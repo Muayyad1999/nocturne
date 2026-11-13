@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nocturne_app::model::{Credential, Device, SnmpAccess};
 use nocturne_app::{App, AppError, AppResult, credentials};
-use nocturne_snmp::{Auth, AuthProtocol, Client, ClientConfig, Oid, PrivProtocol, Value, VarBind};
+use nocturne_snmp::{Auth, AuthParts, AuthProblem, Client, ClientConfig, Oid, Value, VarBind};
 
 /// One row of a walked table: the index below the column OIDs, and the value
 /// of each column that had one.
@@ -214,94 +214,30 @@ fn build_auth(
     access: &SnmpAccess,
     resolved: &credentials::Resolved,
 ) -> AppResult<Auth> {
-    let community = || {
-        resolved
-            .snmp_community
-            .as_ref()
-            .map(|secret| secret.to_string())
-            .ok_or_else(|| {
-                AppError::unauthorized(format!(
-                    "the credential of `{device}` has no SNMP community; add one to the credential"
-                ))
-            })
-    };
-    match access.version.as_str() {
-        "v1" => Ok(Auth::V1 {
-            community: community()?,
-        }),
-        "v2c" | "" => Ok(Auth::V2c {
-            community: community()?,
-        }),
-        "v3" => {
-            if access.user.trim().is_empty() {
-                return Err(AppError::unauthorized(format!(
-                    "the credential of `{device}` selects SNMPv3 but has no user name"
-                )));
-            }
-            let auth = match (
-                auth_protocol(&access.auth_protocol),
-                &resolved.snmp_auth_password,
-            ) {
-                (Some(protocol), Some(password)) => Some((protocol, password.to_string())),
-                (Some(_), None) => {
-                    return Err(AppError::unauthorized(format!(
-                        "the credential of `{device}` selects SNMPv3 authentication but has no authentication password"
-                    )));
-                }
-                (None, _) => None,
-            };
-            let privacy = match (
-                priv_protocol(&access.priv_protocol),
-                &resolved.snmp_priv_password,
-            ) {
-                (Some(protocol), Some(password)) => Some((protocol, password.to_string())),
-                (Some(_), None) => {
-                    return Err(AppError::unauthorized(format!(
-                        "the credential of `{device}` selects SNMPv3 privacy but has no privacy password"
-                    )));
-                }
-                (None, _) => None,
-            };
-            if privacy.is_some() && auth.is_none() {
-                return Err(AppError::invalid(format!(
-                    "the credential of `{device}` has SNMPv3 privacy without authentication, which SNMP does not allow"
-                )));
-            }
-            Ok(Auth::V3 {
-                user: access.user.trim().to_string(),
-                auth,
-                privacy,
-                context_name: String::new(),
-            })
+    // The rules — which protocol names exist, and that SNMPv3 privacy without
+    // authentication is not a mode the protocol has — belong to SNMP, so they
+    // live in the engine. What belongs here is naming the credential that is
+    // wrong, so a person knows which one to go and fix.
+    let community = resolved.snmp_community.as_ref().map(|s| s.to_string());
+    let auth_password = resolved.snmp_auth_password.as_ref().map(|s| s.to_string());
+    let priv_password = resolved.snmp_priv_password.as_ref().map(|s| s.to_string());
+    Auth::from_parts(AuthParts {
+        version: &access.version,
+        user: &access.user,
+        auth_protocol: &access.auth_protocol,
+        priv_protocol: &access.priv_protocol,
+        community: community.as_deref(),
+        auth_password: auth_password.as_deref(),
+        priv_password: priv_password.as_deref(),
+        context_name: "",
+    })
+    .map_err(|problem| match problem {
+        AuthProblem::UnknownVersion(_) => AppError::invalid(format!("`{device}`: {problem}")),
+        AuthProblem::PrivacyWithoutAuthentication => {
+            AppError::invalid(format!("the credential of `{device}`: {problem}"))
         }
-        other => Err(AppError::invalid(format!(
-            "`{other}` is not an SNMP version Nocturne speaks (v1, v2c or v3)"
-        ))),
-    }
-}
-
-fn auth_protocol(name: &str) -> Option<AuthProtocol> {
-    match name.to_ascii_lowercase().as_str() {
-        "md5" => Some(AuthProtocol::Md5),
-        "sha1" | "sha" => Some(AuthProtocol::Sha1),
-        "sha224" => Some(AuthProtocol::Sha224),
-        "sha256" => Some(AuthProtocol::Sha256),
-        "sha384" => Some(AuthProtocol::Sha384),
-        "sha512" => Some(AuthProtocol::Sha512),
-        _ => None,
-    }
-}
-
-fn priv_protocol(name: &str) -> Option<PrivProtocol> {
-    match name.to_ascii_lowercase().as_str() {
-        "des" => Some(PrivProtocol::Des),
-        "aes" | "aes128" => Some(PrivProtocol::Aes128),
-        "aes192" => Some(PrivProtocol::Aes192),
-        "aes256" => Some(PrivProtocol::Aes256),
-        "aes192c" | "aes192-cisco" => Some(PrivProtocol::Aes192Cisco),
-        "aes256c" | "aes256-cisco" => Some(PrivProtocol::Aes256Cisco),
-        _ => None,
-    }
+        other => AppError::unauthorized(format!("the credential of `{device}`: {other}")),
+    })
 }
 
 /// `10.0.0.1` / `[2001:db8::1]` / a bare IPv6 literal with a port.

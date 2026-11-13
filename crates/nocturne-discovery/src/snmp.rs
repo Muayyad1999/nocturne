@@ -8,7 +8,7 @@
 
 use nocturne_app::model::{Credential as CredentialRecord, SnmpAccess, collections::CREDENTIALS};
 use nocturne_app::{App, AppError, AppResult, credentials};
-use nocturne_snmp::{Auth, AuthProtocol, PrivProtocol};
+use nocturne_snmp::{Auth, AuthParts, AuthProblem};
 
 /// One SNMP credential a scan may try, ready to use.
 pub struct Credential {
@@ -51,93 +51,33 @@ pub fn resolve_all(app: &App, ids: &[String]) -> AppResult<Vec<Credential>> {
 }
 
 fn build_auth(name: &str, access: &SnmpAccess, secrets: &credentials::Resolved) -> AppResult<Auth> {
-    let community = || {
-        secrets
-            .snmp_community
-            .as_ref()
-            .map(|secret| secret.to_string())
-            .ok_or_else(|| {
-                AppError::invalid(format!(
-                    "the credential `{name}` has no SNMP community, so a scan cannot use it for SNMP. Add one to the credential, or leave it out of the scan"
-                ))
-            })
-    };
-    match access.version.as_str() {
-        "" => Err(AppError::invalid(format!(
+    // A credential with nothing SNMP about it is a mistake in the *request*
+    // here, not a default: the engine reads an empty version as v2c, which is
+    // right when monitoring a device somebody chose, and wrong when a scan was
+    // handed a credential that has no SNMP in it at all.
+    if access.version.trim().is_empty() {
+        return Err(AppError::invalid(format!(
             "the credential `{name}` has no SNMP access configured (no version, community or v3 user)"
-        ))),
-        "v1" => Ok(Auth::V1 {
-            community: community()?,
-        }),
-        "v2c" => Ok(Auth::V2c {
-            community: community()?,
-        }),
-        "v3" => {
-            if access.user.trim().is_empty() {
-                return Err(AppError::invalid(format!(
-                    "the credential `{name}` selects SNMPv3 but has no user name"
-                )));
-            }
-            let auth = match (
-                auth_protocol(&access.auth_protocol),
-                &secrets.snmp_auth_password,
-            ) {
-                (Some(protocol), Some(password)) => Some((protocol, password.to_string())),
-                (Some(_), None) => {
-                    return Err(AppError::invalid(format!(
-                        "the credential `{name}` selects SNMPv3 authentication but has no authentication password"
-                    )));
-                }
-                (None, _) => None,
-            };
-            let privacy = match (
-                priv_protocol(&access.priv_protocol),
-                &secrets.snmp_priv_password,
-            ) {
-                (Some(protocol), Some(password)) => Some((protocol, password.to_string())),
-                (Some(_), None) => {
-                    return Err(AppError::invalid(format!(
-                        "the credential `{name}` selects SNMPv3 privacy but has no privacy password"
-                    )));
-                }
-                (None, _) => None,
-            };
-            if privacy.is_some() && auth.is_none() {
-                return Err(AppError::invalid(format!(
-                    "the credential `{name}` has SNMPv3 privacy without authentication, which SNMP does not allow"
-                )));
-            }
-            Ok(Auth::V3 {
-                user: access.user.trim().to_string(),
-                auth,
-                privacy,
-                context_name: String::new(),
-            })
-        }
-        other => Err(AppError::invalid(format!(
-            "`{other}` is not an SNMP version Nocturne speaks (v1, v2c or v3)"
-        ))),
+        )));
     }
-}
-
-fn auth_protocol(name: &str) -> Option<AuthProtocol> {
-    match name.to_ascii_lowercase().as_str() {
-        "md5" => Some(AuthProtocol::Md5),
-        "sha1" | "sha" => Some(AuthProtocol::Sha1),
-        "sha224" => Some(AuthProtocol::Sha224),
-        "sha256" => Some(AuthProtocol::Sha256),
-        "sha384" => Some(AuthProtocol::Sha384),
-        "sha512" => Some(AuthProtocol::Sha512),
-        _ => None,
-    }
-}
-
-fn priv_protocol(name: &str) -> Option<PrivProtocol> {
-    match name.to_ascii_lowercase().as_str() {
-        "des" => Some(PrivProtocol::Des),
-        "aes128" | "aes" => Some(PrivProtocol::Aes128),
-        "aes192" => Some(PrivProtocol::Aes192),
-        "aes256" => Some(PrivProtocol::Aes256),
-        _ => None,
-    }
+    // Everything after that is SNMP's own rules, and lives in the engine.
+    let community = secrets.snmp_community.as_ref().map(|s| s.to_string());
+    let auth_password = secrets.snmp_auth_password.as_ref().map(|s| s.to_string());
+    let priv_password = secrets.snmp_priv_password.as_ref().map(|s| s.to_string());
+    Auth::from_parts(AuthParts {
+        version: &access.version,
+        user: &access.user,
+        auth_protocol: &access.auth_protocol,
+        priv_protocol: &access.priv_protocol,
+        community: community.as_deref(),
+        auth_password: auth_password.as_deref(),
+        priv_password: priv_password.as_deref(),
+        context_name: "",
+    })
+    .map_err(|problem| match problem {
+        AuthProblem::NoCommunity => AppError::invalid(format!(
+            "the credential `{name}` has no SNMP community, so a scan cannot use it for SNMP. Add one to the credential, or leave it out of the scan"
+        )),
+        other => AppError::invalid(format!("the credential `{name}`: {other}")),
+    })
 }

@@ -528,3 +528,293 @@ pub(crate) fn random_u64() -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+// --------------------------------------------------------- stored credentials
+
+/// What a stored credential holds, before it becomes an [`Auth`].
+///
+/// Every field is as a person typed it: the version and the protocol names as
+/// text, the secrets as whatever the vault gave back. Turning that into an
+/// `Auth` is the same job wherever it is done, and it carries rules that
+/// belong to SNMP rather than to any one caller — which protocol names exist,
+/// and that privacy without authentication is not a thing the protocol has.
+/// So it lives here, and a caller supplies the wording of its own refusals.
+#[derive(Default, Clone, Copy)]
+pub struct AuthParts<'a> {
+    /// `v1`, `v2c` or `v3`; empty means v2c, which is what most gear speaks.
+    pub version: &'a str,
+    pub user: &'a str,
+    pub auth_protocol: &'a str,
+    pub priv_protocol: &'a str,
+    pub community: Option<&'a str>,
+    pub auth_password: Option<&'a str>,
+    pub priv_password: Option<&'a str>,
+    pub context_name: &'a str,
+}
+
+/// Why a stored credential cannot be used to talk to an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthProblem {
+    /// A version string that is not one this crate speaks.
+    UnknownVersion(String),
+    /// v1 or v2c without a community.
+    NoCommunity,
+    /// v3 without a user name.
+    NoUser,
+    /// An authentication protocol was chosen but no passphrase given.
+    NoAuthPassword,
+    /// A privacy protocol was chosen but no passphrase given.
+    NoPrivPassword,
+    /// Privacy without authentication, which SNMPv3 does not allow.
+    PrivacyWithoutAuthentication,
+}
+
+impl fmt::Display for AuthProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthProblem::UnknownVersion(version) => {
+                write!(f, "`{version}` is not an SNMP version this speaks (v1, v2c or v3)")
+            }
+            AuthProblem::NoCommunity => f.write_str("there is no SNMP community"),
+            AuthProblem::NoUser => f.write_str("SNMPv3 is selected but there is no user name"),
+            AuthProblem::NoAuthPassword => {
+                f.write_str("an SNMPv3 authentication protocol is selected but there is no authentication password")
+            }
+            AuthProblem::NoPrivPassword => {
+                f.write_str("an SNMPv3 privacy protocol is selected but there is no privacy password")
+            }
+            AuthProblem::PrivacyWithoutAuthentication => {
+                f.write_str("SNMPv3 privacy is selected without authentication, which SNMP does not allow")
+            }
+        }
+    }
+}
+
+impl AuthProtocol {
+    /// The protocol a person named, however they spelled it.
+    pub fn from_name(name: &str) -> Option<AuthProtocol> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "md5" => Some(AuthProtocol::Md5),
+            "sha" | "sha1" => Some(AuthProtocol::Sha1),
+            "sha224" => Some(AuthProtocol::Sha224),
+            "sha256" => Some(AuthProtocol::Sha256),
+            "sha384" => Some(AuthProtocol::Sha384),
+            "sha512" => Some(AuthProtocol::Sha512),
+            _ => None,
+        }
+    }
+}
+
+impl PrivProtocol {
+    /// The protocol a person named, however they spelled it. The Cisco
+    /// variants of AES-192 and AES-256 key differently and are not the same
+    /// thing as the standard ones, so they have their own names.
+    pub fn from_name(name: &str) -> Option<PrivProtocol> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "des" => Some(PrivProtocol::Des),
+            "aes" | "aes128" => Some(PrivProtocol::Aes128),
+            "aes192" => Some(PrivProtocol::Aes192),
+            "aes256" => Some(PrivProtocol::Aes256),
+            "aes192c" | "aes192-cisco" => Some(PrivProtocol::Aes192Cisco),
+            "aes256c" | "aes256-cisco" => Some(PrivProtocol::Aes256Cisco),
+            _ => None,
+        }
+    }
+}
+
+impl Auth {
+    /// Build an `Auth` from what a credential store holds.
+    ///
+    /// A protocol name this crate does not know is treated as "none chosen"
+    /// rather than as an error, because a credential may name a protocol for
+    /// a device that is not being spoken to over SNMPv3 at all.
+    pub fn from_parts(parts: AuthParts<'_>) -> Result<Auth, AuthProblem> {
+        let community = || {
+            parts
+                .community
+                .map(str::to_owned)
+                .ok_or(AuthProblem::NoCommunity)
+        };
+        match parts.version.trim().to_ascii_lowercase().as_str() {
+            "v1" => Ok(Auth::V1 {
+                community: community()?,
+            }),
+            "" | "v2c" | "v2" => Ok(Auth::V2c {
+                community: community()?,
+            }),
+            "v3" => {
+                let user = parts.user.trim();
+                if user.is_empty() {
+                    return Err(AuthProblem::NoUser);
+                }
+                let auth = match (
+                    AuthProtocol::from_name(parts.auth_protocol),
+                    parts.auth_password,
+                ) {
+                    (Some(protocol), Some(password)) => Some((protocol, password.to_owned())),
+                    (Some(_), None) => return Err(AuthProblem::NoAuthPassword),
+                    (None, _) => None,
+                };
+                let privacy = match (
+                    PrivProtocol::from_name(parts.priv_protocol),
+                    parts.priv_password,
+                ) {
+                    (Some(protocol), Some(password)) => Some((protocol, password.to_owned())),
+                    (Some(_), None) => return Err(AuthProblem::NoPrivPassword),
+                    (None, _) => None,
+                };
+                if privacy.is_some() && auth.is_none() {
+                    return Err(AuthProblem::PrivacyWithoutAuthentication);
+                }
+                Ok(Auth::V3 {
+                    user: user.to_owned(),
+                    auth,
+                    privacy,
+                    context_name: parts.context_name.to_owned(),
+                })
+            }
+            other => Err(AuthProblem::UnknownVersion(other.to_owned())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_credential_tests {
+    use super::*;
+
+    fn v3(auth_protocol: &str, priv_protocol: &str) -> AuthParts<'static> {
+        AuthParts {
+            version: "v3",
+            user: "nms",
+            auth_protocol: Box::leak(auth_protocol.to_owned().into_boxed_str()),
+            priv_protocol: Box::leak(priv_protocol.to_owned().into_boxed_str()),
+            auth_password: Some("authpass123"),
+            priv_password: Some("privpass123"),
+            ..AuthParts::default()
+        }
+    }
+
+    #[test]
+    fn a_community_credential_becomes_v1_or_v2c() {
+        for (version, expected_v1) in [("v1", true), ("v2c", false), ("", false), ("V2C", false)] {
+            let auth = Auth::from_parts(AuthParts {
+                version,
+                community: Some("public"),
+                ..AuthParts::default()
+            })
+            .unwrap();
+            assert_eq!(matches!(auth, Auth::V1 { .. }), expected_v1, "{version}");
+        }
+        assert_eq!(
+            Auth::from_parts(AuthParts {
+                version: "v2c",
+                ..AuthParts::default()
+            })
+            .unwrap_err(),
+            AuthProblem::NoCommunity
+        );
+        assert_eq!(
+            Auth::from_parts(AuthParts {
+                version: "v4",
+                community: Some("public"),
+                ..AuthParts::default()
+            })
+            .unwrap_err(),
+            AuthProblem::UnknownVersion("v4".into())
+        );
+    }
+
+    #[test]
+    fn every_protocol_name_is_recognised_however_it_is_spelled() {
+        for name in [
+            "md5", "MD5", " sha ", "sha1", "sha224", "sha256", "sha384", "sha512",
+        ] {
+            assert!(AuthProtocol::from_name(name).is_some(), "{name}");
+        }
+        for name in [
+            "des",
+            "AES",
+            "aes128",
+            "aes192",
+            "aes256",
+            "aes192c",
+            "aes256-cisco",
+        ] {
+            assert!(PrivProtocol::from_name(name).is_some(), "{name}");
+        }
+        assert_eq!(AuthProtocol::from_name("sha3"), None);
+        assert_eq!(PrivProtocol::from_name("blowfish"), None);
+        // Cisco's AES-192 is not the standard one; they must stay distinct.
+        assert_ne!(
+            PrivProtocol::from_name("aes192"),
+            PrivProtocol::from_name("aes192c")
+        );
+    }
+
+    #[test]
+    fn privacy_without_authentication_is_refused_because_snmp_has_no_such_mode() {
+        let auth = Auth::from_parts(v3("", "aes")).unwrap_err();
+        assert_eq!(auth, AuthProblem::PrivacyWithoutAuthentication);
+
+        // Authentication alone is a real mode, and so is neither.
+        assert!(matches!(
+            Auth::from_parts(v3("sha256", "")).unwrap(),
+            Auth::V3 {
+                auth: Some(_),
+                privacy: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            Auth::from_parts(v3("", "")).unwrap(),
+            Auth::V3 {
+                auth: None,
+                privacy: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_protocol_without_its_passphrase_is_refused_rather_than_ignored() {
+        assert_eq!(
+            Auth::from_parts(AuthParts {
+                auth_password: None,
+                ..v3("sha256", "")
+            })
+            .unwrap_err(),
+            AuthProblem::NoAuthPassword
+        );
+        assert_eq!(
+            Auth::from_parts(AuthParts {
+                priv_password: None,
+                ..v3("sha256", "aes")
+            })
+            .unwrap_err(),
+            AuthProblem::NoPrivPassword
+        );
+        assert_eq!(
+            Auth::from_parts(AuthParts {
+                user: "   ",
+                ..v3("sha256", "aes")
+            })
+            .unwrap_err(),
+            AuthProblem::NoUser
+        );
+    }
+
+    #[test]
+    fn a_problem_says_what_is_wrong_in_words_a_caller_can_pass_on() {
+        assert!(
+            AuthProblem::PrivacyWithoutAuthentication
+                .to_string()
+                .contains("does not allow")
+        );
+        assert!(AuthProblem::NoCommunity.to_string().contains("community"));
+        assert!(
+            AuthProblem::UnknownVersion("v9".into())
+                .to_string()
+                .contains("v9")
+        );
+    }
+}

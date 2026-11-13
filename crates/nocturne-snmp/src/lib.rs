@@ -55,7 +55,7 @@ mod v3;
 mod value;
 
 pub use agent::Agent;
-pub use client::{Auth, Client, ClientConfig};
+pub use client::{Auth, AuthParts, AuthProblem, Client, ClientConfig};
 pub use error::{SnmpError, error_status_name};
 pub use oid::Oid;
 pub use trap::{Trap, decode_trap, inform_response};
