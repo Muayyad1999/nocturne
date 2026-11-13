@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
@@ -22,7 +23,15 @@ export default defineConfig({
   cacheDir: '.vite',
   plugins: [react()],
   resolve: {
+    // `tsconfigPaths` reads `@/*` out of tsconfig.json, which is what the
+    // editor and the build follow. Vitest resolves a test file's imports
+    // through Node's own resolver, which does not consult it and reports
+    // `@/lib/net` as a missing *package*, so the alias is also spelled out
+    // here. Both must agree with tsconfig.json.
     tsconfigPaths: true,
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
   },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
