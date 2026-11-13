@@ -49,7 +49,7 @@ desktop app — the [Tauri 2 prerequisites](https://tauri.app/start/prerequisite
 for your platform.
 
 ```bash
-cargo test --workspace
+cargo test
 ```
 
 ```bash
