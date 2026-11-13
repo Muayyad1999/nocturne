@@ -509,6 +509,27 @@ fn evaluate_trust(
         error: Some(error),
         hostname_matches,
     };
+
+    // Validity is judged here, against the moment the caller asked about,
+    // and not left to the platform verifier. On Windows and macOS that
+    // verifier hands the question to the operating system, which judges a
+    // certificate against the *system* clock and cannot be told to consider
+    // another moment — so "was this certificate valid in June" would be
+    // answered about today, and answered differently on different machines.
+    // The dates are ours to read, and we already report them; only trust in
+    // the issuer is the platform's to decide. The wording matches what
+    // rustls would have said, so nothing downstream can tell the difference.
+    if let Ok((_, leaf)) = X509Certificate::from_der(end_entity.as_ref()) {
+        let asked_about = i64::try_from(now.as_secs()).unwrap_or(i64::MAX);
+        let validity = leaf.validity();
+        if asked_about < validity.not_before.timestamp() {
+            return untrusted("the certificate is not valid yet".to_owned());
+        }
+        if asked_about > validity.not_after.timestamp() {
+            return untrusted("the certificate has expired".to_owned());
+        }
+    }
+
     let verifier = match trust_verifier(trust) {
         Ok(verifier) => verifier,
         Err(reason) => {

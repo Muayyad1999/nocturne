@@ -799,10 +799,18 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             listener.local_addr().unwrap().port()
         };
+        // Five seconds, not two: this asserts the *kind* of failure, and
+        // Windows takes a little over two to report a refused connection to
+        // an unused loopback port — it retransmits the SYN before giving up,
+        // where Linux answers with a reset at once. With two it timed out in
+        // CI and the test read as "a refusal is not reported" when the
+        // refusal was simply still on its way. How long a refusal takes is
+        // asserted nowhere, deliberately; how long a *silent* server is
+        // waited for is, just below.
         let error = whois_at(
             "192.0.2.1",
             &format!("127.0.0.1:{closed}"),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
         )
         .await
         .unwrap_err();
