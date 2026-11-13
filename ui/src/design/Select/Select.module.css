@@ -1,5 +1,4 @@
 .select {
-  composes: control from '../control.module.css';
   position: relative;
   height: var(--control-md);
   padding: 0;
@@ -11,7 +10,6 @@
 }
 
 .native {
-  composes: native from '../control.module.css';
   padding: 0 var(--sp-24) 0 var(--sp-8);
   appearance: none;
   cursor: pointer;

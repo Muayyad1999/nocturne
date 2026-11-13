@@ -6,7 +6,6 @@
 }
 
 .control {
-  composes: control from '../control.module.css';
   flex-wrap: wrap;
   gap: var(--sp-4);
   padding: 3px var(--sp-4);
@@ -43,7 +42,6 @@
 }
 
 .input {
-  composes: native from '../control.module.css';
   flex: 1 1 80px;
   width: auto;
   height: 20px;

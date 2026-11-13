@@ -1,5 +1,4 @@
 .combobox {
-  composes: control from '../control.module.css';
   height: var(--control-md);
   padding-right: var(--sp-6);
 }
@@ -9,7 +8,6 @@
 }
 
 .input {
-  composes: native from '../control.module.css';
   text-overflow: ellipsis;
 }
 

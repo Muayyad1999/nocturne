@@ -1,45 +1,50 @@
 # UI foundation: running log
 
 Scope: `docs/dev/spec-ui.md`, section "What the foundation build delivers".
+How to work in here: `ui/README.md`.
 
 ## Done
 
-- Scaffold: package.json (exact pins), tsconfig (+ tsconfig.node), Vite 8,
-  Vitest 5, Playwright 1.63 config, index.html, favicon.
-- Tokens (`src/design/tokens.css`), base styles + tone variables (`base.css`).
+- Scaffold: package.json (exact pins), tsconfig (+ tsconfig.node, which also
+  typechecks `tests/`), Vite 8, Vitest 5, Playwright 1.63 config, index.html,
+  favicon.
+- Tokens (`src/design/tokens.css`), base styles + tone variables (`base.css`),
+  shared text-control look (`control.css`).
 - `src/lib`: cx, refs, storage, format, time, keyboard, fuzzy, diff, net
   (+ unit tests, all passing).
 - `src/api`: errors, events (EventHub), transport selection, connection store,
-  token capture, HTTP + Tauri transports, client.
+  token capture, HTTP + Tauri transports, client, hooks, query client
+  (+ unit tests: transport selection, error mapping, reconnect back-off,
+  wildcard subscriptions, invalidation).
 - Overlay primitives (`src/design/overlay`): position, useFloating, layers,
   focus scope, Portal.
-- Components so far: Icon, Spinner, Button, IconButton, Tooltip, Kbd,
-  LogoMark, Badge, StatusDot, StatusPill (+ LabPill), EmptyState, ErrorState,
-  Skeleton, Toast (+ notifications history), Popover, Menu/MenuPopup,
-  DropdownMenu, ContextMenu, Tabs, TimeAgo, Highlight, Splitter/ResizeHandle,
-  Field, Input, Textarea, Select, Combobox, Checkbox, Switch, RadioGroup,
-  Slider, SearchInput, TagInput, Card, Panel, KeyValue, Toolbar, ProgressBar,
+- Components: Icon, Spinner, Button, IconButton, Tooltip, Kbd, LogoMark,
+  Badge, StatusDot, StatusPill (+ LabPill), EmptyState, ErrorState, Skeleton,
+  Toast (+ notifications history), Popover, Menu/MenuPopup, DropdownMenu,
+  ContextMenu, Tabs, TimeAgo, Highlight, Splitter/ResizeHandle, Field, Input,
+  Textarea, Select, Combobox, Checkbox, Switch, RadioGroup, Slider,
+  SearchInput, TagInput, Card, Panel, KeyValue, Toolbar, ProgressBar,
   Sparkline, Stat, CodeBlock, DiffView, Dialog, ConfirmDialog + confirm(),
-  Drawer, Tree, Viewport (+ transform tests).
+  Drawer, Tree, Viewport, **Table**, **TimeSeriesChart**.
 - Shell: AppShell grid, Nav, Header (+ notifications), StatusBar + status
-  items store, AssistantDock frame (+ DockTranscript/DockComposer), command
-  registry + CommandPalette, global shortcuts, layout/theme stores, routes
-  with per-route error boundary, route stubs for every destination. Verified
-  visually with a scratch screenshot (dark, 1440×900).
-- API hooks (`useRpc`, `useRpcMutation`, `useEvent`), query client, mock
-  transport (`src/dev/mock.ts` + `src/dev/mocks/dev.ts`).
+  items store, AssistantDock frame, command registry + CommandPalette, global
+  shortcuts, layout/theme stores, routes with per-route error boundary, route
+  stubs for every destination.
+- Showcase at `/#/dev/components` (dev/test builds only), 11 groups, every
+  component in every state.
+- Playwright: `tests/smoke.spec.ts` (shell, navigation, palette, theme, dock,
+  rail, 1280×720 with the dock open, showcase), `tests/bundle.spec.ts`
+  (the production bundle contains neither the mock nor the showcase),
+  `tests/shell.shots.ts` (`pnpm shots`), `tests/backend.spec.ts` (opt-in, a
+  real `nocturne-server`), and `tests/support/` (`openApp`, `watchConsole`,
+  `startBackend`).
+- `ui/README.md`: running it, conventions, adding a page, registering
+  commands / status items / nav badges.
 
-## In progress
+## State
 
-- Table, TimeSeriesChart (uPlot), then the showcase.
-
-## Next
-
-- API unit tests (transport selection, error mapping, reconnect, wildcard
-  subscriptions, invalidation), tokens contrast test
-- Showcase sections for every component
-- Playwright smoke + bundle check, `pnpm shots`, README
-- Visual review in both themes at 1440×900 and 1280×800
+`pnpm build` (typecheck + build) is clean, with no warnings. `pnpm test`
+262 tests green. `pnpm e2e` 9 specs green. `pnpm shots` writes 40 PNGs.
 
 ## Decisions
 
@@ -64,5 +69,37 @@ Scope: `docs/dev/spec-ui.md`, section "What the foundation build delivers".
   `{code, message}` is also understood).
 - **No barrel file** in `src/design`: import each component from its folder
   so heavy ones (uPlot chart, virtual table) stay out of the main chunk.
+- **No cross-file `composes`.** The shared text-control look used to live in
+  `design/control.module.css` and be composed by Input, Textarea, Select,
+  Combobox and TagInput. The ICSS `:import` rules that generates have no
+  source file, and Vite's URL-rewrite plugin warns about them on every build
+  ("A PostCSS plugin did not pass the `from` option"). The spec asks for a
+  build with no warnings, so the same rules are now a global stylesheet,
+  `design/control.css`, addressed with `data-control`,
+  `data-control-native` and `data-control-adornment`. It is imported from
+  `main.tsx` right after `base.css`, so a component's own module rules — which
+  are emitted later — still win at equal specificity.
 - **E2E** runs against the dev server with `?mock` (the mock is DEV-only by
   spec); the production bundle is built and checked by `tests/bundle.spec.ts`.
+  `openApp` goes through `about:blank` between loads: `…#/a` → `…#/b` is a
+  fragment change, not a navigation, so without it the seeded theme and layout
+  of a second `openApp` in the same test never took effect. It then seeds
+  theme and layout to known values (defaults for anything not asked for), so
+  what one `openApp` left in `localStorage` cannot leak into the next — but
+  each call's seed is applied only once, so a `page.reload()` inside a test
+  still shows what the test itself changed.
+- **Full-page shots** of the showcase temporarily lift the scrolling off
+  `main` onto the document (`unclip` in `shell.shots.ts`): the shell is a
+  100 %-height grid, so a plain `fullPage: true` would capture one window and
+  a page of empty paper.
+
+## Known gaps / notes for the slice authors
+
+- `src/api/types/` is empty: each backend module's author writes their own
+  file there.
+- The assistant dock ships as a frame; `pages/assistant/Dock.tsx` is a stub
+  for the Assistant slice to fill.
+- The status bar has only the engine and version items; monitoring, jobs,
+  alerts and lab slots are registered by the slices that know them.
+- xterm and CodeMirror are pinned in `package.json` but not yet used: the
+  Terminal and Config screens bring them in.

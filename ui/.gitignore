@@ -1,0 +1,11 @@
+# Build output and caches
+dist/
+.vite/
+
+# Playwright
+test-results/
+playwright-report/
+
+# Screenshots from `pnpm shots`: review artefacts, regenerated in ~40s.
+# They are a few megabytes a run, so they are not kept in the repository.
+tests/shots/

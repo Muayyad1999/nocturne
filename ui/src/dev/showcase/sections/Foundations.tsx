@@ -1,4 +1,6 @@
+import { Highlight } from '@/design/Highlight';
 import { LogoMark } from '@/design/LogoMark';
+import { fuzzyMatch } from '@/lib/fuzzy';
 import { Example, Section } from '../parts';
 import styles from '../Showcase.module.css';
 
@@ -20,6 +22,12 @@ const TEXT = [
   ['--accent-soft', 'selected fill'],
   ['--ai', 'assistant'],
   ['--ai-soft', 'assistant fill'],
+];
+/** A query and the text it is matched against, as the palette and Combobox do it. */
+const HIGHLIGHTS: readonly [string, string][] = [
+  ['dev', 'Go to Devices'],
+  ['cfgdif', 'Config drift report'],
+  ['gi101', 'GigabitEthernet1/0/1'],
 ];
 const STATUS = [
   ['--ok', 'up, healthy'],
@@ -119,6 +127,14 @@ export function Foundations() {
                 {sample}
               </span>
             </div>
+          ))}
+        </Example>
+        <Example title="Highlight: what a search matched" layout="column">
+          {HIGHLIGHTS.map(([query, text]) => (
+            <span key={text}>
+              <span className={styles.typeMeta}>{query}</span>
+              <Highlight text={text} indices={fuzzyMatch(query, text)?.indices ?? []} />
+            </span>
           ))}
         </Example>
         <Example title="Monospace and tabular figures" layout="column">

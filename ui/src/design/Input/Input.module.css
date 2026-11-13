@@ -1,18 +1,9 @@
 .input {
-  composes: control from '../control.module.css';
   height: var(--control-md);
 }
 
 .input[data-size='sm'] {
   height: var(--control-sm);
-}
-
-.native {
-  composes: native from '../control.module.css';
-}
-
-.adornment {
-  composes: adornment from '../control.module.css';
 }
 
 /* Number fields: no spinner arrows, tabular digits. */

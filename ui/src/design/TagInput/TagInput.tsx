@@ -95,6 +95,7 @@ export function TagInput({
     <div className={cx(styles.wrapper, className)}>
       <div
         className={styles.control}
+        data-control=""
         data-invalid={isInvalid || undefined}
         data-disabled={disabled || undefined}
         data-mono={mono || undefined}
@@ -127,6 +128,7 @@ export function TagInput({
           {...control}
           ref={inputRef}
           className={styles.input}
+          data-control-native=""
           value={text}
           disabled={disabled}
           // The field is satisfied by its tags, not by the text being typed.

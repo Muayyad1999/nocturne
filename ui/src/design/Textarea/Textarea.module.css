@@ -1,5 +1,4 @@
 .textarea {
-  composes: control from '../control.module.css';
   display: block;
   padding: var(--sp-6) var(--sp-8);
   line-height: var(--lh);

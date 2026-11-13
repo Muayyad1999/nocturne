@@ -129,6 +129,7 @@ export function Combobox({
       <div
         ref={controlRef}
         className={cx(styles.combobox, className)}
+        data-control=""
         data-size={size}
         data-invalid={isInvalid || undefined}
         data-disabled={disabled || undefined}
@@ -137,6 +138,7 @@ export function Combobox({
           {...control}
           ref={inputRef}
           className={styles.input}
+          data-control-native=""
           role="combobox"
           aria-expanded={open}
           aria-controls={open ? listId : undefined}

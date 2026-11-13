@@ -32,11 +32,17 @@ export function Select({ options, size = 'md', invalid, className, children, ...
   return (
     <div
       className={cx(styles.select, className)}
+      data-control=""
       data-size={size}
       data-invalid={isInvalid || undefined}
       data-disabled={props.disabled || undefined}
     >
-      <select {...props} className={styles.native} aria-invalid={props['aria-invalid'] ?? (isInvalid || undefined)}>
+      <select
+        {...props}
+        className={styles.native}
+        data-control-native=""
+        aria-invalid={props['aria-invalid'] ?? (isInvalid || undefined)}
+      >
         {options?.map((option) => (
           <option key={option.value} value={option.value} disabled={option.disabled}>
             {option.label}

@@ -21,6 +21,7 @@ export function Textarea({ invalid, mono = false, rows = 3, className, ...rest }
       {...props}
       rows={rows}
       className={cx(styles.textarea, className)}
+      data-control=""
       data-invalid={isInvalid || undefined}
       data-disabled={props.disabled || undefined}
       data-mono={mono || undefined}

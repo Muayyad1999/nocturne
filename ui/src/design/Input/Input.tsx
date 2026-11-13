@@ -32,14 +32,20 @@ export function Input({
   return (
     <div
       className={cx(styles.input, className)}
+      data-control=""
       data-size={size}
       data-invalid={isInvalid || undefined}
       data-disabled={props.disabled || undefined}
       data-mono={mono || undefined}
     >
-      {leading && <span className={styles.adornment}>{leading}</span>}
-      <input {...props} className={styles.native} aria-invalid={props['aria-invalid'] ?? (isInvalid || undefined)} />
-      {trailing && <span className={styles.adornment}>{trailing}</span>}
+      {leading && <span data-control-adornment="">{leading}</span>}
+      <input
+        {...props}
+        className={styles.native}
+        data-control-native=""
+        aria-invalid={props['aria-invalid'] ?? (isInvalid || undefined)}
+      />
+      {trailing && <span data-control-adornment="">{trailing}</span>}
     </div>
   );
 }
