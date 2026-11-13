@@ -44,11 +44,12 @@ export interface ProviderEntry {
   kind: ProviderKind;
   base_url: string;
   model: string;
-  effort?: Effort;
+  /** The backend sends `null` when no effort is set, not an absent field. */
+  effort?: Effort | null;
   tool_mode: ToolMode;
   /** Tokens of context. Under 16 000 the assistant offers a smaller tool set. */
-  context_window?: number;
-  max_output_tokens?: number;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
   /** Whether a key is stored in the vault for this provider. */
   has_key: boolean;
   is_default: boolean;
@@ -75,8 +76,9 @@ export interface ProviderPreset {
 export interface ModelInfo {
   id: string;
   name: string;
-  context_window?: number;
-  max_output?: number;
+  /** `null` when the endpoint does not say. */
+  context_window?: number | null;
+  max_output?: number | null;
 }
 
 /** A local model runtime found on this machine. */
@@ -195,8 +197,8 @@ export interface Chat {
   seq: number;
   /** Bumped when the context is compacted; older generations stay stored. */
   generation: number;
-  /** The turn that is running, if any. */
-  pending_turn?: string;
+  /** The turn that is running, if any; `null` when none is. */
+  pending_turn?: string | null;
   prefix: string;
 }
 

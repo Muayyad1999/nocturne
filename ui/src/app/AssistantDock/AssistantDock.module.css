@@ -96,3 +96,15 @@
 .input:disabled {
   cursor: not-allowed;
 }
+
+/* A quiet line under the field: which model answers, what Enter does. */
+.hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: var(--sp-6) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.4;
+}
