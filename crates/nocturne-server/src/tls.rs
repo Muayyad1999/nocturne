@@ -142,11 +142,12 @@ pub fn self_signed(data_dir: &Path, bind: IpAddr) -> anyhow::Result<SelfSigned> 
     let key_path = data_dir.join(KEY_FILE);
     let names = names_for(bind, machine_name());
 
-    match (
+    // First start, or one of the two files is gone: fall through and make a new pair.
+    if let (Ok(cert_pem), Ok(key_pem)) = (
         std::fs::read_to_string(&cert_path),
         std::fs::read_to_string(&key_path),
     ) {
-        (Ok(cert_pem), Ok(key_pem)) => match check_reusable(&cert_pem, &key_pem, &names) {
+        match check_reusable(&cert_pem, &key_pem, &names) {
             Ok(()) => {
                 if private_file::restrict(&key_path).unwrap_or(false) {
                     tracing::warn!(
@@ -165,9 +166,7 @@ pub fn self_signed(data_dir: &Path, bind: IpAddr) -> anyhow::Result<SelfSigned> 
                 %reason,
                 "replacing the self-signed certificate; browsers will ask to trust the new one"
             ),
-        },
-        // First start, or one of the two files is gone: make a new pair.
-        _ => {}
+        }
     }
 
     let (cert_pem, key_pem) =

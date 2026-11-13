@@ -5,6 +5,11 @@
 //! error, `error [code]: message`, and an exit status that tells an
 //! application error (1) from a call that never arrived (2).
 
+// `Failure` carries the error code, the message and the details the server
+// sent, so it is a wide type. This is a command-line client: it builds at
+// most one per run, on its way to printing it and exiting.
+#![allow(clippy::result_large_err)]
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

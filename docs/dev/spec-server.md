@@ -41,7 +41,7 @@ fixed.
 | `GET /api/events` | WebSocket. Auth by `?token=…` query (browsers cannot set headers on WebSocket) **or** `Authorization: Bearer`. Optional `?topics=a.*,b.c` filter (comma list; a trailing `*` matches a prefix; absent = everything). Each text frame is one event `{"topic","payload","at"}`. If the client falls behind and events are dropped, send `{"topic":"events.lagged","payload":{"missed":N},"at":…}` so the UI can refetch. Server pings every 20 s; a client silent for 60 s is dropped. Close cleanly on shutdown. |
 | `GET /api/health` | No auth. `{"status":"ok","version":"…"}` only — nothing about the data. |
 | `GET /api/info` | Auth required. `{"version","methods": […]}`. |
-| `GET /*` | The embedded UI (`ui/dist`). `index.html` is served for `/` with `Cache-Control: no-cache`; hashed files under `/assets/` get `public, max-age=31536000, immutable`; correct `Content-Type` for every file; unknown non-API paths return `index.html` (the UI uses a hash router, but deep links must not 404). Never serve files from disk in release builds. |
+| `GET /*` | The embedded UI (`ui/dist`). `index.html` is served for `/` with `Cache-Control: no-cache`; hashed files under `/assets/` get `public, max-age=31536000, immutable`; correct `Content-Type` for every file; an unknown top-level path returns `index.html` (the UI uses a hash router, but a typed link must not 404), a deeper one redirects to `/` because the page's asset URLs are relative, and a path that names a file (an extension, or under `/assets/`) is a plain `404` — a browser that asked for a script cannot use HTML. Never serve files from disk in release builds. |
 
 Auth: a bearer token, compared in constant time. Missing/wrong → `401`
 with `WWW-Authenticate: Bearer`. The token is: `--token`, else
@@ -131,7 +131,9 @@ nocturne-server token [--data-dir DIR]          # print the token (creates it if
   logs go to stderr), so scripts can capture it. `--open` opens the browser.
 * `call` is a small scripting client: prints the result as pretty JSON on
   stdout and exits 0, or prints `error [code]: message` on stderr and exits 1
-  (2 for transport failures). Params may be given as a JSON argument or `-`
+  when the method ran and failed, or 2 when it never ran at all (the server
+  is unreachable, the address is wrong, the token is refused) — a script can
+  then retry the second and not the first. Params may be given as a JSON argument or `-`
   for stdin. This is the automation hook for people who live in shells.
 * Ctrl-C / SIGTERM → graceful shutdown (`app.shutdown()`, then the server).
 

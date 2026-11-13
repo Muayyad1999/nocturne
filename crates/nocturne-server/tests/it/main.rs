@@ -6,11 +6,11 @@
 //! the real UI or the fallback page.
 
 mod auth;
-// mod binary;   // not written yet (the engineer was interrupted)
+mod binary;
 mod events;
 // mod lifecycle;   // not written yet (the engineer was interrupted)
 mod origin;
 mod rpc;
 mod support;
 // mod tls;   // not written yet (the engineer was interrupted)
-// mod ui;   // not written yet (the engineer was interrupted)
+mod ui;
