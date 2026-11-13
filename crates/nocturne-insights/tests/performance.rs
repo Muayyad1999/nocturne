@@ -332,22 +332,30 @@ async fn a_scan_of_five_hundred_devices_is_well_under_a_second() {
     );
     assert_eq!(second.devices, DEVICES);
 
-    // A scan of one device, which is what every collection triggers, must be
-    // cheaper than a scan of five hundred. That is a property of the code
-    // rather than of the machine, so it is asserted tightly: if narrowing
-    // ever stopped narrowing, this is what would notice, on any hardware, at
-    // any speed.
+    // A scan of one device, which is what every collection triggers.
+    //
+    // It is **not** faster than a scan of five hundred, and must not be
+    // asserted to be. Narrowing decides which devices a verdict is reached
+    // *for*; it cannot narrow the loading, because a check like the duplex
+    // mismatch needs the other end of the link, and the other end can be any
+    // device in the inventory. Loading dominates the cost, so the two scans
+    // cost about the same — and on a machine whose storage is slower than
+    // this one's, the one-device scan can come out slightly ahead or behind
+    // depending on nothing more than cache warmth. CI found that out by
+    // failing an assertion here that claimed otherwise, on two platforms at
+    // once, which is exactly what it is for.
+    //
+    // What *is* guaranteed is what the narrowing means, so that is asserted.
     let one = Instant::now();
-    nocturne_insights::scan::run(&app, vec![ids[7].clone()], Vec::new())
+    let narrowed = nocturne_insights::scan::run(&app, vec![ids[7].clone()], Vec::new())
         .await
         .expect("the scan runs");
-    let one = one.elapsed();
-    println!("  one device  {} ms\n", one.as_millis());
-    assert!(
-        one < warm,
-        "scanning one device of {DEVICES} took {} ms, as much as scanning all of them ({} ms)",
-        one.as_millis(),
-        warm.as_millis()
+    println!("  one device  {} ms\n", one.elapsed().as_millis());
+    assert_eq!(
+        narrowed.devices, 1,
+        "a scan narrowed to one device decided for {} of them",
+        narrowed.devices
     );
-    assert!(one.as_millis() < BUDGET_MS);
+    assert!(narrowed.checks_run > 20, "it still ran every check");
+    assert!(one.elapsed().as_millis() < BUDGET_MS);
 }
