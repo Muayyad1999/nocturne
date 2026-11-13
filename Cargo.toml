@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop/src-tauri"]
 # `cargo build` / `cargo test` at the root skip the desktop shell so the engine
 # can be built and tested on machines without the WebView toolchain.
 default-members = ["crates/*"]
