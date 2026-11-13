@@ -95,6 +95,27 @@ data.
 | `nocturne-server` | **done** | 123 tests. HTTP + WebSocket over the RPC surface, token authentication, Host and Origin checks, TLS with rustls, the interface embedded in the binary, and a `call` subcommand for scripting. Four integration modules (binary, lifecycle, TLS, UI) are declared but not yet written. |
 | Desktop (Tauri 2) | **partial** | Builds and runs the backend in process with one `rpc` command and one event channel; icons and bundling configured. Not yet exercised under a real window here. |
 
+## Checked by hand, not only by its own tests
+
+The server holds the credentials of a network, so its refusals were tried
+directly against a running instance:
+
+| | |
+|---|---|
+| A public bind without TLS | refused, with the reason and three ways forward |
+| `server.token`, `vault.key` | mode `600` |
+| No token / a wrong token / the right one | `401` / `401` / `200` |
+| A request carrying another site's `Origin` | `403` — a page the operator visits cannot use the API |
+| A request carrying another `Host` (DNS rebinding) | `403` |
+| `/api/health` without a token | answers, and says nothing about the data |
+| Every response | `nosniff`, `DENY`, `no-referrer`, and a strict content-security policy |
+
+TLS is rustls with the ring provider and nothing else: `aws-lc-rs`,
+`aws-lc-sys`, `openssl-sys` and `native-tls` are all absent from the
+dependency graph, and exactly one version of rustls is linked. The project
+therefore builds on Windows, macOS and Linux without a C toolchain beyond
+what ring and SQLite need.
+
 ## Verified together
 
 The whole stack has been run end to end on this machine: the server with the
