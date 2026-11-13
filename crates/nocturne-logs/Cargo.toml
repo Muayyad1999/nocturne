@@ -1,6 +1,6 @@
 [package]
 name = "nocturne-logs"
-description = "Syslog, SNMP trap and flow receivers; log search, live tail and pattern rules."
+description = "Syslog reception, log search, live tail, pattern rules and device log buffers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,11 +24,20 @@ nocturne-snmp.workspace = true
 regex.workspace = true
 chrono.workspace = true
 bytes.workspace = true
+rusqlite.workspace = true
+# Device output reaches the log store (a pulled `show logging` buffer, a line
+# a device wrote about its own configuration), so everything kept goes
+# through the same redactor the assistant's context does.
+nocturne-ai.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# The flood test needs more log lines than anyone would write by hand: the
+# simulator emits the real ones its devices produce.
+nocturne-netsim.workspace = true
 
 [lints]
 workspace = true
