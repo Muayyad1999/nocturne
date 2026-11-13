@@ -413,6 +413,50 @@ async fn output_right_before_exit_is_not_lost() {
     assert!(seen.ends_with(b"bye\r\n"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_last_words_of_a_device_survive_input_it_never_reads() {
+    let (server, lab) = server(&[]).await;
+    for _ in 0..20 {
+        let mut conn = guest(&server).await;
+        conn.until(b"lab> ").await;
+        // The device leaves on the first line; the rest has nowhere to go,
+        // which must not cut the goodbye short.
+        conn.send("exit\r").await.unwrap();
+        for _ in 0..50 {
+            if conn.send("typed ahead\r").await.is_err() {
+                break;
+            }
+        }
+        let (rest, reason) = conn.until_closed().await;
+        assert!(
+            rest.ends_with(b"\r\nbye\r\n"),
+            "{:?}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert_eq!(reason.as_deref(), Some("exit status 0"));
+    }
+    lab.wait_idle().await;
+}
+
+#[tokio::test]
+async fn a_device_that_stopped_listening_is_still_heard() {
+    let (server, lab) = server(&[]).await;
+    let mut conn = guest(&server).await;
+    conn.until(b"lab> ").await;
+    conn.send("monologue\r").await.unwrap();
+    for _ in 0..50 {
+        conn.send("anyone there?\r").await.unwrap();
+    }
+    let (rest, reason) = conn.until_closed().await;
+    assert!(
+        rest.ends_with(b"\r\none\r\ntwo\r\nthree"),
+        "{:?}",
+        String::from_utf8_lossy(&rest)
+    );
+    assert_eq!(reason.as_deref(), Some("exit status 0"));
+    lab.wait_idle().await;
+}
+
 #[tokio::test]
 async fn local_close_has_no_reason_and_ends_the_remote_session() {
     let (server, lab) = server(&[]).await;
@@ -914,6 +958,63 @@ async fn jump_host_failures_say_where_they_happened() {
     assert_eq!(error.code(), "unsupported", "{error}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_traffic_both_ways_on_several_shells_through_a_jump_host() {
+    let (bastion, _) = server_with(config(&[]), jump_host()).await;
+    let (target, lab) = server(&[]).await;
+    let params = SshParams {
+        jump: vec![hop(&bastion, "jumper", vec![])],
+        ..params(&target, "op", vec![])
+    };
+    echo_in_bulk_on_several_shells(&params).await;
+    lab.wait_idle().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_traffic_both_ways_on_several_shells() {
+    let (target, lab) = server(&[]).await;
+    echo_in_bulk_on_several_shells(&params(&target, "op", vec![])).await;
+    lab.wait_idle().await;
+}
+
+/// Megabytes of input, echoed, on four shells of one session at once.
+async fn echo_in_bulk_on_several_shells(params: &SshParams) {
+    const SHELLS: usize = 4;
+    const CHUNK: usize = 32_000;
+    const CHUNKS: usize = 150;
+    let session = soon(SshSession::connect(params, any_host_key()))
+        .await
+        .unwrap();
+
+    let mut shells = Vec::new();
+    for _ in 0..SHELLS {
+        let (writer, reader) = soon(session.shell()).await.unwrap().split();
+        shells.push(tokio::spawn(async move {
+            let mut reader = tap(reader);
+            reader.until(b"lab> ").await;
+            let sender = tokio::spawn(async move {
+                let chunk = bytes::Bytes::from((0..CHUNK).map(pattern).collect::<Vec<u8>>());
+                for _ in 0..CHUNKS {
+                    writer.send(chunk.clone()).await.unwrap();
+                }
+                writer
+            });
+            let echoed = reader.exactly(CHUNK * CHUNKS).await;
+            for (index, byte) in echoed.iter().enumerate() {
+                assert_eq!(*byte, pattern(index % CHUNK), "byte {index} is wrong");
+            }
+            let writer = soon(sender).await.unwrap();
+            writer.close().await;
+            let (_, reason) = reader.until_closed().await;
+            assert_eq!(reason, None);
+        }));
+    }
+    for shell in shells {
+        soon(shell).await.unwrap();
+    }
+    soon(session.close()).await;
+}
+
 // ------------------------------------------------------------ legacy crypto
 
 /// The one algorithm a restricted server offers in some family.
@@ -1174,4 +1275,127 @@ async fn a_stalled_reader_loses_nothing() {
     }
     conn.until(b"\r\nlab> ").await;
     conn.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn input_far_beyond_what_the_server_stages_is_echoed_in_full() {
+    // The device cannot keep up, so the server has to slow the client down
+    // again and again; that must neither lose a byte nor lock anything up.
+    const CHUNK: usize = 32_000;
+    const CHUNKS: usize = 750;
+    let (server, lab) = server(&[]).await;
+    let (writer, reader) = guest(&server).await.inner.split();
+    let mut reader = tap(reader);
+    reader.until(b"lab> ").await;
+
+    let sender = tokio::spawn(async move {
+        let chunk = bytes::Bytes::from((0..CHUNK).map(pattern).collect::<Vec<u8>>());
+        for _ in 0..CHUNKS {
+            writer.send(chunk.clone()).await.unwrap();
+        }
+        writer
+    });
+    let echoed = reader.exactly(CHUNK * CHUNKS).await;
+    for (index, byte) in echoed.iter().enumerate() {
+        assert_eq!(*byte, pattern(index % CHUNK), "byte {index} is wrong");
+    }
+    let writer = soon(sender).await.unwrap();
+    writer.close().await;
+    let (_, reason) = reader.until_closed().await;
+    assert_eq!(reason, None);
+    lab.wait_idle().await;
+}
+
+/// One connection with two shells, the first of which talks to a device
+/// that stopped reading and is sent input without end. Returns the session,
+/// the stuck shell, the other shell, and the task that floods (which reports
+/// how much the transport took off its hands).
+async fn flood_a_stuck_device(
+    server: &ServerHandle,
+) -> (
+    SshSession,
+    Tap<Connection>,
+    Tap<Connection>,
+    tokio::task::JoinHandle<usize>,
+) {
+    let params = SshParams {
+        // A connection that stops answering is noticed within seconds.
+        keepalive_s: 1,
+        ..params(server, "op", vec![])
+    };
+    let session = soon(SshSession::connect(&params, any_host_key()))
+        .await
+        .unwrap();
+    let mut stuck = tap(soon(session.shell()).await.unwrap());
+    let mut healthy = tap(soon(session.shell()).await.unwrap());
+    stuck.until(b"lab> ").await;
+    healthy.until(b"lab> ").await;
+    stuck.send("hang\r").await.unwrap();
+    stuck.until(b"hang\r").await;
+
+    let writer = stuck.writer();
+    let flood = tokio::spawn(async move {
+        let chunk = bytes::Bytes::from(vec![b'x'; 32 * 1024]);
+        let mut taken = 0;
+        while writer.send(chunk.clone()).await.is_ok() {
+            taken += chunk.len();
+        }
+        taken
+    });
+    (session, stuck, healthy, flood)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stuck_device_holds_its_client_back_and_nothing_else() {
+    let (server, _lab) = server(&[]).await;
+    let (session, stuck, mut healthy, flood) = flood_a_stuck_device(&server).await;
+
+    // Long enough for a connection that froze to miss its keep-alives.
+    for _ in 0..9 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        healthy.send("size\r").await.unwrap();
+        healthy.until(b"120x40\r\nlab> ").await;
+    }
+    assert!(!flood.is_finished(), "the flood should be waiting");
+    assert!(!stuck.is_closed());
+
+    // Giving up on the stuck shell works, and tells how much got through:
+    // megabytes sit in queues along the way, but not the endless stream.
+    stuck.close().await;
+    let taken = soon(flood).await.unwrap();
+    assert!(taken < 32 * 1024 * 1024, "{taken} bytes were taken");
+
+    healthy.send("exit\r").await.unwrap();
+    let (_, reason) = healthy.until_closed().await;
+    assert_eq!(reason.as_deref(), Some("exit status 0"));
+    soon(session.close()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_overruns_the_server_is_cut_off_alone() {
+    // Our own client respects its window, so the limit is lowered to where
+    // the window does not protect it.
+    let options = SshServerOptions {
+        input_limit: Some(64 * 1024),
+        ..SshServerOptions::default()
+    };
+    let (server, _lab) = server_with(config(&[]), options).await;
+    let (session, mut stuck, mut healthy, flood) = flood_a_stuck_device(&server).await;
+
+    let (rest, reason) = stuck.until_closed().await;
+    assert!(
+        contains(&rest, b"too much input that the device does not read"),
+        "{:?}",
+        String::from_utf8_lossy(&rest)
+    );
+    assert_eq!(reason.as_deref(), Some("exit status 1"));
+    soon(flood).await.unwrap();
+
+    // The connection, and the other shell on it, are none the worse for it.
+    healthy.send("size\r").await.unwrap();
+    healthy.until(b"120x40").await;
+    healthy.send("exit\r").await.unwrap();
+    let (_, reason) = healthy.until_closed().await;
+    assert_eq!(reason.as_deref(), Some("exit status 0"));
+    soon(session.close()).await;
 }

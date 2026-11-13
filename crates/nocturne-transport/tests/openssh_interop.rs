@@ -542,6 +542,39 @@ async fn exec_collects_output_streams_and_status() {
         exec("echo still here").await.unwrap().stdout,
         b"still here\n"
     );
+
+    // A command nobody waits for any more is not left running: neither one
+    // that ran out of time, nor one whose caller walked away.
+    let running = || async {
+        let output = exec("pgrep -u \"$(id -u)\" -x yes | wc -l").await.unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let error = soon(session.exec("yes", Duration::from_millis(300)))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "timeout");
+    let abandoned = session.exec("yes", Duration::from_secs(60));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), abandoned)
+            .await
+            .is_err()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running().await != "0" {
+        assert!(Instant::now() < deadline, "`yes` is still running");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Output without end is refused rather than collected.
+    let error = soon(session.exec("cat /dev/zero", Duration::from_secs(120)))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "protocol", "{error}");
+    assert!(error.to_string().contains("more than 256 MiB"), "{error}");
+    assert_eq!(
+        exec("echo still here").await.unwrap().stdout,
+        b"still here\n"
+    );
     soon(session.close()).await;
 }
 
@@ -796,6 +829,87 @@ async fn jump_through_the_same_daemon() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_traffic_both_ways_on_several_channels_through_a_jump_host() {
+    const SHELLS: usize = 3;
+    const CHUNK: usize = 32_000;
+    const CHUNKS: usize = 100;
+    const FILE: usize = 6 * 1024 * 1024;
+    let Some(sshd) = Sshd::start("") else { return };
+    let hop = SshHop {
+        host: "127.0.0.1".to_owned(),
+        port: sshd.port,
+        username: sshd.account.name.clone(),
+        auth: sshd.password(),
+    };
+    let params = SshParams {
+        jump: vec![hop],
+        ..sshd.params(sshd.password())
+    };
+    let session = sshd.session(&params).await;
+    let letter = |index: usize| b'a' + (index % 26) as u8;
+
+    // Shells that send megabytes to `cat` and read them back…
+    let mut work = Vec::new();
+    for _ in 0..SHELLS {
+        let (writer, reader) = soon(session.shell()).await.unwrap().split();
+        work.push(tokio::spawn(async move {
+            let mut reader = tap(reader);
+            // Raw mode: the terminal passes every byte through untouched.
+            writer
+                .send("stty raw -echo; echo \"G$((20 + 2))G\"; exec cat\r")
+                .await
+                .unwrap();
+            reader.until(b"G22G\n").await;
+            let sender = tokio::spawn(async move {
+                let chunk = bytes::Bytes::from((0..CHUNK).map(letter).collect::<Vec<u8>>());
+                for _ in 0..CHUNKS {
+                    writer.send(chunk.clone()).await.unwrap();
+                }
+                writer
+            });
+            let echoed = reader.exactly(CHUNK * CHUNKS).await;
+            for (index, byte) in echoed.iter().enumerate() {
+                assert_eq!(*byte, letter(index % CHUNK), "byte {index} is wrong");
+            }
+            let writer = soon(sender).await.unwrap();
+            writer.close().await;
+            let (_, reason) = reader.until_closed().await;
+            assert_eq!(reason, None);
+        }));
+    }
+
+    // …while a file goes up and comes back down over the same session.
+    let sftp = soon(session.sftp()).await.unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let original = scratch.path().join("original.bin");
+    let returned = scratch.path().join("returned.bin");
+    let content: Vec<u8> = (0..FILE).map(|index| (index % 251) as u8).collect();
+    std::fs::write(&original, &content).unwrap();
+    let remote = format!("{}/bulk.bin", sshd.account.home.display());
+    for _ in 0..2 {
+        assert_eq!(
+            soon(sftp.upload(&original, &remote, None)).await.unwrap(),
+            FILE as u64
+        );
+        assert_eq!(
+            soon(sftp.download(&remote, &returned, None)).await.unwrap(),
+            FILE as u64
+        );
+        assert!(
+            std::fs::read(&returned).unwrap() == content,
+            "the file changed"
+        );
+    }
+    soon(sftp.remove(&remote)).await.unwrap();
+    soon(sftp.close()).await;
+
+    for shell in work {
+        soon(shell).await.unwrap();
+    }
+    soon(session.close()).await;
+}
+
 // ------------------------------------------------------------ robustness
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -825,6 +939,80 @@ async fn a_slow_reader_keeps_answering_the_servers_keepalives() {
     shell.send("echo \"S$((5 + 5))S\"\r").await.unwrap();
     shell.until(b"S10S").await;
     shell.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_session_survives_re_keying_under_load() {
+    const CHUNK: usize = 32_000;
+    const CHUNKS: usize = 100;
+    const FILE: usize = 4 * 1024 * 1024;
+    // The daemon asks for new keys after every 300 KiB, in the middle of
+    // megabytes moving both ways; once with today's algorithms and once
+    // with what an old device would use.
+    for (algorithms, legacy) in [
+        ("", false),
+        (
+            "KexAlgorithms diffie-hellman-group14-sha1\nCiphers aes128-cbc\nMACs hmac-sha1\n",
+            true,
+        ),
+    ] {
+        let config = format!("{algorithms}RekeyLimit 300K\nLogLevel DEBUG1");
+        let Some(sshd) = Sshd::start(&config) else {
+            return;
+        };
+        let session = sshd.session(&sshd.params(sshd.password())).await;
+        assert_eq!(session.info().legacy_crypto, legacy);
+        let letter = |index: usize| b'a' + (index % 26) as u8;
+
+        let (writer, reader) = soon(session.shell()).await.unwrap().split();
+        let echo = tokio::spawn(async move {
+            let mut reader = tap(reader);
+            writer
+                .send("stty raw -echo; echo \"G$((20 + 2))G\"; exec cat\r")
+                .await
+                .unwrap();
+            reader.until(b"G22G\n").await;
+            let sender = tokio::spawn(async move {
+                let chunk = bytes::Bytes::from((0..CHUNK).map(letter).collect::<Vec<u8>>());
+                for _ in 0..CHUNKS {
+                    writer.send(chunk.clone()).await.unwrap();
+                }
+                writer
+            });
+            let echoed = reader.exactly(CHUNK * CHUNKS).await;
+            for (index, byte) in echoed.iter().enumerate() {
+                assert_eq!(*byte, letter(index % CHUNK), "byte {index} is wrong");
+            }
+            soon(sender).await.unwrap().close().await;
+            let (_, reason) = reader.until_closed().await;
+            assert_eq!(reason, None);
+        });
+
+        let sftp = soon(session.sftp()).await.unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let original = scratch.path().join("original.bin");
+        let returned = scratch.path().join("returned.bin");
+        let content: Vec<u8> = (0..FILE).map(|index| (index % 251) as u8).collect();
+        std::fs::write(&original, &content).unwrap();
+        let remote = format!("{}/rekey.bin", sshd.account.home.display());
+        soon(sftp.upload(&original, &remote, None)).await.unwrap();
+        soon(sftp.download(&remote, &returned, None)).await.unwrap();
+        assert!(
+            std::fs::read(&returned).unwrap() == content,
+            "the file changed"
+        );
+        soon(sftp.remove(&remote)).await.unwrap();
+        soon(sftp.close()).await;
+        soon(echo).await.unwrap();
+        soon(session.close()).await;
+
+        let log = sshd.log_text();
+        let rekeys = log.lines().filter(|line| line.contains("rekeying")).count();
+        assert!(
+            rekeys >= 10,
+            "the daemon re-keyed only {rekeys} times:\n{log}"
+        );
+    }
 }
 
 #[tokio::test]

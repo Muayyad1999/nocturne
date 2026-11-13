@@ -2,8 +2,12 @@
 //!
 //! The server puts the client in character-at-a-time mode (`WILL ECHO`,
 //! `WILL SGA`) and asks for its window size (`DO NAWS`); everything else a
-//! client proposes is refused.
+//! client proposes is refused. `IAC BRK` reaches the device as
+//! `Input::Break` and `IAC IP` as Ctrl-C. A client that closes its sending
+//! side (`nc -N`) is still sent what the device has to say to the input it
+//! got.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +21,7 @@ use tokio::time::Instant;
 use super::{ServerHandle, SessionHandler, ShutdownSignal, spawn_server};
 use crate::connection::{ConnectionReader, Input, Output};
 use crate::error::TransportError;
-use crate::relay::Relay;
+use crate::relay::{Relay, Staging};
 use crate::telnet::protocol::{
     AfterCr, BRK, Event, IP, Negotiator, OPT_ECHO, OPT_NAWS, OPT_SGA, Parser, Token, Verb,
     decode_window_size, encode_data,
@@ -33,7 +37,12 @@ const READ_BUFFER: usize = 8 * 1024;
 const INPUT_HIGH_WATER: usize = 256 * 1024;
 /// Negotiation answers waiting for the writer before reading pauses.
 const ANSWER_HIGH_WATER: usize = 16 * 1024;
+/// How long ending the bridged session may take, and how long a device gets
+/// for its last words once a client stopped sending.
 const GOODBYE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a device may leave input untouched once the client stopped
+/// sending (and may be gone for good) before the session is given up.
+const STALL_LIMIT: Duration = Duration::from_secs(10);
 /// Ctrl-C, which is what "interrupt process" means to a device console.
 const INTERRUPT: u8 = 0x03;
 
@@ -79,7 +88,8 @@ async fn serve_connection(
         buffer: vec![0u8; READ_BUFFER],
         tokens: Vec::new(),
         size: None,
-        naws_refused: false,
+        size_withheld: false,
+        finished: false,
     };
 
     let mut hello = Vec::new();
@@ -91,43 +101,40 @@ async fn serve_connection(
     }
 
     // Learn the window size first, so the session starts out right.
-    let mut early = Vec::new();
+    let mut early = Staging::for_input(INPUT_HIGH_WATER);
     let deadline = Instant::now() + WINDOW_SIZE_WAIT;
-    while client.size.is_none() && !client.naws_refused {
+    while client.size.is_none() && !client.size_withheld && !client.finished && early.has_room() {
         let Ok(received) = tokio::time::timeout_at(deadline, client.read()).await else {
             break;
         };
-        let Some(received) = received else {
-            return; // gone already
-        };
-        early.extend(received.inputs);
+        for input in received.inputs {
+            // The size is passed to `open`; a resize from before is history.
+            if !matches!(input, Input::Resize { .. }) {
+                early.push(input);
+            }
+        }
         if socket_tx.write_all(&received.answer).await.is_err() {
             return;
         }
     }
     let (cols, rows) = client.size.unwrap_or(DEFAULT_SIZE);
-    // The size is passed to `open`; what was collected before is history.
-    early.retain(|input| !matches!(input, Input::Resize { .. }));
 
     let Some(connection) = handler.open(peer, None, cols, rows).await else {
         return;
     };
     let (writer, mut device) = connection.split();
-    let mut relay = Relay::new(writer.input.clone(), Input::Data, INPUT_HIGH_WATER);
-    for input in early {
-        stage(&mut relay, input);
-    }
+    let mut relay = Relay::with_staged(writer.input.clone(), early);
     let (answers_tx, mut answers_rx) = mpsc::channel(32);
 
-    let client_left = tokio::select! {
-        () = client_to_device(&mut client, &mut relay, answers_tx) => true,
-        () = device_to_client(&mut device, &mut answers_rx, &mut socket_tx) => false,
-        () = shutdown.requested() => true,
-    };
-    if client_left {
-        // End the device session, then let go of it.
-        relay.push_item(Input::Close);
-        let _ = tokio::time::timeout(GOODBYE_TIMEOUT, relay.flush()).await;
+    tokio::select! {
+        // The client is gone, and the device session was ended.
+        () = client_to_device(&mut client, &mut relay, answers_tx) => {}
+        // The device session is over, or the client cannot be reached.
+        () = device_to_client(&mut device, &mut answers_rx, &mut socket_tx) => {}
+        () = shutdown.requested() => {
+            relay.push(Input::Close);
+            let _ = tokio::time::timeout(GOODBYE_TIMEOUT, relay.flush()).await;
+        }
     }
 }
 
@@ -140,10 +147,15 @@ struct Client {
     tokens: Vec<Token>,
     /// The window size the client reported, if it did.
     size: Option<(u16, u16)>,
-    naws_refused: bool,
+    /// The client will not tell: it refused `NAWS`, or reported no size.
+    size_withheld: bool,
+    /// The client will not send anything more: it closed its side of the
+    /// connection, if not all of it.
+    finished: bool,
 }
 
 /// What one read from the client amounts to.
+#[derive(Default)]
 struct Received {
     /// For the device, in order.
     inputs: Vec<Input>,
@@ -152,36 +164,38 @@ struct Received {
 }
 
 impl Client {
-    /// Reads from the socket once. `None` when the client is gone.
+    /// Reads from the socket once; the end of the stream sets `finished`.
     /// Cancel-safe: nothing is consumed unless the read completes.
-    async fn read(&mut self) -> Option<Received> {
+    async fn read(&mut self) -> Received {
+        let mut received = Received::default();
         let count = match self.socket.read(&mut self.buffer).await {
-            Ok(0) | Err(_) => return None,
+            Ok(0) | Err(_) => {
+                self.finished = true;
+                return received;
+            }
             Ok(count) => count,
         };
         self.parser.feed(&self.buffer[..count], &mut self.tokens);
-        let mut received = Received {
-            inputs: Vec::new(),
-            answer: Vec::new(),
-        };
         for token in std::mem::take(&mut self.tokens) {
             match token {
                 Token::Data(data) => received.inputs.push(Input::Data(data.freeze())),
                 Token::Event(Event::Negotiation { verb, option }) => {
                     self.options.receive(verb, option, &mut received.answer);
                     if option == OPT_NAWS && verb == Verb::Wont {
-                        self.naws_refused = true;
+                        self.size_withheld = true;
                     }
                 }
                 Token::Event(Event::Subnegotiation {
                     option: OPT_NAWS,
                     data,
-                }) if self.options.remote_on(OPT_NAWS) => {
-                    if let Some((cols, rows)) = decode_window_size(&data) {
+                }) if self.options.remote_on(OPT_NAWS) => match decode_window_size(&data) {
+                    // RFC 1073: zero means "not telling".
+                    Some((cols, rows)) if cols > 0 && rows > 0 => {
                         self.size = Some((cols, rows));
                         received.inputs.push(Input::Resize { cols, rows });
                     }
-                }
+                    _ => self.size_withheld = true,
+                },
                 Token::Event(Event::Command(BRK)) => received.inputs.push(Input::Break),
                 Token::Event(Event::Command(IP)) => {
                     received
@@ -191,56 +205,68 @@ impl Client {
                 Token::Event(_) => {}
             }
         }
-        Some(received)
+        received
     }
 }
 
-fn stage(relay: &mut Relay<Input>, input: Input) {
-    match input {
-        Input::Data(data) => relay.push_data(data),
-        other => relay.push_item(other),
-    }
-}
-
-/// Client → device, until the client disconnects or the device stops taking
-/// input.
+/// Client → device, until the client is gone and the device session was told
+/// to end.
 async fn client_to_device(
     client: &mut Client,
     relay: &mut Relay<Input>,
     answers: mpsc::Sender<Vec<u8>>,
 ) {
     // Answers not yet handed to the writing half, and their size.
-    let mut pending: Vec<Vec<u8>> = Vec::new();
+    let mut pending: VecDeque<Vec<u8>> = VecDeque::new();
     let mut pending_bytes = 0;
-    loop {
+    // A device that stopped taking input may still have things to say: the
+    // session goes on, and what the client sends is dropped.
+    let mut deaf = false;
+
+    while !client.finished {
         tokio::select! {
             biased;
-            forwarded = relay.forward_one(), if !relay.is_empty() => {
-                if forwarded.is_err() {
-                    return;
-                }
+            forwarded = relay.forward_one(), if !deaf && !relay.is_empty() => {
+                deaf = forwarded.is_err();
             }
             permit = answers.reserve(), if !pending.is_empty() => {
-                let Ok(permit) = permit else { return };
-                permit.send(pending.remove(0));
+                match (permit, pending.pop_front()) {
+                    (Ok(permit), Some(answer)) => permit.send(answer),
+                    // Nobody is left to write them.
+                    _ => pending.clear(),
+                }
                 if pending.is_empty() {
                     pending_bytes = 0;
                 }
             }
             received = client.read(),
-                if relay.has_room() && pending_bytes < ANSWER_HIGH_WATER =>
+                if (deaf || relay.has_room()) && pending_bytes < ANSWER_HIGH_WATER =>
             {
-                let Some(received) = received else { return };
-                for input in received.inputs {
-                    stage(relay, input);
+                if !deaf {
+                    for input in received.inputs {
+                        relay.push(input);
+                    }
                 }
                 if !received.answer.is_empty() {
                     pending_bytes += received.answer.len();
-                    pending.push(received.answer);
+                    pending.push_back(received.answer);
                 }
             }
         }
     }
+
+    // The client is done sending — or gone altogether, which looks the same
+    // from here. Either way the device gets what was sent, is told to end the
+    // session, and may say its last words (the other direction is still
+    // running); but a device that does not move is not waited for.
+    relay.push(Input::Close);
+    while !deaf && !relay.is_empty() {
+        let forwarded = tokio::time::timeout(STALL_LIMIT, relay.forward_one()).await;
+        if !matches!(forwarded, Ok(Ok(()))) {
+            return;
+        }
+    }
+    tokio::time::sleep(GOODBYE_TIMEOUT).await;
 }
 
 /// Device → client (plus negotiation answers), until the device session ends

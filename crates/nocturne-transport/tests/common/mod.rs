@@ -348,6 +348,14 @@ impl<S: Receive> Tap<S> {
         }
     }
 
+    /// Consumes exactly `count` bytes of output.
+    pub async fn exactly(&mut self, count: usize) -> Vec<u8> {
+        while self.pending.len() < count {
+            self.more(&format!("{count} bytes")).await;
+        }
+        self.pending.drain(..count).collect()
+    }
+
     /// Consumes the rest of the session: its output and the close reason.
     /// Checks that nothing follows `Closed`.
     pub async fn until_closed(&mut self) -> (Vec<u8>, Option<String>) {

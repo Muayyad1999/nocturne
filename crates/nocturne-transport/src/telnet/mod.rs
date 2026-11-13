@@ -4,6 +4,7 @@
 //! negotiation itself, so it can also talk to raw TCP services (console
 //! servers) that would choke on unsolicited option commands.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -178,7 +179,7 @@ async fn read_socket(
     let mut buffer = vec![0u8; READ_BUFFER];
     let mut tokens = Vec::new();
     // Answers not yet handed to the writing half, and their size.
-    let mut pending: Vec<Answer> = Vec::new();
+    let mut pending: VecDeque<Answer> = VecDeque::new();
     let mut pending_bytes = 0;
 
     loop {
@@ -191,9 +192,10 @@ async fn read_socket(
             }
             () = output.closed() => return ReadEnd::Abandoned,
             permit = answers.reserve(), if !pending.is_empty() => {
-                // The writing half only goes away with the whole session.
-                if let Ok(permit) = permit {
-                    permit.send(pending.remove(0));
+                match (permit, pending.pop_front()) {
+                    (Ok(permit), Some(answer)) => permit.send(answer),
+                    // The writing half only goes away with the whole session.
+                    _ => pending.clear(),
                 }
                 if pending.is_empty() {
                     pending_bytes = 0;
@@ -223,7 +225,7 @@ async fn read_socket(
                             Answer::Raw(bytes) => bytes.len(),
                             Answer::WindowSize => 9,
                         };
-                        pending.push(answer);
+                        pending.push_back(answer);
                     }
                 }
             }

@@ -46,8 +46,37 @@ Fallback only if another crate's manifest breaks the workspace again (mention in
 - [x] tests/telnetd_interop.rs: 4 tests vs GNU inetutils telnetd 2.5 (test acts as inetd; real /bin/login as the
       throwaway user): TTYPE→$TERM, NAWS + resize→stty size, IAC IAC / CR NUL from server, CR LF = one Enter,
       100k lines volume, IAC BRK interrupts foreground cmd, wrong password "Login incorrect". Pass 3x, no leftovers.
-- [ ] remove `#![allow(dead_code)]` from lib.rs, clippy clean, fmt, windows cross-check
-- [ ] final report
+- [x] remove `#![allow(dead_code)]` from lib.rs, clippy clean (--all-targets, also for x86_64-pc-windows-gnu), fmt,
+      windows cross-check (`cargo check --target x86_64-pc-windows-gnu -p nocturne-transport` → Finished)
+- [x] review pass 2 (after the summary/compaction), found + fixed in serve/* and relay:
+      * serve_ssh DEADLOCK under bulk input (reproduced: 24 MB echo, 1 in 6 runs under load): stalling the channel
+        reader froze russh's loop, so the client's WINDOW_ADJUSTs for our output sat behind unread input. Fix =
+        real flow control: `server::Handler::adjust_window` returns a 2-byte target window while a device is
+        behind (`Congestion`), channel read every 10 ms meanwhile; channel is never left unread. Hard cap
+        INPUT_LIMIT 8 MiB → channel closed with a stderr notice + exit status 1 (only reachable by clients that
+        ignore their window). Server window 256 KiB.
+        (Client side cannot do this: russh 0.65.1 *client* ignores the value returned by `adjust_window`.)
+      * device output lost when the device stopped taking input while client input was still staged ("deaf"
+        device): bridges now keep delivering output and drop the input (both servers).
+      * serve_telnet: a client that half-closes (`nc -N`, `printf | nc`) now gets the device's answer; early input
+        bounded; zero NAWS/pty sizes ignored (RFC 1073 / RFC 4254) in both servers.
+      * Relay: `Staging` usable before the channel exists; non-data items weigh 64 bytes against the high-water mark.
+      * in-process suite now 176 tests.
+      * JUMP-HOST DEADLOCK (reproduced: 4 shells × 4.8 MB echo through a hop hung 7 runs of 8): inner session
+        blocked writing into the tunnel (window used up) while the outer session's loop was blocked handing
+        tunnel data to a reader that was not reading → the window adjustment never got processed. Fix =
+        `ssh/tunnel.rs`: a task always drains the outer channel into a Relay (cap 32 MiB); inner session reads
+        from that. 8/8 pass after; also verified against real sshd as hop (new openssh_interop test: 3 raw `cat`
+        shells × 3.2 MB echo + SFTP 6 MiB up/down twice, one session through the hop).
+- [x] tests/stock_clients.rs (8 tests): serve_ssh / serve_telnet against the stock OpenSSH `ssh` client
+      (no terminal + in a pty via our own `connect_local`: pty size, window-change, password and
+      keyboard-interactive via SSH_ASKPASS, every modern kex/cipher/MAC + compression + ed25519/rsa-sha2 host
+      keys, 12 MiB of input into a slow device = 33 pause/resume cycles of the flow control, killed client),
+      inetutils `telnet` in a pty (NAWS, ECHO/SGA character mode, resize) and `nc -N` pipelines (half-close).
+- [ ] IN PROGRESS: rest of the review (serial.rs, connection.rs, keys/algorithms, error), then full re-run of
+      everything (lib + openssh_interop + telnetd_interop + stock_clients, clippy --all-targets, fmt --check,
+      windows check + windows clippy)
+- [ ] final report (SubagentHandback)
 
 ### Test plan (in-process, crate-internal `#[cfg(test)]` modules so pub(crate) server options are usable)
 SSH: password ok/fail; key auth (ed25519, rsa file, encrypted); kbd-int only server (Password fallback +

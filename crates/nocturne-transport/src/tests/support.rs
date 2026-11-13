@@ -102,7 +102,8 @@ pub(crate) fn pattern(index: usize) -> u8 {
 ///   of `chunk` bytes, then a new prompt;
 /// * `size` — print the current window size;
 /// * `raw` — print bytes that need escaping on some transports;
-/// * `hang` — stop reading input and never print again.
+/// * `hang` — stop reading input and never print again;
+/// * `monologue` — refuse further input, say three more lines, then close.
 ///
 /// Resizes and breaks are reported as `[resize <cols>x<rows>]` / `[break]`.
 async fn device(mut backend: Backend, user: &str, mut cols: u16, mut rows: u16) {
@@ -151,6 +152,21 @@ async fn device(mut backend: Backend, user: &str, mut cols: u16, mut rows: u16) 
                     return;
                 }
                 ["hang"] => std::future::pending().await,
+                ["monologue"] => {
+                    backend.input.close();
+                    for line in ["one", "two", "three"] {
+                        tokio::time::sleep(Duration::from_millis(40)).await;
+                        if !say(format!("\r\n{line}").into_bytes()).await {
+                            return;
+                        }
+                    }
+                    let _ = output
+                        .send(Output::Closed {
+                            reason: Some("device exit".to_owned()),
+                        })
+                        .await;
+                    return;
+                }
                 ["flood", total, chunk] => {
                     let total: usize = total.parse().unwrap_or(0);
                     let chunk: usize = chunk.parse().unwrap_or(1).max(1);

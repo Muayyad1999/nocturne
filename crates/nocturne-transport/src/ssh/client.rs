@@ -18,6 +18,7 @@ use super::auth;
 use super::jump;
 use super::keys::{HostKeyVerifier, PresentedKey};
 use super::sftp::Sftp;
+use super::tunnel;
 use super::{LegacyCrypto, SshAuth, SshParams};
 use crate::connection::{
     Backend, Connection, ConnectionInfo, Features, Input, Output, TransportKind,
@@ -38,6 +39,8 @@ const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Authentication back-ends (RADIUS, TACACS+) can be slow; each exchange gets
 /// at least this long.
 const MIN_AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+/// What `exec` collects at most: a runaway command must not eat the memory.
+const EXEC_OUTPUT_LIMIT: usize = 256 * 1024 * 1024;
 
 const BREAK_UNSUPPORTED: &str = "a break cannot be sent over SSH: russh 0.65 has no way to send \
      the RFC 4335 \"break\" channel request";
@@ -234,14 +237,14 @@ impl SessionInner {
         host: &str,
         port: u16,
         limit: Duration,
-    ) -> Result<russh::ChannelStream<client::Msg>, TransportError> {
+    ) -> Result<impl AsyncRead + AsyncWrite + Send + Unpin + use<>, TransportError> {
         let opening = self
             .handle
             .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0);
         let target = host_port(host, port);
         match tokio::time::timeout(limit, opening).await {
             Err(_) => Err(TransportError::ConnectTimeout),
-            Ok(Ok(channel)) => Ok(channel.into_stream()),
+            Ok(Ok(channel)) => Ok(tunnel::stream(channel)),
             Ok(Err(russh::Error::ChannelOpenFailure(reason))) => Err(match reason {
                 russh::ChannelOpenFailure::ConnectFailed => TransportError::Unreachable(format!(
                     "the jump host could not connect to {target}"
@@ -306,7 +309,7 @@ pub(crate) struct ConnectOptions {
 /// A session that completed the handshake and authentication.
 pub(crate) struct Established {
     pub session: Arc<SessionInner>,
-    /// Logging in needed a SHA-1 RSA signature.
+    /// Logging in needed a SHA-1 signature (`ssh-rsa`, `ssh-dss`).
     pub legacy_signature: bool,
 }
 
@@ -555,9 +558,12 @@ impl SshSession {
 
     /// One-shot exec channel (no PTY).
     ///
-    /// Collects everything the command prints until the server closes the
-    /// channel; fails with [`TransportError::Timeout`] if that takes longer
-    /// than `timeout`.
+    /// Collects everything the command prints (held in memory: at most
+    /// 256 MiB, more is an error) until the server closes the channel; fails
+    /// with [`TransportError::Timeout`] if that takes longer than `timeout`.
+    /// A command that is given up on — by an error, the timeout, or by
+    /// dropping this future — has its channel closed, upon which servers
+    /// stop it (OpenSSH: the next time it prints something).
     pub async fn exec(
         &self,
         command: &str,
@@ -567,16 +573,19 @@ impl SshSession {
         let Ok(channel) = tokio::time::timeout_at(deadline, self.open_channel()).await else {
             return Err(TransportError::Timeout);
         };
-        let mut channel = channel?;
-        channel.exec(true, command).await.map_err(channel_error)?;
-        let result = match tokio::time::timeout_at(deadline, collect_exec(&mut channel)).await {
+        let mut running = Command(Some(channel?));
+        let collecting = async {
+            let channel = running.0.as_mut().ok_or(TransportError::Closed)?;
+            channel.exec(true, command).await.map_err(channel_error)?;
+            collect_exec(channel).await
+        };
+        let result = match tokio::time::timeout_at(deadline, collecting).await {
             Ok(result) => result,
             Err(_) => Err(TransportError::Timeout),
         };
-        if result.is_err() {
-            // Do not leave a refused or runaway command's channel behind.
-            let (_, channel) = channel.split();
-            let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, channel.close()).await;
+        if result.is_ok() {
+            // It ran to its end; the server closed the channel.
+            running.0 = None;
         }
         result
     }
@@ -813,11 +822,32 @@ pub struct ExecOutput {
     pub exit_status: Option<u32>,
 }
 
+/// The channel of a command that is running; closed when it is given up on.
+struct Command(Option<Channel<client::Msg>>);
+
+impl Drop for Command {
+    fn drop(&mut self) {
+        let Some(channel) = self.0.take() else { return };
+        // No runtime means the whole connection is going away anyway.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, channel.close()).await;
+            });
+        }
+    }
+}
+
 async fn collect_exec(channel: &mut Channel<client::Msg>) -> Result<ExecOutput, TransportError> {
     let mut output = ExecOutput::default();
     let mut accepted = false;
     let mut finished = false;
     loop {
+        if output.stdout.len() + output.stderr.len() > EXEC_OUTPUT_LIMIT {
+            return Err(TransportError::Protocol(format!(
+                "the command printed more than {} MiB; its output was discarded",
+                EXEC_OUTPUT_LIMIT / (1024 * 1024)
+            )));
+        }
         match channel.wait().await {
             Some(ChannelMsg::Success) => accepted = true,
             Some(ChannelMsg::Failure) if !accepted => {

@@ -183,6 +183,86 @@ async fn many_sessions_run_concurrently() {
     lab.wait_idle().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_last_words_of_a_device_survive_input_it_never_reads() {
+    let (server, lab) = server().await;
+    for _ in 0..20 {
+        let mut conn = connect(&params(server.local_addr())).await;
+        conn.until(b"lab> ").await;
+        conn.send("exit\r").await.unwrap();
+        for _ in 0..50 {
+            if conn.send("typed ahead\r").await.is_err() {
+                break;
+            }
+        }
+        let (rest, reason) = conn.until_closed().await;
+        assert!(
+            rest.ends_with(b"\r\nbye\r\n"),
+            "{:?}",
+            String::from_utf8_lossy(&rest)
+        );
+        assert_eq!(reason.as_deref(), Some("closed by remote host"));
+    }
+    lab.wait_idle().await;
+}
+
+#[tokio::test]
+async fn a_device_that_stopped_listening_is_still_heard() {
+    let (server, lab) = server().await;
+    let mut conn = connect(&params(server.local_addr())).await;
+    conn.until(b"lab> ").await;
+    conn.send("monologue\r").await.unwrap();
+    for _ in 0..50 {
+        conn.send("anyone there?\r").await.unwrap();
+    }
+    let (rest, reason) = conn.until_closed().await;
+    assert!(
+        rest.ends_with(b"\r\none\r\ntwo\r\nthree"),
+        "{:?}",
+        String::from_utf8_lossy(&rest)
+    );
+    assert_eq!(reason.as_deref(), Some("closed by remote host"));
+    lab.wait_idle().await;
+}
+
+/// Sends `script` over a plain TCP connection, closes the sending side as
+/// `nc -N` and friends do, and returns everything the server answers.
+async fn pipe_into(server: &ServerHandle, script: &[u8]) -> Vec<u8> {
+    let mut socket = TcpStream::connect(server.local_addr()).await.unwrap();
+    socket.write_all(script).await.unwrap();
+    socket.shutdown().await.unwrap();
+    let mut answer = Vec::new();
+    soon(socket.read_to_end(&mut answer)).await.unwrap();
+    answer
+}
+
+#[tokio::test]
+async fn a_client_that_only_closes_its_sending_side_gets_the_answer() {
+    let (server, lab) = server().await;
+    // The script is on the wire, and the sending side closed, before the
+    // session even exists.
+    let answer = pipe_into(&server, b"size\r\nflood 100000 1000\r\n").await;
+    assert!(
+        contains(&answer, b"Welcome nobody 80x24"),
+        "{:?}",
+        String::from_utf8_lossy(&answer)
+    );
+    assert!(contains(&answer, b"\r\n80x24\r\nlab> "));
+    let flood: Vec<u8> = (0..100_000).map(pattern).collect();
+    assert!(contains(&answer, &flood), "the output was cut short");
+    assert!(answer.ends_with(b"\r\nlab> "));
+    lab.wait_idle().await;
+
+    // A device that says goodbye itself is heard to the end, too.
+    let answer = pipe_into(&server, b"exit\r\nnever read\r\n").await;
+    assert!(
+        answer.ends_with(b"\r\nbye\r\n"),
+        "{:?}",
+        String::from_utf8_lossy(&answer)
+    );
+    lab.wait_idle().await;
+}
+
 #[tokio::test]
 async fn server_shutdown_closes_the_sessions() {
     let (server, lab) = server().await;

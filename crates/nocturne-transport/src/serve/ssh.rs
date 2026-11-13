@@ -1,11 +1,20 @@
 //! SSH server front-end for in-process sessions.
+//!
+//! Clients log in with a password (as such, or through keyboard-interactive);
+//! a server without users lets everybody in, whatever they present. Every
+//! shell a client asks for is bridged to a connection of the handler: the
+//! terminal size goes into `open`, later changes arrive as `Input::Resize`,
+//! and a client that has nothing more to send (`ssh host < script`) shows up
+//! as `Input::Close` behind what it did send. When the device closes the
+//! session, the client is told exit status 0. `exec`, subsystems (SFTP) and
+//! forwarding are refused.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use russh::keys::{Algorithm, PrivateKey};
@@ -16,18 +25,34 @@ use russh::{
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 
 use super::{ServerHandle, SessionHandler, ShutdownSignal, spawn_server};
 use crate::connection::{Connection, ConnectionReader, Input, Output};
 use crate::error::TransportError;
-use crate::relay::Relay;
+use crate::relay::{Relay, Staging};
 use crate::ssh::{CryptoPolicy, Role, decode_private_key, preferred_algorithms};
 
 /// Terminal size assumed until the client says otherwise.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
-/// Unconsumed client input staged per channel before the server stops
-/// reading from that client (see [`crate::relay`]).
-const INPUT_HIGH_WATER: usize = 1024 * 1024;
+/// The receive window of a channel: what a client may send before the server
+/// has seen it. Consoles need little.
+const WINDOW: u32 = 256 * 1024;
+/// The window while a device is behind on its input (see [`Congestion`]).
+const TRICKLE_WINDOW: u32 = 2;
+/// How often a channel is read while its device is behind.
+const TRICKLE_PERIOD: Duration = Duration::from_millis(10);
+/// Staged input above which a device counts as behind…
+const PAUSE_ABOVE: usize = 256 * 1024;
+/// …and below which it has caught up.
+const RESUME_BELOW: usize = 64 * 1024;
+/// Staged input at which a channel is closed on its client. A client that
+/// respects its window stays far below (russh may hand over a hundred
+/// packets before the window shrinks, [`WINDOW`] is still open then, and
+/// the trickle adds next to nothing); this is for those that do not.
+const INPUT_LIMIT: usize = 8 * 1024 * 1024;
+/// What a client that is cut off for flooding is told (on stderr).
+const FLOOD_NOTICE: &str = "\r\nSession closed: too much input that the device does not read.\r\n";
 /// Session channels one connection may hold open.
 const MAX_CHANNELS: usize = 16;
 /// A client must have identified itself within this time…
@@ -87,6 +112,9 @@ pub(crate) struct SshServerOptions {
     pub allow_tcp_forwarding: bool,
     /// Keep-alive interval and tolerated misses, instead of 30 s × 3.
     pub keepalive: Option<(Duration, usize)>,
+    /// Staged input at which a channel is closed, instead of
+    /// [`INPUT_LIMIT`].
+    pub input_limit: Option<usize>,
 }
 
 /// Serves SSH on `config.bind`, bridging every shell to the connection the
@@ -135,6 +163,7 @@ pub(crate) async fn serve_ssh_with(
         preferred: options
             .preferred
             .unwrap_or_else(|| preferred_algorithms(CryptoPolicy::Modern, Role::Server)),
+        window_size: WINDOW,
         // Idle terminals are normal; dead peers are found by keep-alives.
         inactivity_timeout: None,
         keepalive_interval: Some(keepalive_interval),
@@ -147,6 +176,7 @@ pub(crate) async fn serve_ssh_with(
         handler,
         banner: config.banner,
         allow_tcp_forwarding: options.allow_tcp_forwarding,
+        input_limit: options.input_limit.unwrap_or(INPUT_LIMIT),
     });
 
     let listener = TcpListener::bind(config.bind).await?;
@@ -174,6 +204,7 @@ struct Shared {
     handler: Arc<dyn SessionHandler>,
     banner: Option<String>,
     allow_tcp_forwarding: bool,
+    input_limit: usize,
 }
 
 impl Shared {
@@ -201,6 +232,7 @@ async fn serve_connection(
         shared,
         user: None,
         channels: HashMap::new(),
+        behind: Arc::new(AtomicUsize::new(0)),
         logged_in: Arc::clone(&logged_in),
     };
     let hello = server::run_stream(config, stream, handler);
@@ -255,6 +287,8 @@ struct ClientSession {
     /// Set once authentication succeeded.
     user: Option<String>,
     channels: HashMap<ChannelId, ChannelState>,
+    /// How many channels have a device that is behind on its input.
+    behind: Arc<AtomicUsize>,
     logged_in: Arc<AtomicBool>,
 }
 
@@ -369,7 +403,9 @@ impl server::Handler for ClientSession {
         );
         // The task drains the channel from the start: russh delivers channel
         // messages from inside its session loop and would stall otherwise.
-        tokio::spawn(run_channel(channel, attached));
+        let congestion = Congestion::new(Arc::clone(&self.behind));
+        let input_limit = self.shared.input_limit;
+        tokio::spawn(run_channel(channel, attached, congestion, input_limit));
         reply.accept().await;
         Ok(())
     }
@@ -414,6 +450,16 @@ impl server::Handler for ClientSession {
         Ok(())
     }
 
+    /// How far russh re-opens a window it just re-opened the next time:
+    /// see [`Congestion`]. (The setting is per connection, not per channel.)
+    fn adjust_window(&mut self, _channel: ChannelId, _current: u32) -> u32 {
+        if self.behind.load(Ordering::Acquire) > 0 {
+            TRICKLE_WINDOW
+        } else {
+            WINDOW
+        }
+    }
+
     async fn pty_request(
         &mut self,
         channel: ChannelId,
@@ -427,7 +473,9 @@ impl server::Handler for ClientSession {
     ) -> Result<(), Self::Error> {
         match self.channels.get_mut(&channel) {
             Some(state) => {
-                state.size = (dimension(col_width), dimension(row_height));
+                if let Some(size) = terminal_size(col_width, row_height) {
+                    state.size = size;
+                }
                 session.channel_success(channel)
             }
             None => session.channel_failure(channel),
@@ -445,8 +493,10 @@ impl server::Handler for ClientSession {
     ) -> Result<(), Self::Error> {
         // Once the shell runs, the channel task forwards the resize in order
         // with the data; this only matters before that.
-        if let Some(state) = self.channels.get_mut(&channel) {
-            state.size = (dimension(col_width), dimension(row_height));
+        if let Some(state) = self.channels.get_mut(&channel)
+            && let Some(size) = terminal_size(col_width, row_height)
+        {
+            state.size = size;
         }
         Ok(())
     }
@@ -517,20 +567,80 @@ impl server::Handler for ClientSession {
     }
 }
 
-/// A terminal dimension as the rest of the crate knows it.
-fn dimension(value: u32) -> u16 {
-    u16::try_from(value).unwrap_or(u16::MAX)
+/// A terminal size as the rest of the crate knows it: `(columns, rows)`.
+/// `None` when the client left it open (RFC 4254 §6.2: zero dimensions are
+/// to be ignored), as `ssh -tt` does when it has no terminal of its own.
+fn terminal_size(cols: u32, rows: u32) -> Option<(u16, u16)> {
+    let dimension = |value: u32| u16::try_from(value).unwrap_or(u16::MAX);
+    (cols > 0 && rows > 0).then(|| (dimension(cols), dimension(rows)))
+}
+
+/// Flow control for the input of one channel.
+///
+/// russh re-opens a channel's window as soon as data arrives, whether or not
+/// anybody took it, so the window alone never slows a client down. Nor may
+/// the channel simply be left unread: russh has one loop per connection, and
+/// while that waits for a reader, the client's window adjustments for the
+/// *output* sit behind the input nobody reads — a deadlock with every device
+/// that waits for its output to be taken before it reads on.
+///
+/// What a server does get to choose is how far the window is re-opened
+/// ([`server::Handler::adjust_window`]). While a device is behind on its
+/// input, that is [`TRICKLE_WINDOW`] bytes, and its channel is read every
+/// [`TRICKLE_PERIOD`] only: the client all but stops sending, and the
+/// connection stays responsive.
+struct Congestion {
+    /// The connection's count of channels with a device that is behind.
+    behind: Arc<AtomicUsize>,
+    active: bool,
+}
+
+impl Congestion {
+    fn new(behind: Arc<AtomicUsize>) -> Self {
+        Self {
+            behind,
+            active: false,
+        }
+    }
+
+    /// Follows the amount of input staged for the device.
+    fn update(&mut self, staged: usize) {
+        let active = if self.active {
+            staged >= RESUME_BELOW
+        } else {
+            staged > PAUSE_ABOVE
+        };
+        if active == self.active {
+            return;
+        }
+        self.active = active;
+        if active {
+            self.behind.fetch_add(1, Ordering::AcqRel);
+        } else {
+            self.behind.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for Congestion {
+    fn drop(&mut self) {
+        self.update(0);
+    }
 }
 
 /// Serves one session channel: stays on top of what the client sends from
 /// the moment the channel opens, and bridges it to the handler's connection
 /// once a shell was requested.
-async fn run_channel(channel: Channel<Msg>, attached: oneshot::Receiver<Connection>) {
+async fn run_channel(
+    channel: Channel<Msg>,
+    attached: oneshot::Receiver<Connection>,
+    congestion: Congestion,
+    input_limit: usize,
+) {
     let (mut client, sink) = channel.split();
 
-    // Until the shell starts, keep whatever the client already typed.
-    let mut early = Vec::new();
-    let mut early_bytes = 0;
+    // Until the shell starts, keep whatever the client already sent.
+    let mut early = Staging::for_input(input_limit);
     tokio::pin!(attached);
     let connection = loop {
         tokio::select! {
@@ -539,31 +649,36 @@ async fn run_channel(channel: Channel<Msg>, attached: oneshot::Receiver<Connecti
                 Ok(connection) => break connection,
                 Err(_) => return, // no shell will come: refused, or the client left
             },
-            message = client.wait(), if early_bytes < INPUT_HIGH_WATER => match message {
+            message = client.wait() => match message {
                 Some(ChannelMsg::Close) | None => return,
                 Some(message) => {
-                    if let ChannelMsg::Data { data } = &message {
-                        early_bytes += data.len();
+                    if let Some(input) = client_input(message) {
+                        early.push(input);
                     }
-                    early.extend(client_input(message));
+                    if !early.has_room() {
+                        refuse_flood(client, &sink).await;
+                        return;
+                    }
                 }
             }
         }
     };
 
     let (writer, mut device) = connection.split();
-    let mut relay = Relay::new(writer.input.clone(), Input::Data, INPUT_HIGH_WATER);
-    for input in early {
-        stage(&mut relay, input);
-    }
-
-    tokio::select! {
-        () = client_to_device(&mut client, &mut relay) => {
-            // The client is gone: end the device session, then let go of it.
-            relay.push_item(Input::Close);
+    let mut relay = Relay::with_staged(writer.input.clone(), early);
+    let client_end = tokio::select! {
+        end = client_to_device(&mut client, &mut relay, congestion) => Some(end),
+        // The device session is over and the client was told.
+        () = device_to_client(&mut device, &sink) => None,
+    };
+    match client_end {
+        None => {}
+        Some(ClientEnd::Left) => {
+            // End the device session, then let go of it.
+            relay.push(Input::Close);
             let _ = tokio::time::timeout(GOODBYE_TIMEOUT, relay.flush()).await;
         }
-        () = device_to_client(&mut device, &sink) => {}
+        Some(ClientEnd::Flooded) => refuse_flood(client, &sink).await,
     }
 }
 
@@ -575,10 +690,7 @@ fn client_input(message: ChannelMsg) -> Option<Input> {
             col_width,
             row_height,
             ..
-        } => Some(Input::Resize {
-            cols: dimension(col_width),
-            rows: dimension(row_height),
-        }),
+        } => terminal_size(col_width, row_height).map(|(cols, rows)| Input::Resize { cols, rows }),
         // The client has nothing more to say (`ssh host < script`): let the
         // session finish what was sent, then end it.
         ChannelMsg::Eof => Some(Input::Close),
@@ -586,32 +698,51 @@ fn client_input(message: ChannelMsg) -> Option<Input> {
     }
 }
 
-fn stage(relay: &mut Relay<Input>, input: Input) {
-    match input {
-        Input::Data(data) => relay.push_data(data),
-        other => relay.push_item(other),
-    }
+/// Why the client → device direction of a session stopped.
+enum ClientEnd {
+    /// The client closed the channel, or its connection is gone.
+    Left,
+    /// The client sent more than its window allowed, and more than the
+    /// server puts up with ([`INPUT_LIMIT`]).
+    Flooded,
 }
 
-/// Client → device, until the client closes the channel or the device stops
-/// taking input. Keeps draining the channel so russh is never held up.
-async fn client_to_device(client: &mut ChannelReadHalf, relay: &mut Relay<Input>) {
+/// Client → device, until the client is gone. Never leaves the channel
+/// unread for long, so that russh is not held up; see [`Congestion`].
+async fn client_to_device(
+    client: &mut ChannelReadHalf,
+    relay: &mut Relay<Input>,
+    mut congestion: Congestion,
+) -> ClientEnd {
+    // A device that stopped taking input may still have things to say: the
+    // session goes on, and what the client sends is dropped.
+    let mut deaf = false;
+    // While the device is behind: when the channel is read next.
+    let mut next_read = Instant::now();
     loop {
+        congestion.update(relay.weight());
+        let waiting = congestion.active && Instant::now() < next_read;
         tokio::select! {
             biased;
-            forwarded = relay.forward_one(), if !relay.is_empty() => {
+            forwarded = relay.forward_one(), if !deaf && !relay.is_empty() => {
                 if forwarded.is_err() {
-                    return;
+                    deaf = true;
+                    relay.clear();
                 }
             }
-            message = client.wait(), if relay.has_room() => match message {
-                Some(ChannelMsg::Close) | None => return,
+            message = client.wait(), if !waiting => match message {
+                Some(ChannelMsg::Close) | None => return ClientEnd::Left,
                 Some(message) => {
-                    if let Some(input) = client_input(message) {
-                        stage(relay, input);
+                    if !deaf && let Some(input) = client_input(message) {
+                        relay.push(input);
                     }
+                    if !relay.has_room() {
+                        return ClientEnd::Flooded;
+                    }
+                    next_read = Instant::now() + TRICKLE_PERIOD;
                 }
-            }
+            },
+            () = tokio::time::sleep_until(next_read), if waiting => {}
         }
     }
 }
@@ -633,4 +764,21 @@ async fn device_to_client(device: &mut ConnectionReader, sink: &ChannelWriteHalf
             }
         }
     }
+}
+
+/// Closes the channel of a client that floods it, saying why.
+async fn refuse_flood(client: ChannelReadHalf, sink: &ChannelWriteHalf<Msg>) {
+    // Whatever else the client sends is of no interest; russh drops it once
+    // nobody listens.
+    drop(client);
+    // The notice needs room in the client's window, which a client that does
+    // not read will not give: it must not keep the rest from going out.
+    let notice = sink.extended_data_bytes(1, FLOOD_NOTICE);
+    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, notice).await;
+    let hang_up = async {
+        let _ = sink.exit_status(1).await;
+        let _ = sink.eof().await;
+        let _ = sink.close().await;
+    };
+    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, hang_up).await;
 }

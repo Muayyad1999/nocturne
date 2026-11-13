@@ -135,6 +135,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ipv6_literals_work_bare_and_bracketed() {
+        let Ok(listener) = tokio::net::TcpListener::bind("[::1]:0").await else {
+            return; // no IPv6 on this machine
+        };
+        let port = listener.local_addr().unwrap().port();
+        for host in ["::1", "[::1]"] {
+            let stream = connect(host, port, Duration::from_secs(5)).await.unwrap();
+            assert!(stream.peer_addr().unwrap().is_ipv6(), "{host}");
+        }
+    }
+
+    #[tokio::test]
     async fn refused_is_reported_as_refused() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

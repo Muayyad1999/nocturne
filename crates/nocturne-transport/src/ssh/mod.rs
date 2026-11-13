@@ -10,6 +10,7 @@ mod client;
 mod jump;
 mod keys;
 mod sftp;
+mod tunnel;
 
 pub use client::{ExecOutput, SshSession, connect_ssh};
 pub use keys::{
