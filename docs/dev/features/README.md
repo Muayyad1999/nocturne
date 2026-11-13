@@ -62,6 +62,7 @@ credentials::resolve(app, credential_id) -> AppResult<Resolved>;   app.vault().p
 
 // profiles.rs — device types
 profiles::{registry(app) -> Arc<Registry>, platform(app, profile_id) -> AppResult<Arc<Platform>>, expressions(app)}
+profiles::register(builder, yaml)                                   // a feature crate shipping its own built-in profile (call in init)
 
 // connect.rs — the only way to reach a device
 connect::open(app, &device, &OpenOptions{cols, rows, term}) -> AppResult<nocturne_transport::Connection>      // raw byte stream
