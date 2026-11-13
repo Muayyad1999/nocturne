@@ -12,7 +12,12 @@
 //! * [`policy`] — classifies a command as read-only, state-changing or
 //!   dangerous before anything is sent.
 
+pub mod expr;
 pub mod hier;
+pub mod ifname;
 pub mod model;
+pub mod parse;
 pub mod policy;
+pub mod profile;
+pub mod session;
 pub mod term;

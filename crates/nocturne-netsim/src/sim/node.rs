@@ -90,6 +90,9 @@ pub(crate) struct IfState {
     /// Smoothed rates in bits per second (driven by flows).
     pub(crate) rate_in: f64,
     pub(crate) rate_out: f64,
+    /// Rates offered by flows right now, bits per second.
+    pub(crate) load_in: f64,
+    pub(crate) load_out: f64,
 }
 
 impl IfState {
@@ -114,6 +117,8 @@ impl IfState {
             last_secure_src: None,
             rate_in: 0.0,
             rate_out: 0.0,
+            load_in: 0.0,
+            load_out: 0.0,
         }
     }
 }
@@ -162,6 +167,8 @@ pub(crate) struct Node {
     pub(crate) forwarded: u64,
     /// Source of ephemeral ports and identifiers.
     pub(crate) next_ident: u16,
+    /// Name → address records served by the `dns` service (kept by the world).
+    pub(crate) dns_zone: Vec<(String, Ipv4Addr)>,
 }
 
 impl Node {
@@ -202,6 +209,7 @@ impl Node {
             last_config_change: None,
             forwarded: 0,
             next_ident: 0,
+            dns_zone: Vec::new(),
         };
         for (index, port) in model.ports.iter().enumerate() {
             let mac = base_mac.offset(index as u32 + 1);

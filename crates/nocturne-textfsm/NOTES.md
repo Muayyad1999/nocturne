@@ -27,16 +27,30 @@ Design decisions taken (see code docs for detail):
   values are double-quoted strings or lists of them.
 
 Done:
-- [x] bundle copied into `templates/` (+ LICENSE, README.md)
-- [x] `src/pyregex/{ast,parser,emit,mod}.rs` written, compiles, smoke test passes
+- [x] bundle copied into `templates/` (+ LICENSE, README.md); `build.rs` packs it (zlib, ~270 KB)
+- [x] `src/pyregex/{ast,parser,emit,language,mod}.rs`: regex oracle (543,213 evaluations taken from
+      the Python reference over the whole corpus) passes with 0 differences, all groups compared.
+      Oracle file: scratch `textfsm/regex_oracle.jsonl` (made by scratch `py/regex_oracle.py`),
+      test: `PYREGEX_ORACLE=<file> cargo test --release -p nocturne-textfsm agrees_with_python -- --nocapture`
+- [x] `src/{text,error,value,template,fsm}.rs`, `src/ntc/{bundle,index,merge,mod}.rs`, `src/lib.rs`
+- [x] `tests/common/mod.rs` + `tests/conformance.rs`: **1897 / 1897 cases pass (100 %)**, no skips,
+      no fallbacks. Run: `NTC_TEMPLATES_DIR=/home/user/.cache/vendor/ntc-templates cargo test --release
+      -p nocturne-textfsm --test conformance -- --nocapture` (5 s)
 
-In progress / next (in order):
-- [ ] regex oracle test (scratch `py/regex_oracle.py` -> compare every rule regex vs Python)
-- [ ] perf check of Unicode classes (compile time of big templates)
-- [ ] `src/template.rs` (template parser), `src/fsm.rs` (run engine), `src/value.rs`, `src/error.rs`
-- [ ] build.rs + `src/ntc/{bundle,index,merge,mod}.rs`
-- [ ] unit tests (semantics verified against Python), `tests/conformance.rs`, `tests/fixtures*`
-- [ ] clippy, fmt, timing measurement, final report
+Next (in order):
+- [ ] engine-semantics unit tests, expectations verified against Python (scratch venv)
+- [ ] pyregex unit tests (parser errors, emit, both engines agree on every ASCII literal)
+- [ ] `tests/fixtures/` (~80 raw/yml pairs, <= 600 KB) + `tests/fixtures.rs`
+- [ ] copy `py/regex_oracle.py` into `tools/` (the oracle test mentions it)
+- [ ] timing: compile + 5000-line `show interfaces` (release); binary size of the bundle
+- [ ] clippy `-D warnings`, `cargo fmt -p nocturne-textfsm`, doc tests
+- [ ] final report (see brief): conformance table, regex translation, bundle, tests, API notes
+
+Known deviations to report:
+- nullable-loop corner of regex translation (see `src/pyregex/emit.rs` module docs)
+- List value with nested named groups: plain text item instead of Python dict
+- `ntc::find_all` + `Error::Merge` added; `ntc::parse` merges multi-template rows like clitable
+- `serde_json` moved to dev-dependencies; `flate2` added (dep + build-dep)
 
 ## Reference semantics that are easy to get wrong (from parser.py)
 

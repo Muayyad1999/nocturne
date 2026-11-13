@@ -115,15 +115,8 @@ pub(crate) enum Role {
 /// The algorithm preferences for one connection attempt.
 pub(crate) fn preferred(policy: CryptoPolicy, role: Role) -> Preferred {
     let legacy = policy == CryptoPolicy::Legacy;
-    let with = |modern: &[_], extra: &[_]| -> Vec<_> {
-        let mut list = modern.to_vec();
-        if legacy {
-            list.extend_from_slice(extra);
-        }
-        list
-    };
 
-    let mut kex = with(MODERN_KEX, LEGACY_KEX);
+    let mut kex = with_legacy(MODERN_KEX, LEGACY_KEX, legacy);
     kex.extend_from_slice(match role {
         Role::Client => &[
             kex::EXTENSION_SUPPORT_AS_CLIENT,
@@ -143,10 +136,19 @@ pub(crate) fn preferred(policy: CryptoPolicy, role: Role) -> Preferred {
         kex: Cow::Owned(kex),
         key: Cow::Owned(key),
         host_key_certificates: Cow::Borrowed(&[]),
-        cipher: Cow::Owned(with(MODERN_CIPHERS, LEGACY_CIPHERS)),
-        mac: Cow::Owned(with(MODERN_MACS, LEGACY_MACS)),
+        cipher: Cow::Owned(with_legacy(MODERN_CIPHERS, LEGACY_CIPHERS, legacy)),
+        mac: Cow::Owned(with_legacy(MODERN_MACS, LEGACY_MACS, legacy)),
         compression: Cow::Borrowed(COMPRESSION),
     }
+}
+
+/// `modern`, followed by `extra` when legacy algorithms are allowed.
+fn with_legacy<T: Clone>(modern: &[T], extra: &[T], legacy: bool) -> Vec<T> {
+    let mut list = modern.to_vec();
+    if legacy {
+        list.extend_from_slice(extra);
+    }
+    list
 }
 
 /// russh client configuration for one connection attempt.

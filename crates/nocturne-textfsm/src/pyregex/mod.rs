@@ -8,7 +8,10 @@
 
 mod ast;
 mod emit;
+mod language;
 mod parser;
+
+pub(crate) use language::finite_language;
 
 use emit::GroupSlot;
 
@@ -67,11 +70,13 @@ impl Regex {
     }
 
     /// Number of capture groups, not counting the whole match.
+    #[cfg(test)]
     pub fn group_count(&self) -> usize {
         self.group_names.len()
     }
 
     /// Whether the pattern runs on the backtracking engine.
+    #[cfg(test)]
     pub fn uses_backtracking(&self) -> bool {
         matches!(self.engine, Engine::Backtracking(_))
     }

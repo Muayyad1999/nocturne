@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use russh::client::{AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::{AgentClient, AgentStream};
-use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{MethodKind, MethodSet};
 
 use super::SshAuth;
@@ -470,8 +470,3 @@ async fn connect_agent() -> Result<DynAgent, String> {
 async fn connect_agent() -> Result<DynAgent, String> {
     Err("ssh-agent authentication is not supported on this platform".to_owned())
 }
-
-// `PrivateKey` is only named in signatures above through `Arc`; keep the
-// import honest for readers skimming the types involved.
-#[allow(dead_code)]
-type LoadedKey = Arc<PrivateKey>;

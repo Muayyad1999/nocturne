@@ -17,7 +17,7 @@ pub use keys::{
 };
 pub use sftp::{Sftp, SftpEntry};
 
-pub(crate) use algorithms::{CryptoPolicy, preferred as preferred_algorithms};
+pub(crate) use algorithms::{CryptoPolicy, Role, preferred as preferred_algorithms};
 pub(crate) use keys::decode_private_key;
 
 /// Most hops a `ProxyJump` chain may have.

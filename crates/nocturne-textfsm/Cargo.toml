@@ -12,11 +12,16 @@ regex.workspace = true
 fancy-regex.workspace = true
 indexmap.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
+# Inflates the embedded template bundle (pure Rust backend, already in the workspace's tree).
+flate2 = "1.1"
+
+[build-dependencies]
+flate2 = "1.1"
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+serde_json.workspace = true
 serde_yaml_ng.workspace = true
 
 [lints]

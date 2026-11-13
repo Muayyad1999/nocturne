@@ -1,0 +1,532 @@
+# Value declarations and their options.
+#
+# Each case states what the Python reference does; `tools/check_semantics.py`
+# verifies the expectations and `tests/semantics.rs` holds the engine to them.
+# `rows` lists the cells of every recorded row in header order.
+
+- name: a value that never matches is an empty string
+  template: |
+    Value NAME (\S+)
+    Value SPEED (\d+)
+
+    Start
+      ^name ${NAME} -> Record
+  input: |
+    name eth0
+    name eth1
+  header: [NAME, SPEED]
+  rows:
+    - ["eth0", ""]
+    - ["eth1", ""]
+
+- name: a later match replaces the pending value
+  template: |
+    Value NAME (\S+)
+
+    Start
+      ^name ${NAME}
+      ^end -> Record
+  input: |
+    name a
+    name b
+    end
+  rows:
+    - ["b"]
+
+- name: an empty row is not recorded
+  template: |
+    Value NAME (\S+)
+
+    Start
+      ^name ${NAME}
+      ^end -> Record
+  input: |
+    end
+    name a
+    end
+    end
+  rows:
+    - ["a"]
+
+- name: a matched empty string makes the row non-empty
+  template: |
+    Value NAME (\S*)
+    Value OTHER (\d+)
+
+    Start
+      ^name:${NAME} -> Record
+  input: |
+    name:
+    name:x
+  rows:
+    - ["", ""]
+    - ["x", ""]
+
+- name: a group that takes no part in the match erases the pending value
+  template: |
+    Value NAME (\S+)
+    Value SPEED (\d+)
+
+    Start
+      ^name ${NAME} speed ${SPEED}
+      ^more( speed ${SPEED})?
+      ^end -> Record
+  input: |
+    name a speed 10
+    more
+    end
+    name b speed 20
+    more speed 30
+    end
+  rows:
+    - ["a", ""]
+    - ["b", "30"]
+
+- name: Filldown keeps the value for later rows
+  template: |
+    Value Filldown SLOT (\d+)
+    Value Required PORT (\S+)
+
+    Start
+      ^slot ${SLOT}
+      ^port ${PORT} -> Record
+  input: |
+    slot 1
+    port a
+    port b
+    slot 2
+    port c
+  rows:
+    - ["1", "a"]
+    - ["1", "b"]
+    - ["2", "c"]
+
+- name: Filldown alone produces a final row at the end of the input
+  template: |
+    Value Filldown SLOT (\d+)
+    Value PORT (\S+)
+
+    Start
+      ^slot ${SLOT}
+      ^port ${PORT} -> Record
+  input: |
+    slot 1
+    port a
+  rows:
+    - ["1", "a"]
+    - ["1", ""]
+
+- name: Filldown is forgotten when its group takes no part in a match
+  template: |
+    Value Filldown SLOT (\d+)
+    Value Required PORT (\S+)
+
+    Start
+      ^slot ${SLOT}
+      ^chassis( slot ${SLOT})?
+      ^port ${PORT} -> Record
+  input: |
+    slot 1
+    port a
+    chassis
+    port b
+    port c
+  rows:
+    - ["1", "a"]
+    - ["", "b"]
+    - ["", "c"]
+
+- name: Required drops the row and clears the other values
+  template: |
+    Value Required NAME (\S+)
+    Value SPEED (\d+)
+
+    Start
+      ^name ${NAME}
+      ^speed ${SPEED}
+      ^end -> Record
+  input: |
+    speed 10
+    end
+    name a
+    end
+    name b
+    speed 20
+    end
+  rows:
+    - ["a", ""]
+    - ["b", "20"]
+
+- name: Required is not satisfied by an empty match
+  template: |
+    Value Required NAME (\S*)
+    Value SPEED (\d+)
+
+    Start
+      ^name:${NAME} speed ${SPEED} -> Record
+  input: |
+    name: speed 10
+    name:a speed 20
+  rows:
+    - ["a", "20"]
+
+- name: List collects every match until the row is recorded
+  template: |
+    Value NAME (\S+)
+    Value List ADDRESS (\S+)
+
+    Start
+      ^name ${NAME}
+      ^address ${ADDRESS}
+      ^end -> Record
+  input: |
+    name a
+    address 1
+    address 2
+    end
+    name b
+    end
+    address 3
+    end
+  rows:
+    - ["a", ["1", "2"]]
+    - ["b", []]
+    - ["", ["3"]]
+
+- name: a row whose only content is an empty list is not recorded
+  template: |
+    Value List ADDRESS (\S+)
+
+    Start
+      ^address ${ADDRESS}
+      ^end -> Record
+  input: |
+    end
+    address 1
+    end
+  rows:
+    - [["1"]]
+
+- name: a List group that takes no part in a match adds the item None
+  template: |
+    Value List VLAN (\d+)
+
+    Start
+      ^port( vlan ${VLAN})?
+      ^end -> Record
+  input: |
+    port vlan 10
+    port
+    port vlan 30
+    end
+    port
+    end
+  rows:
+    - [["10", "None", "30"]]
+    - [["None"]]
+
+- name: Filldown List keeps growing across rows
+  template: |
+    Value Filldown,List TAG (\S+)
+    Value Required NAME (\S+)
+
+    Start
+      ^tag ${TAG}
+      ^name ${NAME} -> Record
+  input: |
+    tag x
+    name a
+    tag y
+    name b
+  rows:
+    - [["x"], "a"]
+    - [["x", "y"], "b"]
+
+- name: List Filldown in the other order behaves the same
+  template: |
+    Value List,Filldown TAG (\S+)
+    Value Required NAME (\S+)
+
+    Start
+      ^tag ${TAG}
+      ^name ${NAME} -> Record
+  input: |
+    tag x
+    name a
+    name b
+  rows:
+    - [["x"], "a"]
+    - [["x"], "b"]
+
+- name: Required List looks at the last match, not at the list
+  template: |
+    Value Required,List VLAN (\d+)
+    Value NAME (\S+)
+
+    Start
+      ^name ${NAME}
+      ^port( vlan ${VLAN})?
+      ^end -> Record
+  input: |
+    name a
+    port vlan 10
+    port
+    end
+    name b
+    port
+    port vlan 20
+    end
+  rows:
+    - [["None", "20"], "b"]
+
+- name: List Required looks at the list
+  template: |
+    Value List,Required VLAN (\d+)
+    Value NAME (\S+)
+
+    Start
+      ^name ${NAME}
+      ^port( vlan ${VLAN})?
+      ^end -> Record
+  input: |
+    name a
+    port vlan 10
+    port
+    end
+    name b
+    end
+  rows:
+    - [["10", "None"], "a"]
+
+- name: Fillup copies a match into the rows above that lack it
+  template: |
+    Value NAME (\S+)
+    Value Fillup OWNER (\S+)
+
+    Start
+      ^name ${NAME} -> Record
+      ^owner ${OWNER}
+  input: |
+    name a
+    name b
+    owner x
+    name c
+    name d
+    owner y
+    name e
+    name f
+  rows:
+    - ["a", "x"]
+    - ["b", "x"]
+    - ["c", "x"]
+    - ["d", "y"]
+    - ["e", "y"]
+    - ["f", ""]
+
+- name: a Fillup value is also part of the row being built
+  template: |
+    Value NAME (\S+)
+    Value Fillup OWNER (\S+)
+
+    Start
+      ^name ${NAME} -> Record
+      ^owner ${OWNER}
+      ^end -> Record
+  input: |
+    name a
+    owner x
+    end
+  rows:
+    - ["a", "x"]
+    - ["", "x"]
+
+- name: Fillup replaces an empty list by the matched text
+  template: |
+    Value NAME (\S+)
+    Value Fillup,List TAG (\S+)
+
+    Start
+      ^name ${NAME} -> Record
+      ^tag ${TAG}
+      ^end -> Record
+  input: |
+    name a
+    name b
+    tag x
+    tag y
+    end
+  rows:
+    - ["a", "x"]
+    - ["b", "x"]
+    - ["", ["x", "y"]]
+
+- name: Key does not change what is recorded
+  template: |
+    Value Key NAME (\S+)
+    Value Key,Required ID (\d+)
+
+    Start
+      ^${NAME} ${ID} -> Record
+  input: |
+    a 1
+    a 1
+  rows:
+    - ["a", "1"]
+    - ["a", "1"]
+
+- name: a nested group named like another value assigns that value
+  template: |
+    Value WHOLE ((?P<PART>\d+)-\d+)
+    Value PART (\S+)
+
+    Start
+      ^range ${WHOLE} -> Record
+  input: |
+    range 10-20
+  rows:
+    - ["10-20", "10"]
+
+- name: a List value with nested unnamed groups records the whole match
+  template: |
+    Value List MAC ([0-9a-f]{2}(:[0-9a-f]{2}){5})
+
+    Start
+      ^mac ${MAC}
+      ^end -> Record
+  input: |
+    mac 00:11:22:33:44:55
+    mac aa:bb:cc:dd:ee:ff
+    end
+  rows:
+    - [["00:11:22:33:44:55", "aa:bb:cc:dd:ee:ff"]]
+
+- name: options and names are separated by single spaces
+  template: |
+    Value Required,Key NAME (a b  c)
+
+    Start
+      ^${NAME} -> Record
+  input: |
+    a b  c
+  rows:
+    - ["a b  c"]
+
+- name: a value that no rule uses stays in the header
+  template: |
+    Value USED (\S+)
+    Value un-used (\S+)
+
+    Start
+      ^${USED} -> Record
+  input: |
+    x
+  header: [USED, un-used]
+  rows:
+    - ["x", ""]
+
+- name: comments are allowed between Value lines
+  template: |
+    # leading comment
+    Value A (\S+)
+      # indented comment
+    Value B (\S+)
+
+    Start
+      ^${A} ${B} -> Record
+  input: |
+    1 2
+  rows:
+    - ["1", "2"]
+
+- name: a template without values records nothing
+  template: "\nStart\n  ^.* -> Record\n"
+  input: |
+    x
+  header: []
+  rows: []
+
+- name: unknown option
+  template: |
+    Value Optional NAME (\S+)
+
+    Start
+  template_error: {line: 1}
+
+- name: duplicate option
+  template: |
+    Value List,List NAME (\S+)
+
+    Start
+  template_error: {line: 1}
+
+- name: two spaces after Value are read as an empty option
+  template: |
+    Value  NAME (\S+)
+
+    Start
+  template_error: {line: 1}
+
+- name: a Value line needs a regex
+  template: |
+    Value NAME
+
+    Start
+  template_error: {line: 1}
+
+- name: the regex must be enclosed in parentheses
+  template: |
+    Value NAME \S+
+
+    Start
+  template_error: {line: 1}
+
+- name: the regex must not end in an escaped parenthesis
+  template: |
+    Value NAME (\S+\)
+
+    Start
+  template_error: {line: 1}
+
+- name: the regex must be valid
+  template: |
+    Value OK (\S+)
+    Value NAME (\S+))
+
+    Start
+  template_error: {line: 2}
+
+- name: value names are limited to 48 characters
+  template: |
+    Value A123456789012345678901234567890123456789012345678 (\S+)
+
+    Start
+  template_error: {line: 1}
+
+- name: duplicate value
+  template: |
+    Value NAME (\S+)
+    Value NAME (\d+)
+
+    Start
+  template_error: {line: 2}
+
+- name: text other than Value lines in the value block
+  template: |
+    Value NAME (\S+)
+    Start
+      ^${NAME} -> Record
+  template_error: {line: 2}
+
+- name: a template that does not start with values or a blank line
+  template: |
+    Start
+      ^. -> Record
+  template_error: {line: 1}
+
+- name: an indented Value line is not a Value line
+  template: |
+    Value A (\S+)
+     Value B (\S+)
+
+    Start
+  template_error: {line: 2}

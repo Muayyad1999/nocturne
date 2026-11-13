@@ -251,23 +251,24 @@ impl SessionInner {
                     other.description()
                 )),
             }),
-            Ok(Err(error)) => Err(self.channel_error(error)),
+            Ok(Err(error)) => Err(channel_error(error)),
         }
     }
 
-    /// Maps an error from a channel operation on an established session.
-    fn channel_error(&self, error: russh::Error) -> TransportError {
-        match error {
-            russh::Error::SendError | russh::Error::RecvError | russh::Error::Disconnect => {
-                TransportError::Closed
-            }
-            russh::Error::ChannelOpenFailure(reason) => TransportError::Protocol(format!(
-                "the server refused to open a channel: {}",
-                reason.description()
-            )),
-            russh::Error::IO(error) => TransportError::Io(error),
-            other => TransportError::Protocol(other.to_string()),
+}
+
+/// Maps an error from a channel operation on an established session.
+fn channel_error(error: russh::Error) -> TransportError {
+    match error {
+        russh::Error::SendError | russh::Error::RecvError | russh::Error::Disconnect => {
+            TransportError::Closed
         }
+        russh::Error::ChannelOpenFailure(reason) => TransportError::Protocol(format!(
+            "the server refused to open a channel: {}",
+            reason.description()
+        )),
+        russh::Error::IO(error) => TransportError::Io(error),
+        other => TransportError::Protocol(other.to_string()),
     }
 }
 
@@ -521,14 +522,14 @@ impl SshSession {
             channel
                 .request_pty(true, &self.term, cols, rows, 0, 0, &[])
                 .await
-                .map_err(|e| self.session.channel_error(e))?;
+                .map_err(channel_error)?;
             if !request_accepted(&mut channel, &mut early).await? {
                 tracing::warn!(peer = %self.info.peer, "the server refused to allocate a terminal");
             }
             channel
                 .request_shell(true)
                 .await
-                .map_err(|e| self.session.channel_error(e))?;
+                .map_err(channel_error)?;
             if !request_accepted(&mut channel, &mut early).await? {
                 let _ = channel.close().await;
                 return Err(TransportError::Protocol(
@@ -571,7 +572,7 @@ impl SshSession {
         channel
             .exec(true, command)
             .await
-            .map_err(|e| self.session.channel_error(e))?;
+            .map_err(channel_error)?;
         match tokio::time::timeout_at(deadline, collect_exec(&mut channel)).await {
             Ok(result) => result,
             Err(_) => {
@@ -588,7 +589,7 @@ impl SshSession {
             channel
                 .request_subsystem(true, "sftp")
                 .await
-                .map_err(|e| self.session.channel_error(e))?;
+                .map_err(channel_error)?;
             if !request_accepted(&mut channel, &mut Vec::new()).await? {
                 let _ = channel.close().await;
                 return Err(TransportError::Unsupported(
@@ -611,7 +612,7 @@ impl SshSession {
             .handle
             .channel_open_session()
             .await
-            .map_err(|e| self.session.channel_error(e))
+            .map_err(channel_error)
     }
 
     async fn bounded<T>(

@@ -21,9 +21,11 @@ thiserror.workspace = true
 tracing.workspace = true
 bytes.workspace = true
 include_dir = "0.7"
+async-trait.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,516 @@
+# Rules: how lines are matched and what the operators after `->` do.
+#
+# See values.yml for the format.
+
+- name: the first matching rule consumes the line
+  template: |
+    Value WORD (\S+)
+
+    Start
+      ^a${WORD} -> Record
+      ^${WORD} -> Record
+  input: |
+    ab
+    cd
+  rows:
+    - ["b"]
+    - ["cd"]
+
+- name: rules match at the start of the line but need not reach its end
+  template: |
+    Value WORD ([a-z]+)
+
+    Start
+      ^${WORD} -> Record
+  input: |
+    abc123 tail
+     indented
+    xyz
+  rows:
+    - ["abc"]
+    - ["xyz"]
+
+- name: the dollar pair anchors at the end of the line
+  template: |
+    Value WORD ([a-z]+)
+
+    Start
+      ^${WORD}$$ -> Record
+  input: |
+    abc123
+    xyz
+  rows:
+    - ["xyz"]
+
+- name: a value can be referenced without braces
+  template: |
+    Value WORD (\S+)
+    Value NUM (\d+)
+
+    Start
+      ^$WORD:$NUM$$ -> Record
+  input: |
+    a:1
+  rows:
+    - ["a", "1"]
+
+- name: a literal dollar sign is written as backslash dollar dollar
+  template: |
+    Value PRICE (\d+)
+
+    Start
+      ^\$$${PRICE} -> Record
+  input: |
+    $15
+  rows:
+    - ["15"]
+
+- name: unmatched lines are skipped
+  template: |
+    Value WORD (\S+)
+
+    Start
+      ^keep ${WORD} -> Record
+  input: |
+    noise
+    keep a
+
+    more noise
+    keep b
+  rows:
+    - ["a"]
+    - ["b"]
+
+- name: Next is the default line operator and NoRecord the default record operator
+  template: |
+    Value A (\S+)
+    Value B (\S+)
+
+    Start
+      ^a ${A} -> Next
+      ^b ${B} -> Next.NoRecord
+      ^end -> Next.Record
+      ^stop -> NoRecord
+  input: |
+    a 1
+    b 2
+    stop
+    end
+  rows:
+    - ["1", "2"]
+
+- name: Record without a line operator
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record
+  input: |
+    1
+    2
+  rows:
+    - ["1"]
+    - ["2"]
+
+- name: Continue hands the same line to the following rules
+  template: |
+    Value FIRST (\S+)
+    Value SECOND (\S+)
+    Value LAST (\S+)
+
+    Start
+      ^${FIRST}\s -> Continue
+      ^\S+\s+${SECOND} -> Continue
+      ^.*\s${LAST}$$ -> Record
+  input: |
+    a b c
+  rows:
+    - ["a", "b", "c"]
+
+- name: Continue does not restart at the first rule
+  template: |
+    Value List WORD (\S+)
+
+    Start
+      ^${WORD} -> Continue
+      ^\S+ ${WORD} -> Continue
+      ^end -> Record
+  input: |
+    a b
+    end
+  rows:
+    - [["a", "b", "end"]]
+
+- name: Continue.Record records and keeps the line
+  template: |
+    Value Required NAME (\S+)
+    Value TYPE (\S+)
+
+    Start
+      ^name -> Continue.Record
+      ^name ${NAME}
+      ^type ${TYPE}
+  input: |
+    name a
+    type x
+    name b
+    type y
+  rows:
+    - ["a", "x"]
+    - ["b", "y"]
+
+- name: Clear drops everything but Filldown values
+  template: |
+    Value Filldown GROUP (\S+)
+    Value NAME (\S+)
+    Value List TAG (\S+)
+
+    Start
+      ^group ${GROUP}
+      ^name ${NAME}
+      ^tag ${TAG}
+      ^reset -> Clear
+      ^end -> Record
+  input: |
+    group g
+    name a
+    tag t
+    reset
+    end
+    name b
+    end
+  rows:
+    - ["g", "", []]
+    - ["g", "b", []]
+    - ["g", "", []]
+
+- name: Clearall also drops Filldown values
+  template: |
+    Value Filldown GROUP (\S+)
+    Value NAME (\S+)
+
+    Start
+      ^group ${GROUP}
+      ^name ${NAME}
+      ^reset -> Clearall
+      ^end -> Record
+  input: |
+    group g
+    name a
+    end
+    name b
+    reset
+    end
+    name c
+    end
+  rows:
+    - ["g", "a"]
+    - ["", "c"]
+
+- name: Clear and Clearall combine with line operators
+  template: |
+    Value Filldown GROUP (\S+)
+    Value NAME (\S+)
+
+    Start
+      ^group ${GROUP}
+      ^name ${NAME} -> Continue.Clear
+      ^name x -> Next.Clearall
+      ^name ${NAME} -> Record
+  input: |
+    group g
+    name a
+    name x
+    name b
+  rows:
+    - ["g", "a"]
+    - ["", "b"]
+
+- name: values captured by the rule are assigned before its record operator runs
+  template: |
+    Value NAME (\S+)
+
+    Start
+      ^clear ${NAME} -> Clear
+      ^name ${NAME} -> Record
+  input: |
+    clear a
+    name b
+    clear c
+  rows:
+    - ["b"]
+
+- name: the last arrow of a line starts the action
+  template: |
+    Value WORD (\S+)
+
+    Start
+      ^a -> ${WORD} -> Record
+  input: |
+    a -> b
+  rows:
+    - ["b"]
+
+- name: an arrow without a space in front belongs to the regex
+  template: |
+    Value WORD (\S+)
+
+    Start
+      ^${WORD}->x
+      ^end -> Record
+  input: |
+    a->x
+    end
+  rows:
+    - ["a"]
+
+- name: a new state can follow the operators or stand alone
+  template: |
+    Value A (\S+)
+    Value B (\S+)
+
+    Start
+      ^a ${A} -> Second
+      ^never -> Next.NoRecord Start
+
+    Second
+      ^b ${B} -> Record Start
+      ^stay -> NoRecord
+  input: |
+    b ignored
+    a 1
+    a ignored
+    stay
+    b 2
+    b ignored
+    a 3
+  rows:
+    - ["1", "2"]
+    - ["3", ""]
+
+- name: a state may be called like a prefix of an operator
+  template: |
+    Value A (\S+)
+
+    Start
+      ^a -> NextState
+
+    NextState
+      ^${A} -> Record
+  input: |
+    a
+    b
+  rows:
+    - ["b"]
+
+- name: rules may be indented by one space, two spaces or a tab
+  template: "Value A (\\S+)\n\nStart\n ^one ${A} -> Record\n  ^two ${A} -> Record\n\t^three ${A} -> Record\n"
+  input: |
+    one 1
+    two 2
+    three 3
+  rows:
+    - ["1"]
+    - ["2"]
+    - ["3"]
+
+- name: white space around a rule is ignored
+  template: "Value A (\\S+)\n\nStart\n  ^${A}   ->   Record   \n"
+  input: |
+    x
+  rows:
+    - ["x"]
+
+- name: comments between rules
+  template: |
+    Value A (\S+)
+
+    Start
+      # a comment
+      ^${A} -> Record
+    # another
+      ^never
+  input: |
+    x
+  rows:
+    - ["x"]
+
+- name: an Error rule stops the run
+  template: |
+    Value A (\S+)
+
+    Start
+      ^ok ${A} -> Record
+      ^. -> Error
+  input: |
+    ok 1
+    bad line
+    ok 2
+  run_error: {message: null, rule_line: 5, input_line: "bad line"}
+
+- name: Error with a quoted message
+  template: |
+    Value A (\S+)
+
+    Start
+      ^ok ${A} -> Record
+      ^. -> Error "unexpected output"
+  input: |
+    ok 1
+    bad line
+  run_error: {message: "unexpected output", rule_line: 5, input_line: "bad line"}
+
+- name: Error with a one-word message
+  template: |
+    Value A (\S+)
+
+    Start
+      ^. -> Error Unsupported
+  input: |
+    bad line
+  run_error: {message: "Unsupported", rule_line: 4, input_line: "bad line"}
+
+- name: Error may name something that is not a state
+  template: |
+    Value A (\S+)
+
+    Start
+      ^never -> Error NoSuchState
+      ^${A} -> Record
+  input: |
+    x
+  rows:
+    - ["x"]
+
+- name: Error with a record operator still fails
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Error.Record
+  input: |
+    x
+  run_error: {message: null, rule_line: 4, input_line: "x"}
+
+- name: three spaces in front of a rule
+  template: |
+    Value A (\S+)
+
+    Start
+       ^${A} -> Record
+  template_error: {line: 4}
+
+- name: a rule without a caret
+  template: |
+    Value A (\S+)
+
+    Start
+      ${A} -> Record
+  template_error: {line: 4}
+
+- name: a state name directly below the rules of another state
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record
+    Other
+      ^x
+  template_error: {line: 5}
+
+- name: an unknown value in a rule
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${B} -> Record
+  template_error: {line: 4}
+
+- name: a single dollar sign
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}$ -> Record
+  template_error: {line: 4}
+
+- name: a value used twice in one rule
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} ${A} -> Record
+  template_error: {line: 4}
+
+- name: an invalid regular expression
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+      ^(unclosed -> Record
+  template_error: {line: 5}
+
+- name: a value whose name is not a valid group name
+  template: |
+    Value 1A (\S+)
+
+    Start
+      ^$_x -> Record
+  template_error: {line: 4}
+
+- name: an unknown operator
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Next.Save
+  template_error: {line: 4}
+
+- name: operators in the wrong order
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record.Next
+  template_error: {line: 4}
+
+- name: no space after the arrow
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} ->Record
+  template_error: {line: 4}
+
+- name: two words after the operators
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record Start Start
+  template_error: {line: 4}
+
+- name: Continue cannot change the state
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Continue Start
+  template_error: {line: 4}
+
+- name: Continue.Record cannot change the state either
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Continue.Record Start
+  template_error: {line: 4}
+
+- name: a quoted text is only allowed after Error
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record "Start"
+  template_error: {line: 4}

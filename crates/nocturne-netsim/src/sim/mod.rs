@@ -8,6 +8,7 @@
 pub(crate) mod acl;
 pub(crate) mod arp;
 pub(crate) mod dhcp;
+pub(crate) mod edit;
 pub(crate) mod faults;
 pub(crate) mod flows;
 pub(crate) mod frame;
@@ -171,6 +172,8 @@ pub(crate) struct World {
     open_traces: u32,
     pub(crate) faults: BTreeMap<FaultId, Fault>,
     pub(crate) next_fault: FaultId,
+    /// When each `InterfaceErrors` fault last credited its counters.
+    pub(crate) fault_clock: BTreeMap<FaultId, SimTime>,
     pub(crate) flows: BTreeMap<FlowId, flows::FlowRuntime>,
     pub(crate) next_flow: FlowId,
     pub(crate) flow_tick_armed: bool,
@@ -208,6 +211,7 @@ impl World {
             open_traces: 0,
             faults: BTreeMap::new(),
             next_fault: 1,
+            fault_clock: BTreeMap::new(),
             flows: BTreeMap::new(),
             next_flow: 1,
             flow_tick_armed: false,
@@ -420,6 +424,7 @@ impl World {
             self.after_event();
         }
         self.now = self.now.max(deadline);
+        self.account_error_faults();
     }
 
     /// Time of the next scheduled event, if any.

@@ -12,9 +12,18 @@ mod error;
 mod net;
 mod pump;
 mod relay;
+pub mod serve;
+mod ssh;
+mod telnet;
 
 pub use connection::{
     Backend, Connection, ConnectionInfo, ConnectionReader, ConnectionWriter, Input, Output,
     TransportKind,
 };
 pub use error::TransportError;
+pub use ssh::{
+    AcceptAnyHostKey, ExecOutput, HostKeyVerifier, KeyKind, LegacyCrypto, MemoryKnownHosts,
+    PresentedKey, Sftp, SftpEntry, SshAuth, SshHop, SshParams, SshSession, connect_ssh,
+    generate_keypair,
+};
+pub use telnet::{TelnetParams, connect_telnet};

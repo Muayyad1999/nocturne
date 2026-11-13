@@ -22,10 +22,20 @@ x509-parser.workspace = true
 if-addrs.workspace = true
 regex.workspace = true
 bytes.workspace = true
+# Certificate fingerprints (SHA-256) and random ICMP identifiers / nonces.
+sha2.workspace = true
+getrandom.workspace = true
+
+# Safe wrappers for the two Linux-only socket features the probes need: the IP_RECVERR error
+# queue (unprivileged traceroute, ICMP errors on ping sockets) and the TTL of received packets.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["socket", "net", "uio"] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
 tempfile.workspace = true
+# Generates the self-signed and expired certificates of the TLS / HTTPS loopback tests.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 
 [lints]
 workspace = true

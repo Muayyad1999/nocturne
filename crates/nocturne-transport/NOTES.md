@@ -21,17 +21,30 @@ Fallback only if another crate's manifest breaks the workspace again (mention in
 
 - [x] research russh 0.65.1 / russh-sftp 3.0.1 / serialport 4.10.1 / portable-pty 0.9.0 APIs
 - [x] Cargo.toml deps (russh-sftp, serialport no-default-features, portable-pty, socket2)
-- [x] connection.rs / error.rs / relay.rs / pump.rs / net.rs  (written, unit tests inside; NOT YET COMPILED)
-- [~] ssh/{mod(params),algorithms,keys} written (not compiled); auth, client, jump, sftp TODO
-- [ ] telnet.rs
+- [x] connection.rs / error.rs / relay.rs / pump.rs / net.rs  (compiled, 34 unit tests pass)
+- [x] ssh/{mod(params),algorithms,keys,auth,client,jump,sftp} written + compiles (`cargo check --tests` ok); NOT yet exercised
+- [x] telnet/{mod(client),protocol} written + compiles; NOT yet exercised
+- [x] serve/{mod,ssh,telnet} written + compiles; NOT yet exercised
 - [ ] serial.rs
 - [ ] local.rs
-- [ ] serve/{ssh,telnet}
-- [ ] in-process tests
+- [ ] in-process tests (plan below)
 - [ ] OpenSSH interop tests (modern + legacy matrix)
 - [ ] telnetd interop
-- [ ] clippy clean, windows cross-check
+- [ ] remove `#![allow(dead_code)]` from lib.rs, clippy clean, fmt, windows cross-check
 - [ ] final report
+
+### Test plan (in-process, crate-internal `#[cfg(test)]` modules so pub(crate) server options are usable)
+SSH: password ok/fail; key auth (ed25519, rsa file, encrypted); kbd-int only server (Password fallback +
+KeyboardInteractive + wrong pw); resize; initial size; large output integrity (5 MB); close reasons (device exit →
+"exit status 0", local close → None, server shutdown → "disconnected by the server: ...", TCP loss); verifier
+accept/reject/TOFU-changed (restart server with new key on same port); banner; exec refused; jump 1 hop + 2 hops,
+jump errors (target unreachable, forwarding prohibited, hop auth failure, >5 hops); legacy matrix against own server
+(kex g1/g14/gex-sha1, aes-cbc/3des, hmac-sha1, ssh-rsa, ssh-dss) Auto flags / Never NoCommonAlgorithm / Always+modern
+not flagged; slow reader + server keepalive (many small chunks, reader paused) survives; bulk echo with late reader
+does not deadlock; 20 concurrent sessions; session released after close; two shells on one SshSession.
+Telnet: client<->serve_telnet (NAWS size at open, echo, resize, break, exit, close); CR/IAC data both ways;
+raw TCP fake with split IAC sequences; no duplicate replies. Local: sh -c printf, interactive, resize (stty size),
+env/cwd, exit status, close kills child. Serial: pty pair (unix).
 
 ## Design decisions
 
