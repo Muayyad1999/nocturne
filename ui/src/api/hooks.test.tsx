@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useToasts } from '@/design/Toast';
 import { RpcError } from './errors';
 import { topicMatches, type AppEvent } from './events';
-import { INVALIDATION_WINDOW_MS, useEvent, useRpc, useRpcMutation } from './hooks';
+import { INVALIDATION_WINDOW_MS, useEvent, useHasMethod, useRpc, useRpcMutation } from './hooks';
 import { createQueryClient } from './queryClient';
 
 // The hooks talk to the client module; here it is replaced by a controllable
@@ -261,5 +261,48 @@ describe('useEvent', () => {
 
     view.unmount();
     expect(backend.subscriptions.size).toBe(0);
+  });
+});
+
+describe('useHasMethod', () => {
+  function Gate({ method, onResult }: { method: string; onResult: (has: boolean | undefined) => void }) {
+    onResult(useHasMethod(method));
+    return null;
+  }
+
+  it('says it does not know yet, which is not the same as absent', async () => {
+    backend.rpc.mockResolvedValue(['devices.list', 'config.backup']);
+    const seen: (boolean | undefined)[] = [];
+    mount(<Gate method="config.backup" onResult={(has) => seen.push(has)} />);
+
+    // The first answer must be `undefined`. Were it `false`, a build that has
+    // the feature would briefly claim not to, and the control that depends on
+    // it would appear only after the round trip.
+    expect(seen[0]).toBeUndefined();
+    await vi.waitFor(() => expect(seen.at(-1)).toBe(true));
+  });
+
+  it('is false only once the backend has actually listed its methods', async () => {
+    backend.rpc.mockResolvedValue(['devices.list']);
+    const seen: (boolean | undefined)[] = [];
+    mount(<Gate method="ipam.prefixes" onResult={(has) => seen.push(has)} />);
+
+    expect(seen[0]).toBeUndefined();
+    await vi.waitFor(() => expect(seen.at(-1)).toBe(false));
+  });
+
+  it('asks `app.methods` once however many components want it', async () => {
+    backend.rpc.mockResolvedValue(['insights.list', 'insights.fix']);
+    const noop = () => {};
+    mount(
+      <>
+        <Gate method="insights.list" onResult={noop} />
+        <Gate method="insights.fix" onResult={noop} />
+        <Gate method="tools.list" onResult={noop} />
+      </>,
+    );
+    await vi.waitFor(() => expect(backend.rpc).toHaveBeenCalled());
+    await settle(20);
+    expect(backend.rpc.mock.calls.filter(([name]) => name === 'app.methods')).toHaveLength(1);
   });
 });

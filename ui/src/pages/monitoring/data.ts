@@ -26,10 +26,6 @@ import { formatCount } from '@/lib/format';
  * crates, so monitoring may simply not be there; asking once lets the screen
  * say so instead of showing controls that fail.
  */
-export function useHasMethod(method: string): boolean | undefined {
-  const methods = useRpc<string[]>('app.methods');
-  return methods.data === undefined ? undefined : methods.data.includes(method);
-}
 
 export function useMonitorStatus() {
   return useRpc<MonitorStatus>('monitor.status', undefined, {

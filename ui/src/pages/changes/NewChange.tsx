@@ -38,7 +38,7 @@ import { Textarea } from '@/design/Textarea';
 import { plural } from '@/lib/format';
 import { RISK_LABEL, riskTone } from './change';
 import { CommandList } from './CommandList';
-import { useHasMethod } from './methods';
+import { useHasMethod } from '@/api/hooks';
 import { TemplatePicker, type TemplateChoice } from './TemplatePicker';
 import styles from './NewChange.module.css';
 
@@ -89,7 +89,7 @@ export function NewChange({ open, onClose, deviceId }: NewChangeProps) {
   const [options, setOptions] = useState<Options>({});
   const [preview, setPreview] = useState<{ device: string; plan: Plan } | null>(null);
 
-  const hasTemplates = useHasMethod('templates.list');
+  const hasTemplates = useHasMethod('templates.list') === true;
 
   const devices = useRpc<DeviceRow[]>('devices.list', undefined, {
     invalidateOn: ['devices.changed'],

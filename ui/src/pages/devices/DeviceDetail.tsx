@@ -72,7 +72,7 @@ import {
 import { DeviceDrawer } from './DeviceDrawer';
 import { InterfaceDrawer } from './InterfaceDrawer';
 import { TestResult, TestResultPending } from './TestResult';
-import { useHasMethod } from './methods';
+import { useHasMethod } from '@/api/hooks';
 import { useBackup, useCollect } from './useCollect';
 import styles from './DeviceDetail.module.css';
 
@@ -116,7 +116,9 @@ export default function DeviceDetail({ id }: { id: string }) {
 
   const collect = useCollect();
   const backup = useBackup();
-  const canBackUp = useHasMethod('config.backup');
+  // `=== true` on purpose: until `app.methods` has answered, leave the
+  // button out rather than show one that may fail with `unknown_method`.
+  const canBackUp = useHasMethod('config.backup') === true;
   const runTest = useRpcMutation<ConnectionTest, { id: string }>('devices.test', {
     errorToast: 'The test could not be run',
   });

@@ -120,10 +120,6 @@ export function useInsight(id: string | null) {
 }
 
 /** Whether this build answers a method at all (features are optional crates). */
-export function useHasMethod(method: string): boolean | undefined {
-  const methods = useRpc<string[]>('app.methods');
-  return methods.data === undefined ? undefined : methods.data.includes(method);
-}
 
 // --------------------------------------------------------------- mutations
 

@@ -27,7 +27,7 @@
 import { CalendarClock, ClipboardList, FileCode, Play, SquareTerminal, Terminal, Workflow } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
-import { useEvent } from '@/api/hooks';
+import { useEvent, useHasMethod } from '@/api/hooks';
 import type { Run } from '@/api/types/automation';
 import { registerCommand } from '@/app/CommandPalette';
 import { destination } from '@/app/destinations';
@@ -42,7 +42,7 @@ import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { formatCount } from '@/lib/format';
 import { AnsibleTab } from './Ansible';
 import styles from './Automation.module.css';
-import { useHasMethod, useRun, useSchedules } from './data';
+import { useRun, useSchedules } from './data';
 import { given, orNone } from './given';
 import { PlaybooksTab } from './Playbooks';
 import { RunTab } from './RunTab';

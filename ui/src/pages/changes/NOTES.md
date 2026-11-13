@@ -86,10 +86,12 @@ Events: `changes.changed`, `changes.progress`, `jobs.changed`,
 
 ## Things the foundation (or another slice) might want
 
-* `plural()` is now in three page folders (devices, terminal, changes). It
-  belongs in `lib/format.ts`.
-* `useHasMethod` is duplicated from `pages/devices/methods.ts` for the same
-  reason; it belongs in `api/`.
+* `plural()` was in three page folders (devices, terminal, changes); it is now
+  in `lib/format.ts`, where it belongs. Fixed.
+* `useHasMethod` was duplicated in five page folders, in two variants that
+  disagreed about whether "not loaded yet" counts as "absent". It is now one
+  hook in `api/hooks.ts`, returning `boolean | undefined`, and each call site
+  says what it does with the third value. Fixed.
 * `design/Toolbar` wraps rather than condensing, so a page with status pills
   *and* actions wraps to two rows at 1280 with the dock open. This screen
   moved its pills out of the toolbar; a `Toolbar` that could hide labels under

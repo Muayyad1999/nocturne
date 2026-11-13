@@ -28,10 +28,6 @@ import type { DeviceRow, Facets } from '@/api/types/core';
  * crates, so automation may simply not be there; asking once lets the screen
  * say so instead of showing controls that fail.
  */
-export function useHasMethod(method: string): boolean | undefined {
-  const methods = useRpc<string[]>('app.methods');
-  return methods.data === undefined ? undefined : methods.data.includes(method);
-}
 
 /** Every device, for names, lab pills and the filter's own vocabulary. */
 export function useDevices() {

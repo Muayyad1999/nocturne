@@ -57,7 +57,7 @@ import { DeviceDrawer } from './DeviceDrawer';
 import { DeviceFacets, type StatusCounts } from './Facets';
 import { ExportDialog } from './ExportDialog';
 import { ImportDialog } from './ImportDialog';
-import { useHasMethod } from './methods';
+import { useHasMethod } from '@/api/hooks';
 import { useBackup, useCollect } from './useCollect';
 import styles from './DeviceList.module.css';
 
@@ -101,7 +101,7 @@ export default function DeviceList() {
   const backup = useBackup();
   // `config.backup` comes from the configuration module, which is not in
   // every build.
-  const canBackUp = useHasMethod('config.backup');
+  const canBackUp = useHasMethod('config.backup') === true;
 
   const profileName = useMemo(() => {
     const names = new Map(profiles.data?.profiles.map((profile) => [profile.id, profile.name]));

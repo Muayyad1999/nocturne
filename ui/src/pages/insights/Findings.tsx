@@ -12,6 +12,7 @@
 
 import { ListFilter, Radar, ScanSearch, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useHasMethod } from '@/api/hooks';
 import type { Category, Insight, Severity } from '@/api/types/insights';
 import { registerCommand } from '@/app/CommandPalette/commands';
 import { Button } from '@/design/Button';
@@ -32,7 +33,6 @@ import {
   PAGE,
   useCoverage,
   useDevices,
-  useHasMethod,
   useInsights,
   useInsightsSettings,
   type Filter,

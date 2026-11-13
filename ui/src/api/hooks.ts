@@ -145,3 +145,21 @@ export function useEvent<P>(topic: string, handler: (payload: P, event: AppEvent
     [topic],
   );
 }
+
+/**
+ * Is `method` registered on this backend?
+ *
+ * `undefined` while `app.methods` has not answered yet, and that third value
+ * is the point: a build without a feature crate and a build whose method list
+ * is still in flight look identical if they are both `false`, so a control
+ * that should be there flickers, or a screen says "that feature is not
+ * installed" about a feature that is. Decide what to do with `undefined` at
+ * the call site — `=== true` to wait for proof, `!== false` to assume it is
+ * there until told otherwise.
+ *
+ * The list is fetched once and cached, so asking per component is free.
+ */
+export function useHasMethod(method: string): boolean | undefined {
+  const methods = useRpc<string[]>('app.methods');
+  return methods.data === undefined ? undefined : methods.data.includes(method);
+}
