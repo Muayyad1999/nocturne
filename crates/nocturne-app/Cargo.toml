@@ -8,12 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-nocturne-textfsm.workspace = true
-nocturne-snmp.workspace = true
-nocturne-transport.workspace = true
-nocturne-netsim.workspace = true
-nocturne-tools.workspace = true
-nocturne-netprobe.workspace = true
+# Engine crates are added here as they land:
+#   nocturne-textfsm, nocturne-snmp, nocturne-transport, nocturne-netsim,
+#   nocturne-tools, nocturne-netprobe
 nocturne-drivers.workspace = true
 nocturne-ai.workspace = true
 tokio.workspace = true
@@ -25,32 +22,25 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 indexmap.workspace = true
-chrono.workspace = true
-uuid.workspace = true
 csv.workspace = true
 base64.workspace = true
 hex.workspace = true
+flate2.workspace = true
 rusqlite.workspace = true
 regex.workspace = true
-minijinja.workspace = true
-similar.workspace = true
 thiserror.workspace = true
-anyhow.workspace = true
 tracing.workspace = true
-ipnet.workspace = true
-rand.workspace = true
 getrandom.workspace = true
 sha2.workspace = true
 chacha20poly1305.workspace = true
 argon2.workspace = true
 zeroize.workspace = true
 parking_lot.workspace = true
-dirs.workspace = true
-reqwest.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

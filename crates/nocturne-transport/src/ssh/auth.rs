@@ -46,8 +46,11 @@ struct Authenticator<'a> {
     allow_sha1: bool,
     step_timeout: Duration,
     tried: Vec<String>,
-    /// `None` until the server told us.
+    /// What the server currently accepts; `None` until it told us.
     server_methods: Option<MethodSet>,
+    /// Every method the server advertised at some point, in order of first
+    /// appearance (some servers stop listing a method once it failed).
+    advertised: Vec<MethodKind>,
     /// RSA signature hashes worth trying, most promising first (cached).
     rsa_hashes: Option<Vec<Option<HashAlg>>>,
     used_sha1: bool,
@@ -72,6 +75,7 @@ pub(crate) async fn authenticate(
         step_timeout,
         tried: Vec::new(),
         server_methods: None,
+        advertised: Vec::new(),
         rsa_hashes: None,
         used_sha1: false,
         sha1_refused: false,
@@ -129,9 +133,8 @@ impl Authenticator<'_> {
             tried.push(format!("({cause})"));
         }
         let server_methods: Vec<String> = self
-            .server_methods
+            .advertised
             .iter()
-            .flat_map(|methods| methods.iter())
             .map(|method| <&str>::from(method).to_owned())
             .collect();
         // The server would have taken our key, had we been allowed to sign
@@ -174,6 +177,11 @@ impl Authenticator<'_> {
                 // russh reports a dead connection as a failure without methods.
                 if remaining_methods.is_empty() && self.handle.is_closed() {
                     return Err(Halt::Lost);
+                }
+                for method in remaining_methods.iter() {
+                    if !self.advertised.contains(method) {
+                        self.advertised.push(*method);
+                    }
                 }
                 self.server_methods = Some(remaining_methods);
                 Ok(false)

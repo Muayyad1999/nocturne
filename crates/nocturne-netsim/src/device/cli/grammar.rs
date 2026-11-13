@@ -56,6 +56,11 @@ impl Args {
         self.keywords.iter().any(|k| *k == keyword)
     }
 
+    /// The keywords of the line, in the order they were typed.
+    pub(crate) fn keywords(&self) -> &[&'static str] {
+        &self.keywords
+    }
+
     fn get(&self, name: &str) -> Option<&Val> {
         self.values.iter().find(|(n, _)| *n == name).map(|(_, v)| v)
     }

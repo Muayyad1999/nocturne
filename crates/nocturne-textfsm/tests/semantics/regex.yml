@@ -1,0 +1,374 @@
+# Python regular-expression syntax and semantics as seen through templates.
+#
+# See values.yml for the format.
+
+- name: escaped punctuation is literal
+  template: |
+    Value A (\w+)
+
+    Start
+      ^\<${A}\>\-\ \:\=\!\"\#\%\&\'\,\/\;\@\`\~\_ -> Record
+  input: |
+    <tag>- :=!"#%&',/;@`~_
+  rows:
+    - ["tag"]
+
+- name: brackets, ampersands and other operators inside a class are literal
+  template: |
+    Value A ([\w[&&~~||-]+)
+    Value B ([+--]+)
+    Value C ([^][]+)
+
+    Start
+      ^${A} ${B} ${C} -> Record
+  input: |
+    a[b&&c~~d||e-f +,- x]y
+  rows:
+    - ["a[b&&c~~d||e-f", "+,-", "x"]
+
+- name: a closing bracket first in a class is literal
+  template: |
+    Value A ([]x]+)
+    Value B ([^]x]+)
+
+    Start
+      ^${A}${B} -> Record
+  input: |
+    x]]xab]
+  rows:
+    - ["x]]x", "ab"]
+
+- name: a POSIX class is an ordinary class followed by a bracket
+  template: |
+    Value A ([[:alpha:]]+)
+
+    Start
+      ^${A} -> Record
+  input: |
+    a]]x
+    :]
+    b
+    ab]
+    []]]
+  rows:
+    - ["a]]"]
+    - [":]"]
+    - ["[]]]"]
+
+- name: ranges, escapes and categories in classes
+  template: |
+    Value A ([a-c\d\-.\x41é\t]+)
+    Value B ([^\s\w]+)
+    Value C ([\S]+)
+
+    Start
+      ^${A} ${B} ${C} -> Record
+  input: "ab-3.Aé\tc ++ z\n"
+  rows:
+    - ["ab-3.Aé\tc", "++", "z"]
+
+- name: a brace that does not form a quantifier is literal
+  template: |
+    Value A (\w{2,3})
+    Value B (\w{,2})
+    Value C (x{}|{y}|z{1,|q{,})
+
+    Start
+      ^${A}-${B}-${C}$$ -> Record
+  input: |
+    abcd-ab-x{}
+    abc-abc-{y}
+    abc-a-z{1,
+    ab--{y}
+    ab-x-x{}
+    ab-x-qqq
+    ab-x-
+  rows:
+    - ["abc", "a", "z{1,"]
+    - ["ab", "", "{y}"]
+    - ["ab", "x", "x{}"]
+    - ["ab", "x", "qqq"]
+    - ["ab", "x", ""]
+
+- name: lazy quantifiers
+  template: |
+    Value A (\S+?)
+    Value B (\d*?)
+    Value C (\S*)
+
+    Start
+      ^${A}${B}${C}$$ -> Record
+  input: |
+    ab12
+  rows:
+    - ["a", "", "b12"]
+
+- name: alternation prefers the first branch that leads to a match
+  template: |
+    Value A (a|ab)
+    Value B (c|bcd)
+    Value C (d*)
+
+    Start
+      ^${A}${B}${C}$$ -> Record
+  input: |
+    abcd
+  rows:
+    - ["a", "bcd", ""]
+
+- name: look-ahead and look-behind
+  template: |
+    Value A (\w+(?=,))
+    Value B ((?<=,)\w+)
+    Value C ((?!no)\w+)
+    Value D (\w+(?<!no))
+
+    Start
+      ^${A},${B} ${C} ${D} -> Record
+  input: |
+    one,two yes yes
+    one,two nope yes
+    one,two yes nono
+    one;two yes yes
+  rows:
+    - ["one", "two", "yes", "yes"]
+    - ["one", "two", "yes", "non"]
+
+- name: a quantified look-behind
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A}(?<=[^x])+(?=!)*(?<!y)?$$ -> Record
+  input: |
+    ab
+    ax
+    ay
+  rows:
+    - ["ab"]
+    - ["ay"]
+
+- name: back-references
+  template: |
+    Value A ((\w)\2+)
+    Value B ((?P<q>['"]).*?(?P=q))
+
+    Start
+      ^${A} ${B} -> Record
+  input: |
+    aaa "x" tail
+    aab "x"
+    bb 'y" z'
+  rows:
+    - ["aaa", "\"x\""]
+    - ["bb", "'y\" z'"]
+
+- name: atomic groups and possessive quantifiers
+  template: |
+    Value A ((?>\d+)\d?)
+    Value B (\w*+)
+
+    Start
+      ^${A}-${B}$$ -> Record
+      ^${A}x -> Record
+      ^(?P<B>\w++)\w -> Record
+  input: |
+    123-abc
+    123x
+    abc
+  rows:
+    - ["123", "abc"]
+    - ["123", ""]
+
+- name: conditional groups
+  template: |
+    Value A (\w+)
+
+    Start
+      ^(<)?${A}(?(1)>|!)$$ -> Record
+  input: |
+    <a>
+    b!
+    <c!
+    d>
+  rows:
+    - ["a"]
+    - ["b"]
+
+- name: scoped flags
+  template: |
+    Value A ((?i:ab)c)
+    Value B ((?s:.)(?i:x(?-i:y)))
+    Value C ((?i:é|ß))
+
+    Start
+      ^${A} ${B} ${C}$$ -> Record
+  input: |
+    ABc .Xy É
+    abC .xy é
+    aBc .xY é
+    abc .xy ß
+  rows:
+    - ["ABc", ".Xy", "É"]
+    - ["abc", ".xy", "ß"]
+
+- name: a verbose group ignores white space outside classes
+  template: |
+    Value A ((?x: a \  b [ ] c ))
+
+    Start
+      ^${A}$$ -> Record
+  input: |
+    a b c
+    abc
+  rows:
+    - ["a b c"]
+
+- name: comment groups
+  template: |
+    Value A (a(?#one)b(?#two)+)
+
+    Start
+      ^${A}$$ -> Record
+  input: |
+    abbb
+  rows:
+    - ["abbb"]
+
+- name: octal, hexadecimal and Unicode escapes
+  template: |
+    Value A (\101\x42C\U00000044\0)
+
+    Start
+      ^${A}\060\t\\$$ -> Record
+  input: "ABCD\00\t\\\n"
+  rows:
+    - ["ABCD\0"]
+
+- name: anchors inside a rule
+  template: |
+    Value A (\w+)
+
+    Start
+      ^\A${A}\Z -> Record
+      ^(?m:^)${A}(?m:$$) x -> Record
+      ^(?m:^)${A} (?m:$$) -> Record
+  input: "one\ntwo words\nthree \n"
+  rows:
+    - ["one"]
+    - ["three"]
+
+- name: the group of a loop is empty after its final empty iteration
+  template: |
+    Value WORD (\w*)
+    Value List ITEM (\d*)
+    Value LAST (\w+)
+
+    Start
+      ^words(?:\s*${WORD})*$$
+      ^items(?:,?${ITEM})+$$
+      ^last(?: ${LAST})*$$
+      ^end -> Record
+  input: |
+    words ab cd
+    items1,2,3
+    last ab cd
+    end
+  rows:
+    - ["", [""], "cd"]
+
+- name: empty alternatives
+  template: |
+    Value A (x||y)
+    Value B (|z)
+
+    Start
+      ^${A}-${B}$$ -> Record
+  input: |
+    x-
+    -z
+    y-z
+    q-z
+  rows:
+    - ["x", ""]
+    - ["", "z"]
+    - ["y", "z"]
+
+- name: multiple repeat
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A}**
+  template_error: {line: 4}
+
+- name: nothing to repeat
+  template: |
+    Value A (\w+)
+
+    Start
+      ^*${A}
+  template_error: {line: 4}
+
+- name: a bad character range
+  template: |
+    Value A ([\w-z]+)
+
+    Start
+  template_error: {line: 1}
+
+- name: an unknown escape
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A}\y
+  template_error: {line: 4}
+
+- name: an unterminated class
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A}[abc
+  template_error: {line: 4}
+
+- name: a look-behind of variable width
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A}(?<=a+)
+  template_error: {line: 4}
+
+- name: a reference to an unknown group
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A}\2
+  template_error: {line: 4}
+
+- name: global flags inside a rule
+  template: |
+    Value A (\w+)
+
+    Start
+      ^(?i)${A}
+  template_error: {line: 4}
+
+- name: global flags inside a value
+  template: |
+    Value A ((?i)\w+)
+
+    Start
+      ^${A}
+  template_error: {line: 1}
+
+- name: an unbalanced parenthesis
+  template: |
+    Value A (\w+)
+
+    Start
+      ^${A})
+  template_error: {line: 4}

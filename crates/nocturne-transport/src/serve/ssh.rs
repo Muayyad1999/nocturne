@@ -144,6 +144,7 @@ pub(crate) async fn serve_ssh_with(
     });
     let shared = Arc::new(Shared {
         users: config.users,
+        methods,
         handler,
         banner: config.banner,
         allow_tcp_forwarding: options.allow_tcp_forwarding,
@@ -165,9 +166,22 @@ pub(crate) async fn serve_ssh_with(
 /// What every connection of one server shares.
 struct Shared {
     users: Vec<(String, String)>,
+    /// The authentication methods on offer.
+    methods: Vec<MethodKind>,
     handler: Arc<dyn SessionHandler>,
     banner: Option<String>,
     allow_tcp_forwarding: bool,
+}
+
+impl Shared {
+    /// Whether clients are let in without a matching entry in `users`.
+    fn open_house(&self) -> bool {
+        self.users.is_empty()
+    }
+
+    fn offers(&self, method: MethodKind) -> bool {
+        self.methods.contains(&method)
+    }
 }
 
 /// Runs one client connection to its end.
@@ -248,7 +262,7 @@ struct ChannelState {
 impl ClientSession {
     fn password_ok(&self, user: &str, password: &str) -> bool {
         let users = &self.shared.users;
-        users.is_empty() || users.iter().any(|(u, p)| u == user && p == password)
+        self.shared.open_house() || users.iter().any(|(u, p)| u == user && p == password)
     }
 
     fn verdict(&mut self, user: &str, accepted: bool) -> Auth {
@@ -265,12 +279,12 @@ impl server::Handler for ClientSession {
     type Error = russh::Error;
 
     async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
-        let open_house = self.shared.users.is_empty();
-        Ok(self.verdict(user, open_house))
+        let accepted = self.shared.offers(MethodKind::None) && self.shared.open_house();
+        Ok(self.verdict(user, accepted))
     }
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
-        let accepted = self.password_ok(user, password);
+        let accepted = self.shared.offers(MethodKind::Password) && self.password_ok(user, password);
         Ok(self.verdict(user, accepted))
     }
 
@@ -280,11 +294,13 @@ impl server::Handler for ClientSession {
         _offer: server::PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
         // Keys are only meaningful where any credentials are accepted.
-        Ok(if self.shared.users.is_empty() {
-            Auth::Accept
-        } else {
-            Auth::reject()
-        })
+        Ok(
+            if self.shared.offers(MethodKind::PublicKey) && self.shared.open_house() {
+                Auth::Accept
+            } else {
+                Auth::reject()
+            },
+        )
     }
 
     async fn auth_publickey(
@@ -292,8 +308,8 @@ impl server::Handler for ClientSession {
         user: &str,
         _key: server::VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
-        let open_house = self.shared.users.is_empty();
-        Ok(self.verdict(user, open_house))
+        let accepted = self.shared.offers(MethodKind::PublicKey) && self.shared.open_house();
+        Ok(self.verdict(user, accepted))
     }
 
     async fn auth_keyboard_interactive<'a>(
@@ -302,6 +318,9 @@ impl server::Handler for ClientSession {
         _submethods: &str,
         response: Option<Response<'a>>,
     ) -> Result<Auth, Self::Error> {
+        if !self.shared.offers(MethodKind::KeyboardInteractive) {
+            return Ok(Auth::reject());
+        }
         let Some(mut answers) = response else {
             return Ok(Auth::Partial {
                 name: Cow::Borrowed(""),

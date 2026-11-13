@@ -17,24 +17,18 @@
 //!   to the emitted ones.
 //! * A quantified look-around such as `(?<=x)+` (legal in Python, rejected by
 //!   the Rust engines) is reduced to a single, possibly optional, evaluation.
-//! * The final empty iteration of a loop, see [`final_empty_iteration_groups`].
+//! * The final empty iteration of a loop, see [`super::loops`], which also
+//!   describes the one known difference from Python that remains.
 //!
 //! `$` is emitted as-is: outside multi-line mode it matches only at the very end
 //! of the text in Rust, while Python also accepts the position before a final
 //! `\n`. The two agree on text without line breaks, which is all this crate
 //! ever matches against (input lines and commands).
-//!
-//! Known difference: Python stops a loop at the first iteration that matches
-//! the empty string. Apart from the common shape handled by
-//! [`final_empty_iteration_groups`], loops whose body can match the empty
-//! string keep the Rust behaviour, which never takes an empty iteration:
-//! `(a|b*){2,3}` may leave the last non-empty iteration in its group where
-//! Python reports `""`, and `(a*?)*` consumes as many `a` as it can where
-//! Python stops at once.
 
 use super::ast::{
     Assertion, Ast, Category, Class, ClassItem, Flags, GroupKind, LookKind, Node, RepeatMode,
 };
+use super::loops::final_empty_iteration_groups;
 
 /// Python's `\s`: Unicode white space plus the separators FS, GS, RS and US.
 const SPACE: &str = r"\s\x1c-\x1f";
@@ -113,59 +107,6 @@ fn number_groups(node: &Node, groups: &mut [GroupSlot], emitted: &mut usize) {
         | Node::Class(_)
         | Node::Assertion(_)
         | Node::Backref(_) => {}
-    }
-}
-
-/// The groups that Python's final empty iteration resets, for the loops where
-/// that can be emulated.
-///
-/// Python runs the body of `(x)*` once more after the last iteration that
-/// consumed text. If the body matches the empty string there, the loop ends
-/// and the groups on that empty path capture `""`: `(\s*-*)*` always leaves
-/// its group empty. The Rust engines never take an empty iteration and would
-/// report the last non-empty one.
-///
-/// This is emulated for unbounded greedy loops whose body is a sequence of
-/// optional pieces (`a*`, `b?`, ...) that are not themselves loops over
-/// something empty. For such a body every match except "skip everything" consumes text,
-/// so both engines walk through the same iterations and Python then always
-/// adds the empty one. The emitter marks the end of the loop with an empty
-/// group; if that group took part in the match, the returned groups are `""`.
-fn final_empty_iteration_groups(repeat: &Node) -> Option<Vec<u32>> {
-    let Node::Repeat { node: body, max: None, mode: RepeatMode::Greedy, .. } = repeat else {
-        return None;
-    };
-    let mut groups = Vec::new();
-    (skips_to_empty(body, &mut groups) && !groups.is_empty()).then_some(groups)
-}
-
-/// Whether `node` matches the empty string only by skipping optional pieces
-/// that would otherwise consume text; collects the capture groups on that path.
-fn skips_to_empty(node: &Node, groups: &mut Vec<u32>) -> bool {
-    match node {
-        Node::Empty => true,
-        Node::Concat(nodes) => nodes.iter().all(|node| skips_to_empty(node, groups)),
-        Node::Repeat { node, min: 0, mode: RepeatMode::Greedy, .. } => !can_match_empty(node),
-        Node::Group { kind: GroupKind::Capture(number), node } => {
-            groups.push(*number);
-            skips_to_empty(node, groups)
-        }
-        Node::Group { kind: GroupKind::NonCapture | GroupKind::Flags { .. }, node } => {
-            skips_to_empty(node, groups)
-        }
-        _ => false,
-    }
-}
-
-fn can_match_empty(node: &Node) -> bool {
-    match node {
-        Node::Literal(_) | Node::Dot | Node::Class(_) => false,
-        Node::Empty | Node::Assertion(_) | Node::Look { .. } | Node::Backref(_) => true,
-        Node::Concat(nodes) => nodes.iter().all(can_match_empty),
-        Node::Alternation(branches) => branches.iter().any(can_match_empty),
-        Node::Repeat { node, min, .. } => *min == 0 || can_match_empty(node),
-        Node::Group { node, .. } => can_match_empty(node),
-        Node::Conditional { yes, no, .. } => can_match_empty(yes) || can_match_empty(no),
     }
 }
 

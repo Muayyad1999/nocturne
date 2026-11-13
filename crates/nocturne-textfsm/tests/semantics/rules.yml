@@ -314,12 +314,11 @@
     - ["2"]
     - ["3"]
 
-- name: white space around a rule is ignored
+- name: only one space in front of the arrow is not part of the regex
   template: "Value A (\\S+)\n\nStart\n  ^${A}   ->   Record   \n"
-  input: |
-    x
+  input: "x\ny  \n"
   rows:
-    - ["x"]
+    - ["y"]
 
 - name: comments between rules
   template: |

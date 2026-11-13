@@ -93,6 +93,8 @@ impl Shared {
             DisconnectCause::Remote { message, .. } => {
                 Some(format!("disconnected by the server: {}", message.trim()))
             }
+            // We hung up ourselves (or the session was dropped).
+            DisconnectCause::Local(None) => Some("the SSH session was closed".to_owned()),
             DisconnectCause::Local(reason) => reason,
         }
     }
@@ -573,13 +575,16 @@ impl SshSession {
             .exec(true, command)
             .await
             .map_err(channel_error)?;
-        match tokio::time::timeout_at(deadline, collect_exec(&mut channel)).await {
+        let result = match tokio::time::timeout_at(deadline, collect_exec(&mut channel)).await {
             Ok(result) => result,
-            Err(_) => {
-                let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, channel.close()).await;
-                Err(TransportError::Timeout)
-            }
+            Err(_) => Err(TransportError::Timeout),
+        };
+        if result.is_err() {
+            // Do not leave a refused or runaway command's channel behind.
+            let (_, channel) = channel.split();
+            let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, channel.close()).await;
         }
+        result
     }
 
     /// Opens the SFTP subsystem.
@@ -695,9 +700,11 @@ async fn run_shell(
     .await;
 
     // Release the channel and the session before telling the application, so
-    // that `Closed` means "everything is torn down".
+    // that `Closed` means "everything is torn down". The receiving half goes
+    // first: nobody drains it any more, and russh must not wait on it.
+    drop((source, input, output));
     let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, sink.close()).await;
-    drop((source, sink, input, output));
+    drop(sink);
     release(session).await;
     if let Outcome::Closed(reason) = outcome {
         relay.finish(reason).await;

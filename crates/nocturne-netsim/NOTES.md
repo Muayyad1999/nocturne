@@ -30,22 +30,22 @@ Build: `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/netsim cargo test -p 
 
 ## Done
 
-- [x] util (net, mac, rng, regex, crypt, clock, text) — unit tested, all green
-- [x] api.rs public types / catalog.rs / ifname.rs
-- [x] device/config.rs — config model (personality-neutral)
-- [x] sim/frame.rs (frames/packets + inspector text), sim/fx.rs (effects), sim/syslog.rs,
-      sim/node.rs (Node/IfState), sim/mod.rs (World, queue, transmit/arrive, traces)
-- [ ] sim/reconcile.rs (link refresh + Node::derive), sim/port.rs (rx dispatch, l3 tx)
-- [ ] sim/switching.rs, sim/stp.rs
-- [ ] sim/arp.rs, sim/rib.rs, sim/ip.rs (+icmp), sim/procs.rs (ping etc.)
-- [ ] placeholder state for tier 2/3 modules so the tree compiles:
-      acl, dhcp, nat, neighbors, ospf, rip, hsrp, flows, faults, probe
-- [ ] CLI engine (device/cli: grammar, line editor, pager, modifiers)
-- [ ] IOS exec/config/show (tier 1), runcfg round trip, host shell
-- [ ] lab.rs (public API), spec.rs, snapshot/tables/metrics
-- [ ] Tier 2: OSPF, DHCP, NAT, ACL, EtherChannel, CDP/LLDP, traceroute, tracing, demo
-- [ ] Tier 3: RIP, HSRP, port security, telnet/ssh, long-tail shows
-- [ ] tests (scenario, fuzz, determinism), tests/ntc_validate.py, examples/dump.rs
+- [x] util (net, mac, rng, regex, crypt, clock, text) — unit tested
+- [x] api.rs / catalog.rs / ifname.rs / device/config.rs (config model) / device/hostcfg.rs
+- [x] sim core written (NOT YET COMPILED TOGETHER): frame, fx, syslog, node, mod (World),
+      reconcile, port, switching, stp, arp, rib, ip, acl, procs (ping/connect/traceroute/dns),
+      probe (traces + instant probes on scratch clone), flows, faults, edit
+- [x] placeholders (to be replaced): sim/{nat,dhcp,neighbors,ospf,rip,hsrp}.rs
+- [x] device/cli/grammar.rs (pattern DSL -> NFA; parse/help/complete) + tests
+- [x] device/cli/mod.rs (Console, Session, line discipline, pager, nested sessions)
+- [x] device/ios/mod.rs (IosShell: modes, prompts, login, dispatch, output filters, help)
+- [ ] device/ios/{exec,config,config_if,config_sub,help,runcfg,boot}.rs + show/*
+- [ ] device/host.rs (host shell)
+- [ ] lab.rs (public API), spec.rs, views (snapshot/tables/metrics)
+- [ ] first full compile + tier-1 scenario tests
+- [ ] Tier 2: OSPF, DHCP, NAT, EtherChannel show, CDP/LLDP, tracing polish, demo
+- [ ] Tier 3: RIP, HSRP, port security shows, long-tail shows
+- [ ] fuzz + determinism tests, tests/ntc_validate.py, examples/dump.rs
 
 ## Module map (planned)
 
@@ -71,5 +71,10 @@ Build: `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/netsim cargo test -p 
 
 ## In progress / next
 
-writing sim/reconcile.rs, port.rs, switching.rs, stp.rs (tree does not compile until the
-remaining sim modules exist)
+Writing the IOS command tables (exec/config/config_if/config_sub/show/runcfg/boot), then
+host shell, then lab.rs; then first compile of everything written so far.
+
+Handler conventions (device/ios): `fn(&mut Cx, &Args)`; `cx.n` node, `cx.fx` effects,
+`cx.sh` shell state, `cx.say()/cx.fail()`, `cx.cfg()` marks config touched, `cx.next` for
+follow-ups (Job/Connect/Ask/Key/Close/Reload). Tables: `c(pattern, help, handler)` and
+`n(...)` (negatable). Grammars are cached per (mode kind, role).

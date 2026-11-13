@@ -37,13 +37,30 @@ Done:
       no fallbacks. Run: `NTC_TEMPLATES_DIR=/home/user/.cache/vendor/ntc-templates cargo test --release
       -p nocturne-textfsm --test conformance -- --nocapture` (5 s)
 
+- [x] `tests/semantics/{values,rules,states,input,regex}.yml` (147 cases) + `tests/semantics.rs`;
+      expectations verified against Python with `tools/check_semantics.py`
+      (`<scratch>/venv/bin/python -I -W ignore tools/check_semantics.py tests/semantics/*.yml` -> 0 problems);
+      all pass in Rust.
+
+- [x] `tests/fixtures/` (115 pairs, 374 KB, 14 platforms; picked by scratch `py/pick_fixtures.py`)
+      + `tests/fixtures.rs` (passes, 1.5 s debug)
+- [x] `examples/timing.rs`: release, noisy shared box: compile cisco_ios_show_interfaces 9-21 ms,
+      parse 5003 lines 8-17 ms (best total 17.4 ms). ASCII-only classes would halve compile time
+      (experiment, reverted): we keep Unicode-aware classes = exact Python semantics.
+- [x] all 979 templates compile (test `ntc::tests::every_bundled_template_compiles`, 6.6 s debug -> parallelise)
+
+- [x] `src/pyregex/loops.rs`: generalised final-empty-iteration emulation; `src/pyregex/tests.rs`:
+      22 unit tests incl. 67 syntax errors with Python's message+position, every ASCII char on both
+      engines, loop table (44 same as Python, 7 pinned known differences).
+- [x] `tools/regex_oracle.py` + `tools/check_semantics.py` committed (reference-verification tooling)
+- [x] state at this point: all tests green (40 unit + conformance 1897/1897 + fixtures + 5 semantics + doctest)
+
 Next (in order):
-- [ ] engine-semantics unit tests, expectations verified against Python (scratch venv)
-- [ ] pyregex unit tests (parser errors, emit, both engines agree on every ASCII literal)
-- [ ] `tests/fixtures/` (~80 raw/yml pairs, <= 600 KB) + `tests/fixtures.rs`
-- [ ] copy `py/regex_oracle.py` into `tools/` (the oracle test mentions it)
-- [ ] timing: compile + 5000-line `show interfaces` (release); binary size of the bundle
-- [ ] clippy `-D warnings`, `cargo fmt -p nocturne-textfsm`, doc tests
+- [ ] unit tests for template.rs internals (split_action/substitute/parse_action) + ntc API tests
+      (find abbreviations, find_all, parse merge, platforms) + fsm tests if gaps
+- [ ] parallelise `every_bundled_template_compiles` (6.6 s debug)
+- [ ] binary size of the bundle (blob is 270,130 bytes; measure rodata delta)
+- [ ] full review pass of every source file; clippy `-D warnings`; `cargo fmt -p nocturne-textfsm`
 - [ ] final report (see brief): conformance table, regex translation, bundle, tests, API notes
 
 Known deviations to report:

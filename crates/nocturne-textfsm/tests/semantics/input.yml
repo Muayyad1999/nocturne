@@ -1,0 +1,143 @@
+# How the input is cut into lines and which characters the classes match.
+#
+# See values.yml for the format.
+
+- name: no input
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record
+  input: ""
+  rows: []
+
+- name: the last line needs no line break
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}$$ -> Record
+  input: "x\ny"
+  rows:
+    - ["x"]
+    - ["y"]
+
+- name: CRLF ends a line
+  template: |
+    Value A (.+)
+
+    Start
+      ^${A}$$ -> Record
+  input: "x\r\ny\r\n"
+  rows:
+    - ["x"]
+    - ["y"]
+
+- name: a lone CR ends a line
+  template: |
+    Value A (.+)
+
+    Start
+      ^${A}$$ -> Record
+  input: "x\ry\r"
+  rows:
+    - ["x"]
+    - ["y"]
+
+- name: CR CR LF is two line breaks
+  template: |
+    Value List A (.*)
+
+    Start
+      ^${A}$$
+  input: "x\r\r\ny\r\r\n"
+  rows:
+    - [["x", "", "y", ""]]
+
+- name: form feed, vertical tab and the Unicode separators end a line
+  template: |
+    Value List A (.*)
+
+    Start
+      ^${A}$$
+  input: "a\fb\vc d e\u0085f\x1cg\x1dh\x1ei\x1fj"
+  rows:
+    - [["a", "b", "c", "d", "e", "f", "g", "h", "i\x1fj"]]
+
+- name: blank lines are lines
+  template: |
+    Value List A (.*)
+
+    Start
+      ^${A}$$
+  input: "\n\nx\n\n"
+  rows:
+    - [["", "", "x", ""]]
+
+- name: the word class is Unicode aware
+  template: |
+    Value NAME (\w+)
+
+    Start
+      ^name ${NAME}$$ -> Record
+  input: |
+    name Büro_2
+    name 日本語
+    name ②½
+    name a-b
+    name a‿b
+  rows:
+    - ["Büro_2"]
+    - ["日本語"]
+    - ["②½"]
+
+- name: the digit class is Unicode aware
+  template: |
+    Value NUM (\d+)
+
+    Start
+      ^${NUM}$$ -> Record
+  input: |
+    123
+    ١٢٣
+    ②
+  rows:
+    - ["123"]
+    - ["١٢٣"]
+
+- name: the space class includes no-break space and the ASCII separators
+  template: |
+    Value A (\S+)
+    Value B (\S+)
+
+    Start
+      ^${A}\s${B}$$ -> Record
+  input: "a b\nc\x1fd\ne​f\ng　h\n"
+  rows:
+    - ["a", "b"]
+    - ["c", "d"]
+    - ["g", "h"]
+
+- name: word boundaries
+  template: |
+    Value A (\w+)
+
+    Start
+      ^\W*\b${A}\b\W+end\b -> Record
+  input: |
+    --abc-- end
+    déf end
+    xyz ender
+  rows:
+    - ["abc"]
+    - ["déf"]
+
+- name: the dot matches every character of a line
+  template: |
+    Value A (.+)
+
+    Start
+      ^${A}$$ -> Record
+  input: "tab\there\tand é世\U0001F600\n"
+  rows:
+    - ["tab\there\tand é世\U0001F600"]

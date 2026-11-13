@@ -33,13 +33,23 @@ Only touch files in this crate. No git. `cargo fmt -p nocturne-snmp` only (never
 - Agent is `Clone` (Arc inside) so `set_view` works while `run()` is serving; `set_max_message_size` added.
 
 ## Status
-### Done (tests green)
-- `error.rs`, `oid.rs`, `value.rs`, `ber.rs`, `pdu.rs` (+36 unit tests incl. captured net-snmp packets)
+### Done (last run: 88 unit tests + 4 doctests green; interop 10/11 (11th was a flaky assertion, fixed))
+- All source modules: error, oid, value, ber, pdu, v3/{mod,usm}, client/{mod,transport,session,walk},
+  agent, trap, names (+names/extra.rs), oids, lib.rs.
+- Dictionary: 3857 objects (1000 consts), 1261 traps; generated from MIB modules (LibreNMS collection),
+  verified 5117/5118 with snmptranslate + completeness checked against `snmptranslate -Tz`
+  (scraper bug that dropped IF-MIB::ifIndex found by the live test and fixed).
+- `tests/netsnmp_interop.rs` written and run live: v1/v2c get/walk/set/table, 43/43 v3 combinations pass
+  (6 auth x {none, DES, AES, AES-192, AES-256, AES-192-C, AES-256-C} + noAuth), error mapping, privacy
+  mismatch diagnosis, AES key-extension auto-detect, restart resync/rediscovery/failover, full mib-2 walk
+  == snmpwalk, traps v1/v2c/v3-noauth + inform ack accepted by snmpinform.
 
 ### In progress
-- `v3/usm.rs` (crypto) and `v3/mod.rs` (message framing)
+- `client/tests.rs`: scripted responders (tooBig halving, reports mapping, NotInTimeWindows resync,
+  UnknownEngineID rediscovery, stray/late datagrams, privacy-mismatch diagnosis, retries same request id)
 
 ### Next
-- `client` (request engine, walk/table, USM session), `agent`, `trap`, `names`/`oids`
-- tests: `tests/loopback.rs`, `tests/robustness.rs`, `tests/netsnmp_interop.rs`; in-crate scripted-responder tests
-- clippy `-D warnings`, `cargo fmt -p nocturne-snmp`, final report
+- `tests/loopback.rs` (Agent: get/get_next/bulk walk of several hundred OIDs/table pivot/tooBig/timeout+retry)
+- `tests/robustness.rs` + in-crate fuzz of private decoders
+- remove dead code (`peek_tag`, `is_no_such_name`...), clippy `-D warnings`, `cargo fmt -p nocturne-snmp`
+- final report with matrix (logs in scratchpad work/interop*.log are NOT durable - rerun with --nocapture)

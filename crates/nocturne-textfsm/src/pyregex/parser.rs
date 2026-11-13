@@ -4,6 +4,7 @@
 //! places where Python is lenient (`{` that does not start a quantifier is a
 //! literal, `]` right after `[` is a literal, `[` inside a class is a literal)
 //! and where it is strict (`a**` is "multiple repeat", `[\w-x]` is a bad range).
+//! Errors carry Python's message and point at the position Python reports.
 
 use super::SyntaxError;
 use super::ast::{
@@ -35,6 +36,16 @@ pub(crate) fn parse(pattern: &str) -> Result<Ast, SyntaxError> {
 enum Token {
     Char(char),
     Escape(char),
+}
+
+impl Token {
+    /// The token as written in the pattern.
+    fn text(self) -> String {
+        match self {
+            Token::Char(c) => c.to_string(),
+            Token::Escape(c) => format!("\\{c}"),
+        }
+    }
 }
 
 struct Parser {
@@ -133,28 +144,25 @@ impl Parser {
         taken
     }
 
-    /// Consumes everything up to and including `terminator`; used for group names.
-    fn take_until(&mut self, terminator: char, what: &str) -> Result<String, SyntaxError> {
-        let mut taken = String::new();
+    /// Consumes a name up to and including `terminator`. Returns the name and
+    /// the offset at which it starts.
+    fn take_name(&mut self, terminator: char) -> Result<(String, usize), SyntaxError> {
+        let start = self.offset();
+        let mut name = String::new();
         loop {
             match self.advance() {
-                None if taken.is_empty() => return Err(self.error_here(format!("missing {what}"))),
+                None if name.is_empty() => return Err(self.error_here("missing group name")),
                 None => {
-                    return Err(
-                        self.error_here(format!("missing {terminator}, unterminated name"))
-                    );
+                    let message = format!("missing {terminator}, unterminated name");
+                    return Err(SyntaxError::new(message, start));
                 }
                 Some(Token::Char(c)) if c == terminator => {
-                    if taken.is_empty() {
-                        return Err(self.error_here(format!("missing {what}")));
+                    if name.is_empty() {
+                        return Err(self.error_back("missing group name", 1));
                     }
-                    return Ok(taken);
+                    return Ok((name, start));
                 }
-                Some(Token::Char(c)) => taken.push(c),
-                Some(Token::Escape(c)) => {
-                    taken.push('\\');
-                    taken.push(c);
-                }
+                Some(token) => name.push_str(&token.text()),
             }
         }
     }
@@ -166,6 +174,11 @@ impl Parser {
 
     fn error_here(&self, message: impl Into<String>) -> SyntaxError {
         SyntaxError::new(message, self.offset())
+    }
+
+    /// An error `back` characters before the next token.
+    fn error_back(&self, message: impl Into<String>, back: usize) -> SyntaxError {
+        SyntaxError::new(message, self.offset().saturating_sub(back))
     }
 
     // --- grammar ----------------------------------------------------------
@@ -241,7 +254,7 @@ impl Parser {
     }
 
     /// `*`, `+`, `?`, `{m,n}` and their lazy / possessive forms. The quantifier
-    /// character has already been consumed.
+    /// character, found at `start`, has already been consumed.
     fn parse_quantifier(
         &mut self,
         quantifier: char,
@@ -261,13 +274,13 @@ impl Parser {
                 }
             },
         };
-        match items.last() {
+        let node = match items.pop() {
             None | Some(Node::Assertion(_)) => {
                 return Err(SyntaxError::new("nothing to repeat", start));
             }
             Some(Node::Repeat { .. }) => return Err(SyntaxError::new("multiple repeat", start)),
-            Some(_) => {}
-        }
+            Some(node) => Box::new(node),
+        };
         let mode = if self.eat('?') {
             RepeatMode::Lazy
         } else if self.eat('+') {
@@ -275,14 +288,13 @@ impl Parser {
         } else {
             RepeatMode::Greedy
         };
-        if let Some(node) = items.pop() {
-            items.push(Node::Repeat { node: Box::new(node), min, max, mode });
-        }
+        items.push(Node::Repeat { node, min, max, mode });
         Ok(())
     }
 
-    /// Parses the inside of `{m,n}` after the opening brace. Returns `None`, with
-    /// the position restored to just after the brace, when this is not a quantifier.
+    /// Parses the inside of `{m,n}` after the opening brace at `start`. Returns
+    /// `None`, with the position restored to just after the brace, when this is
+    /// not a quantifier.
     fn parse_counted_repeat(
         &mut self,
         start: usize,
@@ -307,48 +319,54 @@ impl Parser {
             }
             match digits.parse::<u64>() {
                 Ok(value) if value < MAX_REPEAT => Ok(Some(value as u32)),
-                _ => Err(SyntaxError::new("the repetition number is too large", start)),
+                _ => Err(SyntaxError::new("the repetition number is too large", start + 1)),
             }
         };
         let min = bound(&low)?.unwrap_or(0);
         let max = bound(&high)?;
         if max.is_some_and(|max| max < min) {
-            return Err(SyntaxError::new("min repeat greater than max repeat", start));
+            return Err(SyntaxError::new("min repeat greater than max repeat", start + 1));
         }
         Ok(Some((min, max)))
     }
 
-    /// A bracketed class; the opening `[` has already been consumed.
+    /// A bracketed class; the opening `[` at `start` has already been consumed.
     fn parse_class(&mut self, start: usize) -> Result<Node, SyntaxError> {
         let unterminated = || SyntaxError::new("unterminated character set", start);
         let negated = self.eat('^');
         let mut items = Vec::new();
         loop {
-            let item_start = self.offset();
-            let token = self.advance().ok_or_else(unterminated)?;
+            let first_start = self.offset();
+            let first_token = self.advance().ok_or_else(unterminated)?;
             // A `]` directly after `[` or `[^` is a literal.
-            if token == Token::Char(']') && !items.is_empty() {
+            if first_token == Token::Char(']') && !items.is_empty() {
                 break;
             }
-            let first = self.parse_class_atom(token, item_start)?;
+            let first = self.parse_class_atom(first_token, first_start)?;
             if !self.eat('-') {
                 items.push(first);
                 continue;
             }
             let second_start = self.offset();
-            let token = self.advance().ok_or_else(unterminated)?;
-            if token == Token::Char(']') {
+            let second_token = self.advance().ok_or_else(unterminated)?;
+            if second_token == Token::Char(']') {
                 // A trailing `-` is a literal.
                 items.push(first);
                 items.push(ClassItem::Char('-'));
                 break;
             }
-            let second = self.parse_class_atom(token, second_start)?;
+            let second = self.parse_class_atom(second_token, second_start)?;
             match (first, second) {
                 (ClassItem::Char(low), ClassItem::Char(high)) if low <= high => {
                     items.push(ClassItem::Range(low, high));
                 }
-                _ => return Err(SyntaxError::new("bad character range", item_start)),
+                _ => {
+                    let range = format!("{}-{}", first_token.text(), second_token.text());
+                    return Err(SyntaxError::new(
+                        format!("bad character range {range}"),
+                        first_start,
+                    ));
+                }
             }
         }
         Ok(Node::Class(Class { negated, items }))
@@ -415,7 +433,8 @@ impl Parser {
                 return Ok(Node::Literal(octal_literal(&digits, start)?));
             }
         }
-        let invalid = || SyntaxError::new(format!("invalid group reference {digits}"), start);
+        // Python points behind the backslash here.
+        let invalid = || SyntaxError::new(format!("invalid group reference {digits}"), start + 1);
         let group: u32 = digits.parse().map_err(|_| invalid())?;
         if group as usize > self.group_names.len() {
             return Err(invalid());
@@ -431,9 +450,10 @@ impl Parser {
             if value.len() != digits {
                 return Err(SyntaxError::new(format!("incomplete escape \\{escaped}{value}"), start));
             }
-            u32::from_str_radix(&value, 16).ok().and_then(char::from_u32).ok_or_else(|| {
-                SyntaxError::new(format!("bad escape \\{escaped}{value}"), start)
-            })
+            u32::from_str_radix(&value, 16)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| SyntaxError::new(format!("bad escape \\{escaped}{value}"), start))
         };
         match escaped {
             'a' => Ok('\x07'),
@@ -445,7 +465,9 @@ impl Parser {
             'x' => hex(self, 2),
             'u' => hex(self, 4),
             'U' => hex(self, 8),
-            'N' => Err(SyntaxError::new("named Unicode escapes (\\N{...}) are not supported", start)),
+            'N' => {
+                Err(SyntaxError::new("named Unicode escapes (\\N{...}) are not supported", start))
+            }
             c if c.is_ascii_alphanumeric() => {
                 Err(SyntaxError::new(format!("bad escape \\{c}"), start))
             }
@@ -453,7 +475,8 @@ impl Parser {
         }
     }
 
-    /// Everything that starts with `(`; the parenthesis has already been consumed.
+    /// Everything that starts with `(`; the parenthesis at `start` has already
+    /// been consumed.
     fn parse_group(
         &mut self,
         start: usize,
@@ -461,40 +484,35 @@ impl Parser {
         nested: u32,
         allow_global_flags: bool,
     ) -> Result<Group, SyntaxError> {
-        let unexpected_end = |parser: &Parser| parser.error_here("unexpected end of pattern");
+        let unknown_extension =
+            |text: String| SyntaxError::new(format!("unknown extension ?{text}"), start + 1);
         let mut kind = GroupKind::NonCapture;
-        let mut capture_name = None;
-        let mut capturing = true;
+        // The name of a capture group and where it is written.
+        let mut capture: Option<(Option<String>, usize)> = Some((None, start));
         let mut body_verbose = verbose;
         if self.eat('?') {
-            capturing = false;
-            let extension_start = self.offset();
-            let unknown_extension = |extension: &str| {
-                SyntaxError::new(format!("unknown extension ?{extension}"), extension_start)
-            };
-            let token = self.advance().ok_or_else(|| unexpected_end(self))?;
+            capture = None;
+            let token = self.advance().ok_or_else(|| self.error_here("unexpected end of pattern"))?;
             let Token::Char(c) = token else {
-                return Err(unknown_extension("\\"));
+                return Err(unknown_extension(token.text()));
             };
             match c {
                 'P' => {
                     if self.eat('<') {
-                        let name = self.take_until('>', "group name")?;
-                        check_group_name(&name, extension_start)?;
-                        capture_name = Some(name);
-                        capturing = true;
+                        let (name, name_start) = self.take_name('>')?;
+                        check_group_name(&name, name_start)?;
+                        capture = Some((Some(name), name_start));
                     } else if self.eat('=') {
-                        let name = self.take_until(')', "group name")?;
-                        check_group_name(&name, extension_start)?;
-                        let group = self.group_number(&name, extension_start)?;
-                        self.check_group_reference(group, extension_start)?;
+                        let (name, name_start) = self.take_name(')')?;
+                        check_group_name(&name, name_start)?;
+                        let group = self.group_number(&name, name_start)?;
+                        self.check_group_reference(group, name_start)?;
                         return Ok(Group::Node(Node::Backref(group)));
                     } else {
-                        return Err(match self.advance() {
-                            None => unexpected_end(self),
-                            Some(Token::Char(c)) => unknown_extension(&format!("P{c}")),
-                            Some(Token::Escape(c)) => unknown_extension(&format!("P\\{c}")),
-                        });
+                        let token = self
+                            .advance()
+                            .ok_or_else(|| self.error_here("unexpected end of pattern"))?;
+                        return Err(unknown_extension(format!("P{}", token.text())));
                     }
                 }
                 ':' => {}
@@ -517,20 +535,17 @@ impl Parser {
                 '!' => return self.parse_look(LookKind::NegativeAhead, start, verbose, nested),
                 '<' => {
                     let kind = match self.advance() {
-                        None => return Err(unexpected_end(self)),
+                        None => return Err(self.error_here("unexpected end of pattern")),
                         Some(Token::Char('=')) => LookKind::Behind,
                         Some(Token::Char('!')) => LookKind::NegativeBehind,
-                        Some(Token::Char(c)) => return Err(unknown_extension(&format!("<{c}"))),
-                        Some(Token::Escape(c)) => {
-                            return Err(unknown_extension(&format!("<\\{c}")));
-                        }
+                        Some(token) => return Err(unknown_extension(format!("<{}", token.text()))),
                     };
                     return self.parse_look(kind, start, verbose, nested);
                 }
                 '(' => return self.parse_conditional(start, verbose, nested),
                 '>' => kind = GroupKind::Atomic,
                 'i' | 'L' | 'm' | 's' | 'x' | 'a' | 'u' | '-' => {
-                    let Some((on, off)) = self.parse_flags(c, extension_start)? else {
+                    let Some((on, off)) = self.parse_flags(c)? else {
                         if !allow_global_flags {
                             return Err(SyntaxError::new(
                                 "global flags not at the start of the expression",
@@ -544,26 +559,29 @@ impl Parser {
                         kind = GroupKind::Flags { on, off };
                     }
                 }
-                c => return Err(unknown_extension(&c.to_string())),
+                c => return Err(unknown_extension(c.to_string())),
             }
         }
 
-        let group = if capturing {
-            if let Some(name) = &capture_name
-                && self.group_names.iter().flatten().any(|existing| existing == name)
-            {
-                return Err(SyntaxError::new(
-                    format!("redefinition of group name '{name}'"),
-                    start,
-                ));
+        let group = match capture {
+            Some((name, name_start)) => {
+                let number = self.group_names.len() as u32 + 1;
+                if let Some(name) = &name
+                    && let Ok(existing) = self.group_number(name, name_start)
+                {
+                    return Err(SyntaxError::new(
+                        format!(
+                            "redefinition of group name '{name}' as group {number}; was group {existing}"
+                        ),
+                        name_start,
+                    ));
+                }
+                self.group_names.push(name);
+                self.group_widths.push(None);
+                kind = GroupKind::Capture(number);
+                Some(number)
             }
-            self.group_names.push(capture_name);
-            self.group_widths.push(None);
-            let number = self.group_names.len() as u32;
-            kind = GroupKind::Capture(number);
-            Some(number)
-        } else {
-            None
+            None => None,
         };
         let body = self.parse_alternation(body_verbose, nested + 1)?;
         self.expect_close(start)?;
@@ -604,12 +622,11 @@ impl Parser {
         verbose: bool,
         nested: u32,
     ) -> Result<Group, SyntaxError> {
-        let name_start = self.offset();
-        let name = self.take_until(')', "group name")?;
+        let (name, name_start) = self.take_name(')')?;
         let group = if name.bytes().all(|b| b.is_ascii_digit()) {
-            let group: u32 = name
-                .parse()
-                .map_err(|_| SyntaxError::new(format!("invalid group reference {name}"), name_start))?;
+            let group: u32 = name.parse().map_err(|_| {
+                SyntaxError::new(format!("invalid group reference {name}"), name_start)
+            })?;
             if group == 0 {
                 return Err(SyntaxError::new("bad group number", name_start));
             }
@@ -620,7 +637,7 @@ impl Parser {
             self.group_number(&name, name_start)?
         };
         if self.lookbehind_first_group.is_some() {
-            self.check_group_reference(group, name_start)?;
+            self.check_group_reference(group, self.offset())?;
         }
         let yes = self.parse_sequence(verbose, nested + 1, false)?;
         let no = if self.eat('|') {
@@ -636,31 +653,24 @@ impl Parser {
         Ok(Group::Node(Node::Conditional { group, yes: Box::new(yes), no: Box::new(no) }))
     }
 
-    /// Inline flags after `(?`. `first` is the first flag character (or `-`).
-    /// Returns `None` for a global flag group `(?i)` and the flags to switch
-    /// on and off for a scoped group `(?i-s:`.
-    fn parse_flags(
-        &mut self,
-        first: char,
-        start: usize,
-    ) -> Result<Option<(Flags, Flags)>, SyntaxError> {
-        let error = |message: &str| SyntaxError::new(message, start);
+    /// Inline flags after `(?`. `first` is the first flag character (or `-`),
+    /// already consumed. Returns `None` for a global flag group `(?i)` and the
+    /// flags to switch on and off for a scoped group `(?i-s:`.
+    fn parse_flags(&mut self, first: char) -> Result<Option<(Flags, Flags)>, SyntaxError> {
         let mut on = Flags::default();
         let mut off = Flags::default();
         let mut c = first;
         if c != '-' {
             loop {
-                set_flag(&mut on, c).map_err(error)?;
-                c = match self.advance() {
-                    Some(Token::Char(c)) => c,
-                    _ => return Err(error("missing -, : or )")),
-                };
+                set_flag(&mut on, c).map_err(|message| self.error_here(message))?;
+                c = self.next_flag_char("missing -, : or )")?;
                 if matches!(c, ')' | '-' | ':') {
                     break;
                 }
                 if !is_flag(c) {
-                    let message = if c.is_alphabetic() { "unknown flag" } else { "missing -, : or )" };
-                    return Err(error(message));
+                    let message =
+                        if c.is_alphabetic() { "unknown flag" } else { "missing -, : or )" };
+                    return Err(self.error_back(message, 1));
                 }
             }
         }
@@ -669,34 +679,42 @@ impl Parser {
             return Ok(None);
         }
         if c == '-' {
-            c = match self.advance() {
-                Some(Token::Char(c)) => c,
-                _ => return Err(error("missing flag")),
-            };
+            c = self.next_flag_char("missing flag")?;
             if !is_flag(c) {
-                return Err(error(if c.is_alphabetic() { "unknown flag" } else { "missing flag" }));
+                let message = if c.is_alphabetic() { "unknown flag" } else { "missing flag" };
+                return Err(self.error_back(message, 1));
             }
             loop {
                 if matches!(c, 'a' | 'u' | 'L') {
-                    return Err(error("bad inline flags: cannot turn off flags 'a', 'u' and 'L'"));
+                    return Err(self.error_here(
+                        "bad inline flags: cannot turn off flags 'a', 'u' and 'L'",
+                    ));
                 }
-                set_flag(&mut off, c).map_err(error)?;
-                c = match self.advance() {
-                    Some(Token::Char(c)) => c,
-                    _ => return Err(error("missing :")),
-                };
+                set_flag(&mut off, c).map_err(|message| self.error_here(message))?;
+                c = self.next_flag_char("missing :")?;
                 if c == ':' {
                     break;
                 }
                 if !is_flag(c) {
-                    return Err(error(if c.is_alphabetic() { "unknown flag" } else { "missing :" }));
+                    let message = if c.is_alphabetic() { "unknown flag" } else { "missing :" };
+                    return Err(self.error_back(message, 1));
                 }
             }
         }
         if on.intersects(off) {
-            return Err(error("bad inline flags: flag turned on and off"));
+            return Err(self.error_back("bad inline flags: flag turned on and off", 1));
         }
         Ok(Some((on, off)))
+    }
+
+    /// The next character of a flag group; `missing` is the error at the end
+    /// of the pattern.
+    fn next_flag_char(&mut self, missing: &str) -> Result<char, SyntaxError> {
+        match self.advance() {
+            Some(Token::Char(c)) => Ok(c),
+            Some(Token::Escape(_)) => Err(self.error_back(missing, 2)),
+            None => Err(self.error_here(missing)),
+        }
     }
 
     fn expect_close(&mut self, group_start: usize) -> Result<(), SyntaxError> {
@@ -717,6 +735,7 @@ impl Parser {
 
     /// Back-references may only point at groups that are already closed and,
     /// inside a look-behind, at groups defined before that look-behind.
+    /// `position` is where the reference is written.
     fn check_group_reference(&self, group: u32, position: usize) -> Result<(), SyntaxError> {
         let closed = (group as usize)
             .checked_sub(1)
@@ -726,9 +745,8 @@ impl Parser {
             return Err(SyntaxError::new("cannot refer to an open group", position));
         }
         if self.lookbehind_first_group.is_some_and(|first| group >= first) {
-            return Err(SyntaxError::new(
+            return Err(self.error_here(
                 "cannot refer to group defined in the same lookbehind subpattern",
-                position,
             ));
         }
         Ok(())
@@ -758,7 +776,10 @@ fn category_escape(escaped: char) -> Option<Category> {
 
 fn octal_literal(digits: &str, position: usize) -> Result<char, SyntaxError> {
     let out_of_range = || {
-        SyntaxError::new(format!("octal escape value \\{digits} outside of range 0-0o377"), position)
+        SyntaxError::new(
+            format!("octal escape value \\{digits} outside of range 0-0o377"),
+            position,
+        )
     };
     let value = u32::from_str_radix(digits, 8).map_err(|_| out_of_range())?;
     if value > 0o377 {
@@ -808,10 +829,12 @@ fn width(node: &Node, group_widths: &[Option<(u64, u64)>]) -> (u64, u64) {
             let (node_low, node_high) = width(node, group_widths);
             (low.saturating_add(node_low), high.saturating_add(node_high))
         }),
-        Node::Alternation(branches) => branches.iter().fold((MAX_WIDTH, 0), |(low, high), branch| {
-            let (branch_low, branch_high) = width(branch, group_widths);
-            (low.min(branch_low), high.max(branch_high))
-        }),
+        Node::Alternation(branches) => {
+            branches.iter().fold((MAX_WIDTH, 0), |(low, high), branch| {
+                let (branch_low, branch_high) = width(branch, group_widths);
+                (low.min(branch_low), high.max(branch_high))
+            })
+        }
         Node::Repeat { node, min, max, .. } => {
             let (low, high) = width(node, group_widths);
             let high = match max {

@@ -5,7 +5,7 @@
 //! pump through channels. Ports are enumerated without libudev: from sysfs on
 //! Linux, IOKit on macOS and the registry on Windows.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -332,7 +332,13 @@ fn write_port(
     while let Some(command) = commands.blocking_recv() {
         let done = match command {
             Command::Write(data) => write_all(port.as_mut(), &data, stop),
-            Command::Break => send_break(port.as_ref()),
+            Command::Break => {
+                // Not every adapter can do it; that is no reason to hang up.
+                if let Err(error) = send_break(port.as_ref()) {
+                    tracing::warn!(%error, "cannot send a break on the serial line");
+                }
+                Ok(())
+            }
         };
         if let Err(error) = done {
             let _ = events.blocking_send(Err(error));

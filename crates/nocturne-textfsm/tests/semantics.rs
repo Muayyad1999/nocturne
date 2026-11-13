@@ -92,3 +92,23 @@ fn check_file(name: &str) {
 fn values() {
     check_file("values.yml");
 }
+
+#[test]
+fn rules() {
+    check_file("rules.yml");
+}
+
+#[test]
+fn states() {
+    check_file("states.yml");
+}
+
+#[test]
+fn input() {
+    check_file("input.yml");
+}
+
+#[test]
+fn regex() {
+    check_file("regex.yml");
+}

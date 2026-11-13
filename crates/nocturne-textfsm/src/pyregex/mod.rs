@@ -9,6 +9,7 @@
 mod ast;
 mod emit;
 mod language;
+mod loops;
 mod parser;
 
 pub(crate) use language::finite_language;

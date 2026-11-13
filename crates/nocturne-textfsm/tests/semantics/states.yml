@@ -1,0 +1,290 @@
+# States: Start, transitions, and the special states End and EOF.
+#
+# See values.yml for the format.
+
+- name: the pending row is recorded at the end of the input
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+  input: |
+    x
+    y
+  rows:
+    - ["y"]
+
+- name: an empty EOF state suppresses the record at the end of the input
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+
+    EOF
+  input: |
+    x
+  rows: []
+
+- name: a transition to EOF stops reading and records the pending row
+  template: |
+    Value A (\S+)
+
+    Start
+      ^stop -> EOF
+      ^${A}
+  input: |
+    x
+    stop
+    y
+  rows:
+    - ["x"]
+
+- name: a transition to EOF with an empty EOF state records nothing
+  template: |
+    Value A (\S+)
+
+    Start
+      ^stop -> EOF
+      ^${A}
+
+    EOF
+  input: |
+    x
+    stop
+    y
+  rows: []
+
+- name: a transition to End stops without recording the pending row
+  template: |
+    Value A (\S+)
+
+    Start
+      ^stop -> End
+      ^${A} -> Continue.Record
+      ^${A}
+  input: |
+    x
+    y
+    stop
+    z
+  rows:
+    - ["x"]
+    - ["y"]
+
+- name: Record together with a transition to End keeps the recorded row
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record End
+  input: |
+    x
+    y
+  rows:
+    - ["x"]
+
+- name: an empty End state may be declared
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> End
+
+    End
+  input: |
+    x
+  rows: []
+
+- name: states are entered by name and keep their own rules
+  template: |
+    Value Required NAME (\S+)
+    Value List MEMBER (\S+)
+
+    Start
+      ^group ${NAME} -> Members
+
+    Members
+      ^  ${MEMBER}
+      ^$$ -> Record Start
+  input: |
+    group a
+      x
+      y
+
+    ignored
+    group b
+      z
+  rows:
+    - ["a", ["x", "y"]]
+    - ["b", ["z"]]
+
+- name: Start need not be the first state
+  template: |
+    Value A (\S+)
+
+    Other
+      ^${A} -> Record
+
+    Start
+      ^go -> Other
+  input: |
+    x
+    go
+    y
+  rows:
+    - ["y"]
+
+- name: a state without rules ignores every line
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record Sink
+
+    Sink
+  input: |
+    x
+    y
+  rows:
+    - ["x"]
+
+- name: blank lines and comments between states
+  template: |
+    Value A (\S+)
+
+
+
+    # about Start
+    Start
+      ^${A} -> Other
+
+
+    # about Other
+
+    Other
+      ^${A} -> Record
+  input: |
+    x
+    y
+  rows:
+    - ["y"]
+
+- name: a state named like a keyword with different case
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> record
+
+    record
+      ^${A} -> Record
+  input: |
+    x
+    y
+  rows:
+    - ["y"]
+
+- name: no Start state
+  template: |
+    Value A (\S+)
+
+    Begin
+      ^${A} -> Record
+  template_error: {}
+
+- name: only values
+  template: |
+    Value A (\S+)
+  template_error: {}
+
+- name: an empty template
+  template: ""
+  template_error: {}
+
+- name: End must be empty
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> End
+
+    End
+      ^x
+  template_error: {}
+
+- name: EOF must be empty
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+
+    EOF
+      ^.* -> Record
+  template_error: {}
+
+- name: a transition to an unknown state
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A} -> Record Missing
+  template_error: {}
+
+- name: a duplicate state
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+
+    Start
+      ^x
+  template_error: {line: 6}
+
+- name: a state name with a space
+  template: |
+    Value A (\S+)
+
+    Start Here
+      ^${A}
+  template_error: {line: 3}
+
+- name: an indented state name
+  template: |
+    Value A (\S+)
+
+     Start
+      ^${A}
+  template_error: {line: 3}
+
+- name: a state named like an operator
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+
+    Record
+  template_error: {line: 6}
+
+- name: state names are limited to 48 characters
+  template: |
+    Value A (\S+)
+
+    Start
+      ^${A}
+
+    S123456789012345678901234567890123456789012345678
+  template_error: {line: 6}
+
+- name: a second Value block is read as a state name
+  template: |
+    Value A (\S+)
+
+    Value B (\S+)
+
+    Start
+      ^${A}
+  template_error: {line: 3}

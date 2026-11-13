@@ -25,9 +25,12 @@ Fallback only if another crate's manifest breaks the workspace again (mention in
 - [x] ssh/{mod(params),algorithms,keys,auth,client,jump,sftp} written + compiles (`cargo check --tests` ok); NOT yet exercised
 - [x] telnet/{mod(client),protocol} written + compiles; NOT yet exercised
 - [x] serve/{mod,ssh,telnet} written + compiles; NOT yet exercised
-- [ ] serial.rs
-- [ ] local.rs
-- [ ] in-process tests (plan below)
+- [x] serial.rs, local.rs written + compile; NOT yet exercised
+- [x] in-process SSH tests: src/tests/ssh.rs — 44 pass (login/auth matrix, kbd-int fallback, keys, banner, resize,
+      6 MB integrity, close reasons, keepalive timeout, jump 1+2 hops + failures, legacy matrix vs own server,
+      slow-reader/keepalive, bulk echo no-deadlock, 24 MiB stalled reader, concurrency). Verified the back-pressure
+      tests FAIL when the relay high-water mark is set to 1 (naive pump) → they have teeth.
+- [ ] in-process telnet / local / serial tests (src/tests/{telnet,local,serial}.rs are stubs)
 - [ ] OpenSSH interop tests (modern + legacy matrix)
 - [ ] telnetd interop
 - [ ] remove `#![allow(dead_code)]` from lib.rs, clippy clean, fmt, windows cross-check
