@@ -311,7 +311,7 @@ mod tests {
     /// algorithm masks the word `md5` and leaves the key in the configuration.
     #[test]
     fn the_key_is_masked_and_not_the_algorithm_that_precedes_it() {
-        let mut redactor = Redactor::new();
+        let redactor = Redactor::new();
         let config = "\
 ntp authentication-key 1 md5 N0cturne!Ntp 7
 ntp authentication-key 2 sha1 S3condKey
