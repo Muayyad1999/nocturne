@@ -726,7 +726,10 @@ async fn getbulk_tables_and_large_requests() {
 
 #[tokio::test]
 async fn set_changes_writable_objects_only() {
-    let Some(daemon) = Snmpd::start("").await else {
+    // A read-write SNMPv3 user next to the read-write community.
+    let v3_writer = User::new(Some(AUTH_PROTOCOLS[3]), Some(PRIV_PROTOCOLS[1]));
+    let config = v3_writer.config().replace("rouser", "rwuser");
+    let Some(daemon) = Snmpd::start(&config).await else {
         return;
     };
     let sys_name = oid(oids::SYS_NAME);
@@ -807,7 +810,30 @@ async fn set_changes_writable_objects_only() {
         v1_writer.set(std::slice::from_ref(&v1_name)).await.unwrap(),
         vec![v1_name]
     );
-    println!("v1/v2c set: pass");
+
+    // ...and so does SNMPv3 with authentication and privacy.
+    let mut secure_writer = connect(&daemon, v3_writer.auth()).await;
+    let v3_name = VarBind::new(oid(oids::SYS_NAME), Value::from("renamed-over-v3"));
+    assert_eq!(
+        secure_writer
+            .set(std::slice::from_ref(&v3_name))
+            .await
+            .unwrap(),
+        vec![v3_name.clone()]
+    );
+    assert_eq!(
+        reader.get(&[oid(oids::SYS_NAME)]).await.unwrap(),
+        vec![v3_name]
+    );
+    let error = secure_writer
+        .set(std::slice::from_ref(&pinned))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, SnmpError::Agent { status: 17, .. }),
+        "{error:?}"
+    );
+    println!("set over v1, v2c and v3 authPriv (and its refusals): pass");
 }
 
 #[tokio::test]
@@ -1277,46 +1303,72 @@ async fn v3_follows_the_agent_through_restarts() {
 }
 
 #[tokio::test]
-async fn v3_context_and_bulk_over_privacy() {
-    let user = User::new(Some(AUTH_PROTOCOLS[5]), Some(PRIV_PROTOCOLS[3]));
-    let Some(daemon) = Snmpd::start(&users_config(std::slice::from_ref(&user))).await else {
+async fn v3_tables_and_walks_equal_v2c() {
+    // DES pads, AES does not; SHA-512 has the longest digest, MD5 the shortest.
+    let users = [
+        User::new(Some(AUTH_PROTOCOLS[5]), Some(PRIV_PROTOCOLS[3])),
+        User::new(Some(AUTH_PROTOCOLS[0]), Some(PRIV_PROTOCOLS[0])),
+        User::new(Some(AUTH_PROTOCOLS[1]), None),
+    ];
+    let Some(daemon) = Snmpd::start(&users_config(&users)).await else {
         return;
     };
-    // A full table over authPriv equals the same table over v2c.
+    let names_of = |walk: &[VarBind]| walk.iter().map(|bind| bind.oid.clone()).collect::<Vec<_>>();
     let columns = [oid(oids::IF_DESCR), oid(oids::IF_TYPE), oid(oids::IF_MTU)];
-    let secure = connect(&daemon, user.auth())
-        .await
-        .table(&columns, usize::MAX)
-        .await
-        .unwrap();
-    let plain = connect(&daemon, v2c("public"))
-        .await
-        .table(&columns, usize::MAX)
-        .await
-        .unwrap();
-    assert!(!secure.is_empty());
-    assert_eq!(secure, plain);
+    // Subtrees whose population does not change from one moment to the next.
+    let subtrees = [
+        oid("1.3.6.1.2.1.2"),
+        oid("1.3.6.1.2.1.31"),
+        oid("1.3.6.1.2.1.25.2"),
+    ];
+    let mut plain = connect(&daemon, v2c("public")).await;
 
-    // A whole-MIB walk over authPriv: thousands of encrypted round trips' worth of data.
-    let mib2 = oid("1.3.6.1.2.1.2");
-    let secure = connect(&daemon, user.auth())
-        .await
-        .walk(&mib2, usize::MAX)
-        .await
-        .unwrap();
-    let plain = connect(&daemon, v2c("public"))
-        .await
-        .walk(&mib2, usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(
-        secure.iter().map(|bind| &bind.oid).collect::<Vec<_>>(),
-        plain.iter().map(|bind| &bind.oid).collect::<Vec<_>>()
-    );
-    println!(
-        "v3 authPriv SHA-512/AES-256: table and walk equal v2c ({} objects): pass",
-        secure.len()
-    );
+    for user in &users {
+        let mut secure = connect(&daemon, user.auth()).await;
+        if !netsnmp_accepts(&daemon, user).await {
+            println!(
+                "v3 {}: not supported by this net-snmp build, skipped",
+                user.label()
+            );
+            continue;
+        }
+        // The same table...
+        let table = secure.table(&columns, usize::MAX).await.unwrap();
+        assert!(!table.is_empty());
+        assert_eq!(
+            table,
+            plain.table(&columns, usize::MAX).await.unwrap(),
+            "{}",
+            user.label()
+        );
+        // ...and the same walks, hundreds of objects in bulk responses of every size.
+        let mut objects = 0;
+        for subtree in &subtrees {
+            let walked = secure.walk(subtree, usize::MAX).await.unwrap();
+            let reference = plain.walk(subtree, usize::MAX).await.unwrap();
+            assert_eq!(
+                names_of(&walked),
+                names_of(&reference),
+                "{} {subtree}",
+                user.label()
+            );
+            objects += walked.len();
+        }
+        assert!(objects > 100, "{objects}");
+        // A long GET, chunked, under the same security.
+        // (sysLocation.0 exists, sysLocation.1 does not.)
+        let wanted: Vec<Oid> = (0..120)
+            .map(|i| oid("1.3.6.1.2.1.1.6").child(i % 2))
+            .collect();
+        let got = secure.get(&wanted).await.unwrap();
+        assert_eq!(got.len(), 120);
+        assert_eq!(text(&got[0]), SYS_LOCATION);
+        assert_eq!(got[1].value, Value::NoSuchInstance);
+        println!(
+            "v3 {}: table, walks ({objects} objects) and a 120-OID get equal v2c: pass",
+            user.label()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

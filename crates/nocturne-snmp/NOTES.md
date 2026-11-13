@@ -32,22 +32,16 @@ Only touch files in this crate. No git. `cargo fmt -p nocturne-snmp` only (never
   keys cached per engine ID inside the Client; privacy-mismatch diagnosis probe after an authPriv timeout.
 - Agent is `Clone` (Arc inside) so `set_view` works while `run()` is serving; `set_max_message_size` added.
 
-## Status
-### Done (all green at last full run)
-- All source modules + tests written: 125 unit tests (incl. 33 scripted-responder client tests and the
-  in-crate hostile-input tests in `src/robustness.rs`), `tests/loopback.rs` (12 + 1 ignored timing report),
-  `tests/robustness.rs` (4), `tests/netsnmp_interop.rs` (11), 4 doctests.
-- clippy clean: `cargo clippy -p nocturne-snmp -- -D warnings` AND `--all-targets`; `#![forbid(unsafe_code)]`;
-  `cargo doc` clean; `cargo fmt -p nocturne-snmp` applied.
-- Privacy-mismatch diagnosis reworked: after an authPriv timeout (privacy never proven) -> authNoPriv probe,
-  then encrypted empty-GET probe; only if the latter is also unanswered -> try other AES key extension ->
-  else `Auth("decryption error ...")`. A slow/lost first request stays `Timeout`.
-- Timing (debug build, loopback, in-crate agent): v2c walk 50k objects 0.34 s; v1 walk 40k 1.0 s;
-  table 10k rows x 5 cols 0.40 s.
+## Status: COMPLETE (pending only the lead's review)
+- Source: error, oid, value, ber, pdu, v3/{mod,usm}, client/{mod,transport,session,walk,tests}, agent, trap,
+  names (+names/extra.rs), oids, robustness (cfg(test)), lib.rs (`#![forbid(unsafe_code)]`).
+- Tests (all green, also when three copies of every test binary run concurrently):
+  126 unit, 12 loopback (+1 ignored timing report), 4 robustness, 11 net-snmp interop, 4 doctests.
+- `cargo clippy -p nocturne-snmp -- -D warnings` clean (also with `--all-targets`); `cargo fmt -p nocturne-snmp`
+  applied; `cargo doc -p nocturne-snmp --no-deps` without warnings.
+- Interop matrix vs net-snmp 5.9.4.pre2: v1, v2c, v3 noAuthNoPriv, 6 authNoPriv, 36 authPriv
+  (MD5|SHA|SHA-224|SHA-256|SHA-384|SHA-512 x DES|AES|AES-192|AES-256|AES-192-C|AES-256-C): all pass.
+- Dictionary: 3857 objects (1000 with constants), 1261 notifications; generated from the MIB modules and
+  verified 5117/5118 against `snmptranslate` (the one exception is the hand-added egpNeighborLoss).
 
-### In progress
-- final full rerun (unit + loopback + robustness + interop with --nocapture for the matrix)
-
-### Next
-- final self-review of public docs; final report (matrix; walk/table performance; concurrency; error mapping;
-  example). NOTES.md may be deleted by the lead afterwards.
+This file was requested by the coordinator as a resume aid; it can be deleted once the crate is committed.
