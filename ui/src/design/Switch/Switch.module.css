@@ -23,6 +23,13 @@
 }
 
 .track {
+  /* Decoration only: it is `aria-hidden`, it sits exactly on top of the real
+   * `<input>`, and intercepting the pointer there means the control that
+   * answers to a click is not the control a test (or a browser extension, or
+   * anything else driving the page) can find. Letting clicks through costs
+   * nothing — the input underneath has the same geometry, and a click on the
+   * label text still reaches it through the label. */
+  pointer-events: none;
   display: inline-flex;
   flex: none;
   align-items: center;
