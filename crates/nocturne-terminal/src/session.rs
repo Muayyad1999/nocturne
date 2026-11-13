@@ -326,13 +326,7 @@ impl Session {
         // A session is started once; a second writer would be a bug in `open`.
         let _ = self.writer.set(writer.clone());
         self.touch();
-        tokio::spawn(pump(
-            app.clone(),
-            self.clone(),
-            reader,
-            writer,
-            auto_login,
-        ));
+        tokio::spawn(pump(app.clone(), self.clone(), reader, writer, auto_login));
         info
     }
 
@@ -494,8 +488,11 @@ impl Session {
             self.typed.store(true, Ordering::Relaxed);
         }
         self.touch();
-        self.submit("the input", writer.send(Bytes::copy_from_slice(data.as_bytes())))
-            .await?;
+        self.submit(
+            "the input",
+            writer.send(Bytes::copy_from_slice(data.as_bytes())),
+        )
+        .await?;
         self.shared.lock().info.bytes_out += data.len() as u64;
         Ok(())
     }
@@ -510,7 +507,8 @@ impl Session {
         if current == (cols, rows) {
             return Ok(());
         }
-        self.submit("the new size", writer.resize(cols, rows)).await?;
+        self.submit("the new size", writer.resize(cols, rows))
+            .await?;
         let info = {
             let mut shared = self.shared.lock();
             shared.info.cols = cols;

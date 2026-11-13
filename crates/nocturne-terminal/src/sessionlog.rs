@@ -165,7 +165,10 @@ impl SessionLog {
 fn cannot_write(path: &Path, err: &io::Error) -> AppError {
     AppError::new(
         "io",
-        format!("the session log {} cannot be written: {err}", path.display()),
+        format!(
+            "the session log {} cannot be written: {err}",
+            path.display()
+        ),
     )
 }
 

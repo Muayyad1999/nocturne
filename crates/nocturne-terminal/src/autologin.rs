@@ -276,7 +276,10 @@ mod tests {
     fn answers_username_then_password_once_each() {
         let mut dialogue = Dialogue::new(credentials());
         dialogue
-            .device("\r\nUser Access Verification\r\n\r\nUsername: ", AFTER_SETTLE)
+            .device(
+                "\r\nUser Access Verification\r\n\r\nUsername: ",
+                AFTER_SETTLE,
+            )
             .device("admin\r\nPassword: ", AFTER_SETTLE);
         assert_eq!(dialogue.sent, ["admin\n", "s3cr3t\n"]);
         assert!(dialogue.login.is_finished());
@@ -308,7 +311,10 @@ mod tests {
         let mut dialogue = Dialogue::new(credentials());
         // The banner mentions a password, then goes on within the settle time.
         dialogue
-            .device("Unauthorised use is an offence. Password: ", Duration::from_millis(50))
+            .device(
+                "Unauthorised use is an offence. Password: ",
+                Duration::from_millis(50),
+            )
             .device("s are rotated monthly.\r\n", Duration::from_millis(50));
         assert_eq!(dialogue.sent, Vec::<String>::new());
         assert!(!dialogue.login.is_finished());

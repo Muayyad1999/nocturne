@@ -193,7 +193,12 @@ fn query_page(
         sql.push_str(" AND device_id = ?");
         args.push(device_id.clone().into());
     }
-    for word in filter.query.as_deref().unwrap_or_default().split_whitespace() {
+    for word in filter
+        .query
+        .as_deref()
+        .unwrap_or_default()
+        .split_whitespace()
+    {
         let pattern = format!(
             "%{}%",
             word.replace('\\', "\\\\")
@@ -335,7 +340,11 @@ async fn read_chunk(path: &Path, offset: u64, limit: u64) -> io::Result<(Vec<u8>
 /// Cut a chunk read at an arbitrary place down to whole characters and, when
 /// more of the file follows, whole lines. Returns how many bytes were dropped
 /// at the start, and the text.
-fn whole_lines(mut bytes: Vec<u8>, starts_inside_file: bool, more_follows: bool) -> (usize, Vec<u8>) {
+fn whole_lines(
+    mut bytes: Vec<u8>,
+    starts_inside_file: bool,
+    more_follows: bool,
+) -> (usize, Vec<u8>) {
     let skipped = if starts_inside_file {
         bytes
             .iter()
@@ -366,10 +375,7 @@ async fn read(app: &App, request: ReadParams) -> AppResult<ReadResult> {
         .await
         .map_err(|err| match err.kind() {
             io::ErrorKind::NotFound => AppError::not_found(format!("session log `{name}`")),
-            _ => AppError::new(
-                "io",
-                format!("session log `{name}` cannot be read: {err}"),
-            ),
+            _ => AppError::new("io", format!("session log `{name}` cannot be read: {err}")),
         })?;
     let offset = request.offset.min(size);
     let more_follows = offset + (bytes.len() as u64) < size;
@@ -389,7 +395,8 @@ async fn read(app: &App, request: ReadParams) -> AppResult<ReadResult> {
             .optional()
             .map(Option::flatten)
         })?;
-        let redaction = redact_transcript(&text, &platform::secret_rules(app, device_id.as_deref()));
+        let redaction =
+            redact_transcript(&text, &platform::secret_rules(app, device_id.as_deref()));
         (redaction.text, redaction.redacted)
     };
     Ok(ReadResult {

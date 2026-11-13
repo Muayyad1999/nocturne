@@ -106,7 +106,10 @@ mod tests {
                 "connect.host_key_changed",
                 &json!({"host": "10.0.0.1", "port": 22}),
             );
-            Err::<(), _>(AppError::new("auth", "authentication failed at 10.0.0.1:22"))
+            Err::<(), _>(AppError::new(
+                "auth",
+                "authentication failed at 10.0.0.1:22",
+            ))
         })
         .await
         .unwrap_err();

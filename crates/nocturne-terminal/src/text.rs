@@ -23,9 +23,8 @@ static TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
 static PROMPT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[\w.\-:/@~\[\]]{1,64}(?:\([\w\-/. ]+\))?\s?[>#$%]\s?").expect("prompt pattern")
 });
-static KEY_BEGIN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----").expect("key pattern")
-});
+static KEY_BEGIN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----").expect("key pattern"));
 static KEY_END: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"-----END [A-Z0-9 ]*PRIVATE KEY-----").expect("key pattern"));
 /// What can stand between the two markers: base64, PEM headers, blank lines.
@@ -142,7 +141,9 @@ fn hide_private_keys(lines: &mut [String]) {
                 let marker = index - 1;
                 hide(&mut lines[marker]);
                 let mut above = marker;
-                while above > 0 && lines[above - 1] != HIDDEN && KEY_BODY.is_match(&lines[above - 1])
+                while above > 0
+                    && lines[above - 1] != HIDDEN
+                    && KEY_BODY.is_match(&lines[above - 1])
                 {
                     above -= 1;
                     hide(&mut lines[above]);
@@ -195,13 +196,23 @@ mod tests {
         let redaction = redact_transcript(text, &[]);
         assert!(redaction.redacted);
         for secret in ["Sup3rS3cret", "0psPass!", "c0mmunity-RO"] {
-            assert!(!redaction.text.contains(secret), "{secret} leaked:\n{}", redaction.text);
+            assert!(
+                !redaction.text.contains(secret),
+                "{secret} leaked:\n{}",
+                redaction.text
+            );
         }
         // Everything that is not a secret is where it was.
         let lines: Vec<&str> = redaction.text.lines().collect();
         assert_eq!(lines.len(), 5);
-        assert!(lines[0].starts_with("2026-11-13T05:24:05.123+02:00 SW1(config)#enable secret <secret:"));
-        assert_eq!(lines[2], "2026-11-13T05:24:07.000+02:00 SW1#show running-config | include snmp");
+        assert!(
+            lines[0]
+                .starts_with("2026-11-13T05:24:05.123+02:00 SW1(config)#enable secret <secret:")
+        );
+        assert_eq!(
+            lines[2],
+            "2026-11-13T05:24:07.000+02:00 SW1#show running-config | include snmp"
+        );
         assert!(lines[3].ends_with(" RO"));
         assert_eq!(lines[4], "2026-11-13T05:24:07.200+02:00 SW1#");
     }

@@ -61,13 +61,41 @@ pub struct Adhoc {
     pub port: Option<u16>,
     pub username: String,
     /// Used for this session only; never stored or logged.
-    pub password: Option<String>,
+    pub password: Option<Secret>,
     /// Take user name and secrets from a stored credential instead.
     pub credential_id: Option<String>,
     pub jump_device_id: Option<String>,
     pub serial: SerialOptions,
     pub local: LocalOptions,
     pub title: Option<String>,
+}
+
+/// A secret that arrived in a request.
+///
+/// It is deliberately not `Serialize`, so it cannot leave through a result,
+/// an event or an audit entry, and its `Debug` says nothing. It is wiped when
+/// it is dropped, which is the end of the call that carried it.
+#[derive(Clone, Default, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<secret>")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.0.zeroize();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

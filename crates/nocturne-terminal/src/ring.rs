@@ -19,6 +19,7 @@ impl Ring {
         }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
@@ -28,8 +29,7 @@ impl Ring {
             self.overflowed |= !self.bytes.is_empty() || data.len() > self.capacity;
             self.bytes.clear();
             self.grow_to(self.capacity);
-            self.bytes
-                .extend(&data[data.len() - self.capacity..]);
+            self.bytes.extend(&data[data.len() - self.capacity..]);
             return;
         }
         let excess = (self.bytes.len() + data.len()).saturating_sub(self.capacity);
