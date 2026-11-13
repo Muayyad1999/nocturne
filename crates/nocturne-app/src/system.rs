@@ -64,10 +64,36 @@ struct SetPasswordParams {
     new: Option<String>,
 }
 
+/// Preferences of the application as a whole (the UI's look lives here too, so it follows the user's data).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneralSettings {
+    /// `night`, `day` or `system`.
+    pub theme: String,
+    /// `compact` or `comfortable`.
+    pub density: String,
+    /// `24h` or `12h`.
+    pub time_format: String,
+    /// Desktop app: closing the window hides it to the tray; monitoring, receivers and schedules keep running.
+    pub keep_running_in_tray: bool,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        GeneralSettings {
+            theme: "night".into(),
+            density: "compact".into(),
+            time_format: "24h".into(),
+            keep_running_in_tray: false,
+        }
+    }
+}
+
 pub fn init(builder: &mut AppBuilder) {
     builder.state(SystemState {
         started_at: now_ms(),
     });
+    crate::settings::declare(builder, "general", &GeneralSettings::default());
     let router = &mut builder.router;
     router.add(
         "app.info",
@@ -152,8 +178,15 @@ mod tests {
     async fn info_vault_and_audit() {
         let dir = tempfile::tempdir().unwrap();
         let mut builder = AppBuilder::new(AppConfig::at(dir.path())).unwrap();
+        crate::settings::init(&mut builder);
         init(&mut builder);
         let app = builder.build();
+        assert_eq!(
+            app.rpc("settings.get", json!({"section": "general"}))
+                .await
+                .unwrap()["theme"],
+            "night"
+        );
 
         let info = app.rpc("app.info", Value::Null).await.unwrap();
         assert_eq!(

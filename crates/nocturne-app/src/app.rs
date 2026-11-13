@@ -136,10 +136,44 @@ pub struct AppBuilder {
     vault: Arc<Vault>,
     states: StateMap,
     starters: Vec<Starter>,
+    /// Held for the life of the app: one process per data directory.
+    lock: Option<std::fs::File>,
+}
+
+/// Take the exclusive lock on a data directory, creating the directory if needed.
+fn lock_data_dir(dir: &Path) -> AppResult<std::fs::File> {
+    std::fs::create_dir_all(dir).map_err(|err| {
+        AppError::internal(format!(
+            "the data directory {} cannot be created: {err}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join("nocturne.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|err| AppError::internal(format!("{} cannot be opened: {err}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::conflict(format!(
+            "Nocturne is already running with the data directory {} (the desktop app and the server cannot share one). Close the other instance, or start this one with a different data directory.",
+            dir.display()
+        ))),
+        Err(std::fs::TryLockError::Error(err)) => Err(AppError::internal(format!(
+            "{} cannot be locked: {err}",
+            path.display()
+        ))),
+    }
 }
 
 impl AppBuilder {
     pub fn new(config: AppConfig) -> AppResult<AppBuilder> {
+        let lock = match &config.data_dir {
+            Some(dir) => Some(lock_data_dir(dir)?),
+            None => None,
+        };
         let store = Arc::new(match &config.data_dir {
             Some(dir) => Store::open(&dir.join("nocturne.db"))?,
             None => Store::in_memory()?,
@@ -153,6 +187,7 @@ impl AppBuilder {
             vault,
             states: HashMap::new(),
             starters: Vec::new(),
+            lock,
         })
     }
 
@@ -199,6 +234,7 @@ impl AppBuilder {
                 shutdown: CancellationToken::new(),
                 local_access: self.config.local_access,
                 data_dir: self.config.data_dir,
+                _lock: self.lock,
             }),
         };
         for starter in self.starters {
@@ -217,6 +253,7 @@ struct Inner {
     shutdown: CancellationToken,
     data_dir: Option<PathBuf>,
     local_access: bool,
+    _lock: Option<std::fs::File>,
 }
 
 /// A cheap, cloneable handle to the running application.
@@ -484,5 +521,24 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn a_data_directory_belongs_to_one_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = AppBuilder::new(AppConfig::at(dir.path())).unwrap().build();
+        let second = AppBuilder::new(AppConfig::at(dir.path()))
+            .err()
+            .expect("the directory is in use");
+        assert_eq!(second.code, "conflict");
+        assert!(
+            second.message.contains("already running"),
+            "{}",
+            second.message
+        );
+        // A builder that is dropped, or an app whose last handle is gone, releases it.
+        drop(first);
+        drop(AppBuilder::new(AppConfig::at(dir.path())).unwrap());
+        AppBuilder::new(AppConfig::at(dir.path())).unwrap();
     }
 }
