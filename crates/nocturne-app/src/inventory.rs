@@ -433,6 +433,7 @@ pub fn delete(app: &App, ids: &[String]) -> AppResult<usize> {
         app.store().delete(DEVICE_STATE, &device.id)?;
         app.store().samples_forget_device(&device.id)?;
         app.store().config_delete_device(&device.id)?;
+        crate::collect::forget(app, &device.id)?;
         app.audit(
             "device.delete",
             Some(&device.id),

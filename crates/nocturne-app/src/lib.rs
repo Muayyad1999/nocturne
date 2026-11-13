@@ -5,6 +5,7 @@
 //! thin adapters over those two.
 
 pub mod app;
+pub mod collect;
 pub mod connect;
 pub mod credentials;
 pub mod error;
@@ -31,5 +32,6 @@ pub fn init(builder: &mut AppBuilder) {
     jobs::init(builder);
     profiles::init(builder);
     connect::init(builder);
+    collect::init(builder);
     system::init(builder);
 }

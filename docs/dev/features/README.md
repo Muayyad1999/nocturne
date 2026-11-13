@@ -85,8 +85,10 @@ return Ok(jobs::started(&job));                                                 
 collect::run(app, device_id, &[Kind]) -> AppResult<Snapshot>       // over a new CLI session; stores what it read, publishes `collect.updated`
 collect::run_on(app, &mut cli, &[Kind]) -> AppResult<Snapshot>     // over a session you already hold
 collect::latest(app, device_id, Kind) -> AppResult<Option<Stored{device_id, kind, collected_at, source, rows: Vec<Value>}>>
-collect::latest_all(app, Kind) -> AppResult<Vec<Stored>>;  collect::typed::<T>(&stored) -> Vec<T>   // T = nocturne_drivers::model::{Interface, Neighbor, …}
-collect::store(app, device_id, Kind, rows, source)                 // for feeders other than the CLI (SNMP, the lab)
+collect::previous(app, device_id, Kind)                            // the generation before `latest` — for "what changed since last time"
+collect::latest_all(app, Kind) -> AppResult<Vec<Stored>>;  stored.typed::<T>() -> Vec<T>            // T = nocturne_drivers::model::{Interface, Neighbor, …}
+collect::store(app, device_id, Kind, rows, source) / store_many(..) // for feeders other than the CLI (SNMP, the lab); tests use it to hand-build data
+RPC: collect.get {id, kind, previous?} / collect.status {id} / collect.run {device_ids, kinds?} -> {job_id};  event collect.updated {device_id, kinds, at, source}
 
 // settings.rs
 settings::declare(builder, "section", &Defaults);  settings::get::<T>(app, "section");  RPC settings.get/set/all;  event settings.changed
