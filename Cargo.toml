@@ -21,6 +21,7 @@ nocturne-snmp = { path = "crates/nocturne-snmp" }
 nocturne-transport = { path = "crates/nocturne-transport" }
 nocturne-netsim = { path = "crates/nocturne-netsim" }
 nocturne-tools = { path = "crates/nocturne-tools" }
+nocturne-netprobe = { path = "crates/nocturne-netprobe" }
 nocturne-drivers = { path = "crates/nocturne-drivers" }
 nocturne-ai = { path = "crates/nocturne-ai" }
 nocturne-app = { path = "crates/nocturne-app" }
@@ -42,6 +43,7 @@ indexmap = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 csv = "1"
+flate2 = "1"
 base64 = "0.23"
 hex = "0.4"
 rusqlite = { version = "0.42", default-features = false, features = ["bundled", "cache"] }
@@ -66,6 +68,10 @@ russh = { version = "0.65", default-features = false, features = ["ring", "rsa",
 socket2 = { version = "0.6", features = ["all"] }
 ipnet = { version = "2", features = ["serde"] }
 hickory-resolver = "0.26"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-platform-verifier = "0.7"
+x509-parser = "0.18"
+if-addrs = "0.15"
 axum = { version = "0.8", features = ["ws", "macros"] }
 tower-http = { version = "0.7", features = ["cors", "trace"] }
 rust-embed = { version = "8", features = ["mime-guess"] }

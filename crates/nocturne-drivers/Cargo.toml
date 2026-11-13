@@ -8,8 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-nocturne-textfsm.workspace = true
-nocturne-transport.workspace = true
+# nocturne-textfsm and nocturne-transport are added once those crates land.
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,6 +20,7 @@ similar.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 bytes.workspace = true
+include_dir = "0.7"
 
 [dev-dependencies]
 pretty_assertions.workspace = true

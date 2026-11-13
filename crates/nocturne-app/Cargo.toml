@@ -13,6 +13,7 @@ nocturne-snmp.workspace = true
 nocturne-transport.workspace = true
 nocturne-netsim.workspace = true
 nocturne-tools.workspace = true
+nocturne-netprobe.workspace = true
 nocturne-drivers.workspace = true
 nocturne-ai.workspace = true
 tokio.workspace = true

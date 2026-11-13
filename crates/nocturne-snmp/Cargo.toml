@@ -12,6 +12,7 @@ tokio.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 tracing.workspace = true
+indexmap.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 md-5.workspace = true
@@ -24,6 +25,8 @@ getrandom.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+# Only used to check the serde representations promised by the public API.
+serde_json.workspace = true
 
 [lints]
 workspace = true

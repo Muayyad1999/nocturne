@@ -1,1 +1,18 @@
-//! Device profiles, CLI driver, structured collectors and hierarchical config diff.
+//! Everything Nocturne needs to talk to a network device's CLI and make sense
+//! of what comes back.
+//!
+//! * [`profile`] — device types are **data**: a YAML profile describes a
+//!   platform's prompts, paging, config mode, safety policy and how to turn
+//!   its `show` output into the normalised [`model`]. Adding a device type
+//!   means adding a file, not code.
+//! * [`term`] — cleans raw terminal bytes (escape sequences, backspaces,
+//!   pager redraws) into plain text.
+//! * [`hier`] — parses configuration into a tree and computes the exact
+//!   commands that turn one configuration into another.
+//! * [`policy`] — classifies a command as read-only, state-changing or
+//!   dangerous before anything is sent.
+
+pub mod hier;
+pub mod model;
+pub mod policy;
+pub mod term;

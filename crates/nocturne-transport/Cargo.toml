@@ -1,6 +1,6 @@
 [package]
 name = "nocturne-transport"
-description = "Interactive device transports: SSH, Telnet and serial console."
+description = "Interactive device transports: SSH, Telnet, serial console and local shell."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,10 +15,21 @@ async-trait.workspace = true
 bytes.workspace = true
 tracing.workspace = true
 serde.workspace = true
+# TCP keep-alive on the sockets we open (OpenSSH's `TCPKeepAlive yes`).
+socket2.workspace = true
+
+# SFTP subsystem client (runs over a russh channel stream).
+russh-sftp = "3.0.1"
+# Serial console. `default-features = false` drops the libudev requirement on
+# Linux; ports are then enumerated from sysfs (see `serial.rs`).
+serialport = { version = "4.10.1", default-features = false }
+# Local shell in a PTY (ConPTY on Windows).
+portable-pty = "0.9.0"
 
 [dev-dependencies]
 pretty_assertions.workspace = true
 tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
