@@ -160,10 +160,10 @@ pub(crate) fn parse_route_print(text: &str) -> Vec<LocalRoute> {
                 .map(|gateway| route(gateway, index)),
             _ => None,
         };
-        if let Some(found) = found {
-            if !routes.contains(&found) {
-                routes.push(found);
-            }
+        if let Some(found) = found
+            && !routes.contains(&found)
+        {
+            routes.push(found);
         }
     }
     routes

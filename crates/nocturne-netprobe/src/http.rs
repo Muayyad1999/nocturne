@@ -124,19 +124,19 @@ pub(crate) async fn check_with(
                 .head
                 .header("location")
                 .filter(|_| matches!(exchange.head.status, 301 | 302 | 303 | 307 | 308));
-            if let Some(location) = location {
-                if redirects.len() < usize::from(options.follow_redirects) {
-                    let target = url.join(location)?;
-                    redirects.push((exchange.head.status, target.to_string()));
-                    // As browsers do: 303 always becomes GET, 301/302 turn POST into GET.
-                    if exchange.head.status == 303 && method != "HEAD"
-                        || matches!(exchange.head.status, 301 | 302) && method == "POST"
-                    {
-                        method = "GET".to_owned();
-                    }
-                    url = target;
-                    continue;
+            if let Some(location) = location
+                && redirects.len() < usize::from(options.follow_redirects)
+            {
+                let target = url.join(location)?;
+                redirects.push((exchange.head.status, target.to_string()));
+                // As browsers do: 303 always becomes GET, 301/302 turn POST into GET.
+                if exchange.head.status == 303 && method != "HEAD"
+                    || matches!(exchange.head.status, 301 | 302) && method == "POST"
+                {
+                    method = "GET".to_owned();
                 }
+                url = target;
+                continue;
             }
             return Ok(HttpReport {
                 url: first.to_string(),

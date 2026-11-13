@@ -468,10 +468,10 @@ fn platform_verifier() -> Result<Arc<dyn ServerCertVerifier>, String> {
     static CACHE: Mutex<Option<(Instant, Arc<rustls_platform_verifier::Verifier>)>> =
         Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((loaded, verifier)) = cache.as_ref() {
-        if loaded.elapsed() < ROOTS_REFRESH {
-            return Ok(verifier.clone());
-        }
+    if let Some((loaded, verifier)) = cache.as_ref()
+        && loaded.elapsed() < ROOTS_REFRESH
+    {
+        return Ok(verifier.clone());
     }
     let verifier = rustls_platform_verifier::Verifier::new(crypto_provider())
         .map(Arc::new)
@@ -526,7 +526,7 @@ fn evaluate_trust(
         // certificate that merely belongs to another name is judged under one of its own.
         Err(error) if is_name_mismatch(&error) => own_names(end_entity)
             .iter()
-            .map(|own| verify(own))
+            .map(verify)
             .find(|outcome| !matches!(outcome, Err(error) if is_name_mismatch(error)))
             .unwrap_or(Err(error)),
         outcome => outcome,

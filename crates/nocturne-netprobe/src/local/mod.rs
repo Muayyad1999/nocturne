@@ -267,10 +267,10 @@ pub async fn wake_on_lan(mac: &str, broadcast: Option<&str>) -> Result<Vec<Strin
         }
         None => {
             for found in if_addrs::get_if_addrs().unwrap_or_default() {
-                if let IfAddr::V4(v4) = &found.addr {
-                    if let Some(broadcast) = v4.broadcast.filter(|_| !v4.is_loopback()) {
-                        destinations.push((broadcast, WAKE_PORT).into());
-                    }
+                if let IfAddr::V4(v4) = &found.addr
+                    && let Some(broadcast) = v4.broadcast.filter(|_| !v4.is_loopback())
+                {
+                    destinations.push((broadcast, WAKE_PORT).into());
                 }
             }
             destinations.push((Ipv4Addr::BROADCAST, WAKE_PORT).into());
@@ -337,10 +337,10 @@ fn parse_ifconfig_macs(text: &str) -> Vec<(String, String)> {
             continue;
         }
         let mut words = line.split_whitespace();
-        if matches!(words.next(), Some("ether" | "lladdr" | "address:")) {
-            if let (Some(name), Some(mac)) = (current, words.next().and_then(parse_mac)) {
-                macs.push((name.to_owned(), format_mac(mac)));
-            }
+        if matches!(words.next(), Some("ether" | "lladdr" | "address:"))
+            && let (Some(name), Some(mac)) = (current, words.next().and_then(parse_mac))
+        {
+            macs.push((name.to_owned(), format_mac(mac)));
         }
     }
     macs

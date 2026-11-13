@@ -488,12 +488,18 @@ pub struct ScriptSim {
 
 #[async_trait::async_trait]
 impl SimConnector for ScriptSim {
-    async fn open(&self, lab: &LabRef, cols: u16, rows: u16) -> AppResult<Connection> {
+    async fn open(
+        &self,
+        app: &nocturne_app::App,
+        lab: &LabRef,
+        cols: u16,
+        rows: u16,
+    ) -> AppResult<Connection> {
         if let Some(device) = self.scripted.get(&lab.node) {
             return Ok(device.connection(&format!("lab:{}", lab.node)));
         }
         match &self.fallback {
-            Some(fallback) => fallback.open(lab, cols, rows).await,
+            Some(fallback) => fallback.open(app, lab, cols, rows).await,
             None => Err(AppError::not_found(format!("lab node `{}`", lab.node))),
         }
     }

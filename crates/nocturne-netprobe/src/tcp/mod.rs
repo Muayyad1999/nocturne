@@ -203,10 +203,10 @@ pub async fn scan(
 
     let mut results: Vec<Option<PortResult>> = vec![None; ports.len()];
     while let Some((index, result)) = finished.recv().await {
-        if result.state == PortState::Open {
-            if let Some(progress) = &progress {
-                let _ = progress.send(result.clone());
-            }
+        if result.state == PortState::Open
+            && let Some(progress) = &progress
+        {
+            let _ = progress.send(result.clone());
         }
         results[index] = Some(result);
     }

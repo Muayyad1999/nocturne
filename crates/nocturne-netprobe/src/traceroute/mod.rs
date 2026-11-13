@@ -184,11 +184,11 @@ async fn build_hop(ttl: u8, probes: &[ProbeResult], resolve_names: bool) -> Hop 
         .iter()
         .map(|problem| (*problem).to_owned())
         .collect();
-    if let [_, others @ ..] = responders.as_slice() {
-        if !others.is_empty() {
-            let others: Vec<String> = others.iter().map(ToString::to_string).collect();
-            notes.push(format!("also answered by {}", others.join(", ")));
-        }
+    if let [_, others @ ..] = responders.as_slice()
+        && !others.is_empty()
+    {
+        let others: Vec<String> = others.iter().map(ToString::to_string).collect();
+        notes.push(format!("also answered by {}", others.join(", ")));
     }
     if responders.is_empty() && notes.is_empty() {
         notes.push("no reply".to_owned());

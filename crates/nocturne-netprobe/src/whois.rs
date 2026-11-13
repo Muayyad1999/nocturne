@@ -134,12 +134,12 @@ fn normalize_query(query: &str) -> Result<Query, ProbeError> {
     // An address, with or without a prefix length.
     let address_part = query.split_once('/').map_or(query, |(address, _)| address);
     if util::parse_ip_literal(address_part).is_some() {
-        if let Some((_, prefix)) = query.split_once('/') {
-            if prefix.parse::<u8>().is_err() {
-                return Err(ProbeError::invalid(format!(
-                    "'{query}' is not a CIDR block: '{prefix}' is not a prefix length"
-                )));
-            }
+        if let Some((_, prefix)) = query.split_once('/')
+            && prefix.parse::<u8>().is_err()
+        {
+            return Err(ProbeError::invalid(format!(
+                "'{query}' is not a CIDR block: '{prefix}' is not a prefix length"
+            )));
         }
         let text = query.trim_matches(['[', ']']).to_owned();
         return Ok(Query {

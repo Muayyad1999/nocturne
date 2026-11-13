@@ -200,14 +200,11 @@ async fn probe(
                     Err(error) => return Err(error),
                 }
             }
-            if ready.is_readable() {
-                match socket.try_recv(&mut scratch) {
-                    // Something listens on the probe's port and answered it.
-                    Ok(_) => return Ok(Event::Reply),
-                    // WouldBlock, or the pending error that mirrors a queue entry (read above
-                    // or on the next turn of the loop).
-                    Err(_) => {}
-                }
+            // An error here is WouldBlock, or the pending error that mirrors a
+            // queue entry (read above, or on the next turn of the loop).
+            if ready.is_readable() && socket.try_recv(&mut scratch).is_ok() {
+                // Something listens on the probe's port and answered it.
+                return Ok(Event::Reply);
             }
         }
     };

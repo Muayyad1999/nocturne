@@ -99,7 +99,7 @@ pub fn decode(datagram: &[u8]) -> Result<Received, ClientError> {
                 .split(|b| *b == 0)
                 .map(|f| String::from_utf8_lossy(f).into_owned())
                 .collect();
-            if fields.len() % 2 != 0 {
+            if !fields.len().is_multiple_of(2) {
                 return Err(malformed());
             }
             Ok(Received::OptionAck(

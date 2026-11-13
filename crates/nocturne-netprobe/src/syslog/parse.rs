@@ -183,11 +183,11 @@ fn parse_legacy(rest: &str, message: &mut SyslogMessage) {
         message.sequence = Some(counter);
         cisco = true;
         text = after;
-    } else if let Some(after) = text.strip_prefix(':').map(str::trim_start) {
-        if timestamp_len(after, true).is_some() {
-            cisco = true;
-            text = after;
-        }
+    } else if let Some(after) = text.strip_prefix(':').map(str::trim_start)
+        && timestamp_len(after, true).is_some()
+    {
+        cisco = true;
+        text = after;
     }
     // Cisco `logging origin-id`: the device's name, then a colon, in front of the timestamp.
     if let Some((origin, after)) = split_origin(text) {

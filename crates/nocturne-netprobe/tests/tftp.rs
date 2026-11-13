@@ -40,15 +40,6 @@ fn pattern(length: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Events received so far.
-fn drain(events: &mut UnboundedReceiver<TftpEvent>) -> Vec<TftpEvent> {
-    let mut seen = Vec::new();
-    while let Ok(event) = events.try_recv() {
-        seen.push(event);
-    }
-    seen
-}
-
 /// Waits for the next event that is not a progress report.
 async fn next_event(events: &mut UnboundedReceiver<TftpEvent>) -> TftpEvent {
     loop {

@@ -135,10 +135,10 @@ pub async fn resolve(host: &str) -> Result<Vec<IpAddr>, ProbeError> {
 pub async fn reverse(address: IpAddr, timeout: Duration) -> Option<String> {
     let name = arpa_name(address);
     let question = Query::query(name, RecordType::PTR);
-    if let Some(found) = hosts_file().lookup_static_host(&question) {
-        if let Some(target) = found.answers().iter().find_map(ptr_target) {
-            return Some(target);
-        }
+    if let Some(found) = hosts_file().lookup_static_host(&question)
+        && let Some(target) = found.answers().iter().find_map(ptr_target)
+    {
+        return Some(target);
     }
     let servers = system_servers().ok()?;
     let answer = lookup_at(question, &servers, timeout).await.ok()?;
@@ -202,10 +202,10 @@ fn query_name(name: &str, record_type: RecordType) -> Result<Name, ProbeError> {
             "the DNS name is empty; enter a name such as example.com",
         ));
     }
-    if record_type == RecordType::PTR {
-        if let Some(address) = util::parse_ip_literal(name) {
-            return Ok(arpa_name(address));
-        }
+    if record_type == RecordType::PTR
+        && let Some(address) = util::parse_ip_literal(name)
+    {
+        return Ok(arpa_name(address));
     }
     if name.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(ProbeError::invalid(format!(
@@ -281,10 +281,10 @@ fn hosts_file() -> Arc<Hosts> {
     let mut cache = CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((loaded, hosts)) = cache.as_ref() {
-        if loaded.elapsed() < HOSTS_CACHE {
-            return hosts.clone();
-        }
+    if let Some((loaded, hosts)) = cache.as_ref()
+        && loaded.elapsed() < HOSTS_CACHE
+    {
+        return hosts.clone();
     }
     let hosts = Arc::new(Hosts::from_system().unwrap_or_default());
     *cache = Some((Instant::now(), hosts.clone()));
@@ -465,10 +465,10 @@ fn matching_response(datagram: &[u8], id: u16, question: &Query) -> Option<Messa
         return None;
     }
     // Servers echo the question; some omit it on errors.
-    if let Some(echoed) = message.queries.first() {
-        if echoed.query_type() != question.query_type() || echoed.name() != question.name() {
-            return None;
-        }
+    if let Some(echoed) = message.queries.first()
+        && (echoed.query_type() != question.query_type() || echoed.name() != question.name())
+    {
+        return None;
     }
     Some(message)
 }

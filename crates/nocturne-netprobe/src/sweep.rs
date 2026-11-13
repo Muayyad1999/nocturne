@@ -446,10 +446,10 @@ fn parse_target(item: &str) -> Result<Target, ProbeError> {
     if let Some(address) = util::parse_ip_literal(item) {
         return Ok(Target::Block(Block::single(address)));
     }
-    if let Some((first, last)) = item.split_once('-') {
-        if let Ok(first) = first.parse::<IpAddr>() {
-            return parse_range(item, first, last).map(Target::Block);
-        }
+    if let Some((first, last)) = item.split_once('-')
+        && let Ok(first) = first.parse::<IpAddr>()
+    {
+        return parse_range(item, first, last).map(Target::Block);
     }
     // Digits and dots only is a mistyped IPv4 address, not a host name (the system resolver
     // would even accept shorthand such as "10.1" and probe an address nobody meant).

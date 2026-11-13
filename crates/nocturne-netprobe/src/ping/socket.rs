@@ -472,14 +472,12 @@ async fn read_loop(socket: Arc<UdpSocket>, family: Family, id: u16, waiters: Wai
                 let matches = waiters
                     .get(&seq)
                     .is_some_and(|waiter| payload.starts_with(&waiter.nonce));
-                if matches {
-                    if let Some(waiter) = waiters.remove(&seq) {
-                        let _ = waiter.sender.send(Outcome::Reply {
-                            received_at,
-                            ttl: ancillary_ttl.or(parsed.ttl),
-                            payload_len: payload.len(),
-                        });
-                    }
+                if matches && let Some(waiter) = waiters.remove(&seq) {
+                    let _ = waiter.sender.send(Outcome::Reply {
+                        received_at,
+                        ttl: ancillary_ttl.or(parsed.ttl),
+                        payload_len: payload.len(),
+                    });
                 }
             }
             Incoming::Error {
