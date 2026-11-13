@@ -5,8 +5,7 @@
   "identifier": "app.nocturne.desktop",
   "build": {
     "frontendDist": "../../../ui/dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "pnpm --dir ../../../ui dev",
+    "beforeDevCommand": "pnpm --dir ../../../ui build",
     "beforeBuildCommand": "pnpm --dir ../../../ui build"
   },
   "app": {

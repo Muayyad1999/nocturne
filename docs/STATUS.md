@@ -93,7 +93,7 @@ data.
 | | Status | Notes |
 |---|---|---|
 | `nocturne-server` | **done** | 123 tests. HTTP + WebSocket over the RPC surface, token authentication, Host and Origin checks, TLS with rustls, the interface embedded in the binary, and a `call` subcommand for scripting. Four integration modules (binary, lifecycle, TLS, UI) are declared but not yet written. |
-| Desktop (Tauri 2) | **partial** | Builds and runs the backend in process with one `rpc` command and one event channel; icons and bundling configured. Not yet exercised under a real window here. |
+| Desktop (Tauri 2) | **done** | 6 tests. Starts the backend in process, one `rpc` command and one event channel, icons and bundling configured. Run here under a virtual display: the window opens at 1440×900, renders the interface, and the status bar reports the in-process engine online. |
 
 ## Checked by hand, not only by its own tests
 

@@ -24,7 +24,12 @@ vault key and logs live; the default is the platform's data folder plus
 them may run on it at a time. `--log-level` takes `error`, `warn`, `info`
 (the default), `debug` or `trace`; `NOCTURNE_LOG` takes a full filter.
 
-For interface work, `cargo tauri dev` runs Vite and reloads on save.
+`cargo tauri dev` rebuilds the interface first and then opens the window.
+There is deliberately no Vite dev server behind the desktop window: it always
+shows the interface that is built into it, so `cargo run` is never a blank
+"connection refused" page. For interface work with hot reload, run
+`nocturne-server` and open its URL in a browser — `ui/README.md` explains the
+three ways to do that.
 
 ## What the shell does
 

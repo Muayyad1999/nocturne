@@ -152,6 +152,7 @@ fn open_main_window(handle: &tauri::AppHandle) -> tauri::Result<()> {
             .min_inner_size(1100.0, 700.0)
             .background_color(colour(BACKGROUND))
             .build()?;
+    tracing::info!(window = MAIN_WINDOW, "the interface window is open");
     // Closing the window quits: the backend has no reason to keep running
     // without an interface, and a half-stopped Nocturne would still be
     // polling devices.
