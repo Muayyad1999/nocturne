@@ -78,11 +78,19 @@ const BUILTIN_RULES: &[&str] = &[
     r"(?im)\b(?:standby|vrrp|glbp) \d+ authentication(?: text| md5 key-string)?(?: \d)? (?P<secret>\S+)",
     r"(?im)\bppp (?:chap|pap) (?:password|sent-username \S+ password)(?: \d)? (?P<secret>\S+)",
     r"(?im)\bwpa-psk (?:ascii|hex)(?: \d)? (?P<secret>\S+)",
+    // `set-key ascii0 <key>` (Aruba, HPE); the generic password rule misses
+    // it because there is no encoding digit after a keyword it knows.
+    r"(?im)\bset-key (?:ascii|hex)\d*(?: \d)? (?P<secret>\S+)",
+    // `ip ftp password <password>` (Cisco) — likewise no encoding digit.
+    r"(?im)^\s*ip (?:ftp|scp|tftp) password(?: \d)? (?P<secret>\S+)",
     r"(?im)\bcommunity(?: name| string)?\s*[:=]\s*(?P<secret>\S+)",
     // --- Junos -----------------------------------------------------------------
     r#"(?im)\b(?:encrypted-password|secret|authentication-key|simple-password|md5-key|key|passphrase)\s+"(?P<secret>[^"]+)""#,
     r#"(?im)\bpre-shared-key (?:ascii-text|hexadecimal) "(?P<secret>[^"]+)""#,
-    r"(?im)\bsnmp community (?P<secret>\S+)",
+    // The access level may stand between the keyword and the community
+    // (`set snmp community read-only Secret`, CatOS). Without it in the
+    // pattern, `read-only` is masked and the community is left in the clear.
+    r"(?im)\bsnmp community (?:(?:read-only|read-write|ro|rw) )?(?P<secret>\S+)",
     r"(?im)^\s*community (?P<secret>[^\s{;]+)\s*\{",
     // --- RouterOS, and key=value styles in general -----------------------------
     r#"(?im)\b(?:password|secret|passphrase|pre-shared-key|preshared-key|psk|private-key|wpa2?-pre-shared-key|authentication-password|encryption-password|auth-key|api-key|token)=(?P<secret>"[^"]*"|[^\s"]+)"#,
@@ -504,5 +512,115 @@ set snmp community JunComm authorization read-only
             second.redact("snmp-server community Gamma3 RO"),
             "snmp-server community <secret:3> RO"
         );
+    }
+}
+
+/// Redacting twice must be the same as redacting once.
+///
+/// Nothing in the application is supposed to redact text that has already
+/// been redacted, but a feature that composes a result out of several reads
+/// can easily end up doing it, and the failure is silent: a rule whose
+/// pattern happens to straddle a `<secret:N>` placeholder would mask part of
+/// the placeholder, or — if a skipped match left the write cursor behind —
+/// drop the text after it. The assistant crate reported both symptoms
+/// against an earlier version of this file, so they are pinned here.
+#[cfg(test)]
+mod idempotence {
+    use super::*;
+
+    #[test]
+    fn placeholders_from_somewhere_else_pass_through_whole() {
+        let redactor = Redactor::new();
+        let text = "snmp-server community <secret:3> RO\n key <secret:4>\n";
+        assert_eq!(redactor.redact(text), text);
+    }
+
+    #[test]
+    fn a_second_pass_over_a_whole_configuration_is_a_no_op() {
+        // One line per rule this crate carries, in the form a device emits.
+        let configuration = "\
+hostname CORE-SW1
+enable secret 5 $1$mERr$Q8Fh2jKpL9vXcB3nD7wQe1
+username admin privilege 15 password 7 070C285F4D06
+username backup secret 9 $9$abc123DEF456ghi
+snmp-server community PublicRead RO
+snmp-server community PrivateWrite RW
+snmp-server host 10.0.0.5 version 3 priv AuthPass123
+ntp authentication-key 1 md5 NtpSharedKey 7
+crypto isakmp key MyPreSharedKey address 203.0.113.9
+tacacs-server key TacacsSecret99
+radius-server key 7 110A1016141D
+ip ftp password FtpPassword1
+line vty 0 4
+ password VtyLinePass
+key chain EIGRP-KEYS
+ key 1
+  key-string RoutingKey42
+interface Tunnel0
+ ipsec profile PROF
+ pre-shared-key TunnelPSK2026
+wlan guest 2 guest-ssid
+ security wpa psk set-key ascii0 WifiPassword9
+username api password 0 PlainTextPass
+set snmp community read-only WriteString
+/interface wireguard peers add private-key=\"aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleQ==\"
+/user add name=ops password=\"RouterOsPass\"
+";
+        let redactor = Redactor::new();
+        let once = redactor.redact(configuration);
+        let twice = redactor.redact(&once);
+        assert_eq!(twice, once, "a second pass changed the text");
+
+        // Every line survives, in order — nothing was dropped on the way.
+        assert_eq!(
+            once.lines().count(),
+            configuration.lines().count(),
+            "lines went missing:\n{once}"
+        );
+        assert!(once.contains("hostname CORE-SW1"));
+        assert!(once.contains("line vty 0 4"));
+        assert!(once.ends_with('\n'));
+
+        // And it did its job: none of the secrets is still there.
+        for secret in [
+            "Q8Fh2jKpL9vXcB3nD7wQe1",
+            "070C285F4D06",
+            "PublicRead",
+            "PrivateWrite",
+            "AuthPass123",
+            "NtpSharedKey",
+            "MyPreSharedKey",
+            "TacacsSecret99",
+            "110A1016141D",
+            "FtpPassword1",
+            "VtyLinePass",
+            "RoutingKey42",
+            "TunnelPSK2026",
+            "WifiPassword9",
+            "PlainTextPass",
+            "WriteString",
+            "RouterOsPass",
+        ] {
+            assert!(
+                !once.contains(secret),
+                "`{secret}` was left in the clear:\n{once}"
+            );
+        }
+
+        // Every placeholder is whole: `<secret:` followed by digits and `>`,
+        // never nested and never with a rule's leftovers inside it.
+        assert!(
+            !twice.contains("<secret:<"),
+            "a placeholder was nested: {twice}"
+        );
+        for (index, _) in twice.match_indices("<secret:") {
+            let rest = &twice[index + "<secret:".len()..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            assert!(
+                !digits.is_empty() && rest[digits.len()..].starts_with('>'),
+                "a placeholder is malformed at {index}: {:?}",
+                &twice[index..(index + 24).min(twice.len())]
+            );
+        }
     }
 }
