@@ -13,9 +13,11 @@ nocturne-app.workspace = true
 nocturne-assistant.workspace = true
 nocturne-changes.workspace = true
 nocturne-config.workspace = true
+nocturne-insights.workspace = true
 nocturne-lab.workspace = true
 nocturne-monitor.workspace = true
 nocturne-terminal.workspace = true
+nocturne-topology.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

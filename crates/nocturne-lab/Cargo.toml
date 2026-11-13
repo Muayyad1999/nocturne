@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 nocturne-app.workspace = true
+nocturne-design.workspace = true
 # The simulator this crate gives a life to.
 nocturne-netsim.workspace = true
 # `Connection` for consoles, and the SSH and Telnet servers `labs.expose` uses.

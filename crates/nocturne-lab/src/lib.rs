@@ -13,6 +13,7 @@
 
 mod api;
 mod console;
+mod design;
 mod devices;
 mod expose;
 mod model;
@@ -33,6 +34,7 @@ pub fn init(builder: &mut nocturne_app::AppBuilder) {
     builder.state(runtime::LabsState::default());
     builder.state(expose::ExposeState::default());
     api::init(builder);
+    design::init(builder);
     builder.on_start(|app| {
         let opener = console::install(app);
         expose::install(app, opener);

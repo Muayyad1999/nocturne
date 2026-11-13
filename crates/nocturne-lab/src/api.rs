@@ -85,7 +85,7 @@ fn node_view(sim: &Lab, node: NodeId) -> AppResult<NodeView> {
 }
 
 /// Store a new lab, create its devices and announce it.
-fn create_record(app: &App, spec: LabSpec, action: &str) -> AppResult<LabView> {
+pub(crate) fn create_record(app: &App, spec: LabSpec, action: &str) -> AppResult<LabView> {
     let mut record = LabRecord::new(spec);
     model::save(app, &mut record)?;
     if let Err(err) = devices::sync(app, &record) {

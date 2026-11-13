@@ -18,7 +18,11 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_config::init(builder);
     nocturne_changes::init(builder);
     nocturne_lab::init(builder);
+    nocturne_topology::init(builder);
     nocturne_monitor::init(builder);
+    // After monitoring and the topology, which it asks for alerts, interface
+    // rates and links when they are there, and does without when they are not.
+    nocturne_insights::init(builder);
     // After the change engine, deliberately: both declare the `assistant`
     // settings section — they share `autonomy` — and a later `declare` wins
     // for the keys it names. The assistant declares all nine, the change
@@ -95,6 +99,24 @@ mod tests {
             "alerts.rules.save",
             "maintenance.save",
             "notify.channels.save",
+            // the topology
+            "topology.get",
+            "topology.path",
+            "topology.neighbors",
+            "topology.export",
+            "locate.host",
+            // the network designer
+            "design.examples",
+            "design.validate",
+            "design.generate",
+            "design.create_lab",
+            // insights
+            "insights.scan",
+            "insights.list",
+            "insights.checks",
+            "insights.coverage",
+            "insights.dismiss",
+            "insights.fix",
             // the assistant
             "ai.status",
             "ai.send",
