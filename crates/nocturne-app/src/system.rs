@@ -24,6 +24,11 @@ pub struct AppInfo {
     pub os: &'static str,
     pub arch: &'static str,
     pub methods: usize,
+    /// Whether the caller is at the machine the engine runs on. False from
+    /// `nocturne-server`, where the local shell, the serial ports and file
+    /// transfer refer to a machine the person is not sitting at, so an
+    /// interface can hide those rather than offer them and then fail.
+    pub local_access: bool,
 }
 
 pub fn info(app: &App) -> AppInfo {
@@ -36,6 +41,7 @@ pub fn info(app: &App) -> AppInfo {
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         methods: app.methods().len(),
+        local_access: app.local_access(),
     }
 }
 
@@ -193,6 +199,19 @@ mod tests {
             (info["name"].as_str(), info["vault"].as_str()),
             (Some("Nocturne"), Some("open"))
         );
+        // An interface asks once, here, instead of probing a method that
+        // needs local access and reading the refusal.
+        assert_eq!(info["local_access"], json!(true));
+
+        // And from a server it is told the truth, so it can hide the local
+        // shell and the serial ports instead of offering a machine the
+        // person is not sitting at.
+        let mut remote = AppBuilder::new(AppConfig::in_memory().remote_users()).unwrap();
+        crate::settings::init(&mut remote);
+        init(&mut remote);
+        let remote = remote.build();
+        let info = remote.rpc("app.info", Value::Null).await.unwrap();
+        assert_eq!(info["local_access"], json!(false));
         assert!(info["methods"].as_u64().unwrap() >= 7);
         assert!(
             app.rpc("app.methods", Value::Null)
