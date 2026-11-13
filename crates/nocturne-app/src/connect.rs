@@ -25,8 +25,8 @@ use nocturne_drivers::session::{
 };
 use nocturne_transport::{
     Connection, ConnectionInfo, HostKeyVerifier, LegacyCrypto, Output, PresentedKey, SerialParams,
-    SshAuth, SshHop, SshParams, TelnetParams, TransportError, connect_serial, connect_ssh,
-    connect_telnet,
+    SshAuth, SshHop, SshParams, SshSession, TelnetParams, TransportError, connect_serial,
+    connect_ssh, connect_telnet,
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,8 @@ use crate::{inventory, profiles, settings};
 const KNOWN_HOSTS: &str = "known_hosts";
 /// Profile used when nothing identifies the device.
 pub const GENERIC_PROFILE: &str = "generic";
+/// How far a jump-host chain may go before it is certainly a mistake.
+pub const MAX_JUMP_HOSTS: usize = 5;
 
 // ------------------------------------------------------------------ settings
 
@@ -309,49 +311,132 @@ fn resolved_credential(app: &App, device: &Device) -> AppResult<Resolved> {
     }
 }
 
-/// How to authenticate over SSH with a stored credential, most specific first.
-fn ssh_auth(credential: &Resolved) -> Vec<SshAuth> {
+/// How to authenticate over SSH: a password typed for this session first,
+/// then what a stored credential holds, most specific first.
+///
+/// A key goes before any password because it cannot lock an account, and the
+/// same password is never offered twice — that would only burn one of the
+/// device's few login attempts.
+pub fn ssh_auth_methods(password: Option<&str>, credential: Option<&Resolved>) -> Vec<SshAuth> {
     let mut auth = Vec::new();
-    if let Some(key) = &credential.private_key {
-        auth.push(SshAuth::PrivateKey {
-            key: key.to_string(),
-            passphrase: credential
-                .passphrase
-                .as_ref()
-                .map(|passphrase| passphrase.to_string()),
-        });
-    }
-    if let Some(password) = &credential.password {
+    let mut add_password = |password: &str| {
         auth.push(SshAuth::Password {
             password: password.to_string(),
         });
+        // Network devices often offer only keyboard-interactive, asking for the same password.
         auth.push(SshAuth::KeyboardInteractive {
             response: password.to_string(),
         });
+    };
+    if let Some(password) = password {
+        add_password(password);
+    }
+    let stored = credential.and_then(|credential| credential.password.as_ref());
+    if let Some(stored) = stored
+        && password != Some(stored.as_str())
+    {
+        add_password(stored);
+    }
+    if let Some(key) = credential.and_then(|credential| credential.private_key.as_ref()) {
+        let passphrase = credential
+            .and_then(|credential| credential.passphrase.as_ref())
+            .map(|passphrase| passphrase.to_string());
+        auth.insert(
+            0,
+            SshAuth::PrivateKey {
+                key: key.to_string(),
+                passphrase,
+            },
+        );
     }
     if auth.is_empty() {
-        // No stored secret: the user's agent may hold a key, and lab gear often needs none.
+        // No secret at hand: the user's agent may hold a key, and lab gear often needs none.
         auth.push(SshAuth::Agent);
         auth.push(SshAuth::None);
     }
     auth
 }
 
-/// The jump chain of a device, outermost hop first.
-fn jump_chain(app: &App, device: &Device) -> AppResult<Vec<SshHop>> {
+/// Where an SSH connection goes and as whom. Built from an inventory device
+/// by [`device_endpoint`], or from what a user typed for an ad-hoc session.
+#[derive(Clone, Debug)]
+pub struct SshEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth: Vec<SshAuth>,
+    /// The device to go through, if any; its own jump host comes before it.
+    pub jump_device_id: Option<String>,
+}
+
+/// The endpoint for an inventory device, with its stored credential.
+pub fn device_endpoint(app: &App, device: &Device) -> AppResult<SshEndpoint> {
+    let credential = resolved_credential(app, device)?;
+    if credential.username.is_empty() {
+        return Err(AppError::unauthorized(format!(
+            "`{}` has no credential with a user name; SSH needs one. Assign a credential to the device.",
+            device.name
+        )));
+    }
+    Ok(SshEndpoint {
+        host: device.address.clone(),
+        port: port_u16(device, 22)?,
+        auth: ssh_auth_methods(None, Some(&credential)),
+        username: credential.username,
+        jump_device_id: device.jump_device_id.clone(),
+    })
+}
+
+/// Everything needed to open an SSH connection, with the connection settings
+/// of this installation applied. One place builds these, so the host-key
+/// policy, the jump chain and the legacy-algorithm choice cannot drift apart
+/// between the terminal, the collectors and the change pipeline.
+pub fn ssh_params(
+    app: &App,
+    endpoint: SshEndpoint,
+    term: &str,
+    (cols, rows): (u16, u16),
+    keepalive: bool,
+) -> AppResult<SshParams> {
+    let settings = connection_settings(app);
+    let target = format!("{}@{}", endpoint.username, endpoint.host);
+    Ok(SshParams {
+        jump: jump_chain(app, endpoint.jump_device_id.as_deref(), &target)?,
+        host: endpoint.host,
+        port: endpoint.port,
+        username: endpoint.username,
+        auth: endpoint.auth,
+        term: term.to_string(),
+        cols,
+        rows,
+        connect_timeout_ms: settings.connect_timeout_s.clamp(1, 120) * 1000,
+        keepalive_s: if keepalive { settings.keepalive_s } else { 0 },
+        legacy: legacy(&settings.legacy_crypto),
+    })
+}
+
+/// An authenticated SSH session, which can carry several channels — a shell
+/// and SFTP at once, for instance. Uses the same host-key policy as every
+/// other connection Nocturne makes.
+pub async fn ssh_session(app: &App, params: &SshParams) -> AppResult<SshSession> {
+    SshSession::connect(params, verifier(app))
+        .await
+        .map_err(Into::into)
+}
+
+/// The hops to reach a target through `first`, outermost hop first.
+pub fn jump_chain(app: &App, first: Option<&str>, target: &str) -> AppResult<Vec<SshHop>> {
     let mut hops = Vec::new();
-    let mut next = device.jump_device_id.clone();
+    let mut next = first.map(str::to_string);
     while let Some(id) = next {
-        if hops.len() >= 5 {
+        if hops.len() >= MAX_JUMP_HOSTS {
             return Err(AppError::invalid(format!(
-                "the jump-host chain of `{}` is more than five hops long",
-                device.name
+                "the jump-host chain of {target} is more than {MAX_JUMP_HOSTS} hops long"
             )));
         }
-        let hop = inventory::get(app, &id).map_err(|_| {
+        let hop = inventory::find(app, &id).map_err(|_| {
             AppError::invalid(format!(
-                "the jump host of `{}` no longer exists; edit the device and pick another",
-                device.name
+                "the jump host of {target} (`{id}`) is not in the inventory; pick another"
             ))
         })?;
         if hop.transport != Transport::Ssh {
@@ -363,7 +448,7 @@ fn jump_chain(app: &App, device: &Device) -> AppResult<Vec<SshHop>> {
         let credential = resolved_credential(app, &hop)?;
         if credential.username.is_empty() {
             return Err(AppError::unauthorized(format!(
-                "the jump host `{}` has no credential with a username",
+                "the jump host `{}` has no credential with a user name",
                 hop.name
             )));
         }
@@ -371,7 +456,7 @@ fn jump_chain(app: &App, device: &Device) -> AppResult<Vec<SshHop>> {
             host: hop.address.clone(),
             port: port_u16(&hop, 22)?,
             username: credential.username.clone(),
-            auth: ssh_auth(&credential),
+            auth: ssh_auth_methods(None, Some(&credential)),
         });
         next = hop.jump_device_id.clone();
     }
@@ -385,26 +470,13 @@ pub async fn open(app: &App, device: &Device, options: &OpenOptions) -> AppResul
     let settings = connection_settings(app);
     match device.transport {
         Transport::Ssh => {
-            let credential = resolved_credential(app, device)?;
-            if credential.username.is_empty() {
-                return Err(AppError::unauthorized(format!(
-                    "`{}` has no credential with a username; SSH needs one. Assign a credential to the device.",
-                    device.name
-                )));
-            }
-            let params = SshParams {
-                host: device.address.clone(),
-                port: port_u16(device, 22)?,
-                username: credential.username.clone(),
-                auth: ssh_auth(&credential),
-                jump: jump_chain(app, device)?,
-                term: options.term.clone(),
-                cols: options.cols,
-                rows: options.rows,
-                connect_timeout_ms: settings.connect_timeout_s.clamp(1, 120) * 1000,
-                keepalive_s: settings.keepalive_s,
-                legacy: legacy(&settings.legacy_crypto),
-            };
+            let params = ssh_params(
+                app,
+                device_endpoint(app, device)?,
+                &options.term,
+                (options.cols, options.rows),
+                true,
+            )?;
             connect_ssh(&params, verifier(app))
                 .await
                 .map_err(|err| with_host_key_details(app, device, err.into()))
@@ -960,6 +1032,52 @@ pub fn init(builder: &mut AppBuilder) {
 
 #[cfg(test)]
 mod tests {
+    use zeroize::Zeroizing;
+
+    fn auth_kinds(auth: &[SshAuth]) -> Vec<&'static str> {
+        auth.iter()
+            .map(|method| match method {
+                SshAuth::Password { .. } => "password",
+                SshAuth::PrivateKey { .. } => "key",
+                SshAuth::KeyFile { .. } => "key_file",
+                SshAuth::KeyboardInteractive { .. } => "interactive",
+                SshAuth::Agent => "agent",
+                SshAuth::None => "none",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn authentication_prefers_keys_then_the_typed_password() {
+        assert_eq!(auth_kinds(&ssh_auth_methods(None, None)), ["agent", "none"]);
+        assert_eq!(
+            auth_kinds(&ssh_auth_methods(Some("typed"), None)),
+            ["password", "interactive"]
+        );
+
+        let stored = Resolved {
+            username: "admin".into(),
+            password: Some(Zeroizing::new("stored".into())),
+            private_key: Some(Zeroizing::new("KEY".into())),
+            passphrase: Some(Zeroizing::new("phrase".into())),
+            ..Resolved::default()
+        };
+        let auth = ssh_auth_methods(Some("typed"), Some(&stored));
+        assert_eq!(
+            auth_kinds(&auth),
+            ["key", "password", "interactive", "password", "interactive"],
+            "a key first: it cannot lock an account"
+        );
+        assert!(matches!(&auth[1], SshAuth::Password { password } if password == "typed"));
+        assert!(matches!(&auth[3], SshAuth::Password { password } if password == "stored"));
+
+        // The same password twice would only burn a login attempt.
+        assert_eq!(
+            auth_kinds(&ssh_auth_methods(Some("stored"), Some(&stored))),
+            ["key", "password", "interactive"]
+        );
+    }
+
     use super::*;
     use crate::testing::{FakeDevice, Lab, builder, lab};
     use nocturne_transport::serve::{ServerHandle, SessionHandler, SshServerConfig, serve_ssh};
