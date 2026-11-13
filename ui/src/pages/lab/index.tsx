@@ -1,26 +1,21 @@
+/**
+ * Lab — networks simulated inside Nocturne.
+ *
+ * The route is `lab/:id?`: without an id this is the list of labs, with one
+ * it is that lab's canvas, consoles and reachability. Both read the `labs.*`
+ * methods documented in `src/api/types/lab.ts`; the consoles are ordinary
+ * `terminal.*` sessions, because a lab node is an inventory device.
+ *
+ * Nothing on this screen is ever deployed: the simulator runs in the
+ * backend's own process and a lab device has no address in the real world.
+ */
+
 import { useParams } from 'react-router';
-import { destination } from '@/app/destinations';
-import { usePageHeader } from '@/app/Header';
-import { Page } from '@/app/Page';
-import { EmptyState } from '@/design/EmptyState';
+import LabEditor from './Editor';
+import LabList from './LabList';
 
-const { label, icon, path } = destination('lab');
-
-/** Route stub for the list and the `:id` detail route: the Lab slice replaces this body with the real screens. */
 export default function LabPage() {
   const { id } = useParams();
-  usePageHeader(id ? { title: id, breadcrumbs: [{ label, to: path }] } : { title: label });
-  return (
-    <Page>
-      <EmptyState
-        icon={icon}
-        title="This screen is not built yet"
-        description={
-          id
-            ? 'A lab page will show one simulated network: its topology, its devices and a console to each.'
-            : 'Lab will let you build simulated networks, or a twin of the real one, and try changes there before they touch production.'
-        }
-      />
-    </Page>
-  );
+  // Keyed on the id: moving to another lab starts its screen clean.
+  return id ? <LabEditor key={id} id={id} /> : <LabList />;
 }

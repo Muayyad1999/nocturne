@@ -1,0 +1,15 @@
+.form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.refusal {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-size: 12px;
+  background: var(--bg-2);
+  border-left: 2px solid var(--warn);
+  border-radius: 0 6px 6px 0;
+}

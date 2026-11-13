@@ -1,0 +1,217 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.run {
+  display: flex;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.note,
+.waiting {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.verdict {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.verdict[data-ok] {
+  color: var(--ok);
+}
+
+/* One pair that was asked about and failed is a verdict; a matrix that is
+   not 100 % is a fact, and often the intended one. */
+.verdict[data-failed] {
+  color: var(--crit);
+}
+
+.rtt {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.reason {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-2);
+  border-left: 2px solid var(--crit);
+  border-radius: 0 6px 6px 0;
+}
+
+/* ------------------------------------------------------------------- hops */
+
+.hops {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hop {
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border-radius: 8px;
+}
+
+.hopHead {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.hopIndex {
+  min-width: 16px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.hopName {
+  font-weight: 600;
+}
+
+.hopPorts {
+  display: flex;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.hopNote {
+  margin: 4px 0 0 24px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ----------------------------------------------------------------- matrix */
+
+.matrixScroll {
+  overflow: auto;
+  max-height: 420px;
+}
+
+.matrix {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.caption {
+  margin-bottom: 6px;
+  color: var(--text-3);
+  font-size: 11px;
+  text-align: left;
+}
+
+.corner {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  color: var(--text-3);
+  font-weight: 500;
+  text-align: left;
+  background: var(--bg-1);
+}
+
+.columnHead {
+  height: 76px;
+  padding: 0 1px;
+  font-weight: 500;
+  vertical-align: bottom;
+}
+
+.columnHead span {
+  display: block;
+  width: 18px;
+  color: var(--text-2);
+  white-space: nowrap;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.rowHead {
+  position: sticky;
+  left: 0;
+  padding-right: 8px;
+  color: var(--text-2);
+  font-weight: 500;
+  text-align: right;
+  white-space: nowrap;
+  background: var(--bg-1);
+}
+
+.cell {
+  padding: 0;
+  text-align: center;
+}
+
+.self {
+  display: block;
+  width: 18px;
+  color: var(--text-3);
+}
+
+.mark {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--crit);
+  font-size: 11px;
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.mark[data-ok] {
+  color: var(--ok);
+}
+
+.mark:hover,
+.mark[data-selected] {
+  background: var(--bg-4);
+  outline: 1px solid var(--accent);
+}
+
+.mark:focus-visible {
+  outline: 2px solid var(--accent);
+}

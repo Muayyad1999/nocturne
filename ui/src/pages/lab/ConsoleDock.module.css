@@ -1,0 +1,101 @@
+.dock {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-1);
+  border-top: 1px solid var(--line);
+}
+
+.tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  align-items: center;
+  height: 30px;
+  padding: 0 6px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding-right: 2px;
+  border-radius: 6px 6px 0 0;
+}
+
+.tab[data-active] {
+  background: var(--bg-0);
+}
+
+.tabButton {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tab[data-active] .tabButton {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.tabButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.closed {
+  color: var(--crit);
+  font-size: 10px;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.surface {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.status {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+  height: 20px;
+  padding: 0 10px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.statusNode {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+
+.failed {
+  color: var(--crit);
+}
+
+.terminal {
+  flex: 1;
+  min-height: 0;
+  padding: 0 4px 4px 8px;
+}

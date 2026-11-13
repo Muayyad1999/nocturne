@@ -1,0 +1,123 @@
+.main {
+  container: labmain / inline-size;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.toolbar {
+  flex: none;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clock {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed {
+  width: 96px;
+}
+
+.frame {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workbench {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.canvasArea {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.inspector {
+  flex: none;
+  width: 290px;
+  min-height: 0;
+}
+
+.dock {
+  flex: none;
+  min-height: 0;
+}
+
+.hint,
+.tip {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  padding: 4px 10px;
+  color: var(--text-2);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--bg-2) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.hint {
+  color: var(--text-1);
+  border-color: var(--accent);
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+/*
+ * Below about 900px of content — 1280 with the assistant dock open — the
+ * toolbar's secondary buttons give way to their icons rather than wrapping
+ * onto a second row, and the two rails give the canvas back some width.
+ * Every button keeps its name for assistive technology and its tooltip.
+ */
+@container labmain (width < 900px) {
+  .label {
+    position: absolute;
+    overflow: hidden;
+    clip-path: inset(50%);
+    width: 1px;
+    height: 1px;
+    white-space: nowrap;
+  }
+
+  .name {
+    max-width: 160px;
+  }
+
+  .inspector {
+    width: 230px;
+  }
+}
