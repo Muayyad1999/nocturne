@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nocturne",
+  "version": "0.1.0",
+  "identifier": "app.nocturne.desktop",
+  "build": {
+    "frontendDist": "../../../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --dir ../../../ui dev",
+    "beforeBuildCommand": "pnpm --dir ../../../ui build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": ["deb", "rpm", "appimage", "msi", "nsis", "dmg", "app"],
+    "category": "DeveloperTool",
+    "shortDescription": "Network operations, from the terminal to the change window.",
+    "longDescription": "Nocturne is one application for the daily work of a network engineer: terminal sessions, discovery, monitoring, versioned configuration backups, safe configuration changes with approval and rollback, topology, IP address management, a virtual lab, and an assistant that can use all of it.",
+    "copyright": "Copyright (c) 2026 Muayyad1999",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
+  }
+}
