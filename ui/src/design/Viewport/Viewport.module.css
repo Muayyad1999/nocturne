@@ -1,0 +1,66 @@
+.viewport {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+  cursor: grab;
+  /* Gestures are ours: the browser must not scroll or zoom the page. */
+  touch-action: none;
+  user-select: none;
+}
+
+.viewport[data-panning] {
+  cursor: grabbing;
+}
+
+.viewport:focus-visible {
+  outline-offset: -2px;
+}
+
+.scene {
+  display: block;
+}
+
+.gridDot {
+  fill: var(--line);
+}
+
+.controls {
+  position: absolute;
+  right: var(--sp-12);
+  bottom: var(--sp-12);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+  cursor: default;
+}
+
+.zoom {
+  min-width: 46px;
+  height: var(--control-sm);
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-badge);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.zoom:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 var(--sp-2);
+  background: var(--line);
+}

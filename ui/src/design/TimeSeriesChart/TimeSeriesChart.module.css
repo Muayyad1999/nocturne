@@ -1,0 +1,171 @@
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+  margin: 0;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+  min-height: var(--control-sm);
+}
+
+.caption {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-8);
+  min-width: 0;
+}
+
+.title {
+  color: var(--text-1);
+  font-weight: var(--fw-semibold);
+}
+
+.subtitle {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/* Legend: names in text ink, identity on the line key beside them. */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-12);
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  height: 20px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-badge);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.legendItem:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.legendItem[aria-pressed='false'] {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.legendItem[aria-pressed='false'] .key {
+  opacity: 0.35;
+}
+
+.key {
+  flex: none;
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.overflow {
+  flex-basis: 100%;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.plot {
+  position: relative;
+  min-width: 0;
+  transition: opacity var(--dur-panel) ease-out;
+}
+
+/* Refetch keeps the frame: the last picture stays, dimmed, until the new one arrives. */
+.plot[data-stale] {
+  opacity: 0.5;
+}
+
+.plot:focus-visible {
+  border-radius: var(--radius-badge);
+}
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* uPlot's own elements */
+
+.plot :global(.uplot) {
+  font-family: var(--font-ui);
+  line-height: var(--lh);
+}
+
+.plot :global(.u-over) {
+  cursor: crosshair;
+}
+
+/* The crosshair: a solid hairline, like the grid. */
+.plot :global(.u-cursor-x) {
+  border-right: 1px solid var(--text-3);
+}
+
+.endLabel {
+  position: absolute;
+  right: 0;
+  height: 14px;
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  line-height: 14px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tooltip {
+  position: absolute;
+  top: var(--sp-8);
+  z-index: 2;
+  min-width: 120px;
+  margin-left: var(--sp-12);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-4);
+  box-shadow: var(--shadow-float);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Past the middle of the plot the tooltip moves to the other side of the crosshair. */
+.tooltip[data-flip] {
+  margin-left: calc(-1 * var(--sp-12));
+  transform: translateX(-100%);
+}
+
+.tooltipTime {
+  margin-bottom: var(--sp-4);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltipRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  height: 18px;
+}
+
+.tooltipValue {
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+}
+
+.tooltipLabel {
+  color: var(--text-2);
+}

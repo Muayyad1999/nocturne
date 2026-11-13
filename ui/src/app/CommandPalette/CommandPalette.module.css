@@ -1,0 +1,137 @@
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14vh var(--sp-16) var(--sp-16);
+  background: var(--scrim);
+  animation: fade var(--dur-fast) ease-out;
+}
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  width: 600px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-dialog);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-modal);
+  animation: rise var(--dur-panel) var(--ease-out);
+}
+
+.inputRow {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-12);
+  height: 48px;
+  padding: 0 var(--sp-16);
+  border-bottom: 1px solid var(--line);
+}
+
+.inputIcon {
+  color: var(--text-3);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--fs-14);
+}
+
+/* The field is the palette: the active option shows where the keyboard is. */
+.input:focus-visible {
+  outline: none;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  max-height: 392px;
+  padding: var(--sp-6);
+  overflow-y: auto;
+  user-select: none;
+}
+
+.sectionTitle {
+  padding: var(--sp-8) var(--sp-8) var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  height: 32px;
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-control);
+  color: var(--text-1);
+  cursor: pointer;
+  scroll-margin: var(--sp-6);
+}
+
+.option[aria-selected='true'] {
+  background: var(--bg-4);
+}
+
+.optionIcon {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 16px;
+  color: var(--text-2);
+}
+
+.optionTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optionGroup {
+  flex: none;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.option[aria-selected='true'] .optionGroup {
+  color: var(--text-2);
+}
+
+.footer {
+  display: flex;
+  flex: none;
+  gap: var(--sp-16);
+  padding: var(--sp-8) var(--sp-16);
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(6px) scale(0.99);
+    opacity: 0;
+  }
+}

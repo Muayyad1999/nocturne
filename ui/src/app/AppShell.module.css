@@ -1,0 +1,53 @@
+/*
+ *  nav │ header            │ dock
+ *      │ main              │
+ *      │ status bar (spans under the dock)
+ */
+.shell {
+  display: grid;
+  grid-template-areas:
+    'nav header dock'
+    'nav main dock'
+    'nav status status';
+  grid-template-rows: var(--header-height) minmax(0, 1fr) var(--statusbar-height);
+  grid-template-columns: var(--nav-width) minmax(0, 1fr) auto;
+  height: 100%;
+  transition: grid-template-columns var(--dur-panel) var(--ease-out);
+}
+
+.shell[data-nav='collapsed'] {
+  grid-template-columns: var(--nav-width-collapsed) minmax(0, 1fr) auto;
+}
+
+.main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+
+.main:focus-visible {
+  outline: none;
+}
+
+/* Keyboard users can jump over the nav rail. Visible only while focused. */
+.skip {
+  position: absolute;
+  top: var(--sp-8);
+  left: var(--sp-8);
+  z-index: var(--z-sticky);
+  height: var(--control-md);
+  padding: 0 var(--sp-12);
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--text-on-solid);
+  font-weight: var(--fw-medium);
+  transform: translateY(-200%);
+}
+
+.skip:focus-visible {
+  transform: none;
+}

@@ -1,0 +1,45 @@
+.bar {
+  grid-area: status;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: var(--sp-16);
+  min-width: 0;
+  padding: 0 var(--sp-8);
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.side {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: 0 var(--sp-8);
+  color: inherit;
+  white-space: nowrap;
+}
+
+button.item {
+  transition:
+    background-color var(--dur-fast) ease-out,
+    color var(--dur-fast) ease-out;
+}
+
+button.item:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+button.item:focus-visible {
+  outline-offset: -2px;
+}

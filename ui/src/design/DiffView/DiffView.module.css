@@ -1,0 +1,129 @@
+.diff {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-0);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  height: 32px;
+  padding: 0 var(--sp-12);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat[data-kind='add'] {
+  color: var(--ok);
+}
+
+.stat[data-kind='remove'] {
+  color: var(--crit);
+}
+
+.scroll {
+  overflow: auto;
+}
+
+.scroll:focus-visible {
+  outline-offset: -2px;
+}
+
+.table {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-ligatures: none;
+  line-height: 20px;
+}
+
+.row[data-kind='add'] {
+  background: var(--ok-soft);
+}
+
+.row[data-kind='remove'] {
+  background: var(--crit-soft);
+}
+
+.number {
+  width: 1%;
+  min-width: 5ch;
+  padding: 0 var(--sp-8);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.sign {
+  width: 1%;
+  padding: 0 var(--sp-4) 0 var(--sp-8);
+  color: var(--text-3);
+  text-align: center;
+  user-select: none;
+}
+
+.row[data-kind='add'] .sign {
+  color: var(--ok);
+}
+
+.row[data-kind='remove'] .sign {
+  color: var(--crit);
+}
+
+.text {
+  padding: 0 var(--sp-12) 0 var(--sp-4);
+  color: var(--text-1);
+  white-space: pre;
+}
+
+.row[data-kind='same'] .text {
+  color: var(--text-2);
+}
+
+.foldCell {
+  padding: 0;
+  border-block: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.fold {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 100%;
+  height: 26px;
+  padding: 0 var(--sp-12);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  text-align: left;
+}
+
+.fold:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.fold:focus-visible {
+  outline-offset: -2px;
+}

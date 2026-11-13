@@ -1,0 +1,14 @@
+.clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-badge);
+  color: var(--text-3);
+}
+
+.clear:hover {
+  background: var(--bg-4);
+  color: var(--text-1);
+}

@@ -1,0 +1,19 @@
+.card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+}
+
+.card[data-padding='sm'] {
+  padding: var(--sp-12);
+}
+
+.card[data-padding='md'] {
+  padding: var(--sp-16);
+}
+
+.card[data-proposed] {
+  border-color: var(--ai);
+  background: linear-gradient(var(--ai-soft), var(--ai-soft)), var(--bg-2);
+}

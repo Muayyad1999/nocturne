@@ -93,12 +93,14 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* Device text is read character by character: "!=" and "->" stay two characters. */
 code,
 kbd,
 samp,
 pre {
   font-family: var(--font-mono);
   font-size: var(--fs-12);
+  font-variant-ligatures: none;
 }
 
 table {
@@ -167,6 +169,7 @@ svg {
 .mono {
   font-family: var(--font-mono);
   font-size: var(--fs-12);
+  font-variant-ligatures: none;
   font-variant-numeric: tabular-nums;
 }
 

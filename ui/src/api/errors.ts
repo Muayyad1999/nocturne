@@ -31,7 +31,7 @@ export class RpcError extends Error {
     super(message);
     this.name = 'RpcError';
     this.code = code;
-    if (details !== undefined) this.details = details;
+    this.details = details;
   }
 }
 

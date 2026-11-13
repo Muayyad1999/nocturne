@@ -1,0 +1,106 @@
+.combobox {
+  composes: control from '../control.module.css';
+  height: var(--control-md);
+  padding-right: var(--sp-6);
+}
+
+.combobox[data-size='sm'] {
+  height: var(--control-sm);
+}
+
+.input {
+  composes: native from '../control.module.css';
+  text-overflow: ellipsis;
+}
+
+.chevron {
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.clear {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-badge);
+  color: var(--text-3);
+}
+
+.clear:hover {
+  background: var(--bg-4);
+  color: var(--text-1);
+}
+
+.list {
+  z-index: var(--z-overlay);
+  max-height: min(280px, var(--available-height));
+  padding: var(--sp-4);
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+  user-select: none;
+  animation: appear var(--dur-fast) ease-out;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  height: var(--control-md);
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-badge);
+  color: var(--text-1);
+  cursor: pointer;
+  scroll-margin: var(--sp-4);
+}
+
+.option[data-active] {
+  background: var(--bg-4);
+}
+
+.option[aria-disabled='true'] {
+  color: var(--text-3);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.check {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  color: var(--accent);
+}
+
+.optionLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optionDescription {
+  flex: none;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.option[data-active] .optionDescription {
+  color: var(--text-2);
+}
+
+.empty {
+  padding: var(--sp-8);
+  color: var(--text-2);
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}

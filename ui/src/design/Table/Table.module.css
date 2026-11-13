@@ -1,0 +1,174 @@
+.table {
+  --row-height: var(--row-compact);
+
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.table[data-density='comfortable'] {
+  --row-height: var(--row-comfortable);
+}
+
+.table[data-fill] {
+  flex: 1;
+  min-height: 0;
+}
+
+.table[data-bounded] {
+  max-height: min(70vh, 640px);
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.grid {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Header: stays in place while the rows scroll under it. */
+.grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 32px;
+  padding: 0 var(--sp-12);
+  background: var(--bg-2);
+  /* A border would scroll away with the cell; an inset shadow stays. */
+  box-shadow: inset 0 -1px 0 var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.headerText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  max-width: 100%;
+  height: 24px;
+  margin: 0 calc(-1 * var(--sp-6));
+  padding: 0 var(--sp-6);
+  border-radius: var(--radius-badge);
+  color: inherit;
+  font-weight: inherit;
+}
+
+.sort:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.sortIcon {
+  color: var(--text-3);
+  opacity: 0;
+}
+
+.sort:hover .sortIcon,
+.sort:focus-visible .sortIcon {
+  opacity: 1;
+}
+
+/* The sorted column says so at rest. */
+th[aria-sort='ascending'] .sort,
+th[aria-sort='descending'] .sort {
+  color: var(--text-1);
+}
+
+th[aria-sort='ascending'] .sortIcon,
+th[aria-sort='descending'] .sortIcon {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.grid td {
+  height: var(--row-height);
+  padding: 0 var(--sp-12);
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grid tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.grid [data-align='right'] {
+  text-align: right;
+}
+
+.grid [data-align='center'] {
+  text-align: center;
+}
+
+/* A right-aligned heading keeps its text over the numbers: icon first. */
+.grid th[data-align='right'] .sort {
+  flex-direction: row-reverse;
+}
+
+.row {
+  /* Arrow-key navigation must not park a row under the sticky header. */
+  scroll-margin-top: 32px;
+}
+
+.row:hover {
+  background: var(--bg-3);
+}
+
+.row[aria-selected='true'] {
+  background: var(--accent-soft);
+}
+
+.row:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.grid .checkCell {
+  padding: 0 0 0 var(--sp-12);
+}
+
+.checkCell label {
+  display: flex;
+}
+
+.grid .actionsCell {
+  padding: 0 var(--sp-6);
+  text-align: right;
+}
+
+.grid td.actionsCell {
+  overflow: visible;
+}
+
+.grid .emptyCell {
+  height: auto;
+  padding: var(--sp-16);
+  white-space: normal;
+}
+
+.grid .spacer {
+  padding: 0;
+  border: 0;
+}

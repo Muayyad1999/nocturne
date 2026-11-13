@@ -1,0 +1,80 @@
+.block {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-0);
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--sp-12);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.scroll {
+  padding: var(--sp-12);
+  overflow: auto;
+  color: var(--text-1);
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+.scroll:focus-visible {
+  outline-offset: -2px;
+}
+
+.block[data-wrap] .scroll {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The copy button appears with the pointer or with keyboard focus. */
+.copy {
+  position: absolute;
+  top: var(--sp-6);
+  right: var(--sp-6);
+  z-index: 1;
+  opacity: 0;
+  transition: opacity var(--dur-fast) ease-out;
+}
+
+.title ~ .copy {
+  top: 3px;
+}
+
+.block:hover .copy,
+.copy:focus-visible,
+.copy[aria-label='Copied'] {
+  opacity: 1;
+}
+
+.numbered {
+  display: block;
+  min-width: max-content;
+}
+
+.block[data-wrap] .numbered {
+  min-width: 0;
+}
+
+.line {
+  display: block;
+}
+
+/* Line numbers are furniture: not selectable, so copying by hand yields the code alone. */
+.number {
+  display: inline-block;
+  width: 4ch;
+  margin-right: var(--sp-16);
+  color: var(--text-3);
+  text-align: right;
+  user-select: none;
+}

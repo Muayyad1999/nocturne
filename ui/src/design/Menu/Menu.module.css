@@ -1,0 +1,93 @@
+.menu {
+  z-index: var(--z-overlay);
+  min-width: 180px;
+  max-width: min(320px, var(--available-width, 320px));
+  max-height: var(--available-height);
+  padding: var(--sp-4);
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+  user-select: none;
+  animation: appear var(--dur-fast) ease-out;
+}
+
+.menu:focus-visible {
+  outline: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  height: var(--control-md);
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-badge);
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+/* The focused item is the highlighted one, for pointer and keyboard alike. */
+.item:focus {
+  outline: none;
+  background: var(--bg-4);
+}
+
+.item[data-tone='crit'] {
+  color: var(--crit);
+}
+
+.item[data-tone='crit']:focus {
+  background: var(--crit-soft);
+}
+
+.item[aria-disabled='true'] {
+  color: var(--text-3);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.leading {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 14px;
+  color: var(--text-2);
+}
+
+.item[data-tone='crit'] .leading {
+  color: inherit;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut {
+  margin-left: var(--sp-16);
+}
+
+.separator {
+  height: 1px;
+  margin: var(--sp-4) calc(-1 * var(--sp-4));
+  background: var(--line);
+}
+
+.label {
+  padding: var(--sp-6) var(--sp-8) var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+}
+
+@keyframes appear {
+  from {
+    transform: scale(0.98);
+    opacity: 0;
+  }
+}

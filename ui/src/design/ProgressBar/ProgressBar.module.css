@@ -1,0 +1,49 @@
+/* The track is a quiet step of the fill's own colour, so state reads across the whole bar. */
+.track {
+  width: 100%;
+  min-width: 24px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--tone-soft);
+}
+
+.track[data-size='sm'] {
+  height: 4px;
+}
+
+.fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--tone);
+  transition: width var(--dur-panel) var(--ease-out);
+}
+
+/* Unknown amount of work: a segment travels along the track. */
+.track[data-indeterminate] .fill {
+  width: 40%;
+  animation: travel 1.4s ease-in-out infinite;
+}
+
+@keyframes travel {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track[data-indeterminate] .fill {
+    width: 100%;
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+}

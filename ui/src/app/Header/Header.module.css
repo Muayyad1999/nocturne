@@ -1,0 +1,175 @@
+.header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+  padding: 0 var(--sp-12) 0 var(--sp-20);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.location {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-2);
+  font-size: var(--fs-14);
+  white-space: nowrap;
+}
+
+.crumb a {
+  color: inherit;
+}
+
+.crumb a:hover {
+  color: var(--text-1);
+}
+
+.separator {
+  display: flex;
+  color: var(--text-3);
+}
+
+.title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-right: var(--sp-8);
+}
+
+/* Looks like a field, behaves like a button: it opens the command palette. */
+.search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 260px;
+  height: var(--control-md);
+  padding: 0 var(--sp-6) 0 var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  color: var(--text-3);
+  transition:
+    border-color var(--dur-fast) ease-out,
+    color var(--dur-fast) ease-out;
+}
+
+.search:hover {
+  border-color: var(--line-strong);
+  color: var(--text-2);
+}
+
+.searchLabel {
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container shell (max-width: 1100px) {
+  .search {
+    width: 180px;
+  }
+}
+
+/* Notifications */
+
+.bell {
+  position: relative;
+  display: inline-flex;
+}
+
+.unread {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--bg-1);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  box-sizing: content-box;
+  pointer-events: none;
+}
+
+.panel {
+  width: 360px;
+}
+
+.panelHeader {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 var(--sp-8) 0 var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.panelTitle {
+  font-size: var(--fs-13);
+}
+
+.list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.notification {
+  display: flex;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+}
+
+.notification + .notification {
+  border-top: 1px solid var(--line);
+}
+
+.notificationIcon {
+  margin-top: var(--sp-2);
+  color: var(--tone);
+}
+
+.notificationBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.notificationTitle {
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+.notificationText {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.notificationTime {
+  flex: none;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  white-space: nowrap;
+}

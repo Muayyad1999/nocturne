@@ -13,9 +13,9 @@ import {
   rateQuantity,
 } from './format';
 
-const NBSP = ' ';
-const GROUP = ' ';
-const MINUS = '−';
+const NBSP = '\u00a0';
+const GROUP = '\u2009';
+const MINUS = '\u2212';
 
 describe('missing values', () => {
   it('renders an em dash instead of inventing a number', () => {
@@ -39,7 +39,7 @@ describe('missing values', () => {
 });
 
 describe('formatCount / formatNumber', () => {
-  it('groups digits with a narrow no-break space', () => {
+  it('groups digits with a thin space', () => {
     expect(formatCount(0)).toBe('0');
     expect(formatCount(999)).toBe('999');
     expect(formatCount(1204)).toBe(`1${GROUP}204`);

@@ -1,0 +1,98 @@
+.dock {
+  grid-area: dock;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-1);
+}
+
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-4);
+  height: var(--header-height);
+  padding: 0 var(--sp-8) 0 var(--sp-16);
+  border-bottom: 1px solid var(--line);
+}
+
+.spark {
+  margin-right: var(--sp-4);
+  color: var(--ai);
+}
+
+.title {
+  flex: 1;
+  font-size: var(--fs-14);
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.transcript:focus-visible {
+  outline-offset: -2px;
+}
+
+.transcriptContent {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: var(--sp-16);
+}
+
+.composer {
+  flex: none;
+  padding: var(--sp-12);
+  border-top: 1px solid var(--line);
+}
+
+.field {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-8);
+  padding: var(--sp-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+  transition: border-color var(--dur-fast) ease-out;
+}
+
+/* The assistant's own accent marks its field. */
+.field:focus-within {
+  border-color: var(--ai);
+  outline: 2px solid var(--ai-soft);
+}
+
+.field[data-disabled] {
+  background: none;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  max-height: 160px;
+  padding: var(--sp-2) var(--sp-4);
+  border: 0;
+  background: none;
+  line-height: 20px;
+  resize: none;
+}
+
+.input:focus-visible {
+  outline: none;
+}
+
+.input:disabled {
+  cursor: not-allowed;
+}

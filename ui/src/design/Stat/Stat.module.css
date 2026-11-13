@@ -1,0 +1,82 @@
+.stat {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-16);
+  min-width: 0;
+}
+
+.figure {
+  min-width: 0;
+}
+
+.label {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.reading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  margin-top: var(--sp-4);
+}
+
+/* Proportional figures: a number standing alone reads tighter than tabular digits. */
+.value {
+  color: var(--text-1);
+  font-size: var(--fs-28);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  white-space: nowrap;
+}
+
+.stat[data-size='sm'] .value {
+  font-size: var(--fs-20);
+}
+
+.unit {
+  color: var(--text-3);
+  font-size: var(--fs-13);
+}
+
+.placeholder {
+  margin-top: var(--sp-6);
+}
+
+.delta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-top: var(--sp-6);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+
+.delta[data-sentiment='good'] {
+  color: var(--ok);
+}
+
+.delta[data-sentiment='bad'] {
+  color: var(--crit);
+}
+
+.deltaText {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-medium);
+}
+
+/* The period is context: it stays in muted ink whatever the sentiment. */
+.period {
+  color: var(--text-3);
+  font-weight: var(--fw-regular);
+}
+
+/* The trend sits on the figure's last line. */
+.trend {
+  flex: none;
+  align-self: flex-end;
+  padding-bottom: var(--sp-2);
+}

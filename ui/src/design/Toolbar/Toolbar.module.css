@@ -1,0 +1,12 @@
+.toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1;
+}

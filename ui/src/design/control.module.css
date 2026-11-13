@@ -1,0 +1,89 @@
+/*
+ * The look shared by every text-like control (Input, Textarea, Select,
+ * Combobox, SearchInput, TagInput). Components compose `.control` and add
+ * what is their own.
+ */
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  color: var(--text-1);
+  transition: border-color var(--dur-fast) ease-out;
+}
+
+.control[data-size='sm'] {
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-6);
+  font-size: var(--fs-12);
+}
+
+.control:hover {
+  border-color: var(--text-3);
+}
+
+/* Focus: the ring sits on the border, so the field reads as one outlined box. */
+.control:focus-within {
+  border-color: var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.control[data-invalid] {
+  border-color: var(--crit);
+}
+
+.control[data-invalid]:focus-within {
+  outline-color: var(--crit);
+}
+
+.control[data-disabled] {
+  border-color: var(--line);
+  background: none;
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.control[data-mono] {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-ligatures: none;
+}
+
+/* The native element inside: transparent, it borrows the wrapper's box. */
+.native {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.native:focus-visible {
+  outline: none;
+}
+
+.native:disabled {
+  cursor: not-allowed;
+}
+
+/* Icons and units placed inside a control. */
+.adornment {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}

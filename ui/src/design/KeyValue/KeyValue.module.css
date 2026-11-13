@@ -1,0 +1,30 @@
+.list {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: var(--sp-8) var(--sp-24);
+  margin: 0;
+}
+
+.list[data-layout='stacked'] {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+
+.label {
+  color: var(--text-2);
+}
+
+.list[data-layout='stacked'] .label {
+  font-size: var(--fs-12);
+}
+
+.value {
+  min-width: 0;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.list[data-layout='stacked'] .value {
+  margin-bottom: var(--sp-8);
+}

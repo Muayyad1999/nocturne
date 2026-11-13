@@ -1,0 +1,56 @@
+.viewport {
+  position: fixed;
+  right: var(--sp-16);
+  bottom: calc(var(--statusbar-height) + var(--sp-16));
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  width: 360px;
+  max-width: calc(100vw - 2 * var(--sp-16));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-8) var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+  box-shadow: var(--shadow-float);
+  pointer-events: auto;
+  animation: enter var(--dur-panel) var(--ease-out);
+}
+
+.icon {
+  margin-top: var(--sp-4);
+  color: var(--tone);
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-2) 0;
+}
+
+.title {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.description {
+  margin-top: var(--sp-2);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+@keyframes enter {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+}

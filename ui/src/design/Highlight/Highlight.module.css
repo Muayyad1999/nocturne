@@ -1,0 +1,5 @@
+.match {
+  background: none;
+  color: var(--accent-strong);
+  font-weight: var(--fw-semibold);
+}

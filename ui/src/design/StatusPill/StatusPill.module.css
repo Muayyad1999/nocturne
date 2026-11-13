@@ -1,0 +1,17 @@
+.pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--sp-4);
+  /* Never stretched by a column layout: a pill is as wide as its word. */
+  width: fit-content;
+  height: 20px;
+  padding: 0 var(--sp-8) 0 var(--sp-6);
+  border-radius: var(--radius-full);
+  background: var(--tone-soft);
+  color: var(--tone-ink);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+}

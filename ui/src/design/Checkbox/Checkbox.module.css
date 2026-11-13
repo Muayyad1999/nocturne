@@ -1,0 +1,78 @@
+.checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox[data-disabled] {
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+/* The native input stays in place, invisible, so it keeps focus and behaviour. */
+.input {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.box {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-badge);
+  background: var(--bg-2);
+  color: var(--text-on-solid);
+  transition:
+    background-color var(--dur-fast) ease-out,
+    border-color var(--dur-fast) ease-out;
+}
+
+.box svg {
+  width: 12px;
+  height: 12px;
+}
+
+.check,
+.dash {
+  opacity: 0;
+}
+
+.checkbox:hover .box {
+  border-color: var(--text-3);
+}
+
+.input:checked + .box,
+.input:indeterminate + .box {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.input:checked:not(:indeterminate) + .box .check,
+.input:indeterminate + .box .dash {
+  opacity: 1;
+}
+
+.input:focus-visible + .box {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.input:disabled + .box {
+  opacity: 0.5;
+}
+
+.label {
+  min-width: 0;
+}

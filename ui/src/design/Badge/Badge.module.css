@@ -1,0 +1,25 @@
+.badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  width: fit-content;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-6);
+  border: 1px solid transparent;
+  border-radius: var(--radius-badge);
+  background: var(--tone-soft);
+  color: var(--tone-ink);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.badge[data-variant='outline'] {
+  border-color: var(--line-strong);
+  background: none;
+}

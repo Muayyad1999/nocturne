@@ -10,11 +10,11 @@
 /** Shown wherever a value is missing. */
 export const EMPTY = '—';
 
-/** Narrow no-break space: groups digits without ever wrapping a number. */
-const GROUP = ' ';
+/** Thin space: groups digits in threes without the ambiguity of a comma or a point. */
+const GROUP = '\u2009';
 /** No-break space between a value and its unit. */
-const NBSP = ' ';
-const MINUS = '−';
+const NBSP = '\u00a0';
+const MINUS = '\u2212';
 
 export type Numeric = number | null | undefined;
 
