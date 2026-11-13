@@ -1,0 +1,13 @@
+kinds:
+  inventory:
+    count: 4
+    rows:
+      - name: 3640 chassis
+        description: 3640 chassis
+        # "PID:                   , VID: 0xFF, SN: FF1045C5"
+        part_id: ""
+        serial: FF1045C5
+      - name: One port Fastethernet TX
+        description: One port Fastethernet TX
+        part_id: NM-1FE-TX=
+        serial: "7720321"

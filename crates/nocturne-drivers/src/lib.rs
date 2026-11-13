@@ -5,6 +5,13 @@
 //!   platform's prompts, paging, config mode, safety policy and how to turn
 //!   its `show` output into the normalised [`model`]. Adding a device type
 //!   means adding a file, not code.
+//! * [`session`] — drives an interactive CLI: login, prompts, paging,
+//!   privileged and configuration mode, one command in, its output out.
+//! * [`collect`] — runs a profile's collection steps over a session (or over
+//!   recorded output) and maps the result onto the model, reporting what
+//!   could not be collected instead of guessing.
+//! * [`detect`] — works out which profile an unknown device needs, from SNMP,
+//!   its banner, or a few harmless probe commands.
 //! * [`term`] — cleans raw terminal bytes (escape sequences, backspaces,
 //!   pager redraws) into plain text.
 //! * [`hier`] — parses configuration into a tree and computes the exact
@@ -12,6 +19,8 @@
 //! * [`policy`] — classifies a command as read-only, state-changing or
 //!   dangerous before anything is sent.
 
+pub mod collect;
+pub mod detect;
 pub mod expr;
 pub mod hier;
 pub mod ifname;

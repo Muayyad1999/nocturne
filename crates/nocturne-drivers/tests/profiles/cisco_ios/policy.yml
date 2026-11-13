@@ -1,0 +1,57 @@
+read_only:
+  - show running-config
+  - show version
+  - sh ip int br                      # abbreviations are accepted by the device, so by the policy too
+  - sho ver
+  - show interfaces status | include connected
+  - show run | section router ospf
+  - show ip route vrf *
+  - show logging | include "err|crit;"
+  - ping 10.0.0.1
+  - traceroute 8.8.8.8
+  - terminal length 0
+  - terminal width 511
+  - "dir flash:"
+  - more flash:config.text
+  - enable
+  - exit
+change:
+  - configure terminal
+  - conf t
+  - write memory
+  - wr
+  - copy running-config startup-config
+  - copy running-config tftp://10.0.0.5/backup.cfg
+  - clear counters
+  - clear mac address-table dynamic
+  - interface GigabitEthernet0/1
+  - shutdown
+  - no shutdown
+  - vlan 30
+  - debug ip packet
+  - undebug all
+  - show                               # nothing to show: not a read
+  - show running-config | redirect tftp://10.0.0.5/leak.cfg
+  - show tech-support | tee flash:tech.txt
+  - reload cancel                      # takes a scheduled reload away: a change, not a threat
+  - "show version\nconfigure terminal"  # two commands sent as one
+dangerous:
+  - reload
+  - reload in 5
+  - rel in 5
+  - erase startup-config
+  - write erase
+  - wr e
+  - "format flash:"
+  - delete /force flash:config.text
+  - del vlan.dat
+  - configure replace flash:backup.cfg
+  - copy tftp://10.0.0.5/x.cfg startup-config
+  - copy flash:old.cfg running-config
+  - "copy scp://user@10.0.0.5/ios.bin flash:"
+  - debug all
+  - factory-reset all
+  - tclsh
+  - clear line 2
+  - show clock ; write erase
+  - test crash

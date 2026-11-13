@@ -1,0 +1,12 @@
+kinds:
+  health:
+    rows:
+      # "CPU utilization for five seconds: 4%/0%; one minute: 6%; five minutes: 5%"
+      - cpu_pct: 4
+        # "Processor Pool Total:  919638648 Used:  236752096 Free:  682886552"
+        memory_total: 919638648
+        memory_used: 236752096
+        # "router1 uptime is 2 years, 31 weeks, 6 days, 9 hours, 55 minutes"
+        uptime_s: 82374900
+        # "Switch 1: … Inlet Temperature Value: 29 Degree Celsius" (the first member of the stack)
+        temperature_c: 29

@@ -1,0 +1,90 @@
+# What IOS prints when it refuses a command, and what it prints when it does not.
+exec:
+  rejected:
+    - output: |
+        show nonsense
+                  ^
+        % Invalid input detected at '^' marker.
+      error: "% Invalid input detected at '^' marker."
+    - output: "% Incomplete command.\n"
+      error: "% Incomplete command."
+    - output: "% Ambiguous command:  \"sh i\"\n"
+      error: "% Ambiguous command:  \"sh i\""
+    - |
+      % Type "show ?" for a list of subcommands
+    - |
+      Translating "shwo"...domain server (255.255.255.255)
+      % Unknown command or computer name, or unable to find computer address
+    - |
+      % Bad IP address or host name% Unknown command or computer name, or unable to find computer address
+    - "% Unrecognized host or address, or protocol not running.\n"
+    - "%Error opening tftp://10.0.0.5/backup.cfg (Timed out)\n"
+    - "% Authorization failed.\n"
+    - "Command authorization failed.\n"
+    - "% CDP is not enabled\n"
+    - "% LLDP is not enabled\n"
+    - "% BGP not active\n"
+    - "% IP routing table vrf BLUE does not exist\n"
+    - "startup-config is not present\n"
+  clean:
+    - |
+      Vlan1 is up, line protocol is up
+        Hardware is EtherSVI, address is 0014.1c57.a4c0 (bia 0014.1c57.a4c0)
+           0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+    # Log messages that arrive while a command runs start with % too.
+    - |
+      *Mar  1 00:02:11.003: %LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up
+      %LINEPROTO-5-UPDOWN: Line protocol on Interface Vlan10, changed state to up
+      %SYS-5-CONFIG_I: Configured from console by admin on vty0 (10.0.0.5)
+    - |
+      %TCP-6-BADAUTH: Invalid MD5 digest from 10.0.0.1(179) to 10.0.0.2(11000)
+      %PM-4-ERR_DISABLE: bpduguard error detected on Gi0/1, putting Gi0/1 in err-disable state
+      %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: admin] [Source: 10.0.0.9] [localport: 22]
+    - |
+      % Key pair was generated at: 12:00:05 UTC Mar 1 1993
+      Key name: SW1.lab.example.com
+    - |
+      Building configuration...
+      [OK]
+    - |
+      Success rate is 0 percent (0/5)
+    - |
+      Type escape sequence to abort.
+      Sending 5, 100-byte ICMP Echos to 10.0.0.1, timeout is 2 seconds:
+      !!!!!
+      Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/4 ms
+config:
+  rejected:
+    - output: |
+        SW1(config)#vlan 5000
+                         ^
+        % Invalid input detected at '^' marker.
+      error: "% Invalid input detected at '^' marker."
+    - "% 10.1.1.0 overlaps with Vlan10\n"
+    - "%Default VLAN 1 may not be deleted.\n"
+    - "Command rejected: Gi0/1 is a dynamic port.\n"
+    - "Command rejected: Bad VLAN list - character #1 ('x') delimits a VLAN number which is out of the range 1..4094.\n"
+    - "%Interface range command failed for GigabitEthernet0/49\n"
+    - "% Port-channel1 is not a switchport\n"
+    - "% Password too short - must be at least 8 characters. Password configuration failed\n"
+    - "% BGP: Error initializing topology\n"
+    - "% Incomplete command.\n"
+  clean:
+    # Notes about a side effect of a command that was accepted.
+    - "% Access VLAN does not exist. Creating vlan 30\n"
+    - |
+      %Warning: portfast should only be enabled on ports connected to a single
+       host. Connecting hubs, concentrators, switches, bridges, etc... to this
+       interface  when portfast is enabled, can cause temporary bridging loops.
+       Use with CAUTION
+
+      %Portfast has been configured on GigabitEthernet0/1 but will only
+       have effect when the interface is in a non-trunking mode.
+    - "% Generating 2048 bit RSA keys, keys will be non-exportable...[OK]\n"
+    - "% Interface GigabitEthernet0/1 IPv4 disabled and address(es) removed due to enabling VRF MGMT\n"
+    - "% Not all config may be removed and may reappear after reactivating the sub-interface\n"
+    - "% Default route without gateway, if not a point-to-point interface, may impact performance\n"
+    - "%OSPF: Reload or use \"clear ip ospf process\" command, for this to take effect\n"
+    - "% You already have RSA keys defined named SW1.lab.example.com.\n"
+    - "Enter configuration commands, one per line.  End with CNTL/Z.\n"
+    - "*Mar  1 00:05:44.201: %SYS-5-CONFIG_I: Configured from console by admin on vty0 (10.0.0.5)\n"

@@ -1,0 +1,28 @@
+read_only:
+  - show version
+  - display current-configuration
+  - get system status
+  - show configuration | display set
+  - /system resource print
+  - print
+  - uname -a
+  - ping 10.0.0.1
+change:
+  - configure terminal
+  - system-view
+  - commit confirmed 5
+  - set system host-name x
+  - show configuration | save /var/tmp/x
+  - write memory
+  - /ip address add address=10.0.0.1/24 interface=ether1
+dangerous:
+  - reload
+  - reboot
+  - request system reboot
+  - request system zeroize
+  - /system reset-configuration
+  - system reboot
+  - write erase
+  - execute factoryreset
+  - rm -rf /
+  - show version ; reload

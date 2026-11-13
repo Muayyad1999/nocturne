@@ -1,0 +1,49 @@
+kinds:
+  interfaces:
+    count: 56
+    rows:
+      - name: Vlan1
+        admin_up: true
+        oper_up: true
+        mtu: 1500
+        mac: 00:14:1c:57:a4:c0
+        kind: EtherSVI
+        # an SVI has no duplex/speed line; "BW 1000000 Kbit" is not a link rate
+        speed_bps: null
+        # none in `show interfaces`; primary and secondary from `show ip interface`
+        ipv4: [192.168.1.1/24, 192.168.1.3/24]
+        # "unassigned" in `show ipv6 interface brief`
+        ipv6: []
+        counters: {in_packets: 37453340, in_octets: 2249839744, out_packets: 0, out_octets: 0}
+      - name: Vlan50
+        ipv4: [10.1.50.1/24]
+        ipv6: []
+        counters: {in_packets: 3772, in_octets: 226742, out_packets: 3804, out_octets: 243514}
+      - name: Vlan100
+        ipv4: [10.1.100.1/24]
+        ipv6: ["FE80::333:3333:3333:3333", "2A01:3333:3336:100::1", "2A01:3333:3336:100::2"]
+      - name: Vlan254
+        ipv4: [10.1.254.1/24]
+      - name: FastEthernet1/0/1
+        admin_up: true
+        oper_up: true
+        # "Full-duplex, 100Mb/s, media type is 10/100BaseTX"
+        duplex: full
+        speed_bps: 100000000
+        mac: 00:14:1c:57:a4:83
+        kind: Fast Ethernet
+        ipv4: []
+        # far beyond 32 bits
+        counters: {in_packets: 8647579827, in_octets: 638901996995, out_packets: 86941746207, out_octets: 41399413469427}
+      - name: FastEthernet1/0/48
+        oper_up: true
+        mac: 00:14:1c:57:a4:b4
+        speed_bps: 100000000
+      - name: GigabitEthernet1/0/1
+        # "is down, line protocol is down (notconnect)"
+        admin_up: true
+        oper_up: false
+        mac: 00:14:1c:57:a4:81
+        duplex: auto
+        speed_bps: null
+        kind: Gigabit Ethernet

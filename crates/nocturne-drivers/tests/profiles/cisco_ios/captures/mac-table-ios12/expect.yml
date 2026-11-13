@@ -1,0 +1,18 @@
+kinds:
+  mac_table:
+    count: 9
+    rows:
+      - mac: 00:10:0d:e0:e2:89
+        vlan: 1
+        interface: FastEthernet0/1
+        kind: dynamic
+      - mac: 00:10:7b:00:15:40
+        vlan: 2
+        interface: FastEthernet0/5
+      - mac: 00:10:7b:00:15:45
+        vlan: 2
+        interface: FastEthernet0/5
+      - mac: 00:e0:1e:9f:39:00
+        vlan: 1
+        interface: FastEthernet0/1
+        kind: dynamic

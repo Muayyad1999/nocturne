@@ -14,15 +14,18 @@
 //! | `mac` | `"aabb.ccdd.eeff" \| mac` | `"aa:bb:cc:dd:ee:ff"` |
 //! | `ifname` | `"Gi1/0/1" \| ifname` | `"GigabitEthernet1/0/1"` |
 //! | `cidr(mask)` | `"10.0.0.1" \| cidr("255.255.255.0")` | `"10.0.0.1/24"` |
+//! | `bytes` | `"64.0MiB" \| bytes` | `67108864` |
+//! | `format_each(t)` | `addrs \| format_each("{local}/{prefixlen}")` | `["10.0.0.1/24", …]` |
 //! | `regex_search(p)` | `"up (connected)" \| regex_search("\\((\\w+)\\)")` | `"connected"` |
 //! | `regex_replace(p, r)` | `"Gi0/1," \| regex_replace(",$", "")` | `"Gi0/1"` |
 //!
-//! and the test `x is matching("^up")`.
+//! and the test `x is matching("^up")`. `cidr` also works as a function over
+//! two lists (`cidr(IP_ADDRESS, PREFIX_LENGTH)`), pairing them item by item.
 
 use std::net::Ipv4Addr;
 use std::sync::LazyLock;
 
-use minijinja::value::{Serde, Value};
+use minijinja::value::{Serde, Value, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
 use regex::Regex;
 
@@ -58,12 +61,14 @@ impl Expressions {
         env.add_filter("num", |value: Value| to_number(&value));
         env.add_filter("mac", |value: Value| normalize_mac(&text(&value)));
         env.add_filter("ifname", |value: Value| ifname::long(&text(&value)));
-        env.add_filter("cidr", |address: Value, mask: Value| {
-            to_cidr(&text(&address), &text(&mask))
+        env.add_filter("cidr", cidr);
+        env.add_function("cidr", cidr);
+        env.add_filter("bytes", |value: Value| {
+            parse_bytes(&text(&value))
+                .map(Value::from)
+                .unwrap_or_default()
         });
-        env.add_function("cidr", |address: Value, mask: Value| {
-            to_cidr(&text(&address), &text(&mask))
-        });
+        env.add_filter("format_each", format_each);
         env.add_filter("regex_search", |value: Value, pattern: String| {
             regex_search(&text(&value), &pattern)
         });
@@ -118,11 +123,52 @@ impl Expressions {
         Ok(value.is_true())
     }
 
+    /// Compile an expression once, to evaluate it against many rows.
+    pub fn compile<'a>(&'a self, expression: &'a str) -> Result<Compiled<'a>, String> {
+        self.env
+            .compile_expression(expression)
+            .map(|expression| Compiled { expression })
+            .map_err(|err| describe(&err))
+    }
+
     /// Render a template string (`show interfaces {{ interface }}`).
     pub fn render(&self, template: &str, context: &serde_json::Value) -> Result<String, String> {
         self.env
             .render_str(template, Value::from(Serde(context)))
             .map_err(|err| describe(&err))
+    }
+}
+
+/// An expression ready to be evaluated; see [`Expressions::compile`].
+pub struct Compiled<'a> {
+    expression: minijinja::Expression<'a, 'a>,
+}
+
+impl Compiled<'_> {
+    pub fn eval(&self, context: &Context) -> Result<serde_json::Value, String> {
+        let value = self
+            .expression
+            .eval(context.0.clone())
+            .map_err(|err| describe(&err))?;
+        serde_json::to_value(&value).map_err(|err| err.to_string())
+    }
+
+    /// Evaluate and decide truthiness the Jinja way.
+    pub fn truthy(&self, context: &Context) -> Result<bool, String> {
+        self.expression
+            .eval(context.0.clone())
+            .map(|value| value.is_true())
+            .map_err(|err| describe(&err))
+    }
+}
+
+/// The variables an expression sees, converted once and shared by every
+/// expression evaluated against the same row.
+pub struct Context(Value);
+
+impl Context {
+    pub fn new(variables: &serde_json::Value) -> Context {
+        Context(Value::from(Serde(variables)))
     }
 }
 
@@ -151,6 +197,72 @@ fn text(value: &Value) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn is_list(value: &Value) -> bool {
+    matches!(value.kind(), ValueKind::Seq | ValueKind::Iterable)
+}
+
+/// `cidr(address, mask)`: one address, or two lists paired item by item
+/// (a single mask applies to every address). Addresses that are empty are dropped.
+fn cidr(address: Value, mask: Value) -> Result<Value, Error> {
+    if !is_list(&address) {
+        return Ok(Value::from(to_cidr(&text(&address), &text(&mask))));
+    }
+    let masks: Option<Vec<Value>> = if is_list(&mask) {
+        Some(mask.try_iter()?.collect())
+    } else {
+        None
+    };
+    let combined: Vec<String> = address
+        .try_iter()?
+        .enumerate()
+        .map(|(index, address)| {
+            let mask = match &masks {
+                Some(masks) => masks.get(index).map(text).unwrap_or_default(),
+                None => text(&mask),
+            };
+            to_cidr(&text(&address), &mask)
+        })
+        .filter(|cidr| !cidr.is_empty())
+        .collect();
+    Ok(Value::from(combined))
+}
+
+/// Turn a list of objects into a list of strings: every `{field}` in the
+/// template is replaced by that field of the item. Items that lack one of
+/// the fields are left out. A single object is treated as a list of one.
+fn format_each(items: Value, template: String) -> Result<Value, Error> {
+    let items: Vec<Value> = if is_list(&items) {
+        items.try_iter()?.collect()
+    } else if items.is_undefined() || items.is_none() {
+        Vec::new()
+    } else {
+        vec![items]
+    };
+    let mut formatted = Vec::with_capacity(items.len());
+    'items: for item in items {
+        let mut out = String::with_capacity(template.len());
+        let mut rest = template.as_str();
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}').map(|offset| open + offset) else {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("format_each: `{{` without `}}` in `{template}`"),
+                ));
+            };
+            out.push_str(&rest[..open]);
+            let field = text(&item.get_attr(rest[open + 1..close].trim())?);
+            if field.is_empty() {
+                continue 'items;
+            }
+            out.push_str(&field);
+            rest = &rest[close + 1..];
+        }
+        out.push_str(rest);
+        formatted.push(out);
+    }
+    Ok(Value::from(formatted))
 }
 
 fn regex_search(text: &str, pattern: &str) -> Result<Value, Error> {
@@ -268,6 +380,33 @@ pub fn parse_bps(text: &str) -> Option<u64> {
     };
     let bps = amount * factor;
     (bps.is_finite() && (0.0..1e18).contains(&bps)).then_some(bps as u64)
+}
+
+static SIZE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(\d+(?:\.\d+)?)\s*(?:([kmgtp])(?:i?b)?|b(?:ytes?)?)?$").expect("size pattern")
+});
+
+/// Bytes from a memory or storage size as devices print it: `64.0MiB`,
+/// `1196.0KiB`, `16384256 kB`, `524288K`, `2G`, or a bare number of bytes.
+/// Units are powers of 1024 whatever the spelling: that is what devices mean
+/// when they report memory (`/proc/meminfo` says `kB` and counts 1024).
+pub fn parse_bytes(text: &str) -> Option<u64> {
+    let caps = SIZE.captures(text.trim())?;
+    let amount: f64 = caps[1].parse().ok()?;
+    let shift = match caps
+        .get(2)
+        .and_then(|unit| unit.as_str().chars().next())
+        .map(|unit| unit.to_ascii_lowercase())
+    {
+        Some('k') => 10,
+        Some('m') => 20,
+        Some('g') => 30,
+        Some('t') => 40,
+        Some('p') => 50,
+        _ => 0,
+    };
+    let bytes = amount * (1u64 << shift) as f64;
+    (bytes.is_finite() && (0.0..1.8e19).contains(&bytes)).then_some(bytes.round() as u64)
 }
 
 /// `aabb.ccdd.eeff`, `AA-BB-CC-DD-EE-FF`, `aabbccddeeff` → `aa:bb:cc:dd:ee:ff`.
@@ -453,6 +592,76 @@ mod tests {
     }
 
     #[test]
+    fn sizes_lists_of_addresses_and_formatted_items() {
+        for (text, bytes) in [
+            ("64.0MiB", 64 * 1024 * 1024),
+            ("1196.0KiB", 1_224_704),
+            ("3704.1MiB", 3_884_030_362),
+            ("16384256 kB", 16_384_256 * 1024),
+            ("524288K", 524_288 * 1024),
+            ("2G", 2 * 1024 * 1024 * 1024),
+            ("1.5 GiB", 1_610_612_736),
+            ("421638160", 421_638_160),
+            ("512 bytes", 512),
+            ("0", 0),
+        ] {
+            assert_eq!(parse_bytes(text), Some(bytes), "{text}");
+        }
+        for text in ["", "n/a", "12 widgets", "MiB", "-5MiB"] {
+            assert_eq!(parse_bytes(text), None, "{text}");
+        }
+
+        let row = json!({
+            "IP_ADDRESS": ["10.1.1.1", "10.2.2.2", ""],
+            "PREFIX_LENGTH": ["24", "30", ""],
+            "total": "64.0MiB",
+            "free": "40.2MiB",
+            "addr_info": [
+                {"family": "inet", "local": "192.0.2.10", "prefixlen": 24},
+                {"family": "inet6", "local": "fe80::1", "prefixlen": 64},
+                {"family": "inet", "local": "198.51.100.1"},
+            ],
+        });
+        assert_eq!(
+            eval("cidr(IP_ADDRESS, PREFIX_LENGTH)", row.clone()),
+            json!(["10.1.1.1/24", "10.2.2.2/30"])
+        );
+        assert_eq!(
+            eval("IP_ADDRESS | cidr('255.255.255.0')", row.clone()),
+            json!(["10.1.1.1/24", "10.2.2.2/24"])
+        );
+        assert_eq!(eval("cidr(MISSING, PREFIX_LENGTH)", row.clone()), json!(""));
+        assert_eq!(
+            eval("(total | bytes) - (free | bytes)", row.clone()),
+            json!(24_956_109)
+        );
+        assert_eq!(eval("MISSING | bytes", row.clone()), json!(null));
+        assert_eq!(
+            eval(
+                "addr_info | selectattr('family', 'equalto', 'inet') | format_each('{local}/{prefixlen}')",
+                row.clone()
+            ),
+            json!(["192.0.2.10/24"]),
+            "an item without one of the fields is left out"
+        );
+        assert_eq!(
+            eval("addr_info | format_each('{family}')", row.clone()),
+            json!(["inet", "inet6", "inet"])
+        );
+        assert_eq!(eval("MISSING | format_each('{a}')", row.clone()), json!([]));
+        assert_eq!(
+            eval("addr_info[0] | format_each('{local}')", row.clone()),
+            json!(["192.0.2.10"])
+        );
+        assert!(
+            Expressions::new()
+                .eval("addr_info | format_each('{local')", &row)
+                .unwrap_err()
+                .contains("without `}`")
+        );
+    }
+
+    #[test]
     fn bad_expressions_are_reported() {
         let expressions = Expressions::new();
         assert!(expressions.check("INTERFACE | upper").is_ok());
@@ -474,5 +683,26 @@ mod tests {
                 .truthy("A and not B", &json!({"A": "x", "B": ""}))
                 .unwrap()
         );
+
+        // Compiled once, evaluated against many rows.
+        let speed = expressions.compile("SPEED | bps").unwrap();
+        let up = expressions.compile("STATUS is matching('^up')").unwrap();
+        for (row, bps, is_up) in [
+            (
+                json!({"SPEED": "1000Mb/s", "STATUS": "up"}),
+                json!(1_000_000_000u64),
+                true,
+            ),
+            (
+                json!({"SPEED": "Auto-speed", "STATUS": "down"}),
+                json!(null),
+                false,
+            ),
+        ] {
+            let context = Context::new(&row);
+            assert_eq!(speed.eval(&context).unwrap(), bps);
+            assert_eq!(up.truthy(&context).unwrap(), is_up);
+        }
+        assert!(expressions.compile("SPEED |").is_err());
     }
 }

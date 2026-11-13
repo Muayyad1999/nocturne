@@ -1,0 +1,18 @@
+kinds:
+  facts:
+    rows:
+      - hostname: my_device
+        vendor: Cisco
+        model: ASR1001
+        os: IOS-XE
+        # The version of the IOS daemon; the IOS-XE release is in `extra`.
+        os_version: 15.3(2)S1
+        serial: SSI1289001MH
+        # 1 day, 15 hours, 32 minutes
+        uptime_s: 142320
+        extra:
+          xe_version: 03.09.01.S
+          image: bootflash:asr1001-universalk9.03.09.01.S.153-2.S1.bin
+          software_image: X86_64_LINUX_IOSD-UNIVERSALK9-M
+          reload_reason: LocalSoft
+          config_register: "0x2102"

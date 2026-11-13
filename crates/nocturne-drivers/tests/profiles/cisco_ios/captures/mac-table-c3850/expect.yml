@@ -1,0 +1,16 @@
+kinds:
+  mac_table:
+    # 11 entries, 3 of them the switch's own (`All … STATIC CPU`), which are left out
+    count: 8
+    rows:
+      - mac: c8:69:cd:54:1f:71
+        vlan: 2
+        interface: GigabitEthernet1/0/7
+        kind: dynamic
+      - mac: fc:ec:da:7a:c9:55
+        vlan: 2
+        interface: GigabitEthernet1/0/1
+      - mac: fc:ec:da:80:0a:f9
+        vlan: 2
+        interface: GigabitEthernet1/0/41
+        kind: dynamic

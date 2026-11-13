@@ -1,0 +1,17 @@
+synthetic: true
+kinds:
+  facts:
+    rows:
+      - hostname: R1
+        vendor: Nocturne
+        model: NV-ROUTER-4GE
+        os: NVOS
+        os_version: 15.9(3)M
+        serial: NV00000101
+        # 2 hours, 14 minutes
+        uptime_s: 8040
+        extra:
+          image: flash:nvos-l3-universalk9.15.9-3.M.bin
+          software_image: NVOS-L3-UNIVERSALK9
+          reload_reason: power-on
+          config_register: "0x2102"

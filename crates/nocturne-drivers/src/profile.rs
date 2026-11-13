@@ -10,6 +10,12 @@
 //! Profiles can `extends:` another profile; the child is merged over the
 //! parent key by key (maps merge, lists and scalars replace). Unknown keys are
 //! rejected so that a typo is reported instead of silently ignored.
+//!
+//! Loading a profile checks everything that can be checked without a device:
+//! every pattern and expression compiles, every template exists, every field a
+//! collector fills is a field of the model, and every command a collector
+//! runs is read-only under the profile's own policy. All problems are
+//! reported together, each with the place in the file it came from.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +28,7 @@ use serde_yaml_ng::Value as Yaml;
 use crate::expr::Expressions;
 use crate::hier::Syntax;
 use crate::model::Kind;
+use crate::parse;
 use crate::policy::Policy;
 
 static BUILTIN: include_dir::Dir<'static> =
@@ -40,12 +47,56 @@ pub struct Profile {
     pub extends: Option<String>,
     /// Platform key in the ntc-templates index, for `parser: {ntc: auto}`.
     pub ntc_platform: Option<String>,
+    /// How far this profile has been checked against the real platform.
+    /// Never inherited through `extends`: every profile states its own.
+    pub maturity: Maturity,
+    /// How interface names in collected data are spelled.
+    pub interface_names: InterfaceNames,
     pub detect: Detect,
     pub cli: Cli,
     pub config: ConfigSpec,
     pub policy: PolicySpec,
     pub collect: IndexMap<Kind, Vec<CollectStep>>,
     pub snmp: SnmpSpec,
+}
+
+/// How much a profile can be trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Maturity {
+    /// Commands, prompts and parsers are checked against recorded output of
+    /// the real platform by this repository's tests.
+    Verified,
+    /// Written from vendor documentation and other tools' definitions; not
+    /// yet checked against a device.
+    Community,
+    /// A draft.
+    #[default]
+    Experimental,
+}
+
+impl Maturity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Maturity::Verified => "verified",
+            Maturity::Community => "community",
+            Maturity::Experimental => "experimental",
+        }
+    }
+}
+
+/// What the collector does with interface names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceNames {
+    /// Expand Cisco-style abbreviations to the long form (`Gi1/0/1` →
+    /// `GigabitEthernet1/0/1`), so that names from different commands agree.
+    #[default]
+    Cisco,
+    /// Keep names exactly as the device prints them. For platforms whose
+    /// names are already unique and would be mangled by the Cisco rules
+    /// (`vlan10` on RouterOS, `eth0` and `lo` on Linux).
+    Verbatim,
 }
 
 /// How to recognise the platform.
@@ -94,6 +145,9 @@ pub struct Cli {
     pub errors: Vec<String>,
     /// Interactive questions to answer automatically in exec mode.
     pub answers: Vec<Answer>,
+    /// Lines the device prints by itself at any moment (log messages on a
+    /// console line). When they follow the prompt, the prompt still counts.
+    pub unsolicited: Vec<String>,
     /// Seconds without output before a command is considered hung.
     pub timeout_s: u64,
 }
@@ -112,6 +166,7 @@ impl Default for Cli {
             exit: "exit".into(),
             errors: Vec::new(),
             answers: Vec::new(),
+            unsolicited: Vec::new(),
             timeout_s: 30,
         }
     }
@@ -240,6 +295,10 @@ pub struct Guard {
 pub struct PolicySpec {
     pub read_only: Vec<String>,
     pub dangerous: Vec<String>,
+    /// The CLI is a POSIX shell: `|`, `&&`, `||` and `&` chain commands that
+    /// are each classified, and a redirection or substitution is never
+    /// read-only. See [`Policy::shell`].
+    pub shell: bool,
 }
 
 /// One command to run and how to turn its output into model rows.
@@ -387,8 +446,11 @@ pub struct Platform {
     pub(crate) exec_answers: Vec<(Regex, String)>,
     pub(crate) config_answers: Vec<(Regex, String)>,
     pub(crate) config_ignore: Vec<Regex>,
-    banner: Vec<Regex>,
-    sysdescr: Vec<Regex>,
+    pub(crate) unsolicited: Vec<Regex>,
+    pub(crate) banner: Vec<Regex>,
+    pub(crate) sysdescr: Vec<Regex>,
+    /// One pattern per entry of `detect.probes`, in the same order.
+    pub(crate) probes: Vec<Regex>,
 }
 
 impl std::fmt::Debug for Platform {
@@ -407,6 +469,31 @@ impl Platform {
 
     pub fn is_abstract(&self) -> bool {
         self.profile.id.starts_with('_')
+    }
+
+    /// The compiled command policy.
+    pub fn policy(&self) -> &Policy {
+        &self.policy
+    }
+
+    /// Whether a line is one of this platform's prompts, in any mode.
+    pub fn is_prompt(&self, line: &str) -> bool {
+        self.prompt.is_match(line)
+    }
+
+    /// Whether a line is something the device prints unasked (`cli.unsolicited`).
+    pub fn is_unsolicited(&self, line: &str) -> bool {
+        self.unsolicited
+            .iter()
+            .any(|pattern| pattern.is_match(line))
+    }
+
+    /// The hostname a prompt line shows (the `host` group of `cli.prompt`).
+    pub fn prompt_host<'a>(&self, line: &'a str) -> Option<&'a str> {
+        self.prompt
+            .captures(line)
+            .and_then(|caps| caps.name("host"))
+            .map(|host| host.as_str())
     }
 
     /// Whether a prompt line belongs to configuration mode.
@@ -499,32 +586,40 @@ impl Platform {
         let exec_errors = compile_list(&mut problems, "cli.errors", &cli.errors);
         let config_errors = compile_list(&mut problems, "config.errors", &profile.config.errors);
         let config_ignore = compile_list(&mut problems, "config.ignore", &profile.config.ignore);
+        let unsolicited = compile_list(&mut problems, "cli.unsolicited", &cli.unsolicited);
         let banner = compile_list(&mut problems, "detect.banner", &profile.detect.banner);
         let sysdescr = compile_list(&mut problems, "detect.sysdescr", &profile.detect.sysdescr);
         let exec_answers = compile_answers(&mut problems, "cli.answers", &cli.answers);
         let config_answers =
             compile_answers(&mut problems, "config.answers", &profile.config.answers);
-        for (index, probe) in profile.detect.probes.iter().enumerate() {
-            compile_one(
-                &mut problems,
-                &format!("detect.probes[{index}].matches"),
-                &probe.matches,
-            );
-        }
+        let probes: Vec<Regex> = profile
+            .detect
+            .probes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, probe)| {
+                compile_one(
+                    &mut problems,
+                    &format!("detect.probes[{index}].matches"),
+                    &probe.matches,
+                )
+            })
+            .collect();
         for (index, pattern) in profile.config.secrets.iter().enumerate() {
             compile_one(&mut problems, &format!("config.secrets[{index}]"), pattern);
         }
 
-        let policy = match Policy::new(&profile.policy.read_only, &profile.policy.dangerous) {
-            Ok(policy) => policy,
-            Err(err) => {
-                problems.push(format!(
-                    "policy: invalid regular expression ({})",
-                    first_line(&err.to_string())
-                ));
-                Policy::generic()
-            }
-        };
+        let (policy, policy_usable) =
+            match Policy::new(&profile.policy.read_only, &profile.policy.dangerous) {
+                Ok(policy) => (policy.shell(profile.policy.shell), true),
+                Err(err) => {
+                    problems.push(format!(
+                        "policy: invalid regular expression ({})",
+                        first_line(&err.to_string())
+                    ));
+                    (Policy::generic(), false)
+                }
+            };
 
         if profile.id.is_empty() {
             problems.push("id: a profile needs an id".into());
@@ -541,36 +636,48 @@ impl Platform {
         if !profile.config.enter.is_empty() && profile.cli.config_prompt.is_none() {
             problems.push("cli.config_prompt: required when config.enter is set, so the driver can tell it is in configuration mode".into());
         }
-
-        for (kind, steps) in &profile.collect {
-            for (index, step) in steps.iter().enumerate() {
-                let at = format!("collect.{}[{index}]", kind.as_str());
-                if step.command.trim().is_empty() {
-                    problems.push(format!("{at}.command: must not be empty"));
-                }
-                if let Parser::Regex(pattern) = &step.parser {
-                    compile_one(&mut problems, &format!("{at}.parser.regex"), pattern);
-                }
-                if step.map.is_empty() {
-                    problems.push(format!("{at}.map: at least one field mapping is required"));
-                }
-                for (field, expression) in &step.map {
-                    if let Err(err) = expressions.check(expression) {
-                        problems.push(format!("{at}.map.{field}: {err}"));
-                    }
-                }
-                if let Some(condition) = &step.when
-                    && let Err(err) = expressions.check(condition)
-                {
-                    problems.push(format!("{at}.when: {err}"));
-                }
-                if let Some(key) = &step.merge_on
-                    && !step.map.contains_key(key)
-                {
+        for (index, probe) in profile.detect.probes.iter().enumerate() {
+            let command = probe.command.trim();
+            if command.is_empty() {
+                problems.push(format!("detect.probes[{index}].command: must not be empty"));
+            } else if policy_usable {
+                // A probe is sent to devices nobody has identified yet.
+                let verdict = policy.classify(command);
+                if verdict.class != crate::policy::CommandClass::ReadOnly {
                     problems.push(format!(
-                        "{at}.merge_on: `{key}` is not one of this step's mapped fields"
+                        "detect.probes[{index}].command: a probe must be read-only, and {}",
+                        verdict.reason
                     ));
                 }
+            }
+        }
+        if origin == Origin::User && profile.maturity == Maturity::Verified {
+            problems.push(
+                "maturity: `verified` is reserved for built-in profiles, whose recorded device output is tested with every build; use `community` or `experimental`"
+                    .into(),
+            );
+        }
+
+        for (kind, steps) in &profile.collect {
+            if !kind.is_single_row()
+                && !steps.is_empty()
+                && steps.iter().all(|step| step.merge_on.is_some())
+            {
+                problems.push(format!(
+                    "collect.{kind}: every step has `merge_on`, so nothing creates the rows they would be merged into; the first step must not have it"
+                ));
+            }
+            for (index, step) in steps.iter().enumerate() {
+                let at = format!("collect.{}[{index}]", kind.as_str());
+                check_step(
+                    &mut problems,
+                    &at,
+                    *kind,
+                    step,
+                    &profile,
+                    policy_usable.then_some(&policy),
+                    expressions,
+                );
             }
         }
 
@@ -595,13 +702,128 @@ impl Platform {
             exec_answers,
             config_answers,
             config_ignore,
+            unsolicited,
             banner,
             sysdescr,
+            probes,
             profile,
             origin,
             source,
         })
     }
+}
+
+/// Everything about one collection step that can be wrong without a device to try it on.
+fn check_step(
+    problems: &mut Vec<String>,
+    at: &str,
+    kind: Kind,
+    step: &CollectStep,
+    profile: &Profile,
+    policy: Option<&Policy>,
+    expressions: &Expressions,
+) {
+    let command = step.command.trim();
+    if command.is_empty() {
+        problems.push(format!("{at}.command: must not be empty"));
+    } else if let Some(policy) = policy {
+        // The collector refuses anything that is not read-only, so say it now.
+        let verdict = policy.classify(command);
+        if verdict.class != crate::policy::CommandClass::ReadOnly {
+            problems.push(format!(
+                "{at}.command: collectors may only run read-only commands, and {}; add a `policy.read_only` pattern that covers it or use another command",
+                verdict.reason
+            ));
+        }
+    }
+
+    match &step.parser {
+        Parser::Regex(pattern) => {
+            if let Some(regex) = compile_one(problems, &format!("{at}.parser.regex"), pattern)
+                && regex.capture_names().flatten().next().is_none()
+            {
+                problems.push(format!(
+                    "{at}.parser.regex: the pattern has no named groups, so its rows would have no fields; name what you capture, e.g. `(?P<name>\\S+)`"
+                ));
+            }
+        }
+        Parser::Ntc(name) if !command.is_empty() => {
+            if let Err(reason) =
+                parse::ntc_templates(profile.ntc_platform.as_deref(), command, name)
+            {
+                problems.push(format!("{at}.parser.ntc: {reason}"));
+            }
+        }
+        Parser::Textfsm(source) => {
+            if let Err(err) = nocturne_textfsm::Template::parse(source) {
+                problems.push(format!("{at}.parser.textfsm: {err}"));
+            }
+        }
+        Parser::Ntc(_) | Parser::Kv | Parser::Colon | Parser::Json(_) | Parser::Raw => {}
+    }
+
+    let model = kind.empty_row();
+    for (field, expression) in &step.map {
+        if let Err(reason) = check_field(&model, field) {
+            problems.push(format!("{at}.map.{field}: {reason}"));
+        }
+        if let Err(err) = expressions.check(expression) {
+            problems.push(format!("{at}.map.{field}: {err}"));
+        }
+    }
+    if let Some(condition) = &step.when
+        && let Err(err) = expressions.check(condition)
+    {
+        problems.push(format!("{at}.when: {err}"));
+    }
+    if let Some(key) = &step.merge_on {
+        if !step.map.is_empty() && !step.map.contains_key(key) {
+            problems.push(format!(
+                "{at}.merge_on: `{key}` is not one of this step's mapped fields"
+            ));
+        } else if step.map.is_empty() && !model.contains_key(key) {
+            problems.push(format!(
+                "{at}.merge_on: `{key}` is not a field of {kind} rows ({})",
+                field_list(&model)
+            ));
+        }
+    }
+}
+
+/// Whether `field` (possibly dotted: `counters.in_errors`) is something a row of the model has.
+fn check_field(
+    model: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<(), String> {
+    let (top, nested) = match field.split_once('.') {
+        Some((top, nested)) => (top, Some(nested)),
+        None => (field, None),
+    };
+    let Some(value) = model.get(top) else {
+        return Err(format!(
+            "the model has no field `{top}` here; the fields are {}",
+            field_list(model)
+        ));
+    };
+    match (nested, value) {
+        (None, _) => Ok(()),
+        // An empty object (`extra`) takes any key.
+        (Some(_), serde_json::Value::Object(inner)) if inner.is_empty() => Ok(()),
+        (Some(nested), serde_json::Value::Object(inner)) if inner.contains_key(nested) => Ok(()),
+        (Some(nested), serde_json::Value::Object(inner)) => Err(format!(
+            "`{top}` has no field `{nested}`; its fields are {}",
+            field_list(inner)
+        )),
+        (Some(_), _) => Err(format!("`{top}` is a plain value and has no sub-fields")),
+    }
+}
+
+fn field_list(model: &serde_json::Map<String, serde_json::Value>) -> String {
+    model
+        .keys()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn compile_one(problems: &mut Vec<String>, field: &str, pattern: &str) -> Option<Regex> {
@@ -660,6 +882,7 @@ pub struct ProfileSummary {
     pub os: String,
     pub description: String,
     pub origin: Origin,
+    pub maturity: Maturity,
     pub extends: Option<String>,
     /// What the profile can collect.
     pub collects: Vec<Kind>,
@@ -795,7 +1018,10 @@ impl Registry {
             .unwrap_or_default()
             .to_string();
 
-        let merged = match document.get("extends").and_then(Yaml::as_str) {
+        // A profile is only as checked as its own author says: a child does
+        // not become `verified` because its parent is.
+        let own_maturity = document.get("maturity").cloned();
+        let mut merged = match document.get("extends").and_then(Yaml::as_str) {
             Some(parent) if parent == id => {
                 return Err(fail(&id, "extends: a profile cannot extend itself".into()));
             }
@@ -807,6 +1033,12 @@ impl Registry {
             }
             None => document,
         };
+        if let Yaml::Mapping(map) = &mut merged {
+            match own_maturity {
+                Some(maturity) => map.insert("maturity".into(), maturity),
+                None => map.remove("maturity"),
+            };
+        }
 
         let profile: Profile =
             serde_yaml_ng::from_value(merged.clone()).map_err(|err| fail(&id, err.to_string()))?;
@@ -830,6 +1062,11 @@ impl Registry {
         self.platforms.get(id).cloned()
     }
 
+    /// Every loaded platform, abstract bases included, in load order.
+    pub fn platforms(&self) -> impl Iterator<Item = &Arc<Platform>> {
+        self.platforms.values()
+    }
+
     pub fn expressions(&self) -> Arc<Expressions> {
         self.expressions.clone()
     }
@@ -849,6 +1086,7 @@ impl Registry {
                     os: profile.os.clone(),
                     description: profile.description.clone(),
                     origin: platform.origin,
+                    maturity: profile.maturity,
                     extends: profile.extends.clone(),
                     collects: profile
                         .collect

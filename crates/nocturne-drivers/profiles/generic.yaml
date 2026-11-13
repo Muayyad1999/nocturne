@@ -1,0 +1,59 @@
+# The profile for a device nobody has identified yet, and for platforms that
+# have no profile of their own.
+#
+# It assumes as little as possible: something that prints a prompt and runs
+# the line it is sent. That is enough to log in, to look around in the
+# terminal and to send the probe commands that identify the platform
+# (`detect.probes` of the other profiles), after which the session carries
+# on with the profile that fits. It has no configuration mode and collects
+# nothing: Nocturne does not guess at commands on a device it cannot name.
+id: generic
+name: Generic CLI
+description: >-
+  Any device with a command-line prompt. Logs in and runs read-only commands;
+  no configuration mode and no structured data. Used to identify a device and
+  for platforms without a profile.
+maturity: community
+
+detect:
+  # Nothing selects it: it is what is left when no other profile matches.
+  priority: -100
+
+cli:
+  # A prompt is at most four words, starts with a name and ends in > # $ or %:
+  #   Router#   Router(config-if)#   <HUAWEI>   user@host:~$   [user@host ~]$
+  #   [admin@MikroTik] /interface>   RP/0/RP0/CPU0:ios#   FGT60F (global) #
+  #   (Aruba7010) #   * Slot-1 Stack.1 #   C:\>   ~ $
+  # `host` is the part that stays the same while the rest (path, mode) changes.
+  prompt: '^[\[(<*]?\s?(?P<host>[A-Za-z0-9][\w.\-@/]{0,63})\S{0,64}(?:\s\S{1,64}){0,3}\s?[>#$%]\s?$|^[~/]\S{0,64}\s[$#]\s?$'
+  login:
+    username_prompt: '(?i)(?:user ?name|login|user):\s*$'
+    password_prompt: '(?i)pass(?:word|code)?:\s*$'
+  # Paging cannot be switched off without knowing the platform; ask for the next page.
+  pager:
+    pattern: '(?i)^\s*(?:-{2,}\s?\(?more(?:\s\d+%)?\)?\s?-{2,}|<-{2,}\s?more\s?-{2,}>)'
+    key: ' '
+  # The ways the common platforms say "no", as far as they can be told from
+  # ordinary output without knowing which platform this is.
+  errors:
+    - '^\s*%\s?(?:Invalid|Incomplete|Ambiguous|Unknown|Unrecognized|Bad|Error)\b'
+    - '(?i)^(?:syntax error|unknown command|invalid command|invalid input|unrecognized command|bad command name)\b'
+    - '(?i)^error: \S'
+    - '(?i)^(?:-?[\w.]+: )+(?:command )?not found\s*$'
+    - '(?i)^\w+: command not found: '
+  timeout_s: 30
+
+config:
+  syntax: flat
+
+policy:
+  read_only:
+    - '^(show|display|get|print|list|ping|traceroute|tracert|dir|more|cat|ls|pwd|whoami|uptime|uname|df|free)\b'
+    - '^terminal (length|width|pager)\b'
+    - '^(screen-length|set cli screen-length|set cli screen-width)\b'
+  dangerous:
+    - '^(reload|reboot|restart|shutdown|halt|poweroff|format|erase|delete|rm|mkfs|dd)\b'
+    - '^write erase\b'
+    - '^request system (reboot|halt|power-off|zeroize)\b'
+    - '^/?system (reboot|shutdown|reset-configuration)\b'
+    - '^(factory-reset|reset saved-configuration|execute factoryreset)\b'

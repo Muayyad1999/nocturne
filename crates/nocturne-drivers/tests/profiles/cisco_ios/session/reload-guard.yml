@@ -1,0 +1,29 @@
+description: >-
+  Arming and cancelling the dead-man switch (`config.guard`): `reload in 5`
+  asks whether to save and then to confirm; the driver answers "no" and Enter.
+  No enable secret is configured on the credential, and none is needed here.
+  Scripted from how IOS behaves; no device was recorded.
+credentials: {username: admin, password: cisco}
+greeting: "R1#"
+dialogue:
+  - recv: terminal length 0
+    send: "terminal length 0\r\nR1#"
+  - recv: terminal width 511
+    send: "terminal width 511\r\nR1#"
+  - recv: reload in 5
+    send: "reload in 5\r\n\r\nSystem configuration has been modified. Save? [yes/no]: "
+  - recv: "no"
+    send: "no\r\nReload scheduled for 00:12:20 UTC Mon Mar 1 1993 (in 5 minutes) by admin on vty0 (10.0.0.5)\r\nReload reason: Reload Command\r\nProceed with reload? [confirm]"
+  - recv: ""
+    send: "\r\nR1#"
+  - recv: reload cancel
+    send: "reload cancel\r\nR1#\r\n\r\n***\r\n*** --- SHUTDOWN ABORTED ---\r\n***\r\n\r\n"
+  - recv: show reload
+    send: "show reload\r\nNo reload is scheduled.\r\nR1#"
+actions:
+  - start: {hostname: R1, prompt: "R1#"}
+    mode: privileged
+  - exec: reload in 5
+  - exec: reload cancel
+  - exec: show reload
+    output: No reload is scheduled.

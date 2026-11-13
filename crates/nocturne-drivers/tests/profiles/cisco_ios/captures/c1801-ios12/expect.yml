@@ -1,0 +1,16 @@
+kinds:
+  facts:
+    rows:
+      - hostname: stud-adsl
+        vendor: Cisco
+        model: "1801"
+        os: IOS
+        os_version: 12.4(6)T2
+        serial: FHK102KKKKK
+        # 20 weeks, 5 days, 12 hours, 15 minutes
+        uptime_s: 12572100
+        extra:
+          image: flash:/c180x-advipservicesk9-mz.124-6.T2.bin
+          software_image: C180X-ADVIPSERVICESK9-M
+          reload_reason: Reload Command
+          config_register: "0x2102"

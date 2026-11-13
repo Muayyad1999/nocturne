@@ -1,0 +1,56 @@
+kinds:
+  neighbors:
+    count: 7
+    rows:
+      - device: desktop-switch
+        protocol: cdp
+        local_interface: GigabitEthernet1/0/16
+        remote_interface: GigabitEthernet0/1
+        platform: cisco WS-C2960-8TC-L
+        address: 10.1.1.2
+        capabilities: Switch IGMP
+      - device: ce-router
+        protocol: cdp
+        local_interface: GigabitEthernet1/0/22
+        remote_interface: GigabitEthernet0/0
+        platform: Cisco 3825
+        address: 10.1.1.1
+        capabilities: Router Switch IGMP
+      - device: server
+        protocol: cdp
+        local_interface: GigabitEthernet1/0/19
+        # another platform's port: kept as advertised, not expanded to "Ethernet0"
+        remote_interface: eth0
+        platform: VMware
+        address: 10.1.1.232
+        capabilities: Host
+      - device: vIOS-L2-1
+        protocol: cdp
+        local_interface: GigabitEthernet0/3
+        remote_interface: GigabitEthernet0/3
+        platform: Cisco
+        address: ""
+      # LLDP: "System Name - not advertised", so the chassis id stands in for the name;
+      # "Port id: 502" is an index, so the port description is the interface.
+      - device: 7c25.86c9.aaaa
+        protocol: lldp
+        local_interface: GigabitEthernet1/0/2
+        remote_interface: ge-0/0/0.0
+        platform: "Juniper Networks, Inc. ex2200-24t-4g , version 12.3R9.4 Build date: 2015-02-12 11:25:30 UTC"
+        address: ""
+        capabilities: B,R
+      # "Port id" is the neighbour's MAC address; its port is "Port Description: 13".
+      - device: HpSwitch
+        protocol: lldp
+        local_interface: GigabitEthernet1/0/1
+        remote_interface: "13"
+        address: 192.168.1.81
+        capabilities: B
+      - device: 44:48:c1:c4:dd:dd
+        protocol: lldp
+        local_interface: GigabitEthernet1/0/9
+        remote_interface: eth0
+        platform: "ArubaOS (MODEL: 225), Version 6.4.2.6-4.1.1.6 (50009)"
+        address: 192.168.1.40
+        # "Enabled Capabilities: W" (the system could also bridge)
+        capabilities: W

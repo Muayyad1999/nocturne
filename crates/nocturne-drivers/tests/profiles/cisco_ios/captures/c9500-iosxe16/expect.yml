@@ -1,0 +1,19 @@
+kinds:
+  facts:
+    rows:
+      - hostname: Switch-Hostname
+        vendor: Cisco
+        model: C9500-48Y4C
+        os: IOS-XE
+        os_version: 16.12.4
+        serial: CAT23XXXXXX
+        # 7 weeks, 17 hours, 14 minutes
+        uptime_s: 4295640
+        extra:
+          image: flash:packages.conf
+          software_image: CAT9K_IOSXE
+          reload_reason: Reload Command
+          base_mac: a0:b4:39:00:00:e0
+          # Two chassis (a StackWise Virtual pair); the capture anonymises both serials alike.
+          stack_models: C9500-48Y4C, C9500-48Y4C
+          stack_serials: CAT23XXXXXX, CAT23XXXXXX

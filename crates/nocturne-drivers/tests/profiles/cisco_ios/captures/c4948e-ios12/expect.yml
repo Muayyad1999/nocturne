@@ -1,0 +1,16 @@
+kinds:
+  facts:
+    rows:
+      - hostname: router1
+        vendor: Cisco
+        model: WS-C4948E
+        os: IOS
+        os_version: 12.2(54)SG1
+        serial: CAT1451S15C
+        # 2 years, 31 weeks, 6 days, 9 hours, 55 minutes (a year counted as 365 days)
+        uptime_s: 82374900
+        extra:
+          image: bootflash:cat4500e-entservicesk9-mz.122-54.SG1.bin
+          software_image: cat4500e-ENTSERVICESK9-M
+          reload_reason: reload
+          config_register: "0x2102"

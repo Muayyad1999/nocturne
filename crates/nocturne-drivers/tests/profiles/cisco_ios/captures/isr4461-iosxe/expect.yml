@@ -1,0 +1,33 @@
+kinds:
+  interfaces:
+    count: 3
+    rows:
+      - name: TenGigabitEthernet0/1
+        admin_up: true
+        oper_up: false
+        mtu: 1500
+        # "address is 74ad.abcd.dcba (bia 74ad.abcd.abcd)": the address in use
+        mac: 74:ad:ab:cd:dc:ba
+        kind: SFP-Plus management port
+        # "Unknown, Unknown, link type is auto"
+        duplex: ""
+        speed_bps: null
+        ipv4: []
+      - name: GigabitEthernet0/0/0
+        # "is administratively down"
+        admin_up: false
+        oper_up: false
+        ipv4: [111.222.0.37/30]
+        mac: c4:f7:d5:14:69:00
+        kind: ISR4461-4x1G-2xTG
+        # "Full Duplex, 1000Mbps"
+        duplex: full
+        speed_bps: 1000000000
+        counters: {in_packets: 49132, in_octets: 9286676, out_packets: 49347, out_octets: 7905236, in_errors: 0, out_errors: 0}
+      - name: TenGigabitEthernet0/0/13
+        admin_up: true
+        oper_up: false
+        mac: 4c:77:ab:cd:12:12
+        kind: 12xGE-2x10GE-FIXED
+        duplex: full
+        speed_bps: 10000000000

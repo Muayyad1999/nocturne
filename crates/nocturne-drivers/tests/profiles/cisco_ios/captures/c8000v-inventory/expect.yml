@@ -1,0 +1,15 @@
+kinds:
+  inventory:
+    count: 3
+    rows:
+      - name: Chassis
+        description: Cisco Catalyst 8000V Edge Chassis
+        part_id: C8000V
+        serial: 9XLWRY40A2V
+      - name: module R0
+        description: Cisco Catalyst 8000V Edge Route Processor
+        serial: JAB1303001C
+      - name: module F0
+        description: Cisco Catalyst 8000V Edge Embedded Services Processor
+        part_id: C8000V
+        serial: ""

@@ -1,0 +1,138 @@
+# Shared behaviour of command lines modelled on Cisco IOS.
+#
+# Abstract (the id starts with `_`): it cannot be chosen for a device. A
+# platform profile says `extends: _cli_ios_like` and then states only what is
+# different: its detection, its paging commands, its collectors. Lists are
+# replaced as a whole by a child, maps are merged key by key.
+#
+# What makes a CLI "IOS-like":
+#   * prompts are `host>` (unprivileged), `host#` (privileged) and
+#     `host(config-…)#` (configuration), with nothing else on the line;
+#   * `enable` raises the privilege level and may ask for a password;
+#   * configuration is entered with `configure terminal` and left with `end`;
+#   * the parser's complaints start with `%`.
+id: _cli_ios_like
+name: IOS-style CLI
+description: >-
+  Base for platforms whose command line follows Cisco IOS conventions
+  (prompts, enable, configure terminal, % errors). Not selectable by itself.
+
+cli:
+  # host            = letters, digits, dot, dash, underscore; IOS shortens it to 20 characters in config mode
+  # (mode)          = only in configuration: (config), (config-if-range), (dhcp-config), (ca-trustpoint), …
+  # no spaces anywhere, so an output line is not taken for a prompt
+  prompt: '^(?P<host>[A-Za-z0-9][\w.\-]{0,62})(?:\([\w.\-:+/]{1,40}\))?[>#]\s?$'
+  user_prompt: '>\s?$'
+  config_prompt: '\([^()\s]+\)#\s?$'
+  enable:
+    command: enable
+    password_prompt: '(?i)password:\s*$'
+  login:
+    username_prompt: '(?i)(?:user ?name|login):\s*$'
+    password_prompt: '(?i)password:\s*$'
+    failure: '(?i)(?:% ?(?:login invalid|authentication failed|bad passwords|access denied|authorization failed)|login incorrect|permission denied)'
+  init:
+    - terminal length 0
+    - terminal width 511
+  # Only met when `terminal length 0` was refused; space asks for the next page.
+  pager:
+    pattern: '^\s*--\s?More\s?--'
+    key: ' '
+  errors:
+    # What the parser says, with or without a space after the percent sign,
+    # optionally behind a protocol tag ("% BGP: Error …"). Log messages
+    # ("%LINK-3-UPDOWN: …") have a facility-severity-mnemonic tag and are not matched.
+    - '^%\s?(?:[A-Za-z]+:\s)?(?:Invalid|Incomplete|Ambiguous|Unknown|Unrecognized|Unrecognised|Bad|Illegal|Error|Cannot|Can''t|Could not|Unable|Failed|Failure|Authorization failed|Permission denied|Access denied|Not allowed|Not supported|Unsupported|No such|Type ")'
+    # A refusal phrased as a sentence: "% 10.1.1.0 overlaps with Vlan10",
+    # "%Default VLAN 1 may not be deleted.", "% LLDP is not enabled".
+    # Informational notes that also start with % ("% Access VLAN does not
+    # exist. Creating vlan 30", "%Warning: …") are not refusals.
+    - '^%\s?[\w.''"/()\-]+\s.*?(?:\bnot (?:active|enabled|supported|allowed|permitted|configured|found|available|valid|running|possible)\b|\bis not (?:a|an|in|on)\b|does not exist\.?\s*$|\balready (?:exists|in use|configured|assigned|defined)\b|\boverlaps with\b|\bconflicts with\b|\bis invalid\b|\bout of range\b|\bmust be\b|\bmay not be\b|\bcannot be\b|\bcan not be\b|\bfailed\b|\brejected\b)'
+    - '^Command rejected\b'
+    - '^Command authorization failed'
+    - '^startup-config is not present'
+  answers:
+    - {prompt: '\[confirm\]\s*$', answer: ''}
+    - {prompt: 'Destination filename \[[^\]]*\]\?\s*$', answer: ''}
+    - {prompt: 'Source filename \[[^\]]*\]\?\s*$', answer: ''}
+    - {prompt: 'Address or name of remote host \[[^\]]*\]\?\s*$', answer: ''}
+    # Asked by `reload` when the running configuration is unsaved. "no": a
+    # reload must not quietly make an unreviewed configuration permanent.
+    - {prompt: 'System configuration has been modified\. Save\? \[yes/no\]:\s*$', answer: 'no'}
+  # A console line prints log messages whenever they occur, also right after
+  # the prompt: "*Mar  1 00:07:20.001: %SYS-5-CONFIG_I: Configured from console by console".
+  # A scheduled reload is announced to every line the same way:
+  # "***" / "*** --- SHUTDOWN in 0:05:00 ---" / "***".
+  unsolicited:
+    - '^[^%]{0,48}%[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+    - '^\*\*\*(?: --- SHUTDOWN .* ---)?\s*$'
+  timeout_s: 30
+
+config:
+  syntax: ios
+  enter: [configure terminal]
+  exit: [end]
+  # `write memory` asks nothing; `copy running-config startup-config` asks for a file name.
+  save: [write memory]
+  running: show running-config
+  startup: show startup-config
+  ignore:
+    - '^Building configuration'
+    - '^Current configuration\s*:'
+    - '^Using \d+ out of \d+ bytes'
+    - '^! Last configuration change at '
+    - '^! NVRAM config last updated at '
+    - '^! No configuration change since last restart'
+    # Printed before every command when `exec prompt timestamp` is configured.
+    - '^Load for five secs'
+    - '^Time source is '
+    # Tuned by the device itself as its clock drifts.
+    - '^ntp clock-period \d+'
+    # Log messages and reload announcements that a console line printed into the listing.
+    - '^[^%]{0,48}%[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+    - '^\*\*\*(?: --- SHUTDOWN .* ---)?\s*$'
+  # No `errors` here: configuration mode complains the way exec mode does, so `cli.errors` apply.
+  answers:
+    - {prompt: '\[confirm\]\s*$', answer: ''}
+    - {prompt: 'Destination filename \[[^\]]*\]\?\s*$', answer: ''}
+    # `crypto key generate rsa` when keys exist: keep the ones in use.
+    - {prompt: 'Do you really want to replace them\? \[yes/no\]:\s*$', answer: 'no'}
+    - {prompt: 'How many bits in the modulus \[\d+\]:\s*$', answer: ''}
+  secrets:
+    - '(?:secret|password) (?:\d+ )?(?P<secret>\S+)'
+    - 'snmp-server community (?P<secret>\S+)'
+    - '\bkey (?:\d+ )?(?P<secret>\S+)\s*$'
+    - 'key-string (?:\d+ )?(?P<secret>\S+)'
+    - 'md5 (?:\d+ )?(?P<secret>\S+)\s*$'
+    - 'pre-shared-key (?:\S+ )*?(?P<secret>\S+)\s*$'
+
+policy:
+  # These CLIs accept any unambiguous abbreviation, so the patterns do too.
+  read_only:
+    - '^sh(?:o(?:w)?)?\s+\S'
+    - '^pi(?:n(?:g)?)?\s+\S'
+    - '^tr(?:a(?:c(?:e(?:r(?:o(?:u(?:t(?:e)?)?)?)?)?)?)?)?\s+\S'
+    - '^dir\b'
+    - '^more\s+\S'
+    - '^ter(?:m(?:i(?:n(?:a(?:l)?)?)?)?)?\s+(?:len(?:g(?:t(?:h)?)?)?|wid(?:t(?:h)?)?|no mon(?:i(?:t(?:o(?:r)?)?)?)?|mon(?:i(?:t(?:o(?:r)?)?)?)?)\b'
+    - '^(?:en(?:a(?:b(?:l(?:e)?)?)?)?|disa(?:b(?:l(?:e)?)?)?|exit|end|logout)$'
+    - '^verify\s+\S'
+  dangerous:
+    # Every form of reload except `reload cancel`, which only removes a scheduled one.
+    - '^rel(?:o(?:a(?:d)?)?)?(?:\s*$|\s+[^cC\s])'
+    - '^er(?:a(?:s(?:e)?)?)?\b'
+    - '^wr(?:i(?:t(?:e)?)?)?\s+e(?:r(?:a(?:s(?:e)?)?)?)?\b'
+    - '^for(?:m(?:a(?:t)?)?)?\b'
+    - '^del(?:e(?:t(?:e)?)?)?\b'
+    - '^sq(?:u(?:e(?:e(?:z(?:e)?)?)?)?)?\b'
+    - '^(?:rmdir|mkdir)\b'
+    - '^conf(?:i(?:g(?:u(?:r(?:e)?)?)?)?)?\s+rep(?:l(?:a(?:c(?:e)?)?)?)?\b'
+    - '^boot\s+system\b'
+    - '^(?:test|hw-module|power|redundancy force-switchover|install|request platform software|factory-reset)\b'
+    - '^cl(?:e(?:a(?:r)?)?)?\s+(?:line|ip bgp|ip ospf|crypto|vtp)\b'
+    - '^deb(?:u(?:g)?)?\s+all\b'
+    # Copying onto the device: a file over the configuration, an image onto flash.
+    # Saving (`copy running-config startup-config`) is an ordinary change.
+    - '^copy\s+(?:tftp|ftp|scp|sftp|https?|rcp|usb\S*|flash|bootflash|disk\d|slot\d|nvram)\S*\s+\S'
+    - '^archive\s+download-sw\b'
+    - '^(?:tclsh|guestshell|bash|run bash|shell|start shell|app-hosting)\b'

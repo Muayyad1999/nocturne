@@ -1,0 +1,59 @@
+# Prompts as IOS and IOS-XE print them. No trailing space: IOS does not send one.
+exec:
+  - "Router#"
+  - "SW1#"
+  - "core-sw1.lab.example.com#"          # dots: a hostname that is an FQDN
+  - "SW_Access-01#"                      # underscore and dash
+  - "ISR4451-X#"
+  - "2960X-48-Stack#"                    # starts with a digit
+  - "Router-stby#"                       # the standby route processor of an IOS-XE pair
+  - "city-building-4-sw#"
+  - "SW1# "                              # tolerated: some terminal servers add a space
+user:
+  - "Router>"
+  - "SW1>"
+  - "core-sw1.lab.example.com>"
+  - "stud-adsl>"
+config:
+  - "Router(config)#"
+  - "SW1(config-if)#"
+  - "SW1(config-if-range)#"
+  - "R1(config-subif)#"
+  - "SW1(config-vlan)#"
+  - "SW1(config-line)#"
+  - "R1(config-router)#"
+  - "R1(config-router-af)#"
+  - "R1(config-std-nacl)#"
+  - "R1(config-ext-nacl)#"
+  - "R1(dhcp-config)#"                   # not every mode starts with "config"
+  - "R1(config-pmap-c)#"
+  - "R1(cfg-crypto-trans)#"
+  - "R1(ca-trustpoint)#"
+  - "R1(config-keychain-key)#"
+  - "SW1(vlan)#"                         # the old `vlan database` mode
+  - "core-sw1.lab.exampl(config)#"       # IOS cuts the hostname to 20 characters in config mode
+not_prompts:
+  - "Building configuration..."
+  - "Current configuration : 2048 bytes"
+  - " --More-- "
+  - "Password: "
+  - "Username: "
+  - "% Invalid input detected at '^' marker."
+  - "SW1#show running-config"            # the echo of a command
+  - "Destination filename [startup-config]? "
+  - "Proceed with reload? [confirm]"
+  - "rommon 1 >"                         # the boot monitor is not a CLI the driver can use
+  - "!"
+  - "#"
+  - "##########################"         # banner decoration
+  - " description <<< uplink >>>"
+  - "banner motd ^C Authorised access only! #"
+  - "ip access-list extended ALLOW-MGMT #"
+  - "Translating \"shwo\"...domain server (255.255.255.255)"
+  - "GigabitEthernet0/1 is up, line protocol is up (connected)"
+  - "*Mar  1 00:02:11.003: %SYS-5-CONFIG_I: Configured from console by console"
+hosts:
+  "Router#": Router
+  "core-sw1.lab.example.com>": core-sw1.lab.example.com
+  "SW_Access-01(config-if-range)#": SW_Access-01
+  "Router-stby#": Router-stby

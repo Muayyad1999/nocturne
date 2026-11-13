@@ -1,0 +1,11 @@
+kinds:
+  neighbors:
+    count: 1
+    rows:
+      - device: switchxxxxx
+        protocol: cdp
+        local_interface: GigabitEthernet0/3
+        remote_interface: GigabitEthernet0/8
+        platform: cisco WS-C3560X-24P
+        address: 1.1.1.1
+        capabilities: Switch IGMP

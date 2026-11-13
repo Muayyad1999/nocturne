@@ -1,0 +1,83 @@
+description: >-
+  A switch on a console line: it shows nothing until a key is pressed, asks for
+  a login, lands in user mode, needs `enable`, pages unless told not to, and
+  logs to the console. Scripted from how IOS behaves; no device was recorded.
+credentials: {username: admin, password: cisco, enable_secret: class}
+dialogue:
+  # Silence: the driver presses Enter to wake the line.
+  - recv: ""
+    send: "\r\n\r\nUser Access Verification\r\n\r\nUsername: "
+  - recv: admin
+    send: "admin\r\nPassword: "
+  - recv: cisco
+    send: "\r\n\r\nACC-SW-01>"
+  - recv: enable
+    send: "enable\r\nPassword: "
+  - recv: class
+    send: "\r\nACC-SW-01#"
+  - recv: terminal length 0
+    send: "terminal length 0\r\nACC-SW-01#"
+  - recv: terminal width 511
+    send: "terminal width 511\r\nACC-SW-01#"
+  - recv: show clock
+    send: "show clock\r\n*00:07:12.345 UTC Mon Mar 1 1993\r\nACC-SW-01#"
+  - recv: show vlan id 4000
+    send: "show vlan id 4000\r\nVLAN id 4000 not found in current VLAN database\r\nACC-SW-01#"
+  - recv: show nonsense
+    send: "show nonsense\r\n           ^\r\n% Invalid input detected at '^' marker.\r\n\r\nACC-SW-01#"
+  - recv: configure terminal
+    send: "configure terminal\r\nEnter configuration commands, one per line.  End with CNTL/Z.\r\nACC-SW-01(config)#"
+  - recv: interface GigabitEthernet1/0/2
+    send: "interface GigabitEthernet1/0/2\r\nACC-SW-01(config-if)#"
+  - recv: description spare
+    send: "description spare\r\nACC-SW-01(config-if)#"
+  - recv: switchport access vlan 30
+    # A note about a side effect, not a refusal: the change went in.
+    send: "switchport access vlan 30\r\n% Access VLAN does not exist. Creating vlan 30\r\nACC-SW-01(config-if)#"
+  - recv: end
+    # The console logs the change right behind the prompt, in the same breath.
+    send: "end\r\nACC-SW-01#\r\n*Mar  1 00:07:20.001: %SYS-5-CONFIG_I: Configured from console by admin on console\r\n"
+  - recv: write memory
+    send: "write memory\r\nBuilding configuration...\r\n[OK]\r\nACC-SW-01#"
+  - recv: show running-config
+    send: |-
+      show running-config
+      Building configuration...
+
+      Current configuration : 151 bytes
+      !
+      ! Last configuration change at 00:07:20 UTC Mon Mar 1 1993 by admin
+      !
+      hostname ACC-SW-01
+      !
+      interface GigabitEthernet1/0/2
+       description spare
+       switchport access vlan 30
+      !
+      ntp clock-period 22518364
+      end
+
+      ACC-SW-01#
+actions:
+  - start: {hostname: ACC-SW-01, prompt: "ACC-SW-01#", login_screen: User Access Verification}
+    mode: privileged
+  - exec: show clock
+    output: "*00:07:12.345 UTC Mon Mar 1 1993"
+  - exec: show vlan id 4000
+    output: "VLAN id 4000 not found in current VLAN database"
+  - exec: show nonsense
+    error: "% Invalid input detected at '^' marker."
+  - configure: [interface GigabitEthernet1/0/2, description spare, switchport access vlan 30]
+    mode: privileged
+  - save: true
+  - fetch_config: running
+    config: |
+      !
+      !
+      hostname ACC-SW-01
+      !
+      interface GigabitEthernet1/0/2
+       description spare
+       switchport access vlan 30
+      !
+      end

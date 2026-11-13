@@ -8,7 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# nocturne-textfsm and nocturne-transport are added once those crates land.
+# nocturne-transport stays out: sessions talk to the `Channel` trait, which the app implements.
+nocturne-textfsm.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

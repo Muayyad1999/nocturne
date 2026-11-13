@@ -1,0 +1,35 @@
+exec:
+  rejected:
+    # Cisco IOS and its relatives
+    - |
+      show nonsense
+                ^
+      % Invalid input detected at '^' marker.
+    - "% Incomplete command.\n"
+    # HPE Comware indents it
+    - " % Unrecognized command found at '^' position.\n"
+    # Huawei VRP
+    - "Error: Unrecognized command found at '^' position.\n"
+    # Junos
+    - |
+               ^
+      syntax error, expecting <command>.
+    - "unknown command.\n"
+    # RouterOS
+    - "bad command name show (line 1 column 1)\n"
+    # ProCurve
+    - "Invalid input: nonsense\n"
+    # shells
+    - "-bash: show: command not found\n"
+    - "sh: 1: show: not found\n"
+    - "zsh: command not found: show\n"
+  clean:
+    - |
+      GigabitEthernet0/1 is up, line protocol is up
+           0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+    - |
+      Error counters:
+        CRC errors: 0
+    - "Mar  6 09:12:44 host sshd[812]: error: kex_exchange_identification: Connection closed by remote host\n"
+    - "%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up\n"
+    - "Linux host 5.15.0-91-generic #101-Ubuntu SMP x86_64 GNU/Linux\n"

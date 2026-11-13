@@ -50,6 +50,50 @@ impl Kind {
             Kind::Inventory => "inventory",
         }
     }
+
+    /// Kinds that describe the device as a whole: one row, not a table.
+    pub fn is_single_row(self) -> bool {
+        matches!(self, Kind::Facts | Kind::Health)
+    }
+
+    /// A row of this kind with nothing in it. Its keys are the fields a
+    /// profile's `map` may fill; a field that is itself an object lists its
+    /// own fields (`counters`), or is empty when it takes any key (`extra`).
+    pub fn empty_row(self) -> serde_json::Map<String, serde_json::Value> {
+        let row = match self {
+            Kind::Facts => serde_json::to_value(Facts::default()),
+            Kind::Interfaces => serde_json::to_value(Interface::default()),
+            Kind::Neighbors => serde_json::to_value(Neighbor::default()),
+            Kind::Vlans => serde_json::to_value(Vlan::default()),
+            Kind::MacTable => serde_json::to_value(MacEntry::default()),
+            Kind::Arp => serde_json::to_value(ArpEntry::default()),
+            Kind::Routes => serde_json::to_value(Route::default()),
+            Kind::Health => serde_json::to_value(Health::default()),
+            Kind::Inventory => serde_json::to_value(InventoryItem::default()),
+        };
+        match row {
+            Ok(serde_json::Value::Object(row)) => row,
+            _ => serde_json::Map::new(),
+        }
+    }
+
+    /// The fields of this kind that name one of the device's own interfaces.
+    /// (A neighbour's `remote_interface` names a port of another device.)
+    pub fn interface_fields(self) -> &'static [&'static str] {
+        match self {
+            Kind::Interfaces => &["name"],
+            Kind::Neighbors => &["local_interface"],
+            Kind::Vlans => &["interfaces"],
+            Kind::MacTable | Kind::Arp | Kind::Routes => &["interface"],
+            Kind::Facts | Kind::Health | Kind::Inventory => &[],
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -370,6 +414,24 @@ mod tests {
         assert_eq!(interface.counters.in_errors, Some(12));
         assert_eq!(interface.counters.crc, None);
         assert_eq!(interface.counters.in_octets, Some(1_000_000_000));
+    }
+
+    #[test]
+    fn kinds_describe_their_rows() {
+        assert!(Kind::Facts.is_single_row() && Kind::Health.is_single_row());
+        assert!(!Kind::Interfaces.is_single_row());
+        let interface = Kind::Interfaces.empty_row();
+        assert!(interface.contains_key("name") && interface.contains_key("speed_bps"));
+        assert!(interface["counters"].get("in_octets").is_some());
+        let facts = Kind::Facts.empty_row();
+        assert_eq!(facts["extra"], json!({}), "extra takes any key");
+        for kind in Kind::ALL {
+            let row = kind.empty_row();
+            assert!(!row.is_empty(), "{kind}");
+            for field in kind.interface_fields() {
+                assert!(row.contains_key(*field), "{kind}.{field}");
+            }
+        }
     }
 
     #[test]

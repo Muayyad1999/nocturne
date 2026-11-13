@@ -1,0 +1,17 @@
+kinds:
+  arp:
+    count: 7
+    rows:
+      - ip: 172.16.233.229
+        mac: 00:00:0c:59:f8:92
+        interface: Ethernet0/0
+        # the router's own address
+        age: "-"
+      - ip: 172.16.168.254
+        mac: 00:00:0c:36:69:65
+        interface: Ethernet0/0
+        age: "9"
+      # "Internet  10.0.0.0  -  aabb.cc03.8200  SRP-A": no interface column
+      - ip: 10.0.0.0
+        mac: aa:bb:cc:03:82:00
+        interface: ""

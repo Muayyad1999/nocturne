@@ -1,0 +1,42 @@
+description: >-
+  Over SSH the device is already logged in and (with privilege 15) already in
+  privileged mode. `terminal length 0` is refused by this line's authorisation,
+  so the pager has to be driven; a configuration line is rejected and the
+  driver must stop there and leave configuration mode. Scripted, not recorded.
+credentials: {username: admin, password: cisco}
+greeting: "\r\nAuthorised access only!\r\n\r\ncore-sw1.lab.example.com#"
+dialogue:
+  - recv: terminal length 0
+    send: "terminal length 0\r\nCommand authorization failed.\r\n\r\ncore-sw1.lab.example.com#"
+  - recv: terminal width 511
+    send: "terminal width 511\r\ncore-sw1.lab.example.com#"
+  - recv: show vlan brief
+    send: "show vlan brief\r\n\r\nVLAN Name                             Status    Ports\r\n---- -------------------------------- --------- -------------------------------\r\n1    default                          active    Gi1/0/3, Gi1/0/4\r\n --More-- "
+  # The space bar asks for the next page; IOS wipes the pager text with backspaces.
+  - key: " "
+    send: "\b\b\b\b\b\b\b\b\b\b          \b\b\b\b\b\b\b\b\b\b10   Staff                            active    Gi1/0/1\r\n20   Guests                           active    Gi1/0/2\r\ncore-sw1.lab.example.com#"
+  - recv: configure terminal
+    send: "configure terminal\r\nEnter configuration commands, one per line.  End with CNTL/Z.\r\ncore-sw1.lab.exampl(config)#"
+  - recv: vlan 40
+    send: "vlan 40\r\ncore-sw1.lab.exampl(config-vlan)#"
+  - recv: name Lab
+    send: "name Lab\r\ncore-sw1.lab.exampl(config-vlan)#"
+  - recv: vlan 5000
+    send: "vlan 5000\r\n     ^\r\n% Invalid input detected at '^' marker.\r\n\r\ncore-sw1.lab.exampl(config-vlan)#"
+  # `name never-sent` must not be sent after the rejected line.
+  - recv: end
+    send: "end\r\ncore-sw1.lab.example.com#"
+actions:
+  - start: {hostname: core-sw1.lab.example.com, prompt: "core-sw1.lab.example.com#", login_screen: Authorised access only!}
+    mode: privileged
+  - exec: show vlan brief
+    output: |
+      VLAN Name                             Status    Ports
+      ---- -------------------------------- --------- -------------------------------
+      1    default                          active    Gi1/0/3, Gi1/0/4
+      10   Staff                            active    Gi1/0/1
+      20   Guests                           active    Gi1/0/2
+  - configure: [vlan 40, name Lab, vlan 5000, name never-sent]
+    failed_at: 2
+    error: "% Invalid input detected at '^' marker."
+    mode: privileged

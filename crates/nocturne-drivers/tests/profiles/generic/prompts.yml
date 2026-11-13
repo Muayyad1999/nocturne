@@ -1,0 +1,54 @@
+# Prompts of platforms that may have to be driven before they are identified.
+exec:
+  - "Router#"                               # Cisco IOS, Arista EOS, Dell, Ruckus …
+  - "Router>"                               # the generic profile has no notion of privilege
+  - "Router(config-if)#"
+  - "switch(config)# "                      # NX-OS adds a space
+  - "RP/0/RP0/CPU0:ios#"                    # IOS XR
+  - "ciscoasa/pri/act# "                    # ASA failover pair
+  - "<HUAWEI>"                              # Huawei VRP, HPE Comware user view
+  - "<Core-SW.1>"
+  - "user@junos-mx> "
+  - "user@junos-mx# "
+  - "admin@PA-220(active)> "                # PAN-OS HA member
+  - "FGT60F # "
+  - "FGT60F (global) # "                    # FortiGate with VDOMs
+  - "(Aruba7010) #"
+  - "* Slot-1 Stack.1 # "                   # Extreme with unsaved changes
+  - "[admin@MikroTik] > "
+  - "[admin@MikroTik] /interface> "
+  - "[admin@Core Router 1] > "              # a RouterOS identity with spaces
+  - "user@host:~$ "
+  - "root@OpenWrt:/etc/config# "
+  - "[user@host ~]$ "                       # RHEL family
+  - "host:~ # "                             # SUSE root
+  - "user@host ~ % "                        # zsh
+  - "bash-5.1$ "
+  - "~ $ "                                  # BusyBox
+  - "/ # "
+  - "C:\\>"                                 # Nocturne's lab hosts
+  - "PS C:\\Users\\admin> "
+  - "2960X-48-Stack#"
+not_prompts:
+  - "Password: "
+  - "login: "
+  - "Username: "
+  - "Last login: Thu Mar  6 09:12:44 2025 from 10.0.0.5"
+  - "Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-91-generic x86_64)"
+  - "  System load:  0.08               Processes:             123"
+  - "Building configuration..."
+  - " --More-- "
+  - "Are you sure you want to continue connecting (yes/no)? "
+  - "Do you want to see the software license? [Y/n]: "
+  - "> "                                    # a shell waiting for the rest of a quoted line
+  - "#"
+  - "The programs included with the Debian GNU/Linux system are free software; see #"
+  - ""
+hosts:
+  "Router(config-if)#": Router
+  "[admin@MikroTik] /interface> ": admin@MikroTik
+  "user@host:/var/log$ ": user@host
+  "[user@host ~]$ ": user@host
+  "<HUAWEI>": HUAWEI
+  "RP/0/RP0/CPU0:ios#": RP/0/RP0/CPU0
+  "C:\\>": C

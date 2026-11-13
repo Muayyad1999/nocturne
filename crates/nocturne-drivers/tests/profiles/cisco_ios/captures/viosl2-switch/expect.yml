@@ -1,0 +1,96 @@
+kinds:
+  interfaces:
+    count: 9
+    rows:
+      - name: GigabitEthernet0/0
+        description: ""
+        # "is reset, line protocol is down (notconnect)": not shut down, not up
+        admin_up: true
+        oper_up: false
+        # "Auto-duplex, Auto-speed": nothing negotiated
+        speed_bps: null
+        duplex: auto
+        mtu: 1500
+        mac: fa:16:3e:57:33:6f
+        ipv4: []
+        kind: iGbE
+        # not a switchport in the second capture
+        mode: ""
+        vlan: null
+        counters:
+          in_packets: 324
+          in_octets: 48614
+          out_packets: 703
+          out_octets: 62737
+          in_errors: 0
+          out_errors: 0
+          crc: 0
+          in_discards: 0
+          out_discards: 0
+          in_rate_bps: 0
+          out_rate_bps: 0
+      - name: GigabitEthernet0/1
+        description: to iosvl2-2
+        admin_up: true
+        oper_up: true
+        mac: fa:16:3e:4f:41:cc
+        # "Administrative Mode: trunk", "Trunking Native Mode VLAN: 1 (default)"
+        mode: trunk
+        vlan: 1
+        counters: {in_packets: 83, in_octets: 14855, out_packets: 15513, out_octets: 2510810}
+      - name: GigabitEthernet0/2
+        description: to iosvl2-4
+        admin_up: true
+        oper_up: true
+        mac: fa:16:3e:a3:3e:49
+        # "Operational Mode: static access", "Access Mode VLAN: 100 (PLC1)"
+        mode: access
+        vlan: 100
+        counters: {in_packets: 8677, in_octets: 1698461, out_packets: 420798, out_octets: 29058795, out_rate_bps: 1000}
+      - name: GigabitEthernet0/3
+        description: to iosvl2-3
+        mode: access
+        vlan: 101
+        counters: {in_octets: 1689698, out_octets: 29060539}
+      - name: GigabitEthernet1/0
+        mode: access
+        vlan: 110
+        counters: {in_octets: 1690235, out_octets: 29056035, out_rate_bps: 2000}
+      - name: Port-channel1
+        admin_up: true
+        oper_up: false
+        mac: fa:16:3e:4f:41:cc
+        kind: EtherChannel
+        speed_bps: null
+        counters: {in_packets: 85, in_octets: 7037, out_packets: 0, out_octets: 0}
+      - name: Loopback0
+        description: Loopback
+        admin_up: true
+        oper_up: true
+        mtu: 1514
+        mac: ""
+        kind: Loopback
+        # no duplex/speed line at all; "BW 8000000 Kbit/sec" is not a link rate
+        speed_bps: null
+        duplex: ""
+      - name: Vlan1
+        description: OOB Management
+        oper_up: true
+        ipv4: [10.255.0.16/16]
+        mac: fa:16:3e:57:80:01
+        kind: Ethernet SVI
+        speed_bps: null
+        # "0 output errors, 0 interface resets": no collision count on an SVI, and the
+        # bundled template only reads the line with one, so this stays unknown.
+        counters: {out_packets: 4, out_octets: 240, in_errors: 0, out_errors: null}
+      # The interface pasted in from an ASR 1001: a second row with the same name.
+      - name: GigabitEthernet0/2
+        description: Port
+        admin_up: false
+        oper_up: false
+        mac: 78:da:6e:af:3b:82
+        kind: ASR1001
+        # "Full Duplex, 1000Mbps"
+        duplex: full
+        speed_bps: 1000000000
+        counters: {in_packets: 0, in_octets: 0, out_packets: 0, out_octets: 0}

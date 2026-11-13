@@ -1,0 +1,279 @@
+# Cisco IOS and IOS-XE: Catalyst switches, ISR/ASR routers, and Nocturne's
+# own lab devices, which speak the same CLI.
+#
+# Prompts, enable, configuration mode, error patterns and the command policy
+# come from `_cli_ios_like`; this file adds what is Cisco's own. It is the
+# reference profile: the collectors below are each checked against real
+# device output under tests/profiles/cisco_ios/.
+id: cisco_ios
+name: Cisco IOS / IOS-XE
+vendor: Cisco
+os: IOS
+description: >-
+  Cisco IOS and IOS-XE routers and switches (Catalyst 2960 to 9000, ISR, ASR,
+  CSR/C8000V). Structured data is parsed with the ntc-templates library.
+extends: _cli_ios_like
+ntc_platform: cisco_ios
+maturity: verified
+
+detect:
+  banner:
+    # The SSH identification string of IOS and IOS-XE.
+    - 'SSH-(?:2\.0|1\.99|1\.5)-Cisco-1\.25'
+    # What a console or Telnet line shows before asking for a login.
+    - 'User Access Verification'
+  sysdescr:
+    - 'Cisco IOS Software'
+    - 'Cisco Internetwork Operating System Software'
+    - 'IOS \(tm\)'
+  sysobjectid:
+    # ciscoProducts. Other Cisco operating systems live here too; they are
+    # told apart by sysDescr, which outranks an object-id prefix.
+    - 1.3.6.1.4.1.9.1.
+  probes:
+    - command: show version
+      matches: 'Cisco IOS Software|Cisco Internetwork Operating System Software|IOS \(tm\)|Cisco IOS[ -]XE Software|Nocturne Virtual Software'
+  priority: 60
+
+config:
+  # The dead-man switch of IOS: a scheduled reload that is cancelled once the
+  # change is known to be good. If the change cuts the management path, the
+  # device reboots into its saved configuration by itself.
+  guard:
+    name: reload timer
+    arm: ['reload in {minutes}']
+    disarm: ['reload cancel']
+    effect: >-
+      The device reloads and comes back with its saved (startup)
+      configuration, undoing every change that was not saved.
+
+collect:
+  facts:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        hostname: HOSTNAME
+        os_version: VERSION
+        model: HARDWARE | first
+        serial: SERIAL | first
+        uptime_s: UPTIME | duration
+        extra.software_image: SOFTWARE_IMAGE
+        extra.reload_reason: RELOAD_REASON
+        extra.config_register: CONFIG_REGISTER
+        extra.base_mac: MAC_ADDRESS | first
+        # A stack lists every member.
+        extra.stack_models: "HARDWARE | join(', ') if HARDWARE | length > 1 else none"
+        extra.stack_serials: "SERIAL | join(', ') if SERIAL | length > 1 else none"
+    # What the template does not capture, read from the same output: which
+    # of the two operating systems this is, and who built the hardware.
+    - command: show version
+      parser: raw
+      map:
+        os: >-
+          'IOS-XE' if output is matching('IOS[ -]XE')
+          else 'IOS' if output is matching('Cisco IOS Software|IOS \(tm\)|Cisco Internetwork Operating System')
+          else output | regex_search('Software \(([A-Za-z]+)-')
+        vendor: >-
+          ((output | regex_search('(?m)^(\w+)\s+\S+\s+(?:\([^)]*\)\s+)?(?:processor\s+)?(?:\([^)]*\)\s+)?with\s+\d+K(?:/\d+K)?\s+bytes\s+of'))
+           or ('cisco' if 'Cisco IOS' in output else '')) | capitalize
+        model: output | regex_search('(?m)^\w+\s+(\S+)\s+(?:\([^)]*\)\s+)?(?:processor\s+)?(?:\([^)]*\)\s+)?with\s+\d+K(?:/\d+K)?\s+bytes\s+of')
+        extra.image: output | regex_search('(?m)^[Ss]ystem image file is "([^"]+)"')
+        extra.xe_version: output | regex_search('IOS XE Version:\s*(\S+)')
+
+  interfaces:
+    - command: show interfaces
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        description: DESCRIPTION
+        admin_up: "not LINK_STATUS is startingwith('administratively')"
+        oper_up: "PROTOCOL_STATUS is startingwith('up')"
+        # Only what the port negotiated or was set to. "Auto-speed" and
+        # "Unknown" are not speeds, and the BW figure of a loopback or an SVI
+        # is a routing metric, not a link rate.
+        speed_bps: SPEED | bps
+        duplex: DUPLEX | lower | regex_search('(full|half|auto)')
+        mtu: MTU
+        mac: MAC_ADDRESS | mac
+        ipv4: "[cidr(IP_ADDRESS, PREFIX_LENGTH)] if IP_ADDRESS else []"
+        kind: HARDWARE_TYPE
+        counters.in_packets: INPUT_PACKETS
+        counters.out_packets: OUTPUT_PACKETS
+        counters.in_errors: INPUT_ERRORS
+        counters.out_errors: OUTPUT_ERRORS
+        counters.in_discards: QUEUE_DROPS
+        counters.out_discards: QUEUE_OUTPUT_DROPS
+        counters.crc: CRC
+        counters.in_rate_bps: INPUT_RATE
+        counters.out_rate_bps: OUTPUT_RATE
+    # The byte counters, which the bundled template leaves out.
+    - command: show interfaces
+      parser:
+        textfsm: |
+          Value Required INTERFACE (\S+)
+          Value IN_OCTETS (\d+)
+          Value OUT_OCTETS (\d+)
+
+          Start
+            ^\S+\s+is\s+.+?,\s+line\s+protocol.*$$ -> Continue.Record
+            ^${INTERFACE}\s+is\s+.+?,\s+line\s+protocol
+            ^\s+\d+\s+packets\s+input,\s+${IN_OCTETS}\s+bytes
+            ^\s+\d+\s+packets\s+output,\s+${OUT_OCTETS}\s+bytes
+      map:
+        name: INTERFACE
+        counters.in_octets: IN_OCTETS
+        counters.out_octets: OUT_OCTETS
+      merge_on: name
+    # Layer 2 role of each port. Routers do not have the command.
+    - command: show interfaces switchport
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        mode: >-
+          'routed' if SWITCHPORT == 'Disabled'
+          else 'trunk' if 'trunk' in (ADMIN_MODE if MODE == 'down' else MODE)
+          else 'access' if 'access' in (ADMIN_MODE if MODE == 'down' else MODE)
+          else none
+        vlan: "NATIVE_VLAN if 'trunk' in (ADMIN_MODE if MODE == 'down' else MODE) else ACCESS_VLAN"
+      merge_on: name
+      optional: true
+    # Secondary addresses, which `show interfaces` does not show.
+    - command: show ip interface
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        ipv4: cidr(IP_ADDRESS, PREFIX_LENGTH)
+      merge_on: name
+      optional: true
+    - command: show ipv6 interface brief
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        # An interface without IPv6 is listed with the word "unassigned".
+        ipv6: IPV6_ADDRESS | reject('equalto', 'unassigned') | list
+      merge_on: name
+      optional: true
+
+  neighbors:
+    # Either protocol may be switched off; a device with neither is reported
+    # as a failure, with what the device said, rather than as "no neighbours".
+    - command: show cdp neighbors detail
+      parser: {ntc: auto}
+      map:
+        device: NEIGHBOR_NAME
+        local_interface: LOCAL_INTERFACE
+        remote_interface: NEIGHBOR_INTERFACE
+        platform: PLATFORM
+        address: MGMT_ADDRESS
+        capabilities: CAPABILITIES
+        protocol: "'cdp'"
+      optional: true
+    - command: show lldp neighbors detail
+      parser: {ntc: auto}
+      map:
+        device: NEIGHBOR_NAME or CHASSIS_ID
+        local_interface: LOCAL_INTERFACE
+        # The port id is the interface name for most neighbours. When it is
+        # a MAC address or a bare index, the port description is the name.
+        remote_interface: >-
+          NEIGHBOR_PORT_ID
+          if NEIGHBOR_PORT_ID and not NEIGHBOR_PORT_ID is matching('^[0-9a-fA-F]{4}(\.[0-9a-fA-F]{4}){2}$|^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$|^\d+$')
+          else (NEIGHBOR_INTERFACE or NEIGHBOR_PORT_ID)
+        platform: PLATFORM or NEIGHBOR_DESCRIPTION
+        address: MGMT_ADDRESS
+        capabilities: CAPABILITIES
+        protocol: "'lldp'"
+      optional: true
+
+  vlans:
+    - command: show vlan
+      parser: {ntc: auto}
+      map:
+        id: VLAN_ID
+        name: VLAN_NAME
+        status: STATUS
+        interfaces: INTERFACES
+
+  mac_table:
+    - command: show mac address-table
+      parser: {ntc: auto}
+      map:
+        mac: DESTINATION_ADDRESS | mac
+        vlan: VLAN_ID
+        interface: DESTINATION_PORT | first
+        kind: TYPE | lower
+      # The switch's own addresses ("CPU") are not hosts behind a port.
+      when: "DESTINATION_PORT | first | default('') | upper not in ['CPU', 'SWITCH', 'ROUTER', '']"
+
+  arp:
+    - command: show ip arp
+      parser: {ntc: auto}
+      map:
+        ip: IP_ADDRESS
+        mac: MAC_ADDRESS | mac
+        interface: INTERFACE
+        age: AGE
+      # An address that never answered has no entry worth the name.
+      when: MAC_ADDRESS is matching('^[0-9a-fA-F]{4}\.')
+
+  routes:
+    - command: show ip route
+      parser: {ntc: auto}
+      map: &ios_route
+        prefix: NETWORK ~ '/' ~ PREFIX_LENGTH
+        protocol: >-
+          ({'C': 'connected', 'L': 'local', 'S': 'static', 'R': 'rip', 'B': 'bgp',
+            'D': 'eigrp', 'O': 'ospf', 'i': 'isis', 'M': 'mobile', 'o': 'odr',
+            'H': 'nhrp', 'l': 'lisp', 'a': 'application', 'U': 'per-user static',
+            'P': 'periodic static'}[PROTOCOL]) or PROTOCOL
+        next_hop: NEXTHOP_IP
+        interface: NEXTHOP_IF
+        distance: DISTANCE
+        metric: METRIC
+        vrf: VRF
+    # The tables of every VRF. Older releases do not accept `vrf *`.
+    - command: show ip route vrf *
+      parser: {ntc: auto}
+      map: *ios_route
+      optional: true
+
+  health:
+    - command: show processes cpu
+      parser: {regex: 'CPU utilization for five seconds: (?P<five_seconds>\d+)%'}
+      map:
+        cpu_pct: five_seconds
+    - command: show processes memory sorted
+      parser: {regex: 'Processor Pool Total:\s+(?P<total>\d+)\s+Used:\s+(?P<used>\d+)'}
+      map:
+        memory_total: total
+        memory_used: used
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        uptime_s: UPTIME | duration
+    # Stackable switches; other models answer with a different command or not at all.
+    - command: show environment temperature
+      parser: {ntc: auto}
+      map:
+        temperature_c: INLET_TEMPERATURE_VALUE or SWITCH_TEMPERATURE or HOTSPOT_TEMPERATURE_VALUE
+      optional: true
+
+  inventory:
+    - command: show inventory
+      parser: {ntc: auto}
+      map:
+        name: NAME
+        description: DESCR
+        part_id: PID
+        serial: SN
+
+snmp:
+  cpu:
+    - 1.3.6.1.4.1.9.9.109.1.1.1.1.7   # cpmCPUTotal1minRev
+    - 1.3.6.1.4.1.9.2.1.57            # avgBusy1, releases before 12.2
+  memory_used:
+    - 1.3.6.1.4.1.9.9.48.1.1.1.5      # ciscoMemoryPoolUsed
+  memory_free:
+    - 1.3.6.1.4.1.9.9.48.1.1.1.6      # ciscoMemoryPoolFree
+  temperature:
+    - 1.3.6.1.4.1.9.9.13.1.3.1.3      # ciscoEnvMonTemperatureStatusValue

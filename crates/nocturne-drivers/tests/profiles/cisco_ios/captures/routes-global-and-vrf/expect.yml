@@ -1,0 +1,118 @@
+kinds:
+  routes:
+    # 35 next hops in the global table, 34 in the VRF table
+    count: 69
+    rows:
+      # "1.0.0.0/32 is subnetted" … "S 1.1.1.1 [1/0] via 212.0.0.1" and a second next hop below it
+      - prefix: 1.1.1.1/32
+        protocol: static
+        next_hop: 212.0.0.1
+        interface: ""
+        distance: 1
+        metric: 0
+        vrf: ""
+      - prefix: 1.1.1.1/32
+        protocol: static
+        next_hop: 192.168.0.1
+      - prefix: 2.2.2.0/24
+        protocol: static
+        next_hop: ""
+        interface: FastEthernet0/0.100
+      - prefix: 4.4.0.0/16
+        protocol: ospf
+        next_hop: 194.0.0.2
+        interface: FastEthernet0/0.100
+        distance: 110
+        metric: 20
+      # "D EX"
+      - prefix: 5.5.5.0/24
+        protocol: eigrp
+        next_hop: 10.0.1.2
+        interface: Serial0/0
+        distance: 170
+        metric: 2297856
+      - prefix: 6.6.0.0/16
+        protocol: bgp
+        next_hop: 195.0.0.1
+        interface: ""
+        distance: 200
+      # "i L2"
+      - prefix: 172.16.1.0/26
+        protocol: isis
+        next_hop: 10.0.1.2
+        interface: Serial0/0
+        distance: 115
+        metric: 10
+      - prefix: 10.0.1.0/24
+        protocol: connected
+        interface: Serial0/0
+      # "B 11.1.0.0/17 [200/0], 2w0d, Null0"
+      - prefix: 11.1.0.0/17
+        protocol: bgp
+        next_hop: ""
+        interface: Null0
+      - prefix: 13.14.128.0/17
+        protocol: ospf
+        interface: Null0
+      # the next hops are on the lines below the prefix
+      - prefix: 10.63.184.0/23
+        next_hop: 10.62.4.29
+        interface: TenGigabitEthernet1/15
+      - prefix: 10.63.184.0/23
+        next_hop: 10.62.3.29
+        interface: TenGigabitEthernet1/16
+      - prefix: 192.168.12.0/27
+        next_hop: 10.64.3.13
+        interface: Port-channel202
+      - prefix: 192.168.12.0/27
+        next_hop: 10.64.1.9
+        interface: Port-channel201
+      - prefix: 10.64.4.88/30
+        protocol: connected
+        interface: "Serial0/0/0:0"
+      # "O*E2 0.0.0.0/0 [110/1] via 194.0.0.2"
+      - prefix: 0.0.0.0/0
+        protocol: ospf
+        next_hop: 194.0.0.2
+        distance: 110
+        metric: 1
+        vrf: ""
+      - prefix: 194.0.0.0/16
+        protocol: connected
+        interface: FastEthernet0/0.100
+      # "Routing Table: TRI"
+      - prefix: 0.0.0.0/0
+        protocol: bgp
+        next_hop: 10.10.254.3
+        distance: 200
+        vrf: TRI
+      - prefix: 10.10.0.0/18
+        protocol: bgp
+        next_hop: ""
+        interface: Null0
+        vrf: TRI
+      - prefix: 10.10.5.1/32
+        protocol: local
+        interface: Vlan5
+        vrf: TRI
+      - prefix: 10.10.254.0/29
+        protocol: connected
+        interface: Vlan3101
+        vrf: TRI
+      # "B 10.20.0.0/16 [200/0] via 10.10.254.10 (AMB), 3w4d": the next hop is in another VRF
+      - prefix: 10.20.0.0/16
+        protocol: bgp
+        next_hop: 10.10.254.10
+        vrf: TRI
+      - prefix: 50.1.1.1/32
+        protocol: connected
+        interface: Loopback50
+        vrf: TRI
+      - prefix: 10.12.1.0/27
+        next_hop: 192.168.12.5
+        metric: 1000
+        vrf: TRI
+      - prefix: 10.12.1.0/27
+        next_hop: 192.168.12.1
+        metric: 1000
+        vrf: TRI

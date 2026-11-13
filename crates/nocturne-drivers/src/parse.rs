@@ -42,99 +42,210 @@ pub fn field_name(raw: &str) -> String {
 ///
 /// Each item starts with its index and optional flag letters, followed by
 /// `key=value` pairs that may wrap over several lines; a `;;;` introduces a
-/// comment. Rows get `index`, `flags` and `comment` in addition to the
-/// device's own properties (with `-` turned into `_`).
+/// comment, which may itself run over several lines. Rows get `index`,
+/// `flags` and `comment` in addition to the device's own properties (with
+/// `-` turned into `_`).
+///
+/// RouterOS 7 lists items that cannot be edited (dynamic routes, for one)
+/// without an index: those rows have an empty `index`. Its flag letters may
+/// be lower-case (`DAc`, `As`) and include `+`. Log lines echoed into the
+/// session (`17:20:06 echo: system,error …`) and the `Flags:` / `Columns:`
+/// legend are not part of any item.
 pub fn parse_kv(output: &str) -> Vec<Row> {
-    let mut items: Vec<(String, String, String)> = Vec::new(); // (index, body, comment)
+    let mut items: Vec<Item> = Vec::new();
+    // A comment met before the item it belongs to (table-style listings).
+    let mut pending_comment = String::new();
     for line in output.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || is_legend(trimmed) || is_log_echo(trimmed) {
             continue;
         }
-        let starts_item = trimmed
-            .split_once(char::is_whitespace)
-            .map(|(first, _)| first)
-            .or(Some(trimmed))
-            .is_some_and(|first| !first.is_empty() && first.chars().all(|c| c.is_ascii_digit()));
-        if starts_item {
-            let (index, rest) = trimmed
-                .split_once(char::is_whitespace)
-                .unwrap_or((trimmed, ""));
-            items.push((index.to_string(), String::new(), String::new()));
-            push_body(&mut items, rest);
-        } else if !items.is_empty() {
-            push_body(&mut items, trimmed);
+        // While an item has shown only its comment, everything up to its
+        // first property still belongs to that comment.
+        let in_comment = items
+            .last()
+            .is_some_and(|item| item.body.is_empty() && !item.comment.is_empty());
+        if !in_comment && let Some(mut item) = Item::start(trimmed) {
+            if !pending_comment.is_empty() && item.comment.is_empty() {
+                item.comment = std::mem::take(&mut pending_comment);
+            }
+            items.push(item);
+            continue;
         }
-        // Lines before the first item are the "Flags:" / "Columns:" legend.
+        match items.last_mut() {
+            Some(item) if in_comment && !starts_with_pair(trimmed) => {
+                item.comment.push(' ');
+                item.comment
+                    .push_str(trimmed.trim_start_matches(";;;").trim());
+            }
+            // A comment on a line of its own announces the next item.
+            _ if trimmed.starts_with(";;;") => {
+                pending_comment = trimmed.trim_start_matches(";;;").trim().to_string();
+            }
+            Some(item) => item.push(trimmed),
+            None => {}
+        }
     }
 
     items
         .into_iter()
-        .map(|(index, body, comment)| {
+        .filter_map(|item| {
+            let pairs = scan_pairs(&item.body);
+            // No property at all: a stray number or legend fragment, not an item.
+            if pairs.is_empty() {
+                return None;
+            }
             let mut row = Row::new();
-            row.insert("index".into(), Value::String(index));
-            let (flags, pairs) = split_flags(&body);
-            row.insert("flags".into(), Value::String(flags));
-            for (key, value) in scan_pairs(pairs) {
+            row.insert("index".into(), Value::String(item.index));
+            row.insert("flags".into(), Value::String(item.flags));
+            for (key, value) in pairs {
                 row.insert(field_name(&key), Value::String(value));
             }
-            if !comment.is_empty() && !row.contains_key("comment") {
-                row.insert("comment".into(), Value::String(comment));
+            if !item.comment.is_empty() && !row.contains_key("comment") {
+                row.insert("comment".into(), Value::String(item.comment));
             }
-            row
+            Some(row)
         })
         .collect()
 }
 
-fn push_body(items: &mut [(String, String, String)], text: &str) {
-    let Some((_, body, comment)) = items.last_mut() else {
-        return;
-    };
-    let (text, remark) = match text.split_once(";;;") {
-        Some((before, after)) => (before, Some(after.trim())),
-        None => (text, None),
-    };
-    if let Some(remark) = remark {
-        if !comment.is_empty() {
-            comment.push(' ');
+/// One listed item while its lines are being gathered.
+struct Item {
+    index: String,
+    flags: String,
+    /// The `key=value` text, joined over wrapped lines.
+    body: String,
+    comment: String,
+}
+
+impl Item {
+    /// Recognise the first line of an item: `7 DRS ;;; comment`,
+    /// `0 R name="ether1" …`, or without an index `DAc dst-address=…`.
+    fn start(line: &str) -> Option<Item> {
+        let (first, rest) = split_word(line);
+        let (index, rest) = if first.chars().all(|c| c.is_ascii_digit()) {
+            (first, rest)
+        } else {
+            ("", line)
+        };
+        let (flags, rest) = split_flags(rest);
+        let begins_item = rest.starts_with(";;;") || starts_with_pair(rest);
+        let recognised = if index.is_empty() {
+            // Without an index, only flag letters tell an item from a wrapped line.
+            !flags.is_empty() && begins_item
+        } else {
+            begins_item || rest.is_empty()
+        };
+        if !recognised {
+            return None;
         }
-        comment.push_str(remark);
+        let mut item = Item {
+            index: index.to_string(),
+            flags,
+            body: String::new(),
+            comment: String::new(),
+        };
+        item.push(rest);
+        Some(item)
     }
-    let text = text.trim();
-    if !text.is_empty() {
-        if !body.is_empty() {
-            body.push(' ');
+
+    /// Add a line (or the rest of the first line): properties, and a `;;;` remark if it has one.
+    fn push(&mut self, text: &str) {
+        let (text, remark) = match text.split_once(";;;") {
+            Some((before, after)) => (before, Some(after.trim())),
+            None => (text, None),
+        };
+        if let Some(remark) = remark {
+            if !self.comment.is_empty() {
+                self.comment.push(' ');
+            }
+            self.comment.push_str(remark);
         }
-        body.push_str(text);
+        let text = text.trim();
+        if !text.is_empty() {
+            if !self.body.is_empty() {
+                self.body.push(' ');
+            }
+            self.body.push_str(text);
+        }
     }
 }
 
-/// Split leading flag letters (`R`, `XS`, `D S`) from the `key=value` part.
-fn split_flags(body: &str) -> (String, &str) {
+fn split_word(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    match text.split_once(char::is_whitespace) {
+        Some((word, rest)) => (word, rest.trim_start()),
+        None => (text, ""),
+    }
+}
+
+/// Split leading flag letters (`R`, `XS`, `D S`, `DAc`, `As+`) from the rest of the line.
+fn split_flags(text: &str) -> (String, &str) {
     let mut flags = String::new();
-    let mut rest = body;
+    let mut rest = text.trim_start();
     loop {
-        let trimmed = rest.trim_start();
-        let Some((word, after)) = trimmed
-            .split_once(char::is_whitespace)
-            .or(Some((trimmed, "")))
-        else {
-            break;
-        };
+        let (word, after) = split_word(rest);
+        // Flag letters come in short groups and always include a capital;
+        // that keeps ordinary lower-case words from being taken for flags.
         let is_flags = !word.is_empty()
             && word.len() <= 6
-            && word.chars().all(|c| c.is_ascii_uppercase() || c == '*');
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || matches!(c, '*' | '+'))
+            && word
+                .chars()
+                .any(|c| c.is_ascii_uppercase() || matches!(c, '*' | '+'));
         if !is_flags {
-            rest = trimmed;
-            break;
+            return (flags, rest);
         }
         flags.push_str(word);
         rest = after;
-        if rest.is_empty() {
-            break;
-        }
     }
-    (flags, rest)
+}
+
+/// Whether the text begins with a `key=` token.
+fn starts_with_pair(text: &str) -> bool {
+    let (word, _) = split_word(text);
+    word.split_once('=').is_some_and(|(key, _)| is_key(key))
+}
+
+fn is_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
+}
+
+/// `Flags: X - disabled, …`, `Columns: …`, a table header, or a wrapped
+/// piece of the flag legend (`C - connect, S - static`).
+fn is_legend(line: &str) -> bool {
+    if line.starts_with("Flags:") || line.starts_with("Columns:") || line.starts_with('#') {
+        return true;
+    }
+    let mut chars = line.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(' '), Some('-'), Some(' ')) if letter.is_ascii_alphabetic() || matches!(letter, '*' | '+')
+    )
+}
+
+/// A log line echoed into the session: `17:20:06 echo: system,error,critical …`.
+fn is_log_echo(line: &str) -> bool {
+    let Some((before, _)) = line.split_once(" echo: ") else {
+        return false;
+    };
+    // The time of day, optionally after a date (`jan/02 17:20:06`).
+    before.split_whitespace().count() <= 2
+        && before.split_whitespace().next_back().is_some_and(|time| {
+            time.len() == 8
+                && time.chars().enumerate().all(|(at, c)| {
+                    if at == 2 || at == 5 {
+                        c == ':'
+                    } else {
+                        c.is_ascii_digit()
+                    }
+                })
+        })
 }
 
 /// Scan `key=value` pairs. Values may be quoted (with `\"` escapes) or bare;
@@ -153,11 +264,7 @@ fn scan_pairs(text: &str) -> Vec<(String, String)> {
             .rfind(char::is_whitespace)
             .map_or(position, |offset| position + offset + 1);
         let key = &text[key_start..equals];
-        if key.is_empty()
-            || !key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
-        {
+        if !is_key(key) {
             position = equals + 1;
             continue;
         }
@@ -198,12 +305,7 @@ fn next_key_start(text: &str, from: usize) -> Option<usize> {
     while let Some(equals) = text[search..].find('=').map(|offset| search + offset) {
         let before = &text[from..equals];
         if let Some(space) = before.rfind(char::is_whitespace) {
-            let key = &before[space + 1..];
-            if !key.is_empty()
-                && key
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
-            {
+            if is_key(&before[space + 1..]) {
                 return Some(from + space);
             }
         }
@@ -304,6 +406,138 @@ pub fn parse_json(output: &str, path: &str) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
+/// The bundled ntc-templates template(s) a step's parser stands for.
+///
+/// `name` is `auto` (resolve `command` through the ntc index for `platform`,
+/// the way ntc-templates does) or the name of one template. The error says
+/// what to change in the profile.
+pub fn ntc_templates(
+    platform: Option<&str>,
+    command: &str,
+    name: &str,
+) -> Result<Vec<&'static str>, String> {
+    use nocturne_textfsm::ntc;
+
+    let name = name.trim();
+    let names: Vec<&'static str> = if name == "auto" {
+        let Some(platform) = platform.filter(|platform| !platform.is_empty()) else {
+            return Err(
+                "`auto` needs the profile's `ntc_platform` (the platform's name in the ntc-templates index, e.g. `cisco_ios`)"
+                    .into(),
+            );
+        };
+        match ntc::find_all(platform, command) {
+            Some(names) => names.to_vec(),
+            None if ntc::platforms().iter().any(|known| known == platform) => {
+                return Err(format!(
+                    "ntc-templates has no template for `{command}` on `{platform}`; name one with `{{ntc: <template>}}` or use another parser"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "ntc-templates does not know the platform `{platform}` (set by `ntc_platform`); the nearest is `{}`",
+                    nearest(platform, ntc::platforms().iter().map(String::as_str))
+                ));
+            }
+        }
+    } else {
+        let name = name.strip_suffix(".textfsm").unwrap_or(name);
+        match ntc::template_names().find(|known| *known == name) {
+            Some(known) => vec![known],
+            None => {
+                return Err(format!(
+                    "there is no bundled ntc-templates template called `{name}`; the nearest is `{}`",
+                    nearest(name, ntc::template_names())
+                ));
+            }
+        }
+    };
+    for name in &names {
+        match ntc::template(name) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(format!("the template `{name}` is missing from the bundle")),
+            Err(err) => return Err(format!("the template `{name}` does not compile: {err}")),
+        }
+    }
+    Ok(names)
+}
+
+/// The candidate closest to `wanted` by edit distance, for "did you mean".
+fn nearest<'a>(wanted: &str, candidates: impl Iterator<Item = &'a str>) -> &'a str {
+    candidates
+        .min_by_key(|candidate| edit_distance(wanted, candidate))
+        .unwrap_or_default()
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = previous + usize::from(ca != *cb);
+            previous = row[j + 1];
+            row[j + 1] = substitution.min(previous + 1).min(row[j] + 1);
+        }
+    }
+    row[b.len()]
+}
+
+/// Run bundled ntc-templates over the output (see [`ntc_templates`] for `name`).
+pub fn parse_ntc(
+    platform: Option<&str>,
+    command: &str,
+    name: &str,
+    output: &str,
+) -> Result<Vec<Row>, String> {
+    use nocturne_textfsm::ntc;
+
+    let names = ntc_templates(platform, command, name)?;
+    let records = if name.trim() == "auto" {
+        // Through the index, so that commands covered by several templates are merged as upstream does.
+        ntc::parse(platform.unwrap_or_default(), command, output)
+            .map_err(|err| format!("{}: {err}", names.join(" + ")))?
+            .unwrap_or_default()
+    } else {
+        let mut records = Vec::new();
+        for name in &names {
+            let template = ntc::template(name)
+                .map_err(|err| format!("{name}: {err}"))?
+                .ok_or_else(|| format!("the template `{name}` is missing from the bundle"))?;
+            records.extend(
+                template
+                    .run(output)
+                    .map_err(|err| format!("{name}: {err}"))?,
+            );
+        }
+        records
+    };
+    Ok(records.into_iter().map(textfsm_row).collect())
+}
+
+/// Run a TextFSM template written in the profile.
+pub fn parse_textfsm(template: &str, output: &str) -> Result<Vec<Row>, String> {
+    let template = nocturne_textfsm::Template::parse(template).map_err(|err| err.to_string())?;
+    let records = template.run(output).map_err(|err| err.to_string())?;
+    Ok(records.into_iter().map(textfsm_row).collect())
+}
+
+fn textfsm_row(record: nocturne_textfsm::Record) -> Row {
+    record
+        .into_iter()
+        .map(|(name, value)| {
+            let value = match value {
+                nocturne_textfsm::Value::Text(text) => Value::String(text),
+                nocturne_textfsm::Value::List(items) => {
+                    Value::Array(items.into_iter().map(Value::String).collect())
+                }
+            };
+            (name, value)
+        })
+        .collect()
+}
+
 /// The whole output as a single row with one field, `output`.
 pub fn parse_raw(output: &str) -> Vec<Row> {
     let mut row = Row::new();
@@ -356,6 +590,75 @@ mod tests {
     }
 
     #[test]
+    fn routeros_v7_items_without_an_index_and_lower_case_flags() {
+        // Taken from the ntc-templates capture of `ip route print terse`: RouterOS 6 and 7
+        // lines side by side, with a log line echoed into the session.
+        let output = " 0 A S  dst-address=0.0.0.0/0 gateway=23.90.232.243 gateway-status=23.90.232.243 reachable via  pppoe-out1 distance=10 scope=30 target-scope=10 \n 1  Db  dst-address=0.0.0.0/0 gateway=23.90.232.243 distance=20 scope=40 target-scope=10 bgp-origin=incomplete received-from=23.90.232.243-peer \n17:20:06 echo: system,error,critical login failure for user admin from 65.160.140.13 via ssh\n 2  DS  dst-address=0.0.0.0/0 gateway=pppoe-out1 gateway-status=pppoe-out1 reachable distance=100 scope=30 target-scope=10 \nDAc dst-address=192.168.1.0/24 routing-table=main gateway=bridge-lan immediate-gw=bridge-lan distance=0 scope=10 suppress-hw-offload=no local-address=192.168.1.254%bridge-lan\nDAv dst-address=0.0.0.0/0 routing-table=main pref-src= gateway=pppoe-out1 immediate-gw=pppoe-out1 distance=100 scope=30 target-scope=10 vrf-interface=pppoe-out1 suppress-hw-offload=no\n";
+        let rows = parse_kv(output);
+        assert_eq!(rows.len(), 5, "{rows:#?}");
+        assert_eq!(rows[0]["flags"], "AS");
+        assert_eq!(
+            rows[0]["gateway_status"],
+            "23.90.232.243 reachable via  pppoe-out1"
+        );
+        assert_eq!(rows[1]["flags"], "Db");
+        assert_eq!(
+            rows[1]["received_from"], "23.90.232.243-peer",
+            "the echoed log line is not part of the item"
+        );
+        assert_eq!(
+            (&rows[2]["index"], &rows[2]["flags"]),
+            (&json!("2"), &json!("DS"))
+        );
+        assert_eq!(
+            (&rows[3]["index"], &rows[3]["flags"]),
+            (&json!(""), &json!("DAc"))
+        );
+        assert_eq!(rows[3]["dst_address"], "192.168.1.0/24");
+        assert_eq!(rows[3]["local_address"], "192.168.1.254%bridge-lan");
+        assert_eq!(rows[4]["flags"], "DAv");
+        assert_eq!(rows[4]["pref_src"], "");
+        assert_eq!(rows[4]["gateway"], "pppoe-out1");
+
+        // The same in `print detail` layout, with the legend wrapped by a narrow terminal.
+        let detail = "Flags: D - dynamic; X - disabled, I - inactive, A - active; \nc - connect, s - static, r - rip, b - bgp, o - ospf, d - dhcp; + - ecmp \n   DAd   dst-address=0.0.0.0/0 routing-table=main gateway=192.168.88.1 \n         immediate-gw=192.168.88.1%ether1 distance=1 scope=30 target-scope=10 \n\n   DAc+  dst-address=192.168.88.0/24 routing-table=main gateway=bridge \n         immediate-gw=bridge local-address=192.168.88.2%bridge distance=0 \n\n 0  As   dst-address=10.0.0.0/8 routing-table=main gateway=192.168.88.254 \n         immediate-gw=192.168.88.254%bridge distance=1 scope=30 \n";
+        let rows = parse_kv(detail);
+        assert_eq!(rows.len(), 3, "{rows:#?}");
+        assert_eq!(rows[0]["flags"], "DAd");
+        assert_eq!(rows[0]["immediate_gw"], "192.168.88.1%ether1");
+        assert_eq!(rows[1]["flags"], "DAc+");
+        assert_eq!(rows[1]["distance"], "0");
+        assert_eq!(
+            (&rows[2]["index"], &rows[2]["flags"]),
+            (&json!("0"), &json!("As"))
+        );
+    }
+
+    #[test]
+    fn routeros_comments_may_span_lines() {
+        // From the ntc-templates capture of `interface print detail`.
+        let output = " 6 D S name=\"lte1\" type=\"lte\" mtu=1500\n\n 7 DRS ;;; very very long\nmultiline description \n       name=\"pptp-out1\" type=\"pptp-out\" mtu=1450 actual-mtu=1450\n \n 8  RS ;;; Free Wi-Fi HTTPS\n       name=\"pptp-to-AH1100-HS\" type=\"pptp-out\" mtu=1596 \n";
+        let rows = parse_kv(output);
+        assert_eq!(rows.len(), 3, "{rows:#?}");
+        assert_eq!(rows[0]["flags"], "DS");
+        assert_eq!(rows[1]["comment"], "very very long multiline description");
+        assert_eq!(rows[1]["name"], "pptp-out1");
+        assert_eq!(rows[1]["actual_mtu"], "1450");
+        assert_eq!(rows[2]["comment"], "Free Wi-Fi HTTPS");
+        assert_eq!(rows[2]["name"], "pptp-to-AH1100-HS");
+
+        // A comment line that happens to start with a number or capitals is still a comment.
+        let tricky = " 0 R ;;; uplink\n3 switches behind this port\nTO BE REPLACED\n     name=\"ether1\" mtu=1500\n 1 X name=\"ether2\" mtu=1500\n";
+        let rows = parse_kv(tricky);
+        assert_eq!(rows.len(), 2, "{rows:#?}");
+        assert_eq!(
+            rows[0]["comment"],
+            "uplink 3 switches behind this port TO BE REPLACED"
+        );
+        assert_eq!(rows[1]["name"], "ether2");
+    }
+
+    #[test]
     fn property_sheets_become_one_row() {
         let output = "                   uptime: 2w3d4h5m6s\n                  version: 7.15.3 (stable)\n               build-time: 2024-07-24 10:39:01\n              free-memory: 1010.0MiB\n                 cpu-load: 5%\n             architecture-name: arm\n";
         let rows = parse_colon(output);
@@ -394,6 +697,60 @@ mod tests {
         assert_eq!(parse_json(output, "").unwrap().len(), 1);
         assert!(parse_json("no json", "").is_err());
         assert!(parse_json("{broken", "").is_err());
+    }
+
+    #[test]
+    fn ntc_templates_resolve_or_explain() {
+        assert_eq!(
+            ntc_templates(Some("cisco_ios"), "show version", "auto").unwrap(),
+            vec!["cisco_ios_show_version"]
+        );
+        assert_eq!(
+            ntc_templates(None, "anything", "cisco_ios_show_vlan.textfsm").unwrap(),
+            vec!["cisco_ios_show_vlan"]
+        );
+        let no_platform = ntc_templates(None, "show version", "auto").unwrap_err();
+        assert!(no_platform.contains("ntc_platform"), "{no_platform}");
+        let unknown_platform =
+            ntc_templates(Some("cicso_ios"), "show version", "auto").unwrap_err();
+        assert!(
+            unknown_platform.contains("nearest is `cisco_ios`"),
+            "{unknown_platform}"
+        );
+        let no_template = ntc_templates(Some("cisco_ios"), "show nonsense", "auto").unwrap_err();
+        assert!(
+            no_template.contains("no template for `show nonsense` on `cisco_ios`"),
+            "{no_template}"
+        );
+        let typo = ntc_templates(None, "", "cisco_ios_show_interface").unwrap_err();
+        assert!(
+            typo.contains("nearest is `cisco_ios_show_interfaces`"),
+            "{typo}"
+        );
+
+        let rows = parse_ntc(
+            Some("cisco_ios"),
+            "sh ip int br",
+            "auto",
+            "Interface              IP-Address      OK? Method Status                Protocol\nVlan1                  10.0.0.2        YES NVRAM  up                    up\n",
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["INTERFACE"], "Vlan1");
+        assert_eq!(rows[0]["IP_ADDRESS"], "10.0.0.2");
+
+        let inline = "Value NAME (\\S+)\nValue List TAGS (\\w+)\n\nStart\n  ^tag ${TAGS}\n  ^${NAME} done -> Record\n";
+        let rows = parse_textfsm(inline, "tag a\ntag b\nfirst done\n").unwrap();
+        assert_eq!(
+            Value::Object(rows[0].clone()),
+            json!({"NAME": "first", "TAGS": ["a", "b"]})
+        );
+        assert!(
+            parse_textfsm("Value X (\\S+)\n", "")
+                .unwrap_err()
+                .contains("line")
+        );
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
     }
 
     #[test]

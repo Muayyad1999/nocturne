@@ -1,0 +1,17 @@
+kinds:
+  mac_table:
+    # 6 unicast entries, one of them on port `Switch` (the supervisor), which is left out.
+    # The multicast section is not host location data and is not read.
+    count: 5
+    rows:
+      - mac: 00:00:0c:07:ac:04
+        vlan: 46
+        interface: TenGigabitEthernet5/1
+        kind: dynamic
+      - mac: ac:9b:0a:cc:ff:55
+        vlan: 46
+        interface: GigabitEthernet7/13
+      - mac: 00:2a:10:60:51:da
+        vlan: 48
+        interface: TenGigabitEthernet1/10
+        kind: dynamic

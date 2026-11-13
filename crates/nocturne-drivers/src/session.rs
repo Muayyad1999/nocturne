@@ -127,6 +127,9 @@ impl ConfigResult {
     }
 }
 
+/// How long the device must stay quiet after its first prompt for the login to count as done.
+const SETTLE: Duration = Duration::from_millis(150);
+
 enum Target<'a> {
     /// This device's prompt.
     Prompt,
@@ -153,6 +156,8 @@ pub struct CliSession {
     warnings: Vec<String>,
     /// The line most recently sent, to recognise a prompt it renamed.
     last_sent: String,
+    /// What the device showed before its first prompt (banner, message of the day).
+    login_screen: String,
 }
 
 impl CliSession {
@@ -174,29 +179,125 @@ impl CliSession {
             tap,
             warnings: Vec::new(),
             last_sent: String::new(),
+            login_screen: String::new(),
         };
         session.login(credentials, options.login_timeout).await?;
+        session.prepare(credentials, options).await?;
+        Ok(session)
+    }
+
+    /// Enter privileged mode and run the profile's `cli.init` commands, as far as `options` ask.
+    async fn prepare(
+        &mut self,
+        credentials: &Credentials,
+        options: &SessionOptions,
+    ) -> Result<(), DriverError> {
         if options.enable {
-            session.enable(credentials).await?;
+            self.enable(credentials).await?;
         }
         if options.init {
-            let init = session.platform.profile.cli.init.clone();
+            let init = self.platform.profile.cli.init.clone();
             for command in init {
                 // Failing to turn paging off is survivable: the pager is handled anyway.
-                if let Err(err) = session
-                    .roundtrip(&command, session.default_timeout(), false)
+                if let Err(err) = self
+                    .roundtrip(&command, self.default_timeout(), false)
                     .await
                 {
                     match err {
-                        DriverError::Timeout { .. } => session
-                            .warnings
-                            .push(format!("`{command}` did not complete")),
+                        DriverError::Timeout { .. } => {
+                            self.warnings.push(format!("`{command}` did not complete"))
+                        }
                         other => return Err(other),
                     }
                 }
             }
         }
-        Ok(session)
+        Ok(())
+    }
+
+    /// Drive the same session with another platform's profile, without
+    /// reconnecting: its prompt patterns, privileged mode and `cli.init`
+    /// commands. This is how a session opened with the permissive `generic`
+    /// profile continues once the device has been identified.
+    ///
+    /// The device is asked for a fresh prompt first. If that prompt is not
+    /// one the new profile recognises, the session goes back to the profile
+    /// it had and stays usable; the error says what the device showed. A
+    /// failure after that (a wrong enable secret, say) leaves the session
+    /// bound to the new profile.
+    pub async fn rebind(
+        &mut self,
+        platform: Arc<Platform>,
+        credentials: &Credentials,
+        options: &SessionOptions,
+    ) -> Result<(), DriverError> {
+        let previous = std::mem::replace(&mut self.platform, platform);
+        let previous_host = std::mem::take(&mut self.host);
+        let wait = self.default_timeout().min(options.login_timeout);
+        match self.sync_within(wait).await {
+            Ok(()) => {}
+            Err(err) => {
+                let shown = match &err {
+                    DriverError::Timeout { last_output, .. } => last_output
+                        .lines()
+                        .rev()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                    _ => String::new(),
+                };
+                let wanted = std::mem::replace(&mut self.platform, previous);
+                self.host = previous_host;
+                return Err(match err {
+                    DriverError::Timeout { seconds, .. } => DriverError::Timeout {
+                        waiting_for: format!(
+                            "waiting for a prompt that matches the `{}` profile; the device shows `{shown}`",
+                            wanted.id()
+                        ),
+                        seconds,
+                        last_output: shown,
+                    },
+                    other => other,
+                });
+            }
+        }
+        self.prepare(credentials, options).await
+    }
+
+    /// Send an empty line and wait for the prompt. Anything still arriving
+    /// from an earlier command is discarded, so the next command starts clean.
+    pub async fn sync(&mut self) -> Result<(), DriverError> {
+        self.sync_within(self.default_timeout()).await
+    }
+
+    async fn sync_within(&mut self, wait: Duration) -> Result<(), DriverError> {
+        self.drain().await;
+        self.screen.clear_current_line();
+        let newline = self.platform.profile.cli.newline.clone();
+        self.send_raw(newline.as_bytes()).await?;
+        let seen = self
+            .expect(
+                &[Target::Prompt],
+                wait,
+                "waiting for the prompt",
+                false,
+                false,
+            )
+            .await?;
+        self.adopt_prompt(&seen.line, self.host.is_empty());
+        Ok(())
+    }
+
+    /// What the device showed between connecting and its first prompt: the
+    /// banner, the message of the day, a "last login" line.
+    pub fn login_screen(&self) -> &str {
+        &self.login_screen
+    }
+
+    /// Start, replace or stop the live transcript of this session.
+    pub fn set_tap(&mut self, tap: Option<UnboundedSender<Transcript>>) {
+        self.tap = tap;
     }
 
     pub fn platform(&self) -> &Arc<Platform> {
@@ -407,12 +508,14 @@ impl CliSession {
                 Target::Pattern(&platform.username_prompt),
                 Target::Pattern(&platform.password_prompt),
             ];
+            // Interactive, so that a question the profile knows the answer to
+            // (RouterOS offering to show its licence, say) does not block the login.
             match self
                 .expect(
                     &targets,
                     Duration::from_millis(2500),
                     "logging in",
-                    false,
+                    true,
                     false,
                 )
                 .await
@@ -427,7 +530,20 @@ impl CliSession {
                         .cloned();
                     match seen.which {
                         0 => {
+                            // A banner line can end like a prompt. The real
+                            // prompt is the one the device stops after.
+                            if self.more_arrives(SETTLE, "logging in").await? {
+                                everything.push(seen.line);
+                                continue;
+                            }
                             self.adopt_prompt(&seen.line, true);
+                            self.login_screen = everything
+                                .iter()
+                                .map(|line| line.trim_end())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                                .trim_matches('\n')
+                                .to_string();
                             return Ok(());
                         }
                         1 => {
@@ -624,6 +740,16 @@ impl CliSession {
         loop {
             lines.extend(self.screen.take_lines());
             let line = self.screen.current_line();
+            if line.is_empty()
+                && let Some(which) = targets
+                    .iter()
+                    .position(|target| matches!(target, Target::Prompt))
+                && let Some(at) = self.prompt_before_unsolicited(&lines)
+            {
+                let line = lines[at].clone();
+                lines.truncate(at);
+                return Ok(Seen { lines, line, which });
+            }
             if !line.is_empty() {
                 if interactive {
                     if let (Some(pager), Some(spec)) =
@@ -693,6 +819,46 @@ impl CliSession {
                     }
                     self.screen.feed(&data);
                 }
+            }
+        }
+    }
+
+    /// A console line prints log messages whenever it likes, also right after
+    /// the prompt — which then is no longer the line being drawn. If the
+    /// output so far ends with our prompt followed only by such messages,
+    /// this is the index of that prompt line.
+    fn prompt_before_unsolicited(&self, lines: &[String]) -> Option<usize> {
+        let mut unsolicited = 0;
+        for (index, line) in lines.iter().enumerate().rev() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if self.platform.is_unsolicited(line) {
+                unsolicited += 1;
+                continue;
+            }
+            return (unsolicited > 0 && self.is_prompt(line)).then_some(index);
+        }
+        None
+    }
+
+    /// Wait briefly for more output and take it in. `false` when the device stays quiet.
+    async fn more_arrives(&mut self, within: Duration, doing: &str) -> Result<bool, DriverError> {
+        match tokio::time::timeout(within, self.channel.recv()).await {
+            Err(_) => Ok(false),
+            Ok(Err(err)) => Err(DriverError::Channel(err)),
+            Ok(Ok(None)) => Err(DriverError::Closed {
+                during: doing.to_string(),
+                partial: self.screen.current_line(),
+            }),
+            Ok(Ok(Some(data))) => {
+                if let Some(tap) = &self.tap {
+                    let _ = tap.send(Transcript::Received {
+                        text: String::from_utf8_lossy(&data).into_owned(),
+                    });
+                }
+                self.screen.feed(&data);
+                Ok(true)
             }
         }
     }
@@ -845,6 +1011,8 @@ pub(crate) mod testing {
         closed: bool,
         /// Emit data in tiny chunks to exercise reassembly.
         pub dribble: bool,
+        /// Behave like a console line: log leaving configuration mode right after the prompt.
+        pub console_logging: bool,
     }
 
     #[derive(PartialEq)]
@@ -889,6 +1057,7 @@ pub(crate) mod testing {
                 saved: false,
                 closed: false,
                 dribble: false,
+                console_logging: false,
             }
         }
 
@@ -1001,6 +1170,15 @@ pub(crate) mod testing {
         fn command(&mut self, command: &str) {
             if self.config_depth > 0 {
                 match command {
+                    "end" if self.console_logging => {
+                        self.config_depth = 0;
+                        // One write, as when the message is already queued behind the prompt.
+                        let hostname = self.hostname.clone();
+                        self.emit(&format!(
+                            "{hostname}#\r\n*Mar  1 00:07:20.001: %SYS-5-CONFIG_I: Configured from console by console\r\n"
+                        ));
+                        return;
+                    }
                     "end" => self.config_depth = 0,
                     "exit" => self.config_depth -= 1,
                     line if line.starts_with("interface ") => {
@@ -1132,6 +1310,7 @@ cli:
   errors: ['^% ']
   answers:
     - {prompt: 'Destination filename \[[^\]]*\]\?\s*$', answer: ""}
+  unsolicited: ['%[A-Z0-9_]+-[0-7]-[A-Z0-9_]+: ']
   timeout_s: 2
 config:
   syntax: ios
@@ -1403,6 +1582,145 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn log_messages_after_the_prompt_do_not_hide_it() {
+        let mut device = FakeDevice::ssh("SW1");
+        device.console_logging = true;
+        let mut session = open(device).await;
+        // The device answers `end` with its prompt and, in the same breath, a log line:
+        // the prompt is no longer the last thing on the screen.
+        let result = session
+            .configure(&["vlan 40".to_string(), "name Lab".to_string()])
+            .await
+            .unwrap();
+        assert!(result.ok());
+        assert_eq!(
+            (session.mode(), session.prompt()),
+            (Mode::Privileged, "SW1#")
+        );
+        let clock = session.exec("show clock").await.unwrap();
+        assert_eq!(
+            clock.output, "*12:00:00.000 UTC Mon Mar 1 1993",
+            "the log line is not taken for output of the next command"
+        );
+    }
+
+    /// A profile that knows nothing about the device: the default prompt, no enable, no init.
+    fn permissive() -> Arc<Platform> {
+        let mut registry = crate::profile::Registry::empty();
+        registry
+            .add(
+                "id: test_generic\nname: Generic\ncli:\n  timeout_s: 2\n",
+                crate::profile::Origin::Builtin,
+            )
+            .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rebinding_continues_the_session_with_another_profile() {
+        let mut session = CliSession::start(
+            Box::new(FakeDevice::ssh("SW1")),
+            permissive(),
+            &credentials(),
+            &SessionOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(session.platform().id(), "test_generic");
+        assert_eq!(session.prompt(), "SW1>");
+        assert_eq!(session.login_screen(), "Authorised access only!");
+        // The permissive profile neither enables nor turns paging off, but it can run commands.
+        assert_eq!(
+            session.exec("show clock").await.unwrap().output,
+            "*12:00:00.000 UTC Mon Mar 1 1993"
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        session.set_tap(Some(tx));
+        session
+            .rebind(platform(), &credentials(), &SessionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(session.platform().id(), "test_ios");
+        assert_eq!(
+            (session.mode(), session.hostname(), session.prompt()),
+            (Mode::Privileged, "SW1", "SW1#")
+        );
+        let mut sent = Vec::new();
+        while let Ok(entry) = rx.try_recv() {
+            if let Transcript::Sent { text } = entry {
+                sent.push(text);
+            }
+        }
+        assert_eq!(
+            sent,
+            [
+                "enable",
+                "********",
+                "terminal length 0",
+                "terminal width 511"
+            ],
+            "privileged mode and the init commands of the new profile"
+        );
+        let config = session.fetch_config(false).await.unwrap();
+        assert!(config.starts_with("!\nhostname X\n"), "{config}");
+
+        session.sync().await.unwrap();
+        assert_eq!(session.prompt(), "SW1#");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rebinding_to_a_profile_that_does_not_fit_keeps_the_session_usable() {
+        let mut session = CliSession::start(
+            Box::new(FakeDevice::ssh("SW1")),
+            permissive(),
+            &credentials(),
+            &SessionOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut registry = crate::profile::Registry::empty();
+        let routeros_like = registry
+            .add(
+                "id: odd\nname: Odd\ncli:\n  prompt: '^\\[\\w+@(?P<host>\\w+)\\] > $'\n  timeout_s: 2\n  init: ['never sent']\n",
+                crate::profile::Origin::Builtin,
+            )
+            .unwrap();
+        match session
+            .rebind(routeros_like, &credentials(), &SessionOptions::default())
+            .await
+        {
+            Err(DriverError::Timeout { waiting_for, .. }) => assert_eq!(
+                waiting_for,
+                "waiting for a prompt that matches the `odd` profile; the device shows `SW1>`"
+            ),
+            other => panic!("expected a timeout, got {other:?}"),
+        }
+        assert_eq!(session.platform().id(), "test_generic");
+        assert_eq!(session.hostname(), "SW1");
+        assert_eq!(
+            session.exec("show clock").await.unwrap().output,
+            "*12:00:00.000 UTC Mon Mar 1 1993"
+        );
+
+        // A wrong enable secret is reported, and the session stays on the profile that fitted.
+        let wrong = Credentials {
+            enable_secret: Some("nope".into()),
+            ..credentials()
+        };
+        let result = session
+            .rebind(platform(), &wrong, &SessionOptions::default())
+            .await;
+        assert!(
+            matches!(result, Err(DriverError::EnableFailed(_))),
+            "{result:?}"
+        );
+        assert_eq!(session.platform().id(), "test_ios");
+        assert_eq!(session.mode(), Mode::User);
     }
 
     #[test]

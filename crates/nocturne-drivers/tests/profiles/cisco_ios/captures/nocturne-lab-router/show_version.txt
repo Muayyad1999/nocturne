@@ -1,0 +1,15 @@
+Nocturne Virtual Software (NVOS-L3-UNIVERSALK9), Version 15.9(3)M, RELEASE SOFTWARE (fc1)
+Lab device simulated by Nocturne - not a vendor image
+ROM: Bootstrap program is NVOS boot loader
+
+R1 uptime is 2 hours, 14 minutes
+System returned to ROM by power-on
+System image file is "flash:nvos-l3-universalk9.15.9-3.M.bin"
+
+nocturne NV-ROUTER-4GE (revision 1.0) with 524288K/65536K bytes of memory.
+Processor board ID NV00000101
+4 Gigabit Ethernet interfaces
+255K bytes of non-volatile configuration memory.
+250880K bytes of flash memory at flash:.
+
+Configuration register is 0x2102

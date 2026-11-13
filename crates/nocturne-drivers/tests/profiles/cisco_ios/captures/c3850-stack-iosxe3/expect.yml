@@ -1,0 +1,19 @@
+kinds:
+  facts:
+    rows:
+      - hostname: city-building-4-sw
+        vendor: Cisco
+        model: WS-C3850-48U
+        os: IOS-XE
+        os_version: 03.06.05E
+        serial: FOC11111111
+        # 28 weeks, 1 day, 7 hours, 54 minutes
+        uptime_s: 17049240
+        extra:
+          image: flash:packages.conf
+          software_image: CAT3K_CAA-UNIVERSALK9-M
+          reload_reason: Reload Command
+          config_register: "0x102"
+          base_mac: f8:7b:20:11:aa:80
+          stack_models: WS-C3850-48U, WS-C3850-48U, WS-C3850-48U, WS-C3850-48U
+          stack_serials: FOC11111111, FCW22222222, FCW33333333, FCW44444444

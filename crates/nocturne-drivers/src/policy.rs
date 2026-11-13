@@ -34,6 +34,8 @@ pub struct Classification {
 pub struct Policy {
     read_only: Vec<Regex>,
     dangerous: Vec<Regex>,
+    /// The command line is a shell line (see [`Policy::shell`]).
+    shell: bool,
 }
 
 /// Output modifiers that write somewhere instead of just filtering.
@@ -51,7 +53,22 @@ impl Policy {
         Ok(Policy {
             read_only: compile(read_only)?,
             dangerous: compile(dangerous)?,
+            shell: false,
         })
+    }
+
+    /// Treat command lines as shell command lines (Linux and other platforms
+    /// that drop into a POSIX shell).
+    ///
+    /// On a network CLI a pipe only filters output. In a shell everything
+    /// after `|`, `&&`, `||` or `&` is another command, and substitutions and
+    /// redirections run or write things too. With this set, every command on
+    /// the line is classified by itself and the line is as risky as its
+    /// riskiest part; a command that redirects or substitutes is never
+    /// read-only.
+    pub fn shell(mut self, shell: bool) -> Policy {
+        self.shell = shell;
+        self
     }
 
     /// A conservative policy for platforms without a profile-specific one.
@@ -78,8 +95,17 @@ impl Policy {
             class: CommandClass::ReadOnly,
             reason: String::new(),
         };
-        for part in split_commands(command) {
-            let verdict = self.classify_one(part);
+        let parts = if self.shell {
+            split_shell(command)
+        } else {
+            split_commands(command)
+        };
+        for part in parts {
+            let verdict = if self.shell {
+                self.classify_shell(part)
+            } else {
+                self.classify_one(part)
+            };
             if verdict.class > worst.class || worst.reason.is_empty() {
                 worst = verdict;
             }
@@ -132,6 +158,78 @@ impl Policy {
             reason: "read-only command".into(),
         }
     }
+
+    /// One simple shell command: no pipes or control operators left in it.
+    fn classify_shell(&self, command: &str) -> Classification {
+        if self
+            .dangerous
+            .iter()
+            .any(|pattern| pattern.is_match(command))
+        {
+            return Classification {
+                class: CommandClass::Dangerous,
+                reason: format!("`{command}` is disruptive or destructive"),
+            };
+        }
+        if let Some(found) = SHELL_ACTIVE.iter().find(|token| command.contains(**token)) {
+            return Classification {
+                class: CommandClass::Change,
+                reason: format!(
+                    "`{command}` uses `{found}`, which can run another command or write a file"
+                ),
+            };
+        }
+        if !self
+            .read_only
+            .iter()
+            .any(|pattern| pattern.is_match(command))
+        {
+            return Classification {
+                class: CommandClass::Change,
+                reason: format!("`{command}` is not on this platform's read-only list"),
+            };
+        }
+        Classification {
+            class: CommandClass::ReadOnly,
+            reason: "read-only command".into(),
+        }
+    }
+}
+
+/// Shell syntax that runs a command or writes somewhere, wherever it appears
+/// (double quotes do not stop a substitution, so quoting is not considered).
+const SHELL_ACTIVE: &[&str] = &["`", "$(", "${", "<(", ">(", ">", "<"];
+
+/// Split a shell line into its simple commands: on `;`, newlines, `|`, `||`,
+/// `&&` and `&` outside quotes.
+fn split_shell(command: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, ch) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (quote, ch) {
+            (Some(open), _) if ch == open => quote = None,
+            // A backslash escapes the next character everywhere but in single quotes.
+            (None | Some('"'), '\\') => escaped = true,
+            (None, '"' | '\'') => quote = Some(ch),
+            (None, ';' | '\n' | '\r' | '|' | '&') => {
+                parts.push(&command[start..index]);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&command[start..]);
+    parts
+        .into_iter()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect()
 }
 
 /// Split on `;` and newlines outside quotes.
@@ -340,6 +438,74 @@ mod tests {
                 .classify("show configuration | save /var/tmp/x")
                 .class,
             CommandClass::Change
+        );
+    }
+
+    #[test]
+    fn shell_lines_are_judged_command_by_command() {
+        let policy = Policy::new(
+            &[
+                r"^uname(\s+-[a-z]+)*$",
+                r"^cat\s+/proc/[\w/]+$",
+                r"^grep\s+[\w .'|-]+$",
+            ],
+            &[r"^rm\b", r"^reboot\b"],
+        )
+        .unwrap()
+        .shell(true);
+        for command in [
+            "uname -a",
+            "cat /proc/meminfo",
+            "cat /proc/meminfo | grep MemTotal",
+            "uname -a; cat /proc/uptime",
+            "uname -a && cat /proc/uptime",
+            "cat /proc/meminfo | grep 'Mem|Swap'",
+        ] {
+            assert_eq!(
+                policy.classify(command).class,
+                CommandClass::ReadOnly,
+                "{command}"
+            );
+        }
+        for command in [
+            // What follows a pipe or a control operator is a command of its own.
+            "cat /proc/meminfo | sh",
+            "uname -a && touch /tmp/x",
+            "uname -a || touch /tmp/x",
+            "uname -a & touch /tmp/x",
+            // Substitutions run commands, redirections write files, even inside double quotes.
+            "uname -a $(touch /tmp/x)",
+            "uname `touch /tmp/x`",
+            "grep \"$(touch /tmp/x)\"",
+            "cat /proc/meminfo > /tmp/x",
+            "cat /proc/meminfo 2>/dev/null",
+            "cat < /proc/meminfo",
+            "FOO=1 uname -a",
+        ] {
+            assert_eq!(
+                policy.classify(command).class,
+                CommandClass::Change,
+                "{command}"
+            );
+        }
+        for command in [
+            "uname -a; rm -rf /tmp/x",
+            "cat /proc/meminfo | rm -rf /tmp/x",
+            "uname -a && reboot",
+        ] {
+            assert_eq!(
+                policy.classify(command).class,
+                CommandClass::Dangerous,
+                "{command}"
+            );
+        }
+        let verdict = policy.classify("cat /proc/meminfo | sh");
+        assert!(verdict.reason.contains("`sh`"), "{}", verdict.reason);
+        // The same line on a network CLI: the pipe is an output filter.
+        let cli = Policy::new(&[r"^cat\b"], &[r"^rm\b"]).unwrap();
+        assert_eq!(
+            cli.classify("cat /proc/meminfo | sh").class,
+            CommandClass::ReadOnly
         );
     }
 
