@@ -1,0 +1,135 @@
+/* The screen's own frame: the tab panel, the scan banner and the filter row. */
+
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-16);
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ banner */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-16);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+}
+
+.bannerText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.bannerDetail {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.bannerBar {
+  flex: 1;
+  max-width: 280px;
+}
+
+/* ------------------------------------------------------------------ filters */
+
+.findings {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.search {
+  flex: 1;
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.chip {
+  white-space: nowrap;
+}
+
+/* A select grows to fill a flex row unless it is told not to. */
+.state {
+  flex: none;
+  width: 150px;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.note[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.note[data-tone='ok'] {
+  color: var(--ok);
+}
+
+.note[data-tone='idle'] {
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------- groups */
+
+.group {
+  background: transparent;
+}
+
+.groupCount {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin: 0;
+  padding: var(--sp-8);
+  list-style: none;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  padding-bottom: var(--sp-8);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/* -------------------------------------------------- the screen's own column */
+
+/**
+ * The body renders inside another screen's tab panel, so it brings its own
+ * column rather than relying on `app/Page`.
+ */
+.screen,
+.loading {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-16);
+  min-height: 0;
+}

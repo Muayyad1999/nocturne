@@ -1,0 +1,255 @@
+/* The coverage band, and the coverage view behind it. */
+
+.band {
+  display: grid;
+  grid-template-areas:
+    'headline actions'
+    'tiles actions'
+    'reasons reasons'
+    'notes notes';
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-8) var(--sp-16);
+  padding: var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.band[data-tone='ageing'] {
+  border-left-color: var(--warn);
+}
+
+.band[data-tone='stale'] {
+  border-left-color: var(--crit);
+}
+
+.band[data-tone='idle'] {
+  border-left-color: var(--idle);
+}
+
+.headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  grid-area: headline;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+}
+
+.detail,
+.reasonChecks {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-regular);
+}
+
+.bandActions {
+  display: flex;
+  align-items: start;
+  grid-area: actions;
+}
+
+/* -------------------------------------------------------------------- tiles */
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  grid-area: tiles;
+  margin: 0;
+}
+
+.tile {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+}
+
+.tile[data-tone='crit'] {
+  border-color: var(--crit);
+  background: var(--crit-soft);
+}
+
+.tile[data-tone='ok'] {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.tile[data-tone='idle'] {
+  border-color: var(--line-strong);
+  background: var(--idle-soft);
+}
+
+.tileValue {
+  order: 0;
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-16);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.tileLabel {
+  order: 1;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* ------------------------------------------------------------------ reasons */
+
+.reasons {
+  grid-area: reasons;
+}
+
+.reasonsTitle,
+.lead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0 0 var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lead {
+  margin-bottom: var(--sp-8);
+  font-size: var(--fs-12);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.reasonList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reason {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: var(--fs-12);
+}
+
+.reasonText {
+  color: var(--text-1);
+}
+
+.reasonChecks {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+/* -------------------------------------------------------------------- notes */
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  grid-area: notes;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.note[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.note[data-tone='ok'] {
+  color: var(--ok);
+}
+
+.note[data-tone='idle'] {
+  color: var(--text-3);
+}
+
+.inlineAction {
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+}
+
+.inlineAction:hover {
+  color: var(--accent-strong);
+}
+
+/* --------------------------------------------------------- the coverage tab */
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.checkCell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.checkTitle {
+  overflow: hidden;
+  color: var(--text-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkId {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.zero {
+  color: var(--text-3);
+}
+
+.skipped {
+  color: var(--warn);
+  font-variant-numeric: tabular-nums;
+}
+
+.reasonCell {
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more {
+  color: var(--text-3);
+}
+
+.panelCount {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.plainList {
+  margin: 0;
+  padding-left: var(--sp-16);
+}
+
+.clean {
+  margin: 0;
+  color: var(--ok);
+  font-size: var(--fs-13);
+}

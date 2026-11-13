@@ -22,6 +22,7 @@ import { Button } from '@/design/Button';
 import { EmptyState } from '@/design/EmptyState';
 import { Skeleton } from '@/design/Skeleton';
 import { TabPanel, Tabs, type TabItem } from '@/design/Tabs';
+import { AREA as INSIGHTS, Insights } from '@/pages/insights';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { formatCount } from '@/lib/format';
 import { AlertsTab } from './Alerts';
@@ -43,6 +44,12 @@ const TABS: readonly TabItem[] = [
   { id: 'interfaces', label: 'Interfaces', icon: Network },
   { id: 'charts', label: 'Charts', icon: ChartLine },
   { id: 'rules', label: 'Rules', icon: SlidersHorizontal },
+  // `docs/dev/spec-ui-pages.md` heads this section "Monitoring — monitor.md,
+  // logs.md, insights.md": the checks belong here rather than at a route of
+  // their own, and the navigation rail has no Insights entry. The tab is
+  // offered only when the crate is in the build; `Insights` itself also says
+  // so if it is mounted without one, so neither place has to trust the other.
+  { id: 'insights', label: INSIGHTS.label, icon: INSIGHTS.icon },
 ];
 
 const DEFAULT_TAB = 'alerts';
@@ -83,6 +90,7 @@ function Monitoring() {
   const [search, setSearch] = useSearchParams();
   const navigate = useNavigate();
   const current = TABS.some((entry) => entry.id === tab) ? (tab as string) : DEFAULT_TAB;
+  const hasInsights = useHasMethod('insights.list');
   const deviceId = search.get('device');
 
   const status = useMonitorStatus();
@@ -154,7 +162,7 @@ function Monitoring() {
     );
   }
 
-  const tabs = TABS.map((entry) =>
+  const tabs = TABS.filter((entry) => entry.id !== 'insights' || hasInsights !== false).map((entry) =>
     entry.id === 'alerts' && open > 0
       ? { ...entry, badge: <span className={styles.tabCount}>{formatCount(open)}</span> }
       : entry,
@@ -195,6 +203,7 @@ function Monitoring() {
         {current === 'interfaces' && <InterfacesTab />}
         {current === 'charts' && <ChartsTab />}
         {current === 'rules' && <RulesTab />}
+        {current === 'insights' && <Insights />}
       </TabPanel>
     </Page>
   );
