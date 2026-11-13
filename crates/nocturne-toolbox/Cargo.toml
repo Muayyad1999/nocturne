@@ -22,6 +22,8 @@ parking_lot.workspace = true
 nocturne-tools.workspace = true
 nocturne-netprobe.workspace = true
 nocturne-transport.workspace = true
+# For the SNMP object dictionary behind `tools.oid` (OID <-> name), nothing else.
+nocturne-snmp.workspace = true
 regex.workspace = true
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }

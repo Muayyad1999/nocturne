@@ -22,6 +22,7 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_logs::init(builder);
     nocturne_automation::init(builder);
     nocturne_ipam::init(builder);
+    nocturne_toolbox::init(builder);
     nocturne_topology::init(builder);
     nocturne_monitor::init(builder);
     // After monitoring and the topology, which it asks for alerts, interface
@@ -134,6 +135,15 @@ mod tests {
             "schedules.save",
             "triggers.save",
             "ansible.status",
+            // the toolbox
+            "tools.list",
+            "tools.subnet",
+            "tools.secret.identify",
+            "tools.oui",
+            "probe.ping",
+            "probe.traceroute",
+            "probe.history",
+            "tftp.start",
             // addressing
             "ipam.prefixes",
             "ipam.next_prefix",
