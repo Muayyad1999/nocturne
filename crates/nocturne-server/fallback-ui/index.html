@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Nocturne</title>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid;
+        place-items: center;
+        background: #090d18;
+        color: #e7ebf3;
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 34rem; padding: 2rem; }
+      h1 { margin: 0 0 0.75rem; font-size: 20px; font-weight: 600; }
+      p { margin: 0; color: #a8b3c7; }
+      code {
+        padding: 0.1rem 0.35rem;
+        border-radius: 4px;
+        background: #141b2d;
+        color: #9db4ff;
+        font: 13px ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Nocturne</h1>
+      <p>
+        The web interface was not built into this binary: build it with
+        <code>pnpm --dir ui build</code> and compile <code>nocturne-server</code> again
+        (the API on this address works regardless).
+      </p>
+    </main>
+  </body>
+</html>
