@@ -30,7 +30,7 @@ use nocturne_transport::{
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -93,6 +93,10 @@ pub trait SimConnector: Send + Sync {
 pub struct ConnectState {
     sim: RwLock<Option<Arc<dyn SimConnector>>>,
     gates: Mutex<HashMap<String, Arc<Semaphore>>>,
+    /// What the verifier refused most recently, by `host:port`. The transport
+    /// can only hand a rejection back as a sentence, so the fingerprints are
+    /// kept here and attached to the error the caller sees.
+    refusals: Mutex<HashMap<String, Value>>,
 }
 
 impl ConnectState {
@@ -165,6 +169,7 @@ impl HostKeyVerifier for StoreVerifier {
                 if now - known.last_seen > 3_600_000 {
                     remember(known.first_seen)?;
                 }
+                forget_refusal(app, &id);
                 Ok(())
             }
             Some(known) => {
@@ -174,6 +179,7 @@ impl HostKeyVerifier for StoreVerifier {
                     "presented": {"algorithm": key.algorithm, "fingerprint": key.fingerprint, "openssh": key.openssh},
                 });
                 app.publish("connect.host_key_changed", &details);
+                remember_refusal(app, &id, &details);
                 if policy == "accept" {
                     tracing::warn!(
                         host,
@@ -202,6 +208,7 @@ impl HostKeyVerifier for StoreVerifier {
                     "presented": {"algorithm": key.algorithm, "fingerprint": key.fingerprint, "openssh": key.openssh},
                 });
                 app.publish("connect.host_key_unknown", &details);
+                remember_refusal(app, &id, &details);
                 Err(format!(
                     "{host}:{port} presented an SSH host key Nocturne has not seen ({} {}), and the host key policy is strict. \
                      Verify the fingerprint and trust it under Settings → Security → Known hosts.",
@@ -212,9 +219,38 @@ impl HostKeyVerifier for StoreVerifier {
                 if policy != "accept" {
                     remember(now)?;
                 }
+                forget_refusal(app, &id);
                 Ok(())
             }
         }
+    }
+}
+
+fn remember_refusal(app: &App, id: &str, details: &Value) {
+    app.state::<ConnectState>()
+        .refusals
+        .lock()
+        .insert(id.to_string(), details.clone());
+}
+
+fn forget_refusal(app: &App, id: &str) {
+    app.state::<ConnectState>().refusals.lock().remove(id);
+}
+
+/// Attach the fingerprints to a rejected-host-key error, so the interface can
+/// show both keys and offer to trust the new one without listening for events.
+fn with_host_key_details(app: &App, device: &Device, err: AppError) -> AppError {
+    if err.code != "host_key" {
+        return err;
+    }
+    let port = device
+        .port
+        .and_then(|port| u16::try_from(port).ok())
+        .unwrap_or(22);
+    let id = known_host_id(&device.address, port);
+    match app.state::<ConnectState>().refusals.lock().get(&id) {
+        Some(details) => err.with_details(details.clone()),
+        None => err,
     }
 }
 
@@ -369,7 +405,9 @@ pub async fn open(app: &App, device: &Device, options: &OpenOptions) -> AppResul
                 keepalive_s: settings.keepalive_s,
                 legacy: legacy(&settings.legacy_crypto),
             };
-            Ok(connect_ssh(&params, verifier(app)).await?)
+            connect_ssh(&params, verifier(app))
+                .await
+                .map_err(|err| with_host_key_details(app, device, err.into()))
         }
         Transport::Telnet => {
             if device.jump_device_id.is_some() {
@@ -1305,13 +1343,27 @@ mod tests {
                 .unwrap()
                 .contains(&first_fingerprint)
         );
-        let mut presented = None;
+        // The error carries both keys, so the interface can offer to trust the
+        // new one without having to catch the announcement.
+        let presented = refused["error"]["details"]["presented"].clone();
+        assert!(
+            presented["fingerprint"]
+                .as_str()
+                .unwrap()
+                .starts_with("SHA256:"),
+            "{refused}"
+        );
+        assert_eq!(
+            refused["error"]["details"]["known"]["fingerprint"],
+            first_fingerprint.as_str()
+        );
+        let mut announced = None;
         while let Ok(event) = events.try_recv() {
             if event.topic == "connect.host_key_changed" {
-                presented = Some(event.payload["presented"].clone());
+                announced = Some(event.payload["presented"].clone());
             }
         }
-        let presented = presented.expect("a host_key_changed event");
+        assert_eq!(announced.expect("a host_key_changed event"), presented);
 
         // The operator trusts the new key; the connection works again.
         app.rpc(

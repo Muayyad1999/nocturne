@@ -395,12 +395,12 @@ impl Collector {
                 continue;
             }
             let mut row = Row::new();
-            if fields.is_empty() {
-                if let Value::Object(variables) = variables {
-                    row.extend(variables.into_iter().filter(|(name, value)| {
-                        !matches!(name.as_str(), "row" | "facts") && !is_blank(value)
-                    }));
-                }
+            if fields.is_empty()
+                && let Value::Object(variables) = variables
+            {
+                row.extend(variables.into_iter().filter(|(name, value)| {
+                    !matches!(name.as_str(), "row" | "facts") && !is_blank(value)
+                }));
             }
             for (field, expression) in &fields {
                 match expression.eval(&context) {

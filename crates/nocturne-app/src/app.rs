@@ -125,6 +125,9 @@ impl AppConfig {
     }
 }
 
+/// How many events the bus keeps for readers that are behind.
+const EVENT_BACKLOG: usize = 1024;
+
 type StateMap = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 type Starter = Box<dyn FnOnce(&App) + Send>;
 
@@ -223,7 +226,12 @@ impl AppBuilder {
     }
 
     pub fn build(self) -> App {
-        let (events, _) = broadcast::channel(4096);
+        // A broadcast channel keeps its whole ring resident, so this bound is
+        // not "how far a slow reader may fall behind" but "how much memory the
+        // bus costs". Most events are a few hundred bytes; terminal output is
+        // capped at 32 KiB each, which is what makes the size matter. A reader
+        // that falls further behind is told it missed events and refetches.
+        let (events, _) = broadcast::channel(EVENT_BACKLOG);
         let app = App {
             inner: Arc::new(Inner {
                 store: self.store,

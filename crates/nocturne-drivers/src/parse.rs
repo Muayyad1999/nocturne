@@ -304,10 +304,10 @@ fn next_key_start(text: &str, from: usize) -> Option<usize> {
     let mut search = from;
     while let Some(equals) = text[search..].find('=').map(|offset| search + offset) {
         let before = &text[from..equals];
-        if let Some(space) = before.rfind(char::is_whitespace) {
-            if is_key(&before[space + 1..]) {
-                return Some(from + space);
-            }
+        if let Some(space) = before.rfind(char::is_whitespace)
+            && is_key(&before[space + 1..])
+        {
+            return Some(from + space);
         }
         search = equals + 1;
     }
