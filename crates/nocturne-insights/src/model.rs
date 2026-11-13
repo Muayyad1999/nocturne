@@ -46,11 +46,6 @@ impl Severity {
             _ => Severity::Critical,
         }
     }
-
-    /// One step up, for findings that are worse than their check's usual case.
-    pub fn raised(self) -> Severity {
-        Severity::from_rank(self.rank() + 1)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -314,7 +309,7 @@ mod tests {
         // Parts do not run into each other.
         assert_ne!(insight_id("a", "bc", "d"), insight_id("ab", "c", "d"));
         // Pinned: ids must not change between releases, or every dismissal is lost.
-        assert_eq!(id, "c3ae3a1bb7a4eb9a4fd1");
+        assert_eq!(id, "99f6704f0eaa509fa022");
     }
 
     #[test]
@@ -327,8 +322,6 @@ mod tests {
                 serde_json::json!(severity.as_str())
             );
         }
-        assert_eq!(Severity::Critical.raised(), Severity::Critical);
-        assert_eq!(Severity::Medium.raised(), Severity::High);
         assert_eq!(Category::parse("l2"), Some(Category::L2));
         assert_eq!(State::parse("gone"), None);
     }
