@@ -11,6 +11,8 @@ lab where all of that can be tried on simulated devices first.
 
 It is written in Rust, with a web UI in a Tauri shell.
 
+![The Nocturne shell](docs/images/shell.png)
+
 ## What it does
 
 | Area | In short |
@@ -63,6 +65,14 @@ cargo run -p nocturne-server
 The server prints the address to open. See `docs/ARCHITECTURE.md` for how
 the pieces fit, `docs/profiles.md` for adding a device type, and `docs/dev/`
 for the specifications each part was built against.
+
+## What it looks like
+
+The interface is dense where engineers scan and calm everywhere else. Status
+is never shown by colour alone, and a device that reported nothing shows an
+em dash rather than a zero — if Nocturne does not know, it says so.
+
+![The component library](docs/images/components.png)
 
 ## Status
 
