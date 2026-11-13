@@ -94,6 +94,23 @@ async fn forced_system_command_reaches_loopback() {
     );
 }
 
+/// The system `ping` reads the round-trip time out of a timestamp it writes
+/// into the payload, so a payload too small to hold one gets a reply line with
+/// no time in it. That must still count as a reply, because it is one.
+#[tokio::test]
+async fn the_system_command_still_reports_a_reply_it_could_not_time() {
+    let pinger = Pinger::with_method(Method::SystemCommand);
+    for payload in [0usize, 8, 15] {
+        let Some(reply) = echo_or_skip(&pinger, LOCALHOST, payload).await else {
+            return;
+        };
+        assert_eq!(reply.bytes, payload + 8, "payload {payload}");
+        // The time is the command's own, an upper bound on the round trip;
+        // all that can be claimed of it is that it was measured.
+        assert!(reply.rtt_ms > 0.0 && reply.rtt_ms < 2000.0, "{reply:?}");
+    }
+}
+
 #[tokio::test]
 async fn payload_sizes_are_echoed_back() {
     let pinger = Pinger::new();

@@ -835,8 +835,8 @@ mod tests {
         );
         assert!(report.hostname_matches);
         assert!(report.handshake_ms > 0.0 && report.handshake_ms < 5000.0);
-        // 2026-01-01 to 2030-01-01: 365 + 365 + 366 + 365 days.
-        assert_eq!(report.expires_in_days, 1461);
+        // 2026-01-01 to 2026-06-01: 31 + 28 + 31 + 30 + 31 days.
+        assert_eq!(report.expires_in_days, 151);
 
         assert_eq!(report.chain.len(), 1);
         let leaf = &report.chain[0];
@@ -844,9 +844,9 @@ mod tests {
         assert_eq!(leaf.issuer, leaf.subject);
         assert_eq!(leaf.common_name, "localhost");
         assert_eq!(leaf.sans, ["localhost", "127.0.0.1"]);
-        assert_eq!(leaf.not_before, "2024-01-01T00:00:00Z");
-        assert_eq!(leaf.not_after, "2030-01-01T00:00:00Z");
-        assert_eq!(leaf.days_left, 1461);
+        assert_eq!(leaf.not_before, "2025-07-01T00:00:00Z");
+        assert_eq!(leaf.not_after, "2026-06-01T00:00:00Z");
+        assert_eq!(leaf.days_left, 151);
         assert_eq!(leaf.signature_algorithm, "ecdsa-with-SHA256");
         assert_eq!(leaf.public_key, "ECDSA P-256");
         assert!(leaf.self_signed && !leaf.is_ca);
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(root.sans, Vec::<String>::new());
         assert_eq!(root.not_after, "2040-01-01T00:00:00Z");
         // Expiry is the server certificate's, not the root's.
-        assert_eq!(report.expires_in_days, 1461);
+        assert_eq!(report.expires_in_days, 151);
     }
 
     #[tokio::test]

@@ -49,12 +49,16 @@ test('the rail navigates, and a page says what it will be', async ({ page }) => 
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Devices' }).click();
   await expect(page).toHaveURL(/#\/devices$/);
   await expect(page.getByRole('heading', { level: 1, name: 'Devices' })).toBeVisible();
-  // A stub is honest about being a stub, and never shows invented data.
-  await expect(page.getByText('This screen is not built yet')).toBeVisible();
+  // A screen that is built shows the engine's answer, not a placeholder.
+  await expect(page.getByText('This screen is not built yet')).toHaveCount(0);
 
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Lab' }).click();
   await expect(page).toHaveURL(/#\/lab$/);
   await expect(page.getByRole('heading', { level: 1, name: 'Lab' })).toBeVisible();
+  // One that is not built says so, and never shows invented data. As the
+  // screens land this moves to whichever is still a stub; when none is, it
+  // goes, and nothing in the interface says this again.
+  await expect(page.getByText('This screen is not built yet')).toBeVisible();
 
   // A route that does not exist is a screen, not a blank page.
   await goTo(page, '/nowhere');

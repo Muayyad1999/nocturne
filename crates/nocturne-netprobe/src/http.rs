@@ -1655,7 +1655,7 @@ mod tests {
         assert_eq!(tls.host, "localhost");
         assert_eq!(tls.protocol, "TLSv1.3");
         assert_eq!(tls.chain[0].common_name, "localhost");
-        assert_eq!(tls.expires_in_days, 1461);
+        assert_eq!(tls.expires_in_days, 151);
         assert_eq!(report.tls_ms, Some(tls.handshake_ms));
         assert!(report.total_ms >= tls.handshake_ms);
     }

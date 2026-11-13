@@ -45,6 +45,7 @@ impl SystemPing {
             .expect("the semaphore is never closed");
         let (program, args) = command_line(target, timeout, payload);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let started = std::time::Instant::now();
         let output = match process::run(program, &args, timeout + PROCESS_GRACE).await {
             Ok(output) => output,
             Err(RunError::TimedOut) => return Err(ProbeError::Timeout),
@@ -71,6 +72,16 @@ impl SystemPing {
                     bytes: bytes.unwrap_or(ECHO_HEADER + payload),
                 })
             }
+            Outcome::ReplyWithoutTime { ttl, bytes } => Ok(PingReply {
+                // The program measured nothing, so this is what we measured:
+                // the whole command, process start included. It is an upper
+                // bound on the round trip and nothing finer is available —
+                // only for a payload too small for `ping` to timestamp, which
+                // is the one case where this arises.
+                rtt_ms: started.elapsed().as_secs_f64() * 1000.0,
+                ttl,
+                bytes: bytes.unwrap_or(ECHO_HEADER + payload),
+            }),
             Outcome::Unreachable(reason) => Err(ProbeError::Unreachable(reason)),
             Outcome::Denied(reason) => Err(ProbeError::Permission(format!(
                 "the system ping could not send the echo request: {reason}"
@@ -140,6 +151,14 @@ pub(crate) enum Outcome {
     Unreachable(String),
     /// `ping` itself was not allowed to send.
     Denied(String),
+    /// A reply the program printed without a round-trip time. `ping` reads the
+    /// time out of a timestamp it writes into the payload, so a payload too
+    /// small to hold one (under 16 bytes on Linux and the BSDs) gets a reply
+    /// line with the size and the TTL and nothing else.
+    ReplyWithoutTime {
+        ttl: Option<u8>,
+        bytes: Option<usize>,
+    },
     NoReply,
     /// The exit status says the host answered, but no line of the output looks like a reply.
     Unrecognized(String),
@@ -191,6 +210,22 @@ pub(crate) fn parse_output(output: &str, replied: bool) -> Outcome {
                 bytes: BYTES_FROM
                     .captures(line)
                     .and_then(|captures| captures[1].parse().ok()),
+            };
+        }
+    }
+
+    // A reply line with a size but no time. Checked after the timed pass so a
+    // normal reply is never read this way, and before the error passes so that
+    // a line which is plainly a reply is not mistaken for a complaint.
+    for line in &lines {
+        if let Some(captures) = BYTES_FROM.captures(line)
+            && TTL.is_match(line)
+        {
+            return Outcome::ReplyWithoutTime {
+                ttl: TTL
+                    .captures(line)
+                    .and_then(|captures| captures[1].parse().ok()),
+                bytes: captures[1].parse().ok(),
             };
         }
     }
@@ -298,6 +333,33 @@ mod tests {
                        --- 10.255.255.1 ping statistics ---\n\
                        1 packets transmitted, 0 received, 100% packet loss, time 0ms\n\n";
         assert_eq!(parse_output(timeout, false), Outcome::NoReply);
+
+        // A payload too small to hold a timestamp: `ping` prints the reply with
+        // no time in it. This is verbatim from a GitHub Linux runner, where it
+        // used to be reported as "its output was not understood".
+        let tiny = "PING 127.0.0.1 (127.0.0.1) 0(28) bytes of data.\n\
+                    8 bytes from 127.0.0.1: icmp_seq=1 ttl=64\n\
+                    \n--- 127.0.0.1 ping statistics ---\n\
+                    1 packets transmitted, 1 received, 0% packet loss, time 0ms\n";
+        assert_eq!(
+            parse_output(tiny, true),
+            Outcome::ReplyWithoutTime {
+                ttl: Some(64),
+                bytes: Some(8)
+            }
+        );
+        let eight = "PING 127.0.0.1 (127.0.0.1) 8(36) bytes of data.\n\
+                     16 bytes from 127.0.0.1: icmp_seq=1 ttl=64\n";
+        assert_eq!(
+            parse_output(eight, true),
+            Outcome::ReplyWithoutTime {
+                ttl: Some(64),
+                bytes: Some(16)
+            }
+        );
+        // A timed reply is still read as one, never through that path.
+        let timed = "64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.041 ms\n";
+        assert_eq!(parse_output(timed, true), reply(0.041, Some(64), Some(64)));
 
         let unreachable = "PING 192.168.1.77 (192.168.1.77) 56(84) bytes of data.\n\
                            From 192.168.1.10 icmp_seq=1 Destination Host Unreachable\n\

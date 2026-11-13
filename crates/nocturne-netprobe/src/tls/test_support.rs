@@ -19,8 +19,17 @@ const RSA_KEY_PEM: &str = include_str!("../../tests/fixtures/test-rsa-2048.key.p
 
 /// A year-month-day triple.
 pub(crate) type Date = (i32, u8, u8);
-pub(crate) const VALID_FROM: Date = (2024, 1, 1);
-pub(crate) const VALID_UNTIL: Date = (2030, 1, 1);
+/// The window a valid test certificate covers: 335 days around [`NOW`].
+///
+/// It is deliberately under a year. Apple's Security framework — which
+/// `rustls-platform-verifier` uses on macOS — refuses any server certificate
+/// whose validity is longer than 825 days, with
+/// `"localhost" certificate is not standards compliant: -67901`, so the
+/// six-year certificates these tests used to issue could not be verified
+/// there at all, and eight of them failed on macOS and nowhere else.
+/// A certificate authority may live longer than that; a leaf may not.
+pub(crate) const VALID_FROM: Date = (2025, 7, 1);
+pub(crate) const VALID_UNTIL: Date = (2026, 6, 1);
 
 /// What a test server presents: its certificate chain and key.
 pub(crate) struct Identity {
