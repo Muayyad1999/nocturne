@@ -1,0 +1,74 @@
+.steps,
+.checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step,
+.check {
+  display: grid;
+  grid-template-columns: 16px 16ch 1fr auto;
+  align-items: baseline;
+  gap: var(--sp-8);
+  padding: 2px 0;
+  font-size: var(--fs-12);
+}
+
+.check {
+  grid-template-columns: 16px 16ch 1fr;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  color: var(--text-3);
+}
+
+.step[data-status='done'] .icon,
+.check[data-ok='true'] .icon {
+  color: var(--ok);
+}
+
+.step[data-status='failed'] .icon,
+.check[data-ok='false'] .icon {
+  color: var(--crit);
+}
+
+.step[data-status='running'] .icon {
+  color: var(--accent);
+}
+
+.name {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+
+.step[data-status='waiting'] .name {
+  color: var(--text-3);
+  font-weight: var(--fw-regular);
+}
+
+.detail {
+  min-width: 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.step[data-status='failed'] .detail,
+.check[data-ok='false'] .detail {
+  color: var(--crit);
+}
+
+.step[data-status='waiting'] .detail {
+  color: var(--text-3);
+}
+
+.at {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,87 @@
+.wrap {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-0);
+}
+
+.list {
+  margin: 0;
+  padding: var(--sp-6) 0;
+  max-height: 420px;
+  overflow: auto;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 4ch 1fr auto;
+  align-items: baseline;
+  column-gap: var(--sp-8);
+  padding: 1px var(--sp-12);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 20px;
+}
+
+.item[data-state='rejected'] {
+  background: var(--crit-soft);
+}
+
+.item[data-state='sent'] .command {
+  color: var(--text-1);
+}
+
+.number {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.command {
+  min-width: 0;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note {
+  padding: 0 var(--sp-6);
+  border-radius: var(--radius-badge);
+  font-family: var(--font-ui);
+  font-size: var(--fs-11);
+  white-space: nowrap;
+}
+
+.note[data-kind='order'] {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.note[data-kind='bad'] {
+  background: var(--crit-soft);
+  color: var(--crit);
+}
+
+.answer {
+  grid-column: 2 / -1;
+  margin: 0 0 var(--sp-4);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.item[data-state='rejected'] .answer {
+  color: var(--crit);
+}
+
+.empty {
+  margin: 0;
+  padding: var(--sp-12);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-12);
+}

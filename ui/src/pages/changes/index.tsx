@@ -1,26 +1,19 @@
+/**
+ * Changes — the one path by which Nocturne configures a device.
+ *
+ * The route is `changes/:id?`: without an id this is the list, with one it is
+ * that change, from the commands nobody has read yet to the record of what
+ * happened on every device. Both read `changes.*`; the backend contract is
+ * `docs/dev/features/changes.md` and `src/api/types/changes.ts`.
+ */
+
 import { useParams } from 'react-router';
-import { destination } from '@/app/destinations';
-import { usePageHeader } from '@/app/Header';
-import { Page } from '@/app/Page';
-import { EmptyState } from '@/design/EmptyState';
+import ChangeList from './ChangeList';
+import ChangePage from './ChangePage';
 
-const { label, icon, path } = destination('changes');
-
-/** Route stub for the list and the `:id` detail route: the Changes slice replaces this body with the real screens. */
 export default function ChangesPage() {
   const { id } = useParams();
-  usePageHeader(id ? { title: id, breadcrumbs: [{ label, to: path }] } : { title: label });
-  return (
-    <Page>
-      <EmptyState
-        icon={icon}
-        title="This screen is not built yet"
-        description={
-          id
-            ? 'A change page will show one change: what it does and to which devices, who approved it, and how it ran.'
-            : 'Changes will take a planned change from draft through review and approval to execution, with verification and rollback.'
-        }
-      />
-    </Page>
-  );
+  // Keyed on the id: moving to another change starts its page clean, so a
+  // typed confirmation or a read plan never carries over to another change.
+  return id ? <ChangePage key={id} id={id} /> : <ChangeList />;
 }
