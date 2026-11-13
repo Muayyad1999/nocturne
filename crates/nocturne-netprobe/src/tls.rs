@@ -638,6 +638,16 @@ pub(crate) fn describe_tls_error(error: &rustls::Error) -> String {
             CertificateError::UnhandledCriticalExtension => {
                 "the certificate has a critical extension this client does not understand".to_owned()
             }
+            // The platform verifiers (macOS Security.framework, Windows
+            // CryptoAPI) hand back their own verdict here rather than one of
+            // the arms above, and `{:?}` on it reads as Rust rather than as
+            // an answer: `Other(OtherError("“host” certificate is not
+            // trusted: -67843"))`. The system's own sentence, with its status
+            // code, is the most useful thing there is — it is what the user
+            // would see in a browser — so pass it through plainly.
+            CertificateError::Other(other) => {
+                format!("the system refused the certificate: {other}")
+            }
             other => format!("the certificate was rejected ({other:?})"),
         },
         Error::AlertReceived(AlertDescription::ProtocolVersion) => {
@@ -808,7 +818,8 @@ pub(crate) mod test_support;
 mod tests {
     use super::test_support::{
         EXPIRED_FROM, EXPIRED_UNTIL, TestCa, date_text, days_left, days_until, drain, now,
-        self_signed, self_signed_rsa, server_config, tls_server, valid_from, valid_until,
+        says_untrusted, self_signed, self_signed_rsa, server_config, tls_server, valid_from,
+        valid_until,
     };
     use super::*;
     use pretty_assertions::assert_eq;
@@ -850,10 +861,7 @@ mod tests {
         assert_eq!(report.alpn, None);
         assert!(!report.trusted);
         let reason = report.trust_error.as_deref().unwrap();
-        assert!(
-            reason.contains("not signed by an authority this system trusts"),
-            "{reason}"
-        );
+        assert!(says_untrusted(reason, "localhost"), "{reason}");
         assert!(report.hostname_matches);
         assert!(report.handshake_ms > 0.0 && report.handshake_ms < 5000.0);
         assert_eq!(report.expires_in_days, days_left());
@@ -1139,10 +1147,7 @@ mod tests {
             error.contains("certificate of localhost was rejected"),
             "{error}"
         );
-        assert!(
-            error.contains("not signed by an authority this system trusts"),
-            "{error}"
-        );
+        assert!(says_untrusted(&error, "localhost"), "{error}");
 
         let error = attempt(
             ca.issue(&NAMES, valid_from(), valid_until()),

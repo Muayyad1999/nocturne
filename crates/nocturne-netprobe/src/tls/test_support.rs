@@ -261,3 +261,28 @@ pub(crate) async fn drain(mut stream: impl AsyncRead + AsyncWrite + Unpin) {
     let mut sink = Vec::new();
     let _ = tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut sink).await;
 }
+
+/// Does this refusal say the certificate was not accepted as trustworthy?
+///
+/// The specific wording cannot be asserted on all three platforms. On Linux
+/// rustls-webpki decides, and reports an unknown issuer, which
+/// `describe_tls_error` turns into our own sentence. On macOS and Windows the
+/// platform verifier decides instead, and answers in its own words: macOS
+/// refuses a *self-signed* server certificate with a status code (its policy
+/// evaluation stops before it gets as far as calling the issuer unknown), so
+/// what comes back is Apple's sentence and `-67843`, not ours.
+///
+/// What every platform must do is refuse the certificate and say which one it
+/// refused, so that is what a test may require.
+pub(crate) fn says_untrusted(reason: &str, host: &str) -> bool {
+    // Ours, from rustls-webpki's `UnknownIssuer`.
+    if reason.contains("not signed by an authority this system trusts") {
+        return true;
+    }
+    // Or the platform's. Its own words still have to be about trust: accepting
+    // any refusal here would let this test pass on an expired or misnamed
+    // certificate, which the tests either side of it are the ones to prove.
+    reason.contains("the system refused the certificate")
+        && reason.contains(host)
+        && reason.contains("not trusted")
+}

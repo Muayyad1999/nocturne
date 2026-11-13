@@ -850,8 +850,8 @@ mod tests {
 
     use super::*;
     use crate::tls::test_support::{
-        EXPIRED_FROM, EXPIRED_UNTIL, TestCa, days_left, days_until, now, self_signed,
-        server_config, tls_server, valid_from, valid_until,
+        EXPIRED_FROM, EXPIRED_UNTIL, TestCa, days_left, days_until, now, says_untrusted,
+        self_signed, server_config, tls_server, valid_from, valid_until,
     };
     use pretty_assertions::assert_eq;
     use tokio::net::TcpListener;
@@ -1673,12 +1673,7 @@ mod tests {
         let error = check_with(&self_signed_url, &quick(), now(), ca.trust())
             .await
             .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("not signed by an authority this system trusts"),
-            "{error}"
-        );
+        assert!(says_untrusted(&error.to_string(), "localhost"), "{error}");
 
         let expired_url = https_server(server_config(ca.issue(
             &["localhost"],
