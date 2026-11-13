@@ -112,7 +112,8 @@ pub(crate) fn parse_netstat_rn(text: &str) -> Vec<LocalRoute> {
         }
         // "link#17" gateways are directly connected, and "fe80::%utun0" is how macOS prints
         // the default route of a tunnel: neither names a next hop.
-        let Some(gateway) = parse_ip_literal(gateway).filter(|gateway| !is_bare_link_local(gateway))
+        let Some(gateway) =
+            parse_ip_literal(gateway).filter(|gateway| !is_bare_link_local(gateway))
         else {
             continue;
         };
@@ -185,9 +186,15 @@ mod tests {
                   10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.5 \n";
         assert_eq!(
             parse_ip_route(v4),
-            vec![default_route("192.168.1.1", "wlan0"), default_route("10.0.0.1", "eth0")]
+            vec![
+                default_route("192.168.1.1", "wlan0"),
+                default_route("10.0.0.1", "eth0")
+            ]
         );
-        assert_eq!(parse_ip_route("default via 192.0.2.1 dev eth0 \n"), vec![default_route("192.0.2.1", "eth0")]);
+        assert_eq!(
+            parse_ip_route("default via 192.0.2.1 dev eth0 \n"),
+            vec![default_route("192.0.2.1", "eth0")]
+        );
 
         let v6 = "default via fe80::1 dev eth0 proto ra metric 100 expires 1798sec pref medium\n";
         let routes = parse_ip_route(v6);
@@ -201,11 +208,17 @@ mod tests {
                          \tnexthop via 10.0.0.9 dev eth0 weight 1 \n";
         assert_eq!(
             parse_ip_route(multipath),
-            vec![default_route("10.0.0.1", "eth0"), default_route("10.0.1.1", "eth1")]
+            vec![
+                default_route("10.0.0.1", "eth0"),
+                default_route("10.0.1.1", "eth1")
+            ]
         );
 
         let over_v6 = "default via inet6 fe80::1 dev eth0 \n";
-        assert_eq!(parse_ip_route(over_v6), vec![default_route("fe80::1", "eth0")]);
+        assert_eq!(
+            parse_ip_route(over_v6),
+            vec![default_route("fe80::1", "eth0")]
+        );
     }
 
     #[test]
@@ -215,7 +228,10 @@ mod tests {
                     eth0\t000200C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n\
                     eth1\t00000000\t00000000\t0001\t0\t0\t50\t00000000\t0\t0\t0\n";
         // 0x010200C0 little-endian is c0.00.02.01 = 192.0.2.1.
-        assert_eq!(parse_proc_route(text), vec![default_route("192.0.2.1", "eth0")]);
+        assert_eq!(
+            parse_proc_route(text),
+            vec![default_route("192.0.2.1", "eth0")]
+        );
     }
 
     #[test]
@@ -236,7 +252,10 @@ mod tests {
                     ::1                                     ::1                                     UHL                   lo0       \n";
         assert_eq!(
             parse_netstat_rn(text),
-            vec![default_route("192.168.1.1", "en0"), default_route("fe80::1", "en0")]
+            vec![
+                default_route("192.168.1.1", "en0"),
+                default_route("fe80::1", "en0")
+            ]
         );
     }
 
@@ -245,7 +264,10 @@ mod tests {
         let text = "Internet:\n\
                     Destination        Gateway            Flags   Refs      Use   Mtu  Prio Iface\n\
                     default            10.0.2.2           UGS        5      120     -     8 em0  \n";
-        assert_eq!(parse_netstat_rn(text), vec![default_route("10.0.2.2", "em0")]);
+        assert_eq!(
+            parse_netstat_rn(text),
+            vec![default_route("10.0.2.2", "em0")]
+        );
     }
 
     #[test]
@@ -279,24 +301,39 @@ mod tests {
                     ===========================================================================\r\n";
         assert_eq!(
             parse_route_print(text),
-            vec![default_route("192.168.1.1", "192.168.1.10"), default_route("fe80::1", "11")]
+            vec![
+                default_route("192.168.1.1", "192.168.1.10"),
+                default_route("fe80::1", "11")
+            ]
         );
         // A VPN default route without a next hop.
-        let on_link = "          0.0.0.0          0.0.0.0         On-link         10.8.0.2     35\r\n";
+        let on_link =
+            "          0.0.0.0          0.0.0.0         On-link         10.8.0.2     35\r\n";
         assert_eq!(parse_route_print(on_link), vec![]);
         // The same table on a German system: only the words differ.
         let german = "Aktive Routen:\r\n\
                       \x20    Netzwerkziel    Netzwerkmaske          Gateway    Schnittstelle Metrik\r\n\
                       \x20         0.0.0.0          0.0.0.0      192.168.1.1     192.168.1.10     25\r\n\
                       \x20       127.0.0.0        255.0.0.0   Auf Verbindung         127.0.0.1    331\r\n";
-        assert_eq!(parse_route_print(german), vec![default_route("192.168.1.1", "192.168.1.10")]);
+        assert_eq!(
+            parse_route_print(german),
+            vec![default_route("192.168.1.1", "192.168.1.10")]
+        );
     }
 
     #[test]
     fn garbage_yields_nothing() {
-        for parser in [parse_ip_route, parse_proc_route, parse_netstat_rn, parse_route_print] {
+        for parser in [
+            parse_ip_route,
+            parse_proc_route,
+            parse_netstat_rn,
+            parse_route_print,
+        ] {
             assert_eq!(parser(""), vec![]);
-            assert_eq!(parser("default\ndefault via\ndefault via x dev\n0.0.0.0 0.0.0.0\n::/0\n"), vec![]);
+            assert_eq!(
+                parser("default\ndefault via\ndefault via x dev\n0.0.0.0 0.0.0.0\n::/0\n"),
+                vec![]
+            );
             assert_eq!(parser("\u{0}\u{7f}\n\t\t\t\n"), vec![]);
         }
     }

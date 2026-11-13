@@ -78,7 +78,7 @@ pub fn interfaces() -> Vec<LocalInterface> {
             }),
         }
     }
-    platform::complete(&mut interfaces);
+    complete(&mut interfaces);
     interfaces
 }
 
@@ -87,7 +87,7 @@ pub fn interfaces() -> Vec<LocalInterface> {
 /// Unresolved entries and multicast / broadcast mappings are left out. Empty when the table
 /// cannot be read.
 pub async fn neighbours() -> Vec<Neighbour> {
-    let mut found = platform::neighbours().await;
+    let mut found = read_neighbours().await;
     let mut seen = std::collections::HashSet::new();
     found.retain(|neighbour| seen.insert((neighbour.address.clone(), neighbour.interface.clone())));
     found
@@ -95,7 +95,146 @@ pub async fn neighbours() -> Vec<Neighbour> {
 
 /// The default routes of this machine (IPv4 and IPv6) that have a next hop.
 pub async fn default_gateways() -> Vec<LocalRoute> {
-    platform::default_gateways().await
+    if cfg!(target_os = "linux") {
+        let v4 = process::run("ip", &["-4", "route", "show", "default"], TOOL_TIMEOUT).await;
+        let mut routes = match v4 {
+            Ok(output) if output.success => route::parse_ip_route(&output.stdout),
+            // No iproute2: the kernel's own table has the IPv4 routes.
+            _ => match tokio::fs::read_to_string("/proc/net/route").await {
+                Ok(text) => route::parse_proc_route(&text),
+                Err(_) => Vec::new(),
+            },
+        };
+        if let Ok(output) =
+            process::run("ip", &["-6", "route", "show", "default"], TOOL_TIMEOUT).await
+        {
+            routes.extend(route::parse_ip_route(&output.stdout));
+        }
+        routes
+    } else if cfg!(windows) {
+        match process::run("route", &["print"], TOOL_TIMEOUT).await {
+            Ok(output) => route::parse_route_print(&output.stdout),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        match process::run("netstat", &["-rn"], TOOL_TIMEOUT).await {
+            Ok(output) => route::parse_netstat_rn(&output.stdout),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+/// Reads the neighbour table with this platform's tool.
+async fn read_neighbours() -> Vec<Neighbour> {
+    if cfg!(target_os = "linux") {
+        return match process::run("ip", &["neigh", "show"], TOOL_TIMEOUT).await {
+            Ok(output) if output.success => neigh::parse_ip_neigh(&output.stdout),
+            // No iproute2: the kernel's own table has the IPv4 entries.
+            _ => match tokio::fs::read_to_string("/proc/net/arp").await {
+                Ok(text) => neigh::parse_proc_arp(&text),
+                Err(_) => Vec::new(),
+            },
+        };
+    }
+    let mut found = Vec::new();
+    if cfg!(windows) {
+        if let Ok(output) = process::run("arp", &["-a"], TOOL_TIMEOUT).await {
+            found.extend(neigh::parse_arp_windows(&output.stdout));
+        }
+        let netsh = ["interface", "ipv6", "show", "neighbors"];
+        if let Ok(output) = process::run("netsh", &netsh, TOOL_TIMEOUT).await {
+            found.extend(neigh::parse_netsh_neighbors(&output.stdout));
+        }
+    } else {
+        if let Ok(output) = process::run("arp", &["-an"], TOOL_TIMEOUT).await {
+            found.extend(neigh::parse_arp_an(&output.stdout));
+        }
+        if let Ok(output) = process::run("ndp", &["-an"], TOOL_TIMEOUT).await {
+            found.extend(neigh::parse_ndp_an(&output.stdout));
+        }
+    }
+    found
+}
+
+/// Adds what `if-addrs` does not report: MAC addresses everywhere, and on Linux the kernel's
+/// view of "up" and the interfaces that have no address.
+fn complete(interfaces: &mut Vec<LocalInterface>) {
+    if cfg!(target_os = "linux") {
+        complete_from_sysfs(interfaces);
+        return;
+    }
+    let macs = if cfg!(windows) {
+        run_and_wait("getmac", &["/fo", "csv", "/nh", "/v"]).map(|text| parse_getmac_csv(&text))
+    } else {
+        run_and_wait("ifconfig", &["-a"]).map(|text| parse_ifconfig_macs(&text))
+    };
+    for interface in interfaces {
+        interface.mac = macs
+            .iter()
+            .flatten()
+            .find(|(name, _)| *name == interface.name)
+            .map(|(_, mac)| mac.clone());
+    }
+}
+
+/// Runs a system tool to completion and returns what it printed.
+fn run_and_wait(program: &str, args: &[&str]) -> Option<String> {
+    let mut command = std::process::Command::new(process::find(program)?);
+    command.args(args).stdin(std::process::Stdio::null());
+    // CREATE_NO_WINDOW: a GUI application must not flash a console.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+    let output = command.output().ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Linux: `/sys/class/net` lists every interface with its flags, state and MAC address.
+fn complete_from_sysfs(interfaces: &mut Vec<LocalInterface>) {
+    const IFF_UP: u32 = 0x1;
+    const IFF_LOOPBACK: u32 = 0x8;
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+        return;
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    for name in names {
+        let read = |file: &str| {
+            std::fs::read_to_string(format!("/sys/class/net/{name}/{file}"))
+                .ok()
+                .map(|text| text.trim().to_owned())
+        };
+        let Some(flags) = read("flags")
+            .and_then(|flags| u32::from_str_radix(flags.trim_start_matches("0x"), 16).ok())
+        else {
+            // Not an interface (for example the bonding_masters file).
+            continue;
+        };
+        let operstate = read("operstate").unwrap_or_default();
+        let is_up = flags & IFF_UP != 0
+            && !matches!(
+                operstate.as_str(),
+                "down" | "lowerlayerdown" | "notpresent" | "dormant"
+            );
+        let mac = read("address")
+            .and_then(|address| parse_mac(&address))
+            .filter(|mac| *mac != [0; 6])
+            .map(format_mac);
+        match interfaces.iter_mut().find(|known| known.name == name) {
+            Some(known) => {
+                known.mac = mac;
+                known.is_up = is_up;
+            }
+            None => interfaces.push(LocalInterface {
+                name,
+                addresses: Vec::new(),
+                mac,
+                is_loopback: flags & IFF_LOOPBACK != 0,
+                is_up,
+            }),
+        }
+    }
 }
 
 /// Sends a Wake-on-LAN magic packet (UDP port 9) for `mac`.
@@ -183,11 +322,12 @@ async fn send_broadcast(packet: &[u8], destination: SocketAddr) -> std::io::Resu
 /// The neighbour-table entry of `address`, if this machine has one.
 pub(crate) fn neighbour_of(neighbours: &[Neighbour], address: IpAddr) -> Option<&Neighbour> {
     let text = address.to_string();
-    neighbours.iter().find(|neighbour| neighbour.address == text)
+    neighbours
+        .iter()
+        .find(|neighbour| neighbour.address == text)
 }
 
 /// `ether aa:bb:cc:dd:ee:ff` lines of `ifconfig`, per interface.
-#[cfg_attr(not(all(unix, not(target_os = "linux"))), allow(dead_code))]
 fn parse_ifconfig_macs(text: &str) -> Vec<(String, String)> {
     let mut current: Option<&str> = None;
     let mut macs = Vec::new();
@@ -207,7 +347,6 @@ fn parse_ifconfig_macs(text: &str) -> Vec<(String, String)> {
 }
 
 /// `getmac /fo csv /nh /v` rows: `"Ethernet","Intel(R) …","A4-83-E7-12-34-56","\Device\Tcpip_{…}"`.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn parse_getmac_csv(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
@@ -217,180 +356,6 @@ fn parse_getmac_csv(text: &str) -> Vec<(String, String)> {
             Some((fields[0].to_owned(), format_mac(mac)))
         })
         .collect()
-}
-
-#[cfg(target_os = "linux")]
-mod platform {
-    use super::*;
-
-    const IFF_UP: u32 = 0x1;
-    const IFF_LOOPBACK: u32 = 0x8;
-
-    /// Adds MAC addresses, the kernel's view of "up", and interfaces without addresses, from sysfs.
-    pub(super) fn complete(interfaces: &mut Vec<LocalInterface>) {
-        let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
-            return;
-        };
-        let mut names: Vec<String> = entries
-            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .collect();
-        names.sort();
-        for name in names {
-            let read = |file: &str| {
-                std::fs::read_to_string(format!("/sys/class/net/{name}/{file}"))
-                    .ok()
-                    .map(|text| text.trim().to_owned())
-            };
-            let Some(flags) = read("flags")
-                .and_then(|flags| u32::from_str_radix(flags.trim_start_matches("0x"), 16).ok())
-            else {
-                // Not an interface (for example the bonding_masters file).
-                continue;
-            };
-            let operstate = read("operstate").unwrap_or_default();
-            let is_up = flags & IFF_UP != 0
-                && !matches!(operstate.as_str(), "down" | "lowerlayerdown" | "notpresent" | "dormant");
-            let mac = read("address")
-                .and_then(|address| parse_mac(&address))
-                .filter(|mac| *mac != [0; 6])
-                .map(format_mac);
-            match interfaces.iter_mut().find(|known| known.name == name) {
-                Some(known) => {
-                    known.mac = mac;
-                    known.is_up = is_up;
-                }
-                None => interfaces.push(LocalInterface {
-                    name,
-                    addresses: Vec::new(),
-                    mac,
-                    is_loopback: flags & IFF_LOOPBACK != 0,
-                    is_up,
-                }),
-            }
-        }
-    }
-
-    pub(super) async fn neighbours() -> Vec<Neighbour> {
-        match process::run("ip", &["neigh", "show"], TOOL_TIMEOUT).await {
-            Ok(output) if output.success => neigh::parse_ip_neigh(&output.stdout),
-            _ => match tokio::fs::read_to_string("/proc/net/arp").await {
-                Ok(text) => neigh::parse_proc_arp(&text),
-                Err(_) => Vec::new(),
-            },
-        }
-    }
-
-    pub(super) async fn default_gateways() -> Vec<LocalRoute> {
-        let v4 = process::run("ip", &["-4", "route", "show", "default"], TOOL_TIMEOUT).await;
-        let mut routes = match v4 {
-            Ok(output) if output.success => route::parse_ip_route(&output.stdout),
-            _ => match tokio::fs::read_to_string("/proc/net/route").await {
-                Ok(text) => route::parse_proc_route(&text),
-                Err(_) => Vec::new(),
-            },
-        };
-        if let Ok(output) = process::run("ip", &["-6", "route", "show", "default"], TOOL_TIMEOUT).await {
-            routes.extend(route::parse_ip_route(&output.stdout));
-        }
-        routes
-    }
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-mod platform {
-    use super::*;
-
-    pub(super) fn complete(interfaces: &mut [LocalInterface]) {
-        let Some(ifconfig) = process::find("ifconfig") else {
-            return;
-        };
-        let Ok(output) = std::process::Command::new(ifconfig).arg("-a").output() else {
-            return;
-        };
-        let macs = parse_ifconfig_macs(&String::from_utf8_lossy(&output.stdout));
-        for interface in interfaces {
-            interface.mac = macs
-                .iter()
-                .find(|(name, _)| *name == interface.name)
-                .map(|(_, mac)| mac.clone());
-        }
-    }
-
-    pub(super) async fn neighbours() -> Vec<Neighbour> {
-        let mut found = Vec::new();
-        if let Ok(output) = process::run("arp", &["-an"], TOOL_TIMEOUT).await {
-            found.extend(neigh::parse_arp_an(&output.stdout));
-        }
-        if let Ok(output) = process::run("ndp", &["-an"], TOOL_TIMEOUT).await {
-            found.extend(neigh::parse_ndp_an(&output.stdout));
-        }
-        found
-    }
-
-    pub(super) async fn default_gateways() -> Vec<LocalRoute> {
-        match process::run("netstat", &["-rn"], TOOL_TIMEOUT).await {
-            Ok(output) => route::parse_netstat_rn(&output.stdout),
-            Err(_) => Vec::new(),
-        }
-    }
-}
-
-#[cfg(windows)]
-mod platform {
-    use super::*;
-
-    pub(super) fn complete(interfaces: &mut [LocalInterface]) {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let Ok(output) = std::process::Command::new("getmac")
-            .args(["/fo", "csv", "/nh", "/v"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-        else {
-            return;
-        };
-        let macs = parse_getmac_csv(&String::from_utf8_lossy(&output.stdout));
-        for interface in interfaces {
-            interface.mac = macs
-                .iter()
-                .find(|(name, _)| *name == interface.name)
-                .map(|(_, mac)| mac.clone());
-        }
-    }
-
-    pub(super) async fn neighbours() -> Vec<Neighbour> {
-        let mut found = Vec::new();
-        if let Ok(output) = process::run("arp", &["-a"], TOOL_TIMEOUT).await {
-            found.extend(neigh::parse_arp_windows(&output.stdout));
-        }
-        let netsh = ["interface", "ipv6", "show", "neighbors"];
-        if let Ok(output) = process::run("netsh", &netsh, TOOL_TIMEOUT).await {
-            found.extend(neigh::parse_netsh_neighbors(&output.stdout));
-        }
-        found
-    }
-
-    pub(super) async fn default_gateways() -> Vec<LocalRoute> {
-        match process::run("route", &["print"], TOOL_TIMEOUT).await {
-            Ok(output) => route::parse_route_print(&output.stdout),
-            Err(_) => Vec::new(),
-        }
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-mod platform {
-    use super::*;
-
-    pub(super) fn complete(_interfaces: &mut [LocalInterface]) {}
-
-    pub(super) async fn neighbours() -> Vec<Neighbour> {
-        Vec::new()
-    }
-
-    pub(super) async fn default_gateways() -> Vec<LocalRoute> {
-        Vec::new()
-    }
 }
 
 #[cfg(test)]
@@ -405,7 +370,10 @@ mod tests {
         assert_eq!(packet[..6], [0xff; 6]);
         for repetition in 0..16 {
             let start = 6 + repetition * 6;
-            assert_eq!(packet[start..start + 6], [0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]);
+            assert_eq!(
+                packet[start..start + 6],
+                [0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]
+            );
         }
     }
 
@@ -418,11 +386,15 @@ mod tests {
             .unwrap();
         assert_eq!(sent, vec![format!("127.0.0.1:{port}")]);
         let mut buffer = [0u8; 200];
-        let (length, _) = tokio::time::timeout(Duration::from_secs(2), listener.recv_from(&mut buffer))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(buffer[..length], magic_packet([0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e])[..]);
+        let (length, _) =
+            tokio::time::timeout(Duration::from_secs(2), listener.recv_from(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            buffer[..length],
+            magic_packet([0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e])[..]
+        );
     }
 
     #[tokio::test]
@@ -430,9 +402,13 @@ mod tests {
         let error = wake_on_lan("00:1a:2b:3c:4d", None).await.unwrap_err();
         assert!(error.to_string().contains("00:1a:2b:3c:4d:5e"), "{error}");
         assert!(matches!(error, ProbeError::Invalid(_)));
-        let error = wake_on_lan("00:1a:2b:3c:4d:5e", Some("office-lan")).await.unwrap_err();
+        let error = wake_on_lan("00:1a:2b:3c:4d:5e", Some("office-lan"))
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("192.168.1.255"), "{error}");
-        let error = wake_on_lan("00:1a:2b:3c:4d:5e", Some("10.0.0.255:99999")).await.unwrap_err();
+        let error = wake_on_lan("00:1a:2b:3c:4d:5e", Some("10.0.0.255:99999"))
+            .await
+            .unwrap_err();
         assert!(matches!(error, ProbeError::Invalid(_)), "{error:?}");
     }
 
@@ -442,7 +418,10 @@ mod tests {
         match result {
             Ok(sent) => {
                 assert!(!sent.is_empty());
-                assert!(sent.iter().all(|destination| destination.ends_with(":9")), "{sent:?}");
+                assert!(
+                    sent.iter().all(|destination| destination.ends_with(":9")),
+                    "{sent:?}"
+                );
             }
             // A machine with nothing but loopback has nowhere to broadcast.
             Err(ProbeError::Unreachable(_) | ProbeError::Permission(_)) => {}
@@ -459,12 +438,17 @@ mod tests {
             .expect("every machine has a loopback interface");
         assert!(loopback.is_up, "{loopback:?}");
         assert!(
-            loopback.addresses.iter().any(|a| a == "127.0.0.1/8" || a == "::1/128"),
+            loopback
+                .addresses
+                .iter()
+                .any(|a| a == "127.0.0.1/8" || a == "::1/128"),
             "{loopback:?}"
         );
         assert_eq!(loopback.mac, None);
-        let names: std::collections::HashSet<&str> =
-            interfaces.iter().map(|interface| interface.name.as_str()).collect();
+        let names: std::collections::HashSet<&str> = interfaces
+            .iter()
+            .map(|interface| interface.name.as_str())
+            .collect();
         assert_eq!(names.len(), interfaces.len(), "one entry per interface");
         for interface in &interfaces {
             for address in &interface.addresses {

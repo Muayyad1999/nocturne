@@ -5,10 +5,18 @@
 //! [`syslog`], [`flow`]) run until they are stopped or dropped. Results are plain serde types.
 
 pub mod dns;
+pub mod flow;
+pub mod http;
 pub mod local;
+pub mod ntp;
 pub mod ping;
 pub mod sweep;
+pub mod syslog;
 pub mod tcp;
+pub mod tftp;
+pub mod tls;
+pub mod traceroute;
+pub mod whois;
 
 mod error;
 mod process;

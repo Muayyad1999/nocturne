@@ -65,7 +65,9 @@ pub struct TraceReport {
     /// The address that was traced.
     pub address: String,
     pub hops: Vec<Hop>,
-    /// Whether the destination itself answered.
+    /// Whether the destination answered. As with every traceroute, an answer for the
+    /// destination that comes from another address counts: routers answer from the interface
+    /// nearest to the tracer (the hop's `note` says when that happened).
     pub reached: bool,
     /// `native-udp`, `system-traceroute` or `system-tracert`.
     pub method: String,
@@ -73,6 +75,9 @@ pub struct TraceReport {
 
 /// How long a reverse lookup of a router may take.
 const NAME_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Note on a final hop whose answer did not come from the traced address itself.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const OTHER_ADDRESS_NOTE: &str = "answered for the destination from another address";
 
 /// Traces the route to `host`. Hops are streamed to `progress` as they are discovered.
 pub async fn traceroute(
@@ -84,10 +89,14 @@ pub async fn traceroute(
         return Err(ProbeError::invalid("max_hops must be at least 1"));
     }
     if options.probes == 0 {
-        return Err(ProbeError::invalid("the number of probes per hop must be at least 1"));
+        return Err(ProbeError::invalid(
+            "the number of probes per hop must be at least 1",
+        ));
     }
     if options.timeout_ms == 0 {
-        return Err(ProbeError::invalid("the traceroute timeout must be at least 1 ms"));
+        return Err(ProbeError::invalid(
+            "the traceroute timeout must be at least 1 ms",
+        ));
     }
     let address = dns::resolve_one(host).await?;
     let mut trace = Trace {
@@ -161,14 +170,20 @@ async fn build_hop(ttl: u8, probes: &[ProbeResult], resolve_names: bool) -> Hop 
     let mut responders: Vec<IpAddr> = Vec::new();
     let mut problems: Vec<&str> = Vec::new();
     for probe in probes {
-        if let Some(address) = probe.address.filter(|address| !responders.contains(address)) {
+        if let Some(address) = probe
+            .address
+            .filter(|address| !responders.contains(address))
+        {
             responders.push(address);
         }
         if let Some(problem) = probe.problem.as_deref().filter(|p| !problems.contains(p)) {
             problems.push(problem);
         }
     }
-    let mut notes: Vec<String> = problems.iter().map(|problem| (*problem).to_owned()).collect();
+    let mut notes: Vec<String> = problems
+        .iter()
+        .map(|problem| (*problem).to_owned())
+        .collect();
     if let [_, others @ ..] = responders.as_slice() {
         if !others.is_empty() {
             let others: Vec<String> = others.iter().map(ToString::to_string).collect();
@@ -206,7 +221,11 @@ mod tests {
 
     #[tokio::test]
     async fn hops_are_summarised() {
-        let ordinary = [answered("10.0.0.1", 1.5), ProbeResult::SILENT, answered("10.0.0.1", 1.7)];
+        let ordinary = [
+            answered("10.0.0.1", 1.5),
+            ProbeResult::SILENT,
+            answered("10.0.0.1", 1.7),
+        ];
         assert_eq!(
             build_hop(3, &ordinary, false).await,
             Hop {
@@ -221,38 +240,77 @@ mod tests {
         let silent = [ProbeResult::SILENT, ProbeResult::SILENT];
         assert_eq!(
             build_hop(4, &silent, true).await,
-            Hop { ttl: 4, address: None, hostname: None, rtts_ms: vec![None, None], note: "no reply".into() }
+            Hop {
+                ttl: 4,
+                address: None,
+                hostname: None,
+                rtts_ms: vec![None, None],
+                note: "no reply".into()
+            }
         );
 
-        let balanced = [answered("10.0.0.1", 1.0), answered("10.0.0.2", 1.1), answered("10.0.0.3", 1.2)];
+        let balanced = [
+            answered("10.0.0.1", 1.0),
+            answered("10.0.0.2", 1.1),
+            answered("10.0.0.3", 1.2),
+        ];
         let hop = build_hop(5, &balanced, false).await;
         assert_eq!(hop.address.as_deref(), Some("10.0.0.1"));
         assert_eq!(hop.note, "also answered by 10.0.0.2, 10.0.0.3");
 
         let unreachable = [
-            ProbeResult { problem: Some("host unreachable".into()), ..answered("10.0.0.9", 3000.0) },
-            ProbeResult { problem: Some("host unreachable".into()), ..answered("10.0.0.9", 3001.0) },
+            ProbeResult {
+                problem: Some("host unreachable".into()),
+                ..answered("10.0.0.9", 3000.0)
+            },
+            ProbeResult {
+                problem: Some("host unreachable".into()),
+                ..answered("10.0.0.9", 3001.0)
+            },
         ];
-        assert_eq!(build_hop(6, &unreachable, false).await.note, "host unreachable");
+        assert_eq!(
+            build_hop(6, &unreachable, false).await.note,
+            "host unreachable"
+        );
     }
 
     #[test]
     fn options_default_and_deserialize_partially() {
         let options = TraceOptions::default();
         assert_eq!(
-            (options.max_hops, options.probes, options.timeout_ms, options.resolve_names),
+            (
+                options.max_hops,
+                options.probes,
+                options.timeout_ms,
+                options.resolve_names
+            ),
             (30, 3, 2000, false)
         );
         let partial: TraceOptions = serde_json::from_str(r#"{"max_hops": 8}"#).unwrap();
-        assert_eq!(partial, TraceOptions { max_hops: 8, ..TraceOptions::default() });
+        assert_eq!(
+            partial,
+            TraceOptions {
+                max_hops: 8,
+                ..TraceOptions::default()
+            }
+        );
     }
 
     #[tokio::test]
     async fn invalid_options_are_rejected() {
         for options in [
-            TraceOptions { max_hops: 0, ..TraceOptions::default() },
-            TraceOptions { probes: 0, ..TraceOptions::default() },
-            TraceOptions { timeout_ms: 0, ..TraceOptions::default() },
+            TraceOptions {
+                max_hops: 0,
+                ..TraceOptions::default()
+            },
+            TraceOptions {
+                probes: 0,
+                ..TraceOptions::default()
+            },
+            TraceOptions {
+                timeout_ms: 0,
+                ..TraceOptions::default()
+            },
         ] {
             let error = traceroute("127.0.0.1", &options, None).await.unwrap_err();
             assert!(matches!(error, ProbeError::Invalid(_)), "{error:?}");
@@ -273,7 +331,12 @@ mod tests {
             reached: false,
             progress: Some(sender),
         };
-        let options = TraceOptions { max_hops: 5, probes: 2, timeout_ms: 1000, resolve_names: false };
+        let options = TraceOptions {
+            max_hops: 5,
+            probes: 2,
+            timeout_ms: 1000,
+            resolve_names: false,
+        };
         let method = match system::run(&mut trace, &options).await {
             Ok(method) => method,
             Err(ProbeError::Unsupported(reason)) => {
@@ -294,5 +357,70 @@ mod tests {
         assert_eq!((hop.ttl, hop.address.as_deref()), (1, Some("127.0.0.1")));
         assert!(hop.rtts_ms.iter().flatten().count() >= 1, "{hop:?}");
         assert_eq!(receiver.try_recv().unwrap(), *hop);
+    }
+
+    /// The system program across the two routers of the namespace lab (`tests/lab/run.sh`).
+    #[tokio::test]
+    async fn lab_system_traceroute_follows_the_routed_path() {
+        if std::env::var_os("NETPROBE_LAB").is_none() {
+            eprintln!("skipping: not inside the lab (run tests/lab/run.sh)");
+            return;
+        }
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut trace = Trace {
+            target: "10.201.3.10".parse().unwrap(),
+            hops: Vec::new(),
+            reached: false,
+            progress: Some(sender),
+        };
+        let options = TraceOptions {
+            max_hops: 8,
+            probes: 3,
+            timeout_ms: 1500,
+            resolve_names: false,
+        };
+        assert_eq!(
+            system::run(&mut trace, &options).await.unwrap(),
+            "system-traceroute"
+        );
+        assert!(trace.reached);
+        let path: Vec<Option<&str>> = trace
+            .hops
+            .iter()
+            .map(|hop| hop.address.as_deref())
+            .collect();
+        assert_eq!(
+            path,
+            [
+                Some("10.201.1.254"),
+                Some("10.201.2.254"),
+                Some("10.201.3.10")
+            ]
+        );
+        assert!(
+            trace
+                .hops
+                .iter()
+                .all(|hop| hop.rtts_ms.iter().flatten().count() == 3 && hop.note.is_empty())
+        );
+        let mut streamed = Vec::new();
+        while let Ok(hop) = receiver.try_recv() {
+            streamed.push(hop);
+        }
+        assert_eq!(streamed, trace.hops);
+
+        // A dead end: the first router has no route and says so (`!N`). Linux routers send at
+        // most five such errors in a burst; give this one time to recover from other tests.
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let mut trace = Trace {
+            target: "10.201.9.9".parse().unwrap(),
+            hops: Vec::new(),
+            reached: false,
+            progress: None,
+        };
+        system::run(&mut trace, &options).await.unwrap();
+        assert!(!trace.reached);
+        assert_eq!(trace.hops[0].address.as_deref(), Some("10.201.1.254"));
+        assert_eq!(trace.hops[0].note, "network unreachable");
     }
 }

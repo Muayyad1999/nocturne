@@ -153,16 +153,14 @@ pub(crate) fn parse_v4(datagram: &[u8], header: IpHeader) -> Parsed<'_> {
                 }
             }
         }
-        V4_UNREACHABLE | V4_TIME_EXCEEDED | V4_PARAMETER_PROBLEM => {
-            match quoted_echo_v4(body) {
-                Some((id, seq)) => Incoming::Error {
-                    id,
-                    seq,
-                    reason: error_text_v4(kind, code),
-                },
-                None => Incoming::Other,
-            }
-        }
+        V4_UNREACHABLE | V4_TIME_EXCEEDED | V4_PARAMETER_PROBLEM => match quoted_echo_v4(body) {
+            Some((id, seq)) => Incoming::Error {
+                id,
+                seq,
+                reason: error_text_v4(kind, code),
+            },
+            None => Incoming::Other,
+        },
         _ => Incoming::Other,
     };
     Parsed { ttl, message }
@@ -238,11 +236,6 @@ fn quoted_echo_v6(quoted: &[u8]) -> Option<(u16, u16)> {
 
 fn be16(data: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([data[offset], data[offset + 1]])
-}
-
-/// The identifier and sequence number at the start of an echo header, if `icmp` is long enough.
-pub(crate) fn echo_ids(icmp: &[u8]) -> Option<(u16, u16)> {
-    (icmp.len() >= ECHO_HEADER).then(|| (be16(icmp, 4), be16(icmp, 6)))
 }
 
 /// What an ICMPv4 error message says, in the words of RFC 792 / RFC 1812.
@@ -346,8 +339,8 @@ mod tests {
         assert_eq!(
             request,
             [
-                0x08, 0x00, 0x54, 0x35, 0x12, 0x34, 0x00, 0x01, b'a', b'b', b'c', b'd', b'e',
-                b'f', b'g', b'h'
+                0x08, 0x00, 0x54, 0x35, 0x12, 0x34, 0x00, 0x01, b'a', b'b', b'c', b'd', b'e', b'f',
+                b'g', b'h'
             ]
         );
         assert_eq!(checksum(&request), 0);
@@ -396,14 +389,26 @@ mod tests {
 
         // Linux datagram socket: the bare ICMP message.
         let parsed = parse_v4(&reply, IpHeader::Detect);
-        assert_eq!(parsed, Parsed { ttl: None, message: expected.clone() });
+        assert_eq!(
+            parsed,
+            Parsed {
+                ttl: None,
+                message: expected.clone()
+            }
+        );
 
         // Raw socket (and macOS datagram socket): IP header first, TTL 57.
         let mut packet = ipv4_header(57, [192, 0, 2, 1], [192, 0, 2, 2], reply.len());
         packet.extend_from_slice(&reply);
         for header in [IpHeader::Present, IpHeader::Detect] {
             let parsed = parse_v4(&packet, header);
-            assert_eq!(parsed, Parsed { ttl: Some(57), message: expected.clone() });
+            assert_eq!(
+                parsed,
+                Parsed {
+                    ttl: Some(57),
+                    message: expected.clone()
+                }
+            );
         }
 
         // IP options make the header longer than 20 bytes.
@@ -422,7 +427,10 @@ mod tests {
         reply[10] ^= 0xff;
         let mut packet = ipv4_header(64, [127, 0, 0, 1], [127, 0, 0, 1], reply.len());
         packet.extend_from_slice(&reply);
-        assert_eq!(parse_v4(&packet, IpHeader::Present).message, Incoming::Other);
+        assert_eq!(
+            parse_v4(&packet, IpHeader::Present).message,
+            Incoming::Other
+        );
     }
 
     #[test]
@@ -430,7 +438,10 @@ mod tests {
         let request = echo_request(Family::V4, 1, 2, b"x");
         let mut packet = ipv4_header(64, [127, 0, 0, 1], [127, 0, 0, 1], request.len());
         packet.extend_from_slice(&request);
-        assert_eq!(parse_v4(&packet, IpHeader::Present).message, Incoming::Other);
+        assert_eq!(
+            parse_v4(&packet, IpHeader::Present).message,
+            Incoming::Other
+        );
         // Router advertisement (type 9).
         let mut advert = vec![9, 0, 0, 0, 1, 2, 0, 30];
         let sum = checksum(&advert);
@@ -447,7 +458,12 @@ mod tests {
     fn icmp_error_v4(kind: u8, code: u8, id: u16, seq: u16) -> Vec<u8> {
         let request = echo_request(Family::V4, id, seq, b"12345678");
         let mut message = vec![kind, code, 0, 0, 0, 0, 0, 0];
-        message.extend_from_slice(&ipv4_header(1, [192, 0, 2, 2], [198, 51, 100, 7], request.len()));
+        message.extend_from_slice(&ipv4_header(
+            1,
+            [192, 0, 2, 2],
+            [198, 51, 100, 7],
+            request.len(),
+        ));
         // RFC 792 only guarantees the first 8 bytes of the offending datagram.
         message.extend_from_slice(&request[..8]);
         let sum = checksum(&message);
@@ -462,8 +478,16 @@ mod tests {
         let cases = [
             (3, 1, "host unreachable"),
             (3, 0, "network unreachable"),
-            (3, 13, "communication administratively prohibited (filtered)"),
-            (3, 4, "fragmentation needed but the don't-fragment bit is set"),
+            (
+                3,
+                13,
+                "communication administratively prohibited (filtered)",
+            ),
+            (
+                3,
+                4,
+                "fragmentation needed but the don't-fragment bit is set",
+            ),
             (3, 99, "destination unreachable"),
             (11, 0, "time to live exceeded in transit"),
             (12, 0, "IP header parameter problem"),
@@ -475,14 +499,24 @@ mod tests {
                 parsed,
                 Parsed {
                     ttl: Some(254),
-                    message: Incoming::Error { id: 0x0a0b, seq: 0x0c0d, reason }
+                    message: Incoming::Error {
+                        id: 0x0a0b,
+                        seq: 0x0c0d,
+                        reason
+                    }
                 },
                 "type {kind} code {code}"
             );
         }
         // Redirects and source quench are not failures of the echo.
-        assert_eq!(parse_v4(&icmp_error_v4(5, 1, 1, 1), IpHeader::Present).message, Incoming::Other);
-        assert_eq!(parse_v4(&icmp_error_v4(4, 0, 1, 1), IpHeader::Present).message, Incoming::Other);
+        assert_eq!(
+            parse_v4(&icmp_error_v4(5, 1, 1, 1), IpHeader::Present).message,
+            Incoming::Other
+        );
+        assert_eq!(
+            parse_v4(&icmp_error_v4(4, 0, 1, 1), IpHeader::Present).message,
+            Incoming::Other
+        );
     }
 
     #[test]
@@ -490,7 +524,10 @@ mod tests {
         let mut packet = icmp_error_v4(3, 3, 1, 1);
         // Inner protocol UDP instead of ICMP: outer header 20 + ICMP header 8 + inner offset 9.
         packet[20 + 8 + 9] = 17;
-        assert_eq!(parse_v4(&packet, IpHeader::Present).message, Incoming::Other);
+        assert_eq!(
+            parse_v4(&packet, IpHeader::Present).message,
+            Incoming::Other
+        );
     }
 
     fn ipv6_header(next_header: u8, payload_len: usize) -> Vec<u8> {
@@ -511,7 +548,11 @@ mod tests {
             parse_v6(&reply),
             Parsed {
                 ttl: None,
-                message: Incoming::EchoReply { id: 0x7777, seq: 3, payload: b"sixsixsix" }
+                message: Incoming::EchoReply {
+                    id: 0x7777,
+                    seq: 3,
+                    payload: b"sixsixsix"
+                }
             }
         );
 
@@ -529,13 +570,20 @@ mod tests {
             error.extend_from_slice(&request);
             assert_eq!(
                 parse_v6(&error).message,
-                Incoming::Error { id: 0x7777, seq: 4, reason },
+                Incoming::Error {
+                    id: 0x7777,
+                    seq: 4,
+                    reason
+                },
                 "type {kind} code {code}"
             );
         }
 
         // Neighbour solicitation, our own request, and an error quoting a TCP packet.
-        assert_eq!(parse_v6(&[135, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3]).message, Incoming::Other);
+        assert_eq!(
+            parse_v6(&[135, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3]).message,
+            Incoming::Other
+        );
         assert_eq!(parse_v6(&request).message, Incoming::Other);
         let mut about_tcp = vec![1, 4, 0, 0, 0, 0, 0, 0];
         about_tcp.extend_from_slice(&ipv6_header(6, 20));
@@ -571,7 +619,6 @@ mod tests {
             let _ = parse_v4(&junk, IpHeader::Present);
             let _ = parse_v4(&junk, IpHeader::Detect);
             let _ = parse_v6(&junk);
-            let _ = echo_ids(&junk);
         }
     }
 

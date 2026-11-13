@@ -259,7 +259,12 @@ mod tests {
             vec![
                 neighbour("192.168.1.1", "a4:2b:b0:c1:d2:e3", "en0", "dynamic"),
                 neighbour("192.168.1.23", "00:0c:29:0a:0b:0c", "en0", "dynamic"),
-                neighbour("192.168.64.1", "3e:22:fb:01:02:64", "bridge100", "permanent"),
+                neighbour(
+                    "192.168.64.1",
+                    "3e:22:fb:01:02:64",
+                    "bridge100",
+                    "permanent"
+                ),
             ]
         );
     }
@@ -298,7 +303,12 @@ mod tests {
             parse_ndp_an(text),
             vec![
                 neighbour("fe80::1", "a4:2b:b0:c1:d2:e3", "en0", "stale"),
-                neighbour("fe80::a683:e7ff:fe12:3456", "a4:83:e7:12:34:56", "en0", "reachable"),
+                neighbour(
+                    "fe80::a683:e7ff:fe12:3456",
+                    "a4:83:e7:12:34:56",
+                    "en0",
+                    "reachable"
+                ),
                 neighbour("2001:db8::9", "00:1b:21:0a:0b:0c", "en0", "delay"),
             ]
         );
@@ -318,8 +328,18 @@ mod tests {
         assert_eq!(
             parse_arp_windows(english),
             vec![
-                neighbour("192.168.1.1", "a4:2b:b0:c1:d2:e3", "192.168.1.10", "dynamic"),
-                neighbour("192.168.1.42", "00:1a:2b:3c:4d:5e", "192.168.1.10", "static"),
+                neighbour(
+                    "192.168.1.1",
+                    "a4:2b:b0:c1:d2:e3",
+                    "192.168.1.10",
+                    "dynamic"
+                ),
+                neighbour(
+                    "192.168.1.42",
+                    "00:1a:2b:3c:4d:5e",
+                    "192.168.1.10",
+                    "static"
+                ),
                 neighbour("10.8.0.1", "00:ff:aa:bb:cc:dd", "10.8.0.2", "dynamic"),
             ]
         );
@@ -330,14 +350,22 @@ mod tests {
                       \x20 192.168.1.255         ff-ff-ff-ff-ff-ff     statisch  \r\n";
         assert_eq!(
             parse_arp_windows(german),
-            vec![neighbour("192.168.1.1", "a4:2b:b0:c1:d2:e3", "192.168.1.10", "dynamic")]
+            vec![neighbour(
+                "192.168.1.1",
+                "a4:2b:b0:c1:d2:e3",
+                "192.168.1.10",
+                "dynamic"
+            )]
         );
 
         let spanish = "\r\nInterfaz: 192.168.1.10 --- 0xb\r\n\
                        \x20 Dirección de Internet          Dirección física      Tipo\r\n\
                        \x20 192.168.1.1           a4-2b-b0-c1-d2-e3     dinámico  \r\n\
                        \x20 192.168.1.2           a4-2b-b0-c1-d2-e4     estático  \r\n";
-        let states: Vec<String> = parse_arp_windows(spanish).into_iter().map(|n| n.state).collect();
+        let states: Vec<String> = parse_arp_windows(spanish)
+            .into_iter()
+            .map(|n| n.state)
+            .collect();
         assert_eq!(states, ["dynamic", "static"]);
     }
 
@@ -358,7 +386,12 @@ mod tests {
             parse_netsh_neighbors(text),
             vec![
                 neighbour("fe80::1", "a4:2b:b0:c1:d2:e3", "Ethernet", "reachable"),
-                neighbour("fe80::2c3:d4ff:fee5:f607", "00:c3:d4:e5:f6:07", "Ethernet", "stale"),
+                neighbour(
+                    "fe80::2c3:d4ff:fee5:f607",
+                    "00:c3:d4:e5:f6:07",
+                    "Ethernet",
+                    "stale"
+                ),
             ]
         );
     }
@@ -374,7 +407,10 @@ mod tests {
             parse_netsh_neighbors,
         ] {
             assert_eq!(parser(""), vec![]);
-            assert_eq!(parser("\u{0}\u{1} dev lladdr at on ( ) --- 0x\n\n: : :\n"), vec![]);
+            assert_eq!(
+                parser("\u{0}\u{1} dev lladdr at on ( ) --- 0x\n\n: : :\n"),
+                vec![]
+            );
             assert_eq!(parser("command not found\n"), vec![]);
         }
     }

@@ -28,13 +28,35 @@ Scratch: `/tmp/claude-0/-home-user-netops-ai/862b16f9-1524-5810-bc17-cca256bcf36
 - Servers: accept loop task owns a `JoinSet`; `stop()`/drop abort it, which releases every socket.
 
 ## Status
-### Done
-- (nothing yet)
+### Done (tests green)
+- `error.rs`, `util.rs`, `process.rs`, `sys/linux.rs` (nix: errqueue, TTL cmsg, BPF filter for raw ICMP, rcvbuf)
+- `dns.rs` (own UDP/TCP exchange on hickory-proto messages; unit + fake-server tests)
+- `ping/` (`icmp.rs` codec, `socket.rs` datagram + raw demux, `system.rs` ping parser) + `tests/ping.rs`
+- `local/` (interfaces, neighbours, gateways, WoL; parsers for Linux/macOS/BSD/Windows)
+- `tcp/` (ports, services, scan, banners) + `tests/tcp.rs` (nmap cross-check)
+- `sweep.rs` + `tests/sweep.rs`
+- `traceroute/` (native Linux UDP+errqueue, system traceroute/tracert incremental parser) + `tests/traceroute.rs`
+- `tests/lab.rs` + `tests/lab/run.sh`: netns topology client-r1-r2-target (root only). Run: `crates/nocturne-netprobe/tests/lab/run.sh`
+  (11 integration + 1 lib test green). Facts learned: Linux routers rate-limit route errors (burst 5, 1/s, global
+  sysctl, not per-netns) -> tests ask for <=2 errors per router and sleep 5 s first.
+- `examples/probe.rs` (manual CLI)
+
+- `ntp.rs` + `tests/ntp.rs` (chronyd interop: `chronyd -n -x -U -u root -f conf`, never touches the clock)
+- `whois.rs` (fake-server chain tests; `whois_at` added for tests / direct registry queries)
+- `tls.rs` + `tls/test_support.rs` (rcgen PKI, TestCa, tls_server) + `tests/tls.rs` (openssl s_server/x509 interop)
+- `http.rs` (own HTTP/1.1 client) + `tests/http.rs` (python http.server, openssl s_server -www, curl cross-check)
+- `tests/support/mod.rs`: `Helper` (kill-on-drop child), `require_program`, free ports
+
+- `tftp/` (packet, path, transfer, server) + `tests/tftp.rs` (own client in `tests/support/tftp_client.rs`) +
+  `tests/tftp_interop.rs` (curl get/put incl. blksize / no-options, tftp-hpa get/put). Note: curl rejects `tsize=0`
+  from any server (empty file needs `--tftp-no-options`).
 
 ### In progress
-- scaffolding: `error.rs`, `util.rs`, `lib.rs`
+- syslog
 
 ### Next
-- dns, ping, local, tcp, sweep, traceroute, ntp, whois, tls, http, tftp, syslog, flow
-- tests: unit (parsers/codecs), loopback integration, interop (curl/tftp/logger/softflowd/dig), robustness
-- Windows `cargo check`, clippy `-D warnings`, `cargo fmt -p nocturne-netprobe`, final report
+- flow
+- interop tests: curl/tftp-hpa (TFTP), logger (syslog), softflowd (flow), dig (DNS)
+- `tests/internet.rs` (public DNS / whois / TLS / HTTP with skip detection)
+- robustness tests (random/truncated datagrams) for syslog/flow/tftp/sntp
+- Windows `cargo check --target x86_64-pc-windows-gnu`, clippy `-D warnings`, `cargo fmt -p nocturne-netprobe`, final report

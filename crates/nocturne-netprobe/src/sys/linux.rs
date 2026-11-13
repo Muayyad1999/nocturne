@@ -10,7 +10,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsFd, AsRawFd};
 
 use nix::libc;
-use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrStorage, recvmsg, setsockopt, sockopt};
+use nix::sys::socket::{
+    ControlMessageOwned, MsgFlags, SockaddrStorage, recvmsg, setsockopt, sockopt,
+};
 
 /// Room for the ancillary data of one message: an extended error plus the offender's address
 /// is under 64 bytes, a TTL is 4.

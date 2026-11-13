@@ -19,7 +19,10 @@ fn quick() -> SweepOptions {
 
 /// `false` (with a note) when this machine cannot ping at all, which a sweep needs.
 async fn can_ping(pinger: &Pinger) -> bool {
-    match pinger.ping_once("127.0.0.1".parse().unwrap(), Duration::from_secs(2), 0).await {
+    match pinger
+        .ping_once("127.0.0.1".parse().unwrap(), Duration::from_secs(2), 0)
+        .await
+    {
         Ok(_) => true,
         Err(error) => {
             eprintln!("skipping: {error}");
@@ -35,7 +38,9 @@ async fn loopback_is_found_by_icmp_and_streamed() {
         return;
     }
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<HostResult>();
-    let hosts = sweep::sweep(&pinger, "127.0.0.1", &quick(), Some(sender)).await.unwrap();
+    let hosts = sweep::sweep(&pinger, "127.0.0.1", &quick(), Some(sender))
+        .await
+        .unwrap();
     assert_eq!(hosts.len(), 1);
     let host = &hosts[0];
     assert_eq!(host.address, "127.0.0.1");
@@ -70,7 +75,9 @@ async fn open_fallback_ports_are_reported() {
         tcp_fallback_ports: vec![closed, open],
         ..quick()
     };
-    let hosts = sweep::sweep(&pinger, "127.0.0.1", &options, None).await.unwrap();
+    let hosts = sweep::sweep(&pinger, "127.0.0.1", &options, None)
+        .await
+        .unwrap();
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].via, "icmp");
     assert_eq!(hosts[0].open_ports, vec![open]);
@@ -83,11 +90,22 @@ async fn ranges_names_and_duplicates() {
         return;
     }
     // Linux answers on all of 127.0.0.0/8; other systems only on 127.0.0.1.
-    let hosts = sweep::sweep(&pinger, "127.0.0.1-127.0.0.6, localhost, 127.0.0.1", &quick(), None)
-        .await
-        .unwrap();
-    let addresses: Vec<IpAddr> = hosts.iter().map(|host| host.address.parse().unwrap()).collect();
-    assert!(addresses.contains(&"127.0.0.1".parse().unwrap()), "{addresses:?}");
+    let hosts = sweep::sweep(
+        &pinger,
+        "127.0.0.1-127.0.0.6, localhost, 127.0.0.1",
+        &quick(),
+        None,
+    )
+    .await
+    .unwrap();
+    let addresses: Vec<IpAddr> = hosts
+        .iter()
+        .map(|host| host.address.parse().unwrap())
+        .collect();
+    assert!(
+        addresses.contains(&"127.0.0.1".parse().unwrap()),
+        "{addresses:?}"
+    );
     let mut sorted = addresses.clone();
     sorted.sort();
     sorted.dedup();
@@ -107,11 +125,19 @@ async fn names_are_resolved_on_request() {
         resolve_names: true,
         ..quick()
     };
-    let hosts = sweep::sweep(&pinger, "127.0.0.1", &options, None).await.unwrap();
+    let hosts = sweep::sweep(&pinger, "127.0.0.1", &options, None)
+        .await
+        .unwrap();
     assert_eq!(hosts.len(), 1);
     let hosts_file = std::fs::read_to_string("/etc/hosts").unwrap_or_default();
-    if hosts_file.lines().any(|line| line.trim_start().starts_with("127.0.0.1")) {
-        assert!(hosts[0].hostname.is_some(), "127.0.0.1 has a name in /etc/hosts");
+    if hosts_file
+        .lines()
+        .any(|line| line.trim_start().starts_with("127.0.0.1"))
+    {
+        assert!(
+            hosts[0].hostname.is_some(),
+            "127.0.0.1 has a name in /etc/hosts"
+        );
     }
 }
 
@@ -130,7 +156,9 @@ async fn silent_addresses_are_not_reported_and_do_not_take_forever() {
         ..SweepOptions::default()
     };
     let started = Instant::now();
-    let hosts = sweep::sweep(&pinger, "198.51.100.64/26", &options, None).await.unwrap();
+    let hosts = sweep::sweep(&pinger, "198.51.100.64/26", &options, None)
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
     for host in &hosts {
         // A network that answers for unassigned space (a captive gateway) is not our bug, but
@@ -144,16 +172,32 @@ async fn silent_addresses_are_not_reported_and_do_not_take_forever() {
 #[tokio::test]
 async fn invalid_requests_are_rejected_before_anything_is_sent() {
     let pinger = Pinger::new();
-    let too_many = SweepOptions { limit: 100, ..quick() };
-    let error = sweep::sweep(&pinger, "10.0.0.0/24", &too_many, None).await.unwrap_err();
+    let too_many = SweepOptions {
+        limit: 100,
+        ..quick()
+    };
+    let error = sweep::sweep(&pinger, "10.0.0.0/24", &too_many, None)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("limit is 100"), "{error}");
 
     for bad in [
-        SweepOptions { concurrency: 0, ..quick() },
-        SweepOptions { timeout_ms: 0, ..quick() },
-        SweepOptions { tcp_fallback_ports: vec![0], ..quick() },
+        SweepOptions {
+            concurrency: 0,
+            ..quick()
+        },
+        SweepOptions {
+            timeout_ms: 0,
+            ..quick()
+        },
+        SweepOptions {
+            tcp_fallback_ports: vec![0],
+            ..quick()
+        },
     ] {
-        let error = sweep::sweep(&pinger, "127.0.0.1", &bad, None).await.unwrap_err();
+        let error = sweep::sweep(&pinger, "127.0.0.1", &bad, None)
+            .await
+            .unwrap_err();
         assert!(matches!(error, ProbeError::Invalid(_)), "{error:?}");
     }
     assert!(matches!(

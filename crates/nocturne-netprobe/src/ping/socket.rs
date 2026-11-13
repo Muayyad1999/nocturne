@@ -123,7 +123,9 @@ const MESSAGE_TOO_LONG: &[i32] = if cfg!(windows) {
 };
 
 fn os_error_is(error: &io::Error, codes: &[i32]) -> bool {
-    error.raw_os_error().is_some_and(|code| codes.contains(&code))
+    error
+        .raw_os_error()
+        .is_some_and(|code| codes.contains(&code))
 }
 
 fn send_error(error: io::Error, target: IpAddr, payload: usize) -> ProbeError {
@@ -188,17 +190,22 @@ pub(crate) async fn echo_datagram(
                     let received_at = Instant::now();
                     let parsed = parse(family, &buffer[..len], IpHeader::Detect);
                     match parsed.message {
-                        Incoming::EchoReply { id, seq: got, payload }
-                            if got == seq
-                                && expected_id.is_none_or(|expected| expected == id)
-                                && payload.starts_with(nonce) =>
+                        Incoming::EchoReply {
+                            id,
+                            seq: got,
+                            payload,
+                        } if got == seq
+                            && expected_id.is_none_or(|expected| expected == id)
+                            && payload.starts_with(nonce) =>
                         {
                             let ttl = ttl.or(parsed.ttl);
                             return Ok(reply(sent_at, received_at, ttl, payload.len()));
                         }
-                        Incoming::Error { id, seq: got, reason }
-                            if got == seq && expected_id.is_none_or(|expected| expected == id) =>
-                        {
+                        Incoming::Error {
+                            id,
+                            seq: got,
+                            reason,
+                        } if got == seq && expected_id.is_none_or(|expected| expected == id) => {
                             return Err(ProbeError::Unreachable(reported_by(reason, from)));
                         }
                         _ => {}
@@ -456,7 +463,11 @@ async fn read_loop(socket: Arc<UdpSocket>, family: Family, id: u16, waiters: Wai
         let received_at = Instant::now();
         let parsed = parse(family, &buffer[..len], IpHeader::Present);
         match parsed.message {
-            Incoming::EchoReply { id: got, seq, payload } if got == id => {
+            Incoming::EchoReply {
+                id: got,
+                seq,
+                payload,
+            } if got == id => {
                 let mut waiters = lock(&waiters);
                 let matches = waiters
                     .get(&seq)
@@ -471,7 +482,11 @@ async fn read_loop(socket: Arc<UdpSocket>, family: Family, id: u16, waiters: Wai
                     }
                 }
             }
-            Incoming::Error { id: got, seq, reason } if got == id => {
+            Incoming::Error {
+                id: got,
+                seq,
+                reason,
+            } if got == id => {
                 if let Some(waiter) = lock(&waiters).remove(&seq) {
                     let _ = waiter
                         .sender

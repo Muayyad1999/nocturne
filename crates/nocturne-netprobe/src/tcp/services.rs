@@ -196,7 +196,9 @@ mod tests {
         // Every listed port has a name to show next to it (6646 is the one nmap itself calls unknown).
         for port in TOP_100.iter().chain(COMMON.iter()) {
             assert!(
-                SERVICES.binary_search_by_key(port, |(port, _)| *port).is_ok(),
+                SERVICES
+                    .binary_search_by_key(port, |(port, _)| *port)
+                    .is_ok(),
                 "port {port} has no service entry"
             );
         }

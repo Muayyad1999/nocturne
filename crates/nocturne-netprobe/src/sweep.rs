@@ -101,13 +101,19 @@ pub async fn sweep(
     found: Option<UnboundedSender<HostResult>>,
 ) -> Result<Vec<HostResult>, ProbeError> {
     if options.concurrency == 0 {
-        return Err(ProbeError::invalid("the sweep concurrency must be at least 1"));
+        return Err(ProbeError::invalid(
+            "the sweep concurrency must be at least 1",
+        ));
     }
     if options.timeout_ms == 0 {
-        return Err(ProbeError::invalid("the sweep timeout must be at least 1 ms"));
+        return Err(ProbeError::invalid(
+            "the sweep timeout must be at least 1 ms",
+        ));
     }
     if options.tcp_fallback_ports.contains(&0) {
-        return Err(ProbeError::invalid("0 is not a TCP port; ports are numbers from 1 to 65535"));
+        return Err(ProbeError::invalid(
+            "0 is not a TCP port; ports are numbers from 1 to 65535",
+        ));
     }
     let mut blocks = Vec::new();
     for target in parse_targets(targets)? {
@@ -176,7 +182,9 @@ pub async fn sweep(
 
     // The neighbour table knows the MAC of every on-link host that answered, and of hosts
     // that filter ICMP and TCP but still had to answer ARP.
-    let neighbours = local::neighbours().await;
+    let answered: HashSet<String> = alive.iter().map(|host| host.address.clone()).collect();
+    let swept: HashSet<IpAddr> = addresses.iter().copied().collect();
+    let neighbours = settled_neighbours(&swept, &answered).await;
     for host in &mut alive {
         host.mac = host
             .address
@@ -185,8 +193,6 @@ pub async fn sweep(
             .and_then(|address| local::neighbour_of(&neighbours, address))
             .map(|neighbour| neighbour.mac.clone());
     }
-    let answered: HashSet<String> = alive.iter().map(|host| host.address.clone()).collect();
-    let swept: HashSet<IpAddr> = addresses.iter().copied().collect();
     for neighbour in &neighbours {
         let Ok(address) = neighbour.address.parse::<IpAddr>() else {
             continue;
@@ -216,6 +222,36 @@ pub async fn sweep(
     alive.sort_by_key(|host| host.address.parse::<IpAddr>().ok());
     alive.dedup_by(|a, b| a.address == b.address);
     Ok(alive)
+}
+
+/// Reads the neighbour table once the kernel has made up its mind about the silent hosts.
+///
+/// An echo sent to a neighbour the kernel already knew (a stale entry) starts a reachability
+/// check that takes a few seconds: the entry sits in `delay`, then `probe`, and ends up
+/// `reachable` (it answered ARP) or gone. Hosts in between are worth waiting for; this only
+/// happens on systems that expose the state (Linux) and when such entries exist.
+async fn settled_neighbours(
+    swept: &HashSet<IpAddr>,
+    answered: &HashSet<String>,
+) -> Vec<local::Neighbour> {
+    const SETTLE_LIMIT: Duration = Duration::from_secs(7);
+    const POLL: Duration = Duration::from_millis(500);
+    let started = Instant::now();
+    loop {
+        let neighbours = local::neighbours().await;
+        let undecided = neighbours.iter().any(|neighbour| {
+            matches!(neighbour.state.as_str(), "delay" | "probe")
+                && !answered.contains(&neighbour.address)
+                && neighbour
+                    .address
+                    .parse()
+                    .is_ok_and(|address| swept.contains(&address))
+        });
+        if !undecided || started.elapsed() >= SETTLE_LIMIT {
+            return neighbours;
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 struct Settings {
@@ -432,11 +468,15 @@ fn parse_cidr(item: &str, network: &str, prefix: &str) -> Result<Block, ProbeErr
         )));
     };
     let bits: u32 = if network.is_ipv6() { 128 } else { 32 };
-    let prefix = prefix.parse::<u32>().ok().filter(|prefix| *prefix <= bits).ok_or_else(|| {
-        ProbeError::invalid(format!(
-            "'{item}' is not a CIDR block: the prefix length must be a number from 0 to {bits}"
-        ))
-    })?;
+    let prefix = prefix
+        .parse::<u32>()
+        .ok()
+        .filter(|prefix| *prefix <= bits)
+        .ok_or_else(|| {
+            ProbeError::invalid(format!(
+                "'{item}' is not a CIDR block: the prefix length must be a number from 0 to {bits}"
+            ))
+        })?;
     let (number, v6) = to_number(network);
     let host_bits = bits - prefix;
     let host_mask = match host_bits {
@@ -455,7 +495,8 @@ fn parse_cidr(item: &str, network: &str, prefix: &str) -> Result<Block, ProbeErr
 
 fn parse_range(item: &str, first: IpAddr, last: &str) -> Result<Block, ProbeError> {
     let last = match (first, last.parse::<IpAddr>(), last.parse::<u8>()) {
-        (IpAddr::V4(_), Ok(last @ IpAddr::V4(_)), _) | (IpAddr::V6(_), Ok(last @ IpAddr::V6(_)), _) => last,
+        (IpAddr::V4(_), Ok(last @ IpAddr::V4(_)), _)
+        | (IpAddr::V6(_), Ok(last @ IpAddr::V6(_)), _) => last,
         // "10.0.0.5-40": the end replaces the last octet.
         (IpAddr::V4(first), Err(_), Ok(octet)) => {
             let [a, b, c, _] = first.octets();
@@ -542,14 +583,20 @@ mod tests {
             ["10.0.0.5", "10.0.0.6", "10.0.0.7", "10.0.0.8"]
         );
         assert_eq!(expand("10.0.0.5-7"), ["10.0.0.5", "10.0.0.6", "10.0.0.7"]);
-        assert_eq!(expand("10.0.0.254-10.0.1.1"), ["10.0.0.254", "10.0.0.255", "10.0.1.0", "10.0.1.1"]);
+        assert_eq!(
+            expand("10.0.0.254-10.0.1.1"),
+            ["10.0.0.254", "10.0.0.255", "10.0.1.0", "10.0.1.1"]
+        );
         assert_eq!(expand("10.0.0.9-10.0.0.9"), ["10.0.0.9"]);
         assert_eq!(
             expand(" 10.0.0.1, 10.0.0.9 ;10.0.0.3\t10.0.0.1 "),
             ["10.0.0.1", "10.0.0.9", "10.0.0.3"]
         );
         // Overlapping items do not repeat addresses.
-        assert_eq!(expand("10.0.0.0/30,10.0.0.2-10.0.0.4"), ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]);
+        assert_eq!(
+            expand("10.0.0.0/30,10.0.0.2-10.0.0.4"),
+            ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+        );
     }
 
     #[test]
@@ -558,10 +605,18 @@ mod tests {
         assert_eq!(expand("[2001:db8::1]"), ["2001:db8::1"]);
         assert_eq!(
             expand("2001:db8::fffe-2001:db8::1:1"),
-            ["2001:db8::fffe", "2001:db8::ffff", "2001:db8::1:0", "2001:db8::1:1"]
+            [
+                "2001:db8::fffe",
+                "2001:db8::ffff",
+                "2001:db8::1:0",
+                "2001:db8::1:1"
+            ]
         );
         let block = expand("2001:db8::/126");
-        assert_eq!(block, ["2001:db8::", "2001:db8::1", "2001:db8::2", "2001:db8::3"]);
+        assert_eq!(
+            block,
+            ["2001:db8::", "2001:db8::1", "2001:db8::2", "2001:db8::3"]
+        );
         assert_eq!(expand("fd00::/120").len(), 256);
     }
 
@@ -571,7 +626,13 @@ mod tests {
         let error = expand_targets("10.0.0.0/24", 253).unwrap_err();
         assert!(error.to_string().contains("254 addresses"), "{error}");
         assert!(error.to_string().contains("limit is 253"), "{error}");
-        for huge in ["10.0.0.0/8", "0.0.0.0/0", "2001:db8::/64", "::/0", "::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"] {
+        for huge in [
+            "10.0.0.0/8",
+            "0.0.0.0/0",
+            "2001:db8::/64",
+            "::/0",
+            "::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        ] {
             let error = expand_targets(huge, 65_536).unwrap_err();
             assert!(matches!(error, ProbeError::Invalid(_)), "{huge}: {error:?}");
         }
@@ -599,7 +660,10 @@ mod tests {
         ];
         for (targets, expected) in cases {
             let error = expand_targets(targets, 1000).unwrap_err();
-            assert!(matches!(error, ProbeError::Invalid(_)), "{targets:?}: {error:?}");
+            assert!(
+                matches!(error, ProbeError::Invalid(_)),
+                "{targets:?}: {error:?}"
+            );
             assert!(error.to_string().contains(expected), "{targets:?}: {error}");
         }
     }
@@ -619,12 +683,18 @@ mod tests {
     fn options_default_and_deserialize_partially() {
         let options = SweepOptions::default();
         assert_eq!(
-            (options.concurrency, options.timeout_ms, options.retries, options.limit),
+            (
+                options.concurrency,
+                options.timeout_ms,
+                options.retries,
+                options.limit
+            ),
             (128, 800, 1, 65_536)
         );
         assert_eq!(options.tcp_fallback_ports, [22, 23, 80, 443, 8291]);
         assert!(!options.resolve_names);
-        let partial: SweepOptions = serde_json::from_str(r#"{"retries": 0, "tcp_fallback_ports": []}"#).unwrap();
+        let partial: SweepOptions =
+            serde_json::from_str(r#"{"retries": 0, "tcp_fallback_ports": []}"#).unwrap();
         assert_eq!(partial.retries, 0);
         assert!(partial.tcp_fallback_ports.is_empty());
         assert_eq!(partial.concurrency, 128);

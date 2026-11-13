@@ -83,8 +83,12 @@ pub fn parse_ports(spec: &str) -> Result<Vec<u16>, ProbeError> {
         any = true;
         let lower = item.to_ascii_lowercase();
         match lower.as_str() {
-            "top100" | "top-100" => TOP_100.iter().for_each(|port| selected[usize::from(*port)] = true),
-            "common" => COMMON.iter().for_each(|port| selected[usize::from(*port)] = true),
+            "top100" | "top-100" => TOP_100
+                .iter()
+                .for_each(|port| selected[usize::from(*port)] = true),
+            "common" => COMMON
+                .iter()
+                .for_each(|port| selected[usize::from(*port)] = true),
             "all" | "*" => selected[1..].fill(true),
             _ => {
                 let (first, last) = parse_range(item)?;
@@ -105,11 +109,14 @@ pub fn parse_ports(spec: &str) -> Result<Vec<u16>, ProbeError> {
 /// One item of a port expression as an inclusive range.
 fn parse_range(item: &str) -> Result<(u16, u16), ProbeError> {
     let port = |text: &str| {
-        text.parse::<u16>().ok().filter(|port| *port != 0).ok_or_else(|| {
-            ProbeError::invalid(format!(
-                "'{text}' in '{item}' is not a port; ports are numbers from 1 to 65535"
-            ))
-        })
+        text.parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| {
+                ProbeError::invalid(format!(
+                    "'{text}' in '{item}' is not a port; ports are numbers from 1 to 65535"
+                ))
+            })
     };
     if let Some(port) = service_port(item) {
         return Ok((port, port));
@@ -145,13 +152,19 @@ pub async fn scan(
     progress: Option<UnboundedSender<PortResult>>,
 ) -> Result<Vec<PortResult>, ProbeError> {
     if options.timeout_ms == 0 {
-        return Err(ProbeError::invalid("the scan timeout must be at least 1 ms"));
+        return Err(ProbeError::invalid(
+            "the scan timeout must be at least 1 ms",
+        ));
     }
     if options.concurrency == 0 {
-        return Err(ProbeError::invalid("the scan concurrency must be at least 1"));
+        return Err(ProbeError::invalid(
+            "the scan concurrency must be at least 1",
+        ));
     }
     if ports.contains(&0) {
-        return Err(ProbeError::invalid("0 is not a TCP port; ports are numbers from 1 to 65535"));
+        return Err(ProbeError::invalid(
+            "0 is not a TCP port; ports are numbers from 1 to 65535",
+        ));
     }
     let address = dns::resolve_one(host).await?;
 
@@ -210,7 +223,9 @@ pub async fn scan(
 /// can produce (`state` tells which).
 pub async fn check(host: &str, port: u16, timeout: Duration) -> Result<PortResult, ProbeError> {
     if port == 0 {
-        return Err(ProbeError::invalid("0 is not a TCP port; ports are numbers from 1 to 65535"));
+        return Err(ProbeError::invalid(
+            "0 is not a TCP port; ports are numbers from 1 to 65535",
+        ));
     }
     let address = dns::resolve_one(host).await?;
     Ok(probe(address, port, timeout, false).await)
@@ -290,7 +305,9 @@ async fn read_banner(mut stream: TcpStream, port: u16) -> Option<String> {
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// Telnet servers open with option negotiation: IAC (0xff) followed by WILL/WONT/DO/DONT.
@@ -371,7 +388,11 @@ mod tests {
         assert_eq!(parse_ports("1-65535").unwrap().len(), 65_535);
 
         let mixed = parse_ports("top100,8291,2000-2002").unwrap();
-        assert_eq!(mixed.len(), 102, "top100 has 2000 and 2001; 2002 and 8291 are new");
+        assert_eq!(
+            mixed.len(),
+            102,
+            "top100 has 2000 and 2001; 2002 and 8291 are new"
+        );
         assert!(mixed.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(mixed.contains(&8291) && mixed.contains(&2002));
     }
@@ -395,7 +416,10 @@ mod tests {
         ];
         for (spec, expected) in cases {
             let error = parse_ports(spec).unwrap_err();
-            assert!(matches!(error, ProbeError::Invalid(_)), "{spec:?}: {error:?}");
+            assert!(
+                matches!(error, ProbeError::Invalid(_)),
+                "{spec:?}: {error:?}"
+            );
             assert!(error.to_string().contains(expected), "{spec:?}: {error}");
         }
     }
@@ -429,36 +453,77 @@ mod tests {
             Some("nginx/1.24.0")
         );
         assert_eq!(
-            describe_banner(b"HTTP/1.0 401 Unauthorized\r\nserver:  mini_httpd/1.30 26Oct2018 \r\n\r\n").as_deref(),
+            describe_banner(
+                b"HTTP/1.0 401 Unauthorized\r\nserver:  mini_httpd/1.30 26Oct2018 \r\n\r\n"
+            )
+            .as_deref(),
             Some("mini_httpd/1.30 26Oct2018")
         );
         // No Server header: the status line still says it is an HTTP server.
         assert_eq!(
-            describe_banner(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\nServer: in-body").as_deref(),
+            describe_banner(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\nServer: in-body")
+                .as_deref(),
             Some("HTTP/1.1 404 Not Found")
         );
-        assert_eq!(describe_banner(b"\r\n\r\nUser Access Verification\r\n").as_deref(), Some("User Access Verification"));
-        assert_eq!(describe_banner(b"RFB 003.008\n").as_deref(), Some("RFB 003.008"));
-        assert_eq!(describe_banner(b"+OK Dovecot ready.\r\n").as_deref(), Some("+OK Dovecot ready."));
+        assert_eq!(
+            describe_banner(b"\r\n\r\nUser Access Verification\r\n").as_deref(),
+            Some("User Access Verification")
+        );
+        assert_eq!(
+            describe_banner(b"RFB 003.008\n").as_deref(),
+            Some("RFB 003.008")
+        );
+        assert_eq!(
+            describe_banner(b"+OK Dovecot ready.\r\n").as_deref(),
+            Some("+OK Dovecot ready.")
+        );
         // MySQL 8 handshake: length 0x4a, sequence 0, protocol 10, version, NUL, thread id …
         let mysql = b"\x4a\x00\x00\x00\x0a8.0.36-0ubuntu0.22.04.1\x00\x0b\x00\x00\x00\x5a\x3b\x41";
-        assert_eq!(describe_banner(mysql).as_deref(), Some("MySQL 8.0.36-0ubuntu0.22.04.1"));
+        assert_eq!(
+            describe_banner(mysql).as_deref(),
+            Some("MySQL 8.0.36-0ubuntu0.22.04.1")
+        );
         // A TLS alert (what an HTTPS server answers to a plain-text request) is not a banner.
-        assert_eq!(describe_banner(&[0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x46]), None);
-        assert_eq!(describe_banner(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03abc"), None);
+        assert_eq!(
+            describe_banner(&[0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x46]),
+            None
+        );
+        assert_eq!(
+            describe_banner(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03abc"),
+            None
+        );
         assert_eq!(describe_banner(b""), None);
         assert_eq!(describe_banner(b"\x00\x01\x02\x03"), None);
         assert_eq!(describe_banner(b"\r\n\r\n"), None);
         let long = [b'A'; 5000];
-        assert_eq!(describe_banner(&long).map(|banner| banner.len()), Some(BANNER_SHOWN));
+        assert_eq!(
+            describe_banner(&long).map(|banner| banner.len()),
+            Some(BANNER_SHOWN)
+        );
     }
 
     #[test]
     fn options_default_and_deserialize_partially() {
         let options = ScanOptions::default();
-        assert_eq!((options.timeout_ms, options.concurrency, options.grab_banners), (1000, 200, true));
+        assert_eq!(
+            (
+                options.timeout_ms,
+                options.concurrency,
+                options.grab_banners
+            ),
+            (1000, 200, true)
+        );
         let partial: ScanOptions = serde_json::from_str(r#"{"grab_banners": false}"#).unwrap();
-        assert_eq!(partial, ScanOptions { grab_banners: false, ..ScanOptions::default() });
-        assert_eq!(serde_json::to_string(&PortState::Filtered).unwrap(), r#""filtered""#);
+        assert_eq!(
+            partial,
+            ScanOptions {
+                grab_banners: false,
+                ..ScanOptions::default()
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&PortState::Filtered).unwrap(),
+            r#""filtered""#
+        );
     }
 }

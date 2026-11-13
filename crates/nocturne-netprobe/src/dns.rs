@@ -176,7 +176,11 @@ async fn is_routable(address: IpAddr) -> bool {
 
 fn parse_kind(kind: &str) -> Result<RecordType, ProbeError> {
     let wanted = kind.trim().to_ascii_uppercase();
-    let wanted = if wanted == "*" { "ANY" } else { wanted.as_str() };
+    let wanted = if wanted == "*" {
+        "ANY"
+    } else {
+        wanted.as_str()
+    };
     KINDS
         .iter()
         .find(|(name, _)| *name == wanted)
@@ -274,7 +278,9 @@ fn system_servers() -> Result<Vec<SocketAddr>, ProbeError> {
 
 fn hosts_file() -> Arc<Hosts> {
     static CACHE: Mutex<Option<(Instant, Arc<Hosts>)>> = Mutex::new(None);
-    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((loaded, hosts)) = cache.as_ref() {
         if loaded.elapsed() < HOSTS_CACHE {
             return hosts.clone();
@@ -316,9 +322,9 @@ async fn lookup_at(
     let mut edns = Edns::new();
     edns.set_max_payload(UDP_PAYLOAD);
     request.set_edns(edns);
-    let wire = request
-        .to_vec()
-        .map_err(|error| ProbeError::invalid(format!("the DNS query cannot be encoded ({error})")))?;
+    let wire = request.to_vec().map_err(|error| {
+        ProbeError::invalid(format!("the DNS query cannot be encoded ({error})"))
+    })?;
     let id = request.metadata.id;
 
     let started = Instant::now();
@@ -401,11 +407,18 @@ async fn lookup_at(
 fn is_server_failure(code: ResponseCode) -> bool {
     matches!(
         code,
-        ResponseCode::ServFail | ResponseCode::Refused | ResponseCode::NotImp | ResponseCode::FormErr
+        ResponseCode::ServFail
+            | ResponseCode::Refused
+            | ResponseCode::NotImp
+            | ResponseCode::FormErr
     )
 }
 
-async fn transmit(channel: &mut Channel, server: SocketAddr, wire: &[u8]) -> Result<(), ProbeError> {
+async fn transmit(
+    channel: &mut Channel,
+    server: SocketAddr,
+    wire: &[u8],
+) -> Result<(), ProbeError> {
     if matches!(channel, Channel::Idle) {
         let local: SocketAddr = match server {
             SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
@@ -701,11 +714,31 @@ mod tests {
                 "2606:2800:220:1:248:1893:25c8:1946",
             ),
             // "www" + pointer to example.com
-            (RecordType::CNAME, 5, b"\x03www\xc0\x0c".to_vec(), "www.example.com"),
-            (RecordType::NS, 2, b"\x01a\x0ciana-servers\x03net\x00".to_vec(), "a.iana-servers.net"),
-            (RecordType::MX, 15, b"\x00\x0a\x04mail\xc0\x0c".to_vec(), "10 mail.example.com"),
+            (
+                RecordType::CNAME,
+                5,
+                b"\x03www\xc0\x0c".to_vec(),
+                "www.example.com",
+            ),
+            (
+                RecordType::NS,
+                2,
+                b"\x01a\x0ciana-servers\x03net\x00".to_vec(),
+                "a.iana-servers.net",
+            ),
+            (
+                RecordType::MX,
+                15,
+                b"\x00\x0a\x04mail\xc0\x0c".to_vec(),
+                "10 mail.example.com",
+            ),
             // Two character-strings are one text.
-            (RecordType::TXT, 16, b"\x0bv=spf1 -all\x04 two".to_vec(), "v=spf1 -all two"),
+            (
+                RecordType::TXT,
+                16,
+                b"\x0bv=spf1 -all\x04 two".to_vec(),
+                "v=spf1 -all two",
+            ),
             (
                 RecordType::SOA,
                 6,
@@ -733,7 +766,12 @@ mod tests {
                 .concat(),
                 "10 60 5060 sip.example.com",
             ),
-            (RecordType::PTR, 12, b"\x03dns\x06google\x00".to_vec(), "dns.google"),
+            (
+                RecordType::PTR,
+                12,
+                b"\x03dns\x06google\x00".to_vec(),
+                "dns.google",
+            ),
             (
                 RecordType::CAA,
                 257,
@@ -801,7 +839,9 @@ mod tests {
         for _ in 0..2000 {
             let mut junk = vec![0u8; (state % 300) as usize];
             for byte in &mut junk {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 *byte = (state >> 56) as u8;
             }
             let _ = matching_response(&junk, 7, &question);
@@ -840,7 +880,8 @@ mod tests {
             let mut queries = 0u32;
             loop {
                 let Ok(Ok((length, peer))) =
-                    tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buffer)).await
+                    tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buffer))
+                        .await
                 else {
                     return queries;
                 };
@@ -869,10 +910,16 @@ mod tests {
 
     #[tokio::test]
     async fn asks_the_named_server_and_reports_its_answer() {
-        let (server, _task) = fake_server(Behaviour::Answer(0x8180, vec![a_record(1), a_record(2)])).await;
-        let answer = lookup("example.com", "a", Some(&server.to_string()), Duration::from_secs(2))
-            .await
-            .unwrap();
+        let (server, _task) =
+            fake_server(Behaviour::Answer(0x8180, vec![a_record(1), a_record(2)])).await;
+        let answer = lookup(
+            "example.com",
+            "a",
+            Some(&server.to_string()),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
         assert_eq!(answer.query, "example.com");
         assert_eq!(answer.kind, "A");
         assert_eq!(answer.server, server.to_string());
@@ -885,9 +932,14 @@ mod tests {
     #[tokio::test]
     async fn nxdomain_is_an_answer_not_an_error() {
         let (server, _task) = fake_server(Behaviour::Answer(0x8183, vec![])).await;
-        let answer = lookup("example.com", "MX", Some(&server.to_string()), Duration::from_secs(2))
-            .await
-            .unwrap();
+        let answer = lookup(
+            "example.com",
+            "MX",
+            Some(&server.to_string()),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
         assert_eq!(answer.rcode, "NXDOMAIN");
         assert!(answer.records.is_empty());
     }
@@ -908,7 +960,11 @@ mod tests {
         assert_eq!(answer.server, healthy.to_string());
         assert_eq!(answer.records[0].data, "192.0.2.9");
         // SERVFAIL moves on at once; the silent server costs one step (3 s / 6 transmissions).
-        assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -925,14 +981,20 @@ mod tests {
         .unwrap();
         assert_eq!(answer.rcode, "SERVFAIL");
         assert_eq!(answer.server, broken.to_string());
-        assert!(started.elapsed() < Duration::from_secs(2), "must not wait for the deadline");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "must not wait for the deadline"
+        );
     }
 
     #[tokio::test]
     async fn a_slow_answer_to_the_first_transmission_is_still_accepted() {
         // One server, 1.2 s timeout: retransmission at 0.6 s, the answer to the first query at 0.8 s.
-        let (server, task) =
-            fake_server(Behaviour::Slow(Duration::from_millis(800), vec![a_record(7)])).await;
+        let (server, task) = fake_server(Behaviour::Slow(
+            Duration::from_millis(800),
+            vec![a_record(7)],
+        ))
+        .await;
         let answer = lookup_at(
             example_question(RecordType::A),
             &[server],
@@ -958,7 +1020,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, ProbeError::Timeout), "{error:?}");
         let waited = started.elapsed();
-        assert!(waited >= Duration::from_millis(390) && waited < Duration::from_millis(900), "{waited:?}");
+        assert!(
+            waited >= Duration::from_millis(390) && waited < Duration::from_millis(900),
+            "{waited:?}"
+        );
         assert_eq!(task.await.unwrap(), 2, "one transmission per round");
 
         // A port nobody listens on answers with ICMP port unreachable.
@@ -967,11 +1032,18 @@ mod tests {
             socket.local_addr().unwrap()
         };
         let started = Instant::now();
-        let error = lookup_at(example_question(RecordType::A), &[closed], Duration::from_secs(3))
-            .await
-            .unwrap_err();
+        let error = lookup_at(
+            example_question(RecordType::A),
+            &[closed],
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(error, ProbeError::Refused), "{error:?}");
-        assert!(started.elapsed() < Duration::from_secs(2), "refusal must not wait for the timeout");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "refusal must not wait for the timeout"
+        );
     }
 
     #[tokio::test]
@@ -1002,12 +1074,19 @@ mod tests {
             let end = 12 + query[12..].iter().position(|b| *b == 0).unwrap() + 5;
             let answers: Vec<&[u8]> = tcp_records.iter().map(Vec::as_slice).collect();
             let reply = response_bytes(id, 0x8180, &query[12..end], &answers);
-            stream.write_all(&(reply.len() as u16).to_be_bytes()).await.unwrap();
+            stream
+                .write_all(&(reply.len() as u16).to_be_bytes())
+                .await
+                .unwrap();
             stream.write_all(&reply).await.unwrap();
         });
-        let answer = lookup_at(example_question(RecordType::A), &[address], Duration::from_secs(3))
-            .await
-            .unwrap();
+        let answer = lookup_at(
+            example_question(RecordType::A),
+            &[address],
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
         assert_eq!(answer.records.len(), 40);
         assert_eq!(answer.records[39].data, "192.0.2.40");
     }
@@ -1023,8 +1102,14 @@ mod tests {
             vec!["2001:db8::1".parse::<IpAddr>().unwrap()]
         );
         assert!(matches!(resolve("").await, Err(ProbeError::Invalid(_))));
-        assert!(matches!(resolve("10.0.0.0/24").await, Err(ProbeError::Invalid(_))));
-        assert!(matches!(resolve("two words").await, Err(ProbeError::Invalid(_))));
+        assert!(matches!(
+            resolve("10.0.0.0/24").await,
+            Err(ProbeError::Invalid(_))
+        ));
+        assert!(matches!(
+            resolve("two words").await,
+            Err(ProbeError::Invalid(_))
+        ));
         // RFC 6761: .invalid never resolves.
         assert!(matches!(
             resolve("no-such-host.invalid").await,
@@ -1049,7 +1134,10 @@ mod tests {
             fields.next() == Some("127.0.0.1") && fields.next().is_some()
         });
         if listed {
-            assert!(name.is_some(), "127.0.0.1 is in /etc/hosts but was not reverse-resolved");
+            assert!(
+                name.is_some(),
+                "127.0.0.1 is in /etc/hosts but was not reverse-resolved"
+            );
         }
     }
 }

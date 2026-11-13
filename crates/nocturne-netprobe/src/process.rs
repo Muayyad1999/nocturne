@@ -107,9 +107,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn runs_a_program_and_captures_its_output() {
-        let output = run("sh", &["-c", "echo out; echo err >&2; exit 3"], Duration::from_secs(5))
-            .await
-            .unwrap();
+        let output = run(
+            "sh",
+            &["-c", "echo out; echo err >&2; exit 3"],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
         assert_eq!(output.stdout, "out\n");
         assert_eq!(output.stderr, "err\n");
         assert!(!output.success);

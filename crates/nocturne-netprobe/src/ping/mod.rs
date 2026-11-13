@@ -48,9 +48,8 @@ impl Pinger {
     /// Detects the best available method once: unprivileged ICMP datagram sockets, raw sockets,
     /// otherwise the operating system's `ping` program.
     pub fn new() -> Pinger {
-        let can_open = |kind| {
-            socket::open(kind, Family::V4).is_ok() || socket::open(kind, Family::V6).is_ok()
-        };
+        let can_open =
+            |kind| socket::open(kind, Family::V4).is_ok() || socket::open(kind, Family::V6).is_ok();
         let method = if can_open(SocketKind::Datagram) {
             Method::IcmpDatagram
         } else if can_open(SocketKind::Raw) {
@@ -289,7 +288,11 @@ pub async fn ping(
         .iter()
         .filter_map(|result| result.as_ref().ok().map(|reply| reply.rtt_ms))
         .collect();
-    if rtts.is_empty() && results.iter().all(|result| matches!(result, Err(e) if is_local(e))) {
+    if rtts.is_empty()
+        && results
+            .iter()
+            .all(|result| matches!(result, Err(e) if is_local(e)))
+    {
         let first = results.into_iter().next().expect("count is at least 1");
         return Err(first.expect_err("no echo succeeded"));
     }
@@ -334,7 +337,9 @@ fn is_local(error: &ProbeError) -> bool {
 }
 
 fn task_failure(error: tokio::task::JoinError) -> ProbeError {
-    ProbeError::Io(std::io::Error::other(format!("a ping task failed: {error}")))
+    ProbeError::Io(std::io::Error::other(format!(
+        "a ping task failed: {error}"
+    )))
 }
 
 #[cfg(test)]
@@ -346,35 +351,68 @@ mod tests {
     fn options_default_and_deserialize_partially() {
         let options = PingOptions::default();
         assert_eq!(
-            (options.count, options.interval_ms, options.timeout_ms, options.payload),
+            (
+                options.count,
+                options.interval_ms,
+                options.timeout_ms,
+                options.payload
+            ),
             (4, 1000, 1000, 56)
         );
         let partial: PingOptions = serde_json::from_str(r#"{"count": 2}"#).unwrap();
-        assert_eq!(partial, PingOptions { count: 2, ..PingOptions::default() });
+        assert_eq!(
+            partial,
+            PingOptions {
+                count: 2,
+                ..PingOptions::default()
+            }
+        );
     }
 
     #[test]
     fn method_serializes_as_snake_case() {
-        assert_eq!(serde_json::to_string(&Method::IcmpDatagram).unwrap(), r#""icmp_datagram""#);
-        assert_eq!(serde_json::to_string(&Method::IcmpRaw).unwrap(), r#""icmp_raw""#);
-        assert_eq!(serde_json::to_string(&Method::SystemCommand).unwrap(), r#""system_command""#);
+        assert_eq!(
+            serde_json::to_string(&Method::IcmpDatagram).unwrap(),
+            r#""icmp_datagram""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Method::IcmpRaw).unwrap(),
+            r#""icmp_raw""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Method::SystemCommand).unwrap(),
+            r#""system_command""#
+        );
     }
 
     #[test]
     fn echo_entries_describe_success_and_failure() {
-        let ok = Ok(PingReply { rtt_ms: 1.25, ttl: Some(64), bytes: 64 });
+        let ok = Ok(PingReply {
+            rtt_ms: 1.25,
+            ttl: Some(64),
+            bytes: 64,
+        });
         assert_eq!(
             echo_of(0, &ok),
-            PingEcho { seq: 1, rtt_ms: Some(1.25), ttl: Some(64), error: None }
+            PingEcho {
+                seq: 1,
+                rtt_ms: Some(1.25),
+                ttl: Some(64),
+                error: None
+            }
         );
-        let failed = Err(ProbeError::Unreachable("host unreachable (reported by 10.0.0.1)".into()));
+        let failed = Err(ProbeError::Unreachable(
+            "host unreachable (reported by 10.0.0.1)".into(),
+        ));
         assert_eq!(
             echo_of(2, &failed),
             PingEcho {
                 seq: 3,
                 rtt_ms: None,
                 ttl: None,
-                error: Some("destination unreachable: host unreachable (reported by 10.0.0.1)".into()),
+                error: Some(
+                    "destination unreachable: host unreachable (reported by 10.0.0.1)".into()
+                ),
             }
         );
     }
@@ -383,13 +421,27 @@ mod tests {
     async fn invalid_options_are_rejected_with_the_reason() {
         let pinger = Pinger::with_method(Method::SystemCommand);
         let bad = [
-            PingOptions { count: 0, ..PingOptions::default() },
-            PingOptions { timeout_ms: 0, ..PingOptions::default() },
-            PingOptions { payload: 70_000, ..PingOptions::default() },
+            PingOptions {
+                count: 0,
+                ..PingOptions::default()
+            },
+            PingOptions {
+                timeout_ms: 0,
+                ..PingOptions::default()
+            },
+            PingOptions {
+                payload: 70_000,
+                ..PingOptions::default()
+            },
         ];
         for options in bad {
-            let error = ping(&pinger, "127.0.0.1", &options, None).await.unwrap_err();
-            assert!(matches!(error, ProbeError::Invalid(_)), "{options:?}: {error:?}");
+            let error = ping(&pinger, "127.0.0.1", &options, None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ProbeError::Invalid(_)),
+                "{options:?}: {error:?}"
+            );
         }
         let error = pinger
             .ping_once("127.0.0.1".parse().unwrap(), Duration::from_secs(1), 70_000)

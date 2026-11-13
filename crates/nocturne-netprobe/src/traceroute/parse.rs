@@ -69,7 +69,8 @@ impl TraceParser {
     }
 
     fn feed_unix(&mut self, line: &str) -> Vec<HopLine> {
-        static HOP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(\d{1,3})\s+(\S.*)$").unwrap());
+        static HOP: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^\s*(\d{1,3})\s+(\S.*)$").unwrap());
         let mut complete = Vec::new();
         if let Some(captures) = HOP.captures(line) {
             let probes = parse_unix_probes(&captures[2]);
@@ -283,12 +284,40 @@ mod tests {
         assert_eq!(
             parse_all(Flavor::Unix, 3, output),
             vec![
-                hop(1, vec![answered("192.168.1.1", 0.411), answered("192.168.1.1", 0.389), answered("192.168.1.1", 0.357)]),
-                hop(2, vec![answered("10.20.0.1", 2.105), answered("10.20.0.1", 2.324), answered("10.20.0.1", 2.279)]),
+                hop(
+                    1,
+                    vec![
+                        answered("192.168.1.1", 0.411),
+                        answered("192.168.1.1", 0.389),
+                        answered("192.168.1.1", 0.357)
+                    ]
+                ),
+                hop(
+                    2,
+                    vec![
+                        answered("10.20.0.1", 2.105),
+                        answered("10.20.0.1", 2.324),
+                        answered("10.20.0.1", 2.279)
+                    ]
+                ),
                 hop(3, vec![SILENT, SILENT, SILENT]),
-                hop(4, vec![answered("72.14.215.85", 9.821), answered("72.14.215.87", 10.212), answered("72.14.215.87", 9.914)]),
+                hop(
+                    4,
+                    vec![
+                        answered("72.14.215.85", 9.821),
+                        answered("72.14.215.87", 10.212),
+                        answered("72.14.215.87", 9.914)
+                    ]
+                ),
                 hop(5, vec![SILENT, answered("108.170.250.33", 11.4), SILENT]),
-                hop(6, vec![answered("8.8.8.8", 9.544), answered("8.8.8.8", 9.397), answered("8.8.8.8", 9.468)]),
+                hop(
+                    6,
+                    vec![
+                        answered("8.8.8.8", 9.544),
+                        answered("8.8.8.8", 9.397),
+                        answered("8.8.8.8", 9.468)
+                    ]
+                ),
             ]
         );
     }
@@ -299,7 +328,10 @@ mod tests {
                       \x201  gw.example.net (192.0.2.1)  0.234 ms  0.202 ms\n";
         assert_eq!(
             parse_all(Flavor::Unix, 2, output),
-            vec![hop(1, vec![answered("192.0.2.1", 0.234), answered("192.0.2.1", 0.202)])]
+            vec![hop(
+                1,
+                vec![answered("192.0.2.1", 0.234), answered("192.0.2.1", 0.202)]
+            )]
         );
 
         let unreachable = "traceroute to 10.9.9.9 (10.9.9.9), 30 hops max, 60 byte packets\n\
@@ -310,8 +342,14 @@ mod tests {
         assert_eq!(
             hops[1].probes,
             vec![
-                ProbeLine { flag: Some("H".into()), ..answered("192.168.1.1", 3051.2) },
-                ProbeLine { flag: Some("H".into()), ..answered("192.168.1.1", 3052.8) },
+                ProbeLine {
+                    flag: Some("H".into()),
+                    ..answered("192.168.1.1", 3051.2)
+                },
+                ProbeLine {
+                    flag: Some("H".into()),
+                    ..answered("192.168.1.1", 3052.8)
+                },
                 SILENT,
             ]
         );
@@ -322,7 +360,10 @@ mod tests {
             .iter()
             .map(|probe| probe.flag.clone())
             .collect();
-        assert_eq!(flags, [Some("X".into()), Some("10".into()), Some("N".into())]);
+        assert_eq!(
+            flags,
+            [Some("X".into()), Some("10".into()), Some("N".into())]
+        );
     }
 
     #[test]
@@ -349,10 +390,31 @@ mod tests {
         assert_eq!(
             parse_all(Flavor::Unix, 3, output),
             vec![
-                hop(1, vec![answered("192.168.1.1", 1.123), answered("192.168.1.1", 0.912), answered("192.168.1.1", 0.855)]),
+                hop(
+                    1,
+                    vec![
+                        answered("192.168.1.1", 1.123),
+                        answered("192.168.1.1", 0.912),
+                        answered("192.168.1.1", 0.855)
+                    ]
+                ),
                 hop(2, vec![SILENT, SILENT, SILENT]),
-                hop(3, vec![answered("10.20.0.1", 2.105), answered("10.20.0.2", 2.324), answered("10.20.0.2", 2.279)]),
-                hop(4, vec![answered("8.8.8.8", 9.544), answered("8.8.8.8", 9.397), answered("8.8.8.8", 9.468)]),
+                hop(
+                    3,
+                    vec![
+                        answered("10.20.0.1", 2.105),
+                        answered("10.20.0.2", 2.324),
+                        answered("10.20.0.2", 2.279)
+                    ]
+                ),
+                hop(
+                    4,
+                    vec![
+                        answered("8.8.8.8", 9.544),
+                        answered("8.8.8.8", 9.397),
+                        answered("8.8.8.8", 9.468)
+                    ]
+                ),
             ]
         );
     }
@@ -360,16 +422,25 @@ mod tests {
     #[test]
     fn hops_are_emitted_as_soon_as_they_are_complete() {
         let mut parser = TraceParser::new(Flavor::Unix, 3);
-        assert_eq!(parser.feed("traceroute to 8.8.8.8 (8.8.8.8), 30 hops max, 60 byte packets"), vec![]);
+        assert_eq!(
+            parser.feed("traceroute to 8.8.8.8 (8.8.8.8), 30 hops max, 60 byte packets"),
+            vec![]
+        );
         // Three probes on the line: complete at once.
-        assert_eq!(parser.feed(" 1  192.168.1.1  0.4 ms  0.3 ms  0.3 ms").len(), 1);
+        assert_eq!(
+            parser.feed(" 1  192.168.1.1  0.4 ms  0.3 ms  0.3 ms").len(),
+            1
+        );
         // One probe so far: wait for a continuation or the next hop.
         assert_eq!(parser.feed(" 2  10.20.0.1  2.1 ms"), vec![]);
         assert_eq!(parser.feed("    10.20.0.2  2.3 ms  2.2 ms").len(), 1);
         assert_eq!(parser.feed(" 3  10.30.0.1  5.0 ms"), vec![]);
         // The next hop starts: hop 3 was all there was.
         let emitted = parser.feed(" 4  8.8.8.8  9.5 ms  9.4 ms  9.4 ms");
-        assert_eq!(emitted.iter().map(|hop| hop.ttl).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(
+            emitted.iter().map(|hop| hop.ttl).collect::<Vec<_>>(),
+            [3, 4]
+        );
         assert_eq!(parser.finish(), None);
     }
 
@@ -379,7 +450,14 @@ mod tests {
                          \x20 1   127.0.0.1  0.003ms  0.002ms  0.001ms \n";
         assert_eq!(
             parse_all(Flavor::Unix, 3, inetutils),
-            vec![hop(1, vec![answered("127.0.0.1", 0.003), answered("127.0.0.1", 0.002), answered("127.0.0.1", 0.001)])]
+            vec![hop(
+                1,
+                vec![
+                    answered("127.0.0.1", 0.003),
+                    answered("127.0.0.1", 0.002),
+                    answered("127.0.0.1", 0.001)
+                ]
+            )]
         );
         let busybox = "traceroute to 10.0.0.1 (10.0.0.1), 30 hops max, 46 byte packets\n\
                        \x201  10.0.0.1 (10.0.0.1)  0.331 ms  0.290 ms  0.270 ms\n";
@@ -398,10 +476,34 @@ mod tests {
         assert_eq!(
             parse_all(Flavor::Windows, 3, output),
             vec![
-                hop(1, vec![answered("192.168.1.1", 1.0), answered("192.168.1.1", 1.0), answered("192.168.1.1", 1.0)]),
-                hop(2, vec![answered("10.20.0.1", 2.0), answered("10.20.0.1", 2.0), answered("10.20.0.1", 2.0)]),
-                HopLine { message: Some("Request timed out".into()), ..hop(3, vec![SILENT, SILENT, SILENT]) },
-                hop(4, vec![answered("72.14.215.85", 9.0), answered("72.14.215.85", 10.0), answered("72.14.215.85", 9.0)]),
+                hop(
+                    1,
+                    vec![
+                        answered("192.168.1.1", 1.0),
+                        answered("192.168.1.1", 1.0),
+                        answered("192.168.1.1", 1.0)
+                    ]
+                ),
+                hop(
+                    2,
+                    vec![
+                        answered("10.20.0.1", 2.0),
+                        answered("10.20.0.1", 2.0),
+                        answered("10.20.0.1", 2.0)
+                    ]
+                ),
+                HopLine {
+                    message: Some("Request timed out".into()),
+                    ..hop(3, vec![SILENT, SILENT, SILENT])
+                },
+                hop(
+                    4,
+                    vec![
+                        answered("72.14.215.85", 9.0),
+                        answered("72.14.215.85", 10.0),
+                        answered("72.14.215.85", 9.0)
+                    ]
+                ),
                 hop(5, vec![SILENT, answered("8.8.8.8", 9.0), SILENT]),
             ]
         );
@@ -416,10 +518,21 @@ mod tests {
         assert_eq!(
             parse_all(Flavor::Windows, 3, output),
             vec![
-                hop(1, vec![answered("192.168.1.1", 1.0), answered("192.168.1.1", 1.0), answered("192.168.1.1", 1.0)]),
+                hop(
+                    1,
+                    vec![
+                        answered("192.168.1.1", 1.0),
+                        answered("192.168.1.1", 1.0),
+                        answered("192.168.1.1", 1.0)
+                    ]
+                ),
                 HopLine {
                     ttl: 2,
-                    probes: vec![ProbeLine { address: Some("192.168.1.1".parse().unwrap()), rtt_ms: None, flag: None }],
+                    probes: vec![ProbeLine {
+                        address: Some("192.168.1.1".parse().unwrap()),
+                        rtt_ms: None,
+                        flag: None
+                    }],
                     message: Some("Destination host unreachable".into()),
                 },
             ]
@@ -438,10 +551,19 @@ mod tests {
         assert_eq!(hops.len(), 4);
         assert_eq!(hops[0].probes[0], answered("192.168.1.1", 1.0));
         assert_eq!(hops[1].probes, vec![SILENT, SILENT, SILENT]);
-        assert_eq!(hops[1].message.as_deref(), Some("Zeitüberschreitung der Anforderung"));
+        assert_eq!(
+            hops[1].message.as_deref(),
+            Some("Zeitüberschreitung der Anforderung")
+        );
         assert_eq!(hops[2].probes[1], answered("8.8.8.8", 11.0));
-        assert_eq!(hops[3].message.as_deref(), Some("Zielhost nicht erreichbar"));
-        assert_eq!(hops[3].probes[0].address, Some("192.168.1.1".parse().unwrap()));
+        assert_eq!(
+            hops[3].message.as_deref(),
+            Some("Zielhost nicht erreichbar")
+        );
+        assert_eq!(
+            hops[3].probes[0].address,
+            Some("192.168.1.1".parse().unwrap())
+        );
     }
 
     #[test]
@@ -480,7 +602,10 @@ mod tests {
     fn flags_are_explained() {
         assert_eq!(flag_meaning("H"), "host unreachable");
         assert_eq!(flag_meaning("N"), "network unreachable");
-        assert_eq!(flag_meaning("X"), "communication administratively prohibited");
+        assert_eq!(
+            flag_meaning("X"),
+            "communication administratively prohibited"
+        );
         assert_eq!(flag_meaning("13"), "destination unreachable (ICMP code 13)");
         assert_eq!(flag_meaning("Q"), "ICMP error !Q");
     }

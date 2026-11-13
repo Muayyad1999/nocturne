@@ -92,18 +92,33 @@ fn command_line(target: IpAddr, timeout: Duration, payload: usize) -> (&'static 
     let v6 = target.is_ipv6();
     let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
         let family = if v6 { "-6" } else { "-4" };
-        ("ping", vec!["-n", "1", "-w", &millis, "-l", &payload, family, &address])
-    } else if cfg!(any(target_os = "macos", target_os = "freebsd", target_os = "dragonfly")) {
+        (
+            "ping",
+            vec!["-n", "1", "-w", &millis, "-l", &payload, family, &address],
+        )
+    } else if cfg!(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "dragonfly"
+    )) {
         if v6 {
             ("ping6", vec!["-n", "-c", "1", "-s", &payload, &address])
         } else {
             // BSD ping takes the wait time in milliseconds.
-            ("ping", vec!["-n", "-c", "1", "-W", &millis, "-s", &payload, &address])
+            (
+                "ping",
+                vec!["-n", "-c", "1", "-W", &millis, "-s", &payload, &address],
+            )
         }
     } else if cfg!(any(target_os = "linux", target_os = "android")) {
         let family = if v6 { "-6" } else { "-4" };
         // iputils and busybox take whole seconds; the caller's timeout is enforced on top.
-        ("ping", vec!["-n", "-c", "1", "-W", &seconds, "-s", &payload, family, &address])
+        (
+            "ping",
+            vec![
+                "-n", "-c", "1", "-W", &seconds, "-s", &payload, family, &address,
+            ],
+        )
     } else if v6 {
         ("ping6", vec!["-n", "-c", "1", "-s", &payload, &address])
     } else {
@@ -136,8 +151,7 @@ static DURATION: LazyLock<Regex> =
 static TTL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(?:ttl|hlim)\s*[=:]\s*(\d+)").unwrap());
 /// Any `key=number` / `key<number` value.
-static VALUE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[=<]\s*(\d+(?:[.,]\d+)?)").unwrap());
+static VALUE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[=<]\s*(\d+(?:[.,]\d+)?)").unwrap());
 static BYTES_FROM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) bytes from ").unwrap());
 /// "… <address>: <text>" — how every `ping` prints an ICMP error it received, in any language.
 static REPORTED: LazyLock<Regex> = LazyLock::new(|| {
@@ -161,7 +175,11 @@ static DENIED_WORDS: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// `replied` is what the exit status says, on the systems where it is meaningful.
 pub(crate) fn parse_output(output: &str, replied: bool) -> Outcome {
-    let lines: Vec<&str> = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
 
     for line in &lines {
         if let Some(rtt_ms) = reply_time(line) {
@@ -184,7 +202,10 @@ pub(crate) fn parse_output(output: &str, replied: bool) -> Outcome {
     }
     for line in &lines {
         if let Some(captures) = FROM_LINE.captures(line) {
-            return Outcome::Unreachable(format!("{} (reported by {})", &captures[2], &captures[1]));
+            return Outcome::Unreachable(format!(
+                "{} (reported by {})",
+                &captures[2], &captures[1]
+            ));
         }
         if let Some(captures) = REPORTED.captures(line) {
             let text = captures[2].trim_end_matches('.').trim();
@@ -228,7 +249,15 @@ fn parse_number(text: &str) -> Option<f64> {
 /// "ping: connect: Network is unreachable" -> "Network is unreachable"
 fn strip_program_prefix(line: &str) -> &str {
     let mut text = line;
-    for prefix in ["ping6: ", "ping: ", "PING: ", "connect: ", "sendto: ", "sendmsg: ", "socket: "] {
+    for prefix in [
+        "ping6: ",
+        "ping: ",
+        "PING: ",
+        "connect: ",
+        "sendto: ",
+        "sendmsg: ",
+        "socket: ",
+    ] {
         text = text.strip_prefix(prefix).unwrap_or(text);
     }
     text
@@ -255,7 +284,10 @@ mod tests {
 
         let slow = "PING 8.8.8.8 (8.8.8.8) 1400(1428) bytes of data.\n\
                     1408 bytes from 8.8.8.8: icmp_seq=1 ttl=117 time=1024 ms\n";
-        assert_eq!(parse_output(slow, true), reply(1024.0, Some(117), Some(1408)));
+        assert_eq!(
+            parse_output(slow, true),
+            reply(1024.0, Some(117), Some(1408))
+        );
 
         let v6 = "PING ::1(::1) 56 data bytes\n\
                   64 bytes from ::1: icmp_seq=1 ttl=64 time=0.045 ms\n";
@@ -357,7 +389,10 @@ mod tests {
         );
 
         assert_eq!(
-            parse_output("PING 10.1.1.1 (10.1.1.1): 56 data bytes\nping: sendto: No route to host\n", false),
+            parse_output(
+                "PING 10.1.1.1 (10.1.1.1): 56 data bytes\nping: sendto: No route to host\n",
+                false
+            ),
             Outcome::Unreachable("No route to host".into())
         );
     }
@@ -463,7 +498,10 @@ mod tests {
         assert_eq!(parse_output(chinese, true), reply(1.0, Some(64), None));
 
         let spanish_decimal_comma = "64 bytes desde 10.0.0.1: icmp_seq=1 ttl=64 tiempo=0,512 ms\n";
-        assert_eq!(parse_output(spanish_decimal_comma, true), reply(0.512, Some(64), None));
+        assert_eq!(
+            parse_output(spanish_decimal_comma, true),
+            reply(0.512, Some(64), None)
+        );
     }
 
     #[test]
@@ -488,14 +526,25 @@ mod tests {
 
     #[test]
     fn command_lines_pass_the_address_as_a_plain_argument() {
-        let (program, args) = command_line("192.0.2.9".parse().unwrap(), Duration::from_millis(800), 56);
+        let (program, args) =
+            command_line("192.0.2.9".parse().unwrap(), Duration::from_millis(800), 56);
         assert!(program.starts_with("ping"));
         assert_eq!(args.last().map(String::as_str), Some("192.0.2.9"));
         assert!(args.contains(&"56".to_owned()));
         if cfg!(target_os = "linux") {
-            assert_eq!(args, ["-n", "-c", "1", "-W", "1", "-s", "56", "-4", "192.0.2.9"]);
-            let (_, v6) = command_line("2001:db8::1".parse().unwrap(), Duration::from_millis(2500), 0);
-            assert_eq!(v6, ["-n", "-c", "1", "-W", "3", "-s", "0", "-6", "2001:db8::1"]);
+            assert_eq!(
+                args,
+                ["-n", "-c", "1", "-W", "1", "-s", "56", "-4", "192.0.2.9"]
+            );
+            let (_, v6) = command_line(
+                "2001:db8::1".parse().unwrap(),
+                Duration::from_millis(2500),
+                0,
+            );
+            assert_eq!(
+                v6,
+                ["-n", "-c", "1", "-W", "3", "-s", "0", "-6", "2001:db8::1"]
+            );
         }
     }
 }

@@ -95,7 +95,9 @@ pub(crate) fn is_out_of_resources(error: &std::io::Error) -> bool {
     } else {
         &[24, 23, 55]
     };
-    error.raw_os_error().is_some_and(|code| CODES.contains(&code))
+    error
+        .raw_os_error()
+        .is_some_and(|code| CODES.contains(&code))
 }
 
 /// Checks that `host` can be a host name or an address at all.
@@ -322,7 +324,10 @@ mod tests {
 
     #[test]
     fn ip_literals() {
-        assert_eq!(parse_ip_literal("10.1.2.3"), Some("10.1.2.3".parse().unwrap()));
+        assert_eq!(
+            parse_ip_literal("10.1.2.3"),
+            Some("10.1.2.3".parse().unwrap())
+        );
         assert_eq!(parse_ip_literal("[::1]"), Some("::1".parse().unwrap()));
         assert_eq!(
             parse_ip_literal("fe80::1%eth0"),
@@ -356,12 +361,18 @@ mod tests {
         ] {
             assert_eq!(parse_mac(bad), None, "{bad:?}");
         }
-        assert_eq!(format_mac([0, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]), "00:1a:2b:3c:4d:5e");
+        assert_eq!(
+            format_mac([0, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]),
+            "00:1a:2b:3c:4d:5e"
+        );
     }
 
     #[test]
     fn printable_text() {
-        assert_eq!(printable("SSH-2.0-OpenSSH_9.6\r\n", 80), "SSH-2.0-OpenSSH_9.6");
+        assert_eq!(
+            printable("SSH-2.0-OpenSSH_9.6\r\n", 80),
+            "SSH-2.0-OpenSSH_9.6"
+        );
         assert_eq!(printable("a\x00\x07b\t\tc", 80), "a b c");
         assert_eq!(printable("abcdef", 3), "abc");
         assert_eq!(printable("\r\n", 80), "");
