@@ -19,6 +19,8 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_config::init(builder);
     nocturne_changes::init(builder);
     nocturne_lab::init(builder);
+    nocturne_logs::init(builder);
+    nocturne_automation::init(builder);
     nocturne_topology::init(builder);
     nocturne_monitor::init(builder);
     // After monitoring and the topology, which it asks for alerts, interface
@@ -108,6 +110,24 @@ mod tests {
             "discovery.add",
             "discovery.crawl",
             "discovery.ignore",
+            // logs
+            "logs.query",
+            "logs.histogram",
+            "logs.follow",
+            "logs.pull",
+            "logs.rules.save",
+            "logs.status",
+            // automation
+            "tasks.list",
+            "tasks.run",
+            "runner.run",
+            "runner.compare",
+            "templates.list",
+            "templates.render",
+            "playbooks.run",
+            "schedules.save",
+            "triggers.save",
+            "ansible.status",
             // the topology
             "topology.get",
             "topology.path",

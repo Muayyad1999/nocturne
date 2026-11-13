@@ -1,0 +1,752 @@
+//! Templates: rendering, variable validation, the built-ins, and the fact
+//! that a configuration template produces a change and never a command.
+
+mod common;
+
+use common::{Changes, lab};
+use nocturne_app::collect;
+use nocturne_drivers::model::Kind;
+use serde_json::{Value, json};
+
+async fn render_one(lab: &nocturne_app::testing::Lab, body: &str, vars: Value) -> Value {
+    lab.app
+        .rpc(
+            "templates.render",
+            json!({"body": body, "device_ids": [lab.id("SW1")], "vars": vars}),
+        )
+        .await
+        .expect("templates.render")[0]
+        .clone()
+}
+
+#[tokio::test]
+async fn a_name_the_template_does_not_have_is_an_error_that_says_which_name() {
+    let lab = lab(&["SW1"]).await;
+    let rendered = render_one(&lab, "ntp server {{ server }}", json!({})).await;
+    assert_eq!(rendered["ok"], json!(false));
+    let error = rendered["error"].as_str().expect("an error");
+    assert!(error.contains("`server`"), "it names the variable: {error}");
+    assert!(
+        rendered["lines"].is_null(),
+        "and renders nothing: {rendered:?}"
+    );
+
+    // With the variable, it renders — and never as an empty string.
+    let rendered = render_one(
+        &lab,
+        "ntp server {{ server }}",
+        json!({"server": "192.0.2.1"}),
+    )
+    .await;
+    assert_eq!(rendered["lines"], json!(["ntp server 192.0.2.1"]));
+}
+
+#[tokio::test]
+async fn a_template_that_needs_collected_data_says_to_collect_it_first() {
+    let lab = lab(&["SW1"]).await;
+    let body =
+        "{% for neighbor in neighbors %}interface {{ neighbor.local_interface }}\n{% endfor %}";
+    let rendered = render_one(&lab, body, json!({})).await;
+    assert_eq!(rendered["ok"], json!(false));
+    let error = rendered["error"].as_str().expect("an error");
+    assert!(
+        error.contains("collect neighbors for `SW1` first"),
+        "{error}"
+    );
+
+    // Once neighbours are there, the same body renders.
+    collect::store(
+        &lab.app,
+        &lab.id("SW1"),
+        Kind::Neighbors,
+        vec![json!({
+            "local_interface": "GigabitEthernet0/1",
+            "device": "CORE1",
+            "remote_interface": "Gi1/0/1",
+            "platform": "", "address": "10.0.0.1", "protocol": "cdp"
+        })],
+        "test",
+    )
+    .expect("neighbours are stored");
+    let rendered = render_one(&lab, body, json!({})).await;
+    assert_eq!(rendered["lines"], json!(["interface GigabitEthernet0/1"]));
+}
+
+#[tokio::test]
+async fn the_render_context_carries_the_device_and_what_was_collected_from_it() {
+    let lab = lab(&["SW1"]).await;
+    collect::store(
+        &lab.app,
+        &lab.id("SW1"),
+        Kind::Facts,
+        vec![json!({"hostname": "SW1", "model": "WS-C2960", "os_version": "15.2(4)E10"})],
+        "test",
+    )
+    .expect("facts");
+    collect::store(
+        &lab.app,
+        &lab.id("SW1"),
+        Kind::Vlans,
+        vec![json!({"id": 10, "name": "users", "status": "active"})],
+        "test",
+    )
+    .expect("vlans");
+
+    let rendered = render_one(
+        &lab,
+        "! {{ device.name }} {{ device.site }} {{ facts.model }} {{ vlans | length }}",
+        json!({}),
+    )
+    .await;
+    assert_eq!(rendered["lines"], json!(["! SW1 Lab WS-C2960 1"]));
+}
+
+#[tokio::test]
+async fn a_variable_is_checked_against_its_kind_with_its_label_in_the_message() {
+    let lab = lab(&["SW1"]).await;
+    let variables = json!([
+        {"name": "vlan", "label": "Access VLAN", "kind": "vlan", "required": true},
+        {"name": "address", "label": "Address", "kind": "ip", "required": true},
+        {"name": "prefix", "label": "Prefix", "kind": "cidr", "required": true},
+        {"name": "count", "label": "Count", "kind": "int", "required": true},
+        {"name": "on", "label": "Enabled", "kind": "bool", "required": true},
+        {"name": "port", "label": "Port", "kind": "interface", "required": true},
+        {"name": "servers", "label": "Servers", "kind": "list", "required": true},
+        {"name": "level", "label": "Level", "kind": "choice", "required": true,
+         "choices": ["low", "high"]},
+    ]);
+    let good = json!({
+        "vlan": 10, "address": "10.0.0.1", "prefix": "10.0.0.0/24", "count": "7",
+        "on": "yes", "port": "Gi0/1", "servers": "1.1.1.1, 8.8.8.8", "level": "high"
+    });
+    let rendered = lab
+        .app
+        .rpc(
+            "templates.render",
+            json!({
+                "body": "! {{ vlan }} {{ address }} {{ prefix }} {{ count }} {{ on }} \
+                         {{ port }} {{ servers | join('+') }} {{ level }}",
+                "variables": variables,
+                "device_ids": [lab.id("SW1")],
+                "vars": good,
+            }),
+        )
+        .await
+        .expect("templates.render")[0]
+        .clone();
+    assert_eq!(
+        rendered["lines"],
+        json!(["! 10 10.0.0.1 10.0.0.0/24 7 True Gi0/1 1.1.1.1+8.8.8.8 high"]),
+        "a comma-separated string becomes a list and `yes` becomes a boolean"
+    );
+
+    for (field, value, wanted) in [
+        ("vlan", json!(5000), "VLAN id between 1 and 4094"),
+        ("vlan", json!(0), "VLAN id between 1 and 4094"),
+        ("address", json!("10.0.0.300"), "must be an IP address"),
+        ("prefix", json!("10.0.0.0"), "prefix length"),
+        ("prefix", json!("10.0.0.0/40"), "prefix length"),
+        ("count", json!("many"), "whole number"),
+        ("on", json!("perhaps"), "true or false"),
+        ("level", json!("medium"), "must be one of low, high"),
+    ] {
+        let mut vars = good.clone();
+        vars[field] = value.clone();
+        let err = lab
+            .app
+            .rpc(
+                "templates.render",
+                json!({"body": "!", "variables": variables,
+                       "device_ids": [lab.id("SW1")], "vars": vars}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid", "{field}={value}");
+        assert!(
+            err.message.contains(wanted),
+            "{field}={value}: {}",
+            err.message
+        );
+    }
+
+    // A required variable that is simply missing says so by its label.
+    let err = lab
+        .app
+        .rpc(
+            "templates.render",
+            json!({"body": "!", "variables": variables,
+                   "device_ids": [lab.id("SW1")], "vars": {}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("Access VLAN") && err.message.contains("required"),
+        "{}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn validate_reports_what_a_body_uses_and_what_it_has_not_declared() {
+    let lab = lab(&["SW1"]).await;
+    let checked = lab
+        .app
+        .rpc(
+            "templates.validate",
+            json!({
+                "body": "ntp server {{ server }}\n! {{ device.name }} {{ facts.model }}",
+                "variables": [{"name": "server", "kind": "ip", "required": true}],
+            }),
+        )
+        .await
+        .expect("templates.validate");
+    assert_eq!(checked["ok"], json!(true));
+    assert_eq!(
+        checked["used_variables"],
+        json!(["device", "facts", "server"])
+    );
+    assert!(checked["undeclared"].as_array().expect("array").is_empty());
+
+    let checked = lab
+        .app
+        .rpc(
+            "templates.validate",
+            json!({"body": "ntp server {{ server }}", "variables": []}),
+        )
+        .await
+        .expect("templates.validate");
+    assert_eq!(checked["ok"], json!(false));
+    assert_eq!(checked["undeclared"], json!(["server"]));
+
+    let checked = lab
+        .app
+        .rpc(
+            "templates.validate",
+            json!({"body": "{% for x in %}", "variables": []}),
+        )
+        .await
+        .expect("templates.validate");
+    assert_eq!(checked["ok"], json!(false));
+    assert!(
+        checked["problems"][0]["line"].as_u64().is_some(),
+        "a syntax error says where: {checked:?}"
+    );
+}
+
+#[tokio::test]
+async fn every_built_in_template_renders_to_the_lines_it_is_meant_to() {
+    let lab = lab(&["SW1"]).await;
+    collect::store(
+        &lab.app,
+        &lab.id("SW1"),
+        Kind::Neighbors,
+        vec![json!({
+            "local_interface": "GigabitEthernet0/1", "device": "CORE1",
+            "remote_interface": "Gi1/0/1", "platform": "", "address": "10.0.0.1",
+            "protocol": "cdp"
+        })],
+        "test",
+    )
+    .expect("neighbours");
+
+    let cases: Vec<(&str, Value, Vec<&str>)> = vec![
+        (
+            "ios_ntp",
+            json!({"servers": ["192.0.2.1", "192.0.2.2"]}),
+            vec!["ntp server 192.0.2.1", "ntp server 192.0.2.2"],
+        ),
+        (
+            "ios_syslog",
+            json!({"hosts": ["10.0.0.5"]}),
+            vec!["logging host 10.0.0.5", "logging trap informational"],
+        ),
+        (
+            "ios_banner",
+            json!({"text": "Authorised use only"}),
+            vec!["banner login ^C", "Authorised use only", "^C"],
+        ),
+        (
+            "ios_vlan",
+            json!({"vlan": 30, "vlan_name": "guests"}),
+            vec!["vlan 30", " name guests"],
+        ),
+        (
+            "ios_access_port",
+            json!({"interface": "Gi0/5", "vlan": 10, "description": "desk 5"}),
+            vec![
+                "interface GigabitEthernet0/5",
+                " description desk 5",
+                " switchport mode access",
+                " switchport access vlan 10",
+                " spanning-tree portfast",
+            ],
+        ),
+        (
+            "ios_access_port",
+            json!({"interface": "Gi0/5", "vlan": 10, "voice_vlan": 110}),
+            vec![
+                "interface GigabitEthernet0/5",
+                " switchport mode access",
+                " switchport access vlan 10",
+                " switchport voice vlan 110",
+                " spanning-tree portfast",
+            ],
+        ),
+        (
+            "ios_trunk_port",
+            json!({"interface": "Gi0/1", "vlans": [30, 31], "native_vlan": 999}),
+            vec![
+                "interface GigabitEthernet0/1",
+                " switchport mode trunk",
+                " switchport trunk native vlan 999",
+                " switchport trunk allowed vlan add 30,31",
+            ],
+        ),
+        (
+            "ios_port_description_from_neighbor",
+            json!({}),
+            vec![
+                "interface GigabitEthernet0/1",
+                " description to CORE1 Gi1/0/1",
+            ],
+        ),
+        (
+            "ios_dns",
+            json!({"servers": ["1.1.1.1"], "domain": "lab.example"}),
+            vec!["ip name-server 1.1.1.1", "ip domain-name lab.example"],
+        ),
+        (
+            "ios_disable_port",
+            json!({"interface": "Gi0/9"}),
+            vec![
+                "interface GigabitEthernet0/9",
+                " description DISABLED - unused",
+                " shutdown",
+            ],
+        ),
+        (
+            "ios_mgmt_acl_vty",
+            json!({"prefixes": ["10.0.0.0/24", "192.168.1.0/28"]}),
+            vec![
+                "ip access-list standard MGMT-VTY",
+                " permit 10.0.0.0 0.0.0.255",
+                " permit 192.168.1.0 0.0.0.15",
+                "line vty 0 15",
+                " access-class MGMT-VTY in",
+                " transport input ssh",
+            ],
+        ),
+        (
+            "ios_health_check",
+            json!({}),
+            vec![
+                "show version",
+                "show ip interface brief",
+                "show cdp neighbors",
+                "show logging",
+            ],
+        ),
+        (
+            "routeros_ntp_client",
+            json!({"servers": ["192.0.2.1", "192.0.2.2"]}),
+            vec!["/system ntp client set enabled=yes servers=192.0.2.1,192.0.2.2"],
+        ),
+        (
+            "routeros_syslog",
+            json!({"host": "10.0.0.5"}),
+            vec![
+                "/system logging action add name=nocturne-remote target=remote remote=10.0.0.5 remote-port=514",
+                "/system logging add action=nocturne-remote topics=info",
+            ],
+        ),
+        (
+            "routeros_vlan_bridge",
+            json!({"vlan": 30}),
+            vec!["/interface vlan add name=vlan30 vlan-id=30 interface=bridge"],
+        ),
+        (
+            "routeros_lan_with_dhcp",
+            json!({
+                "interface": "vlan30", "address": "10.30.0.1/24", "network": "10.30.0.0/24",
+                "gateway": "10.30.0.1", "pool_from": "10.30.0.100", "pool_to": "10.30.0.200",
+                "dns": ["1.1.1.1", "9.9.9.9"]
+            }),
+            vec![
+                "/ip address add address=10.30.0.1/24 interface=vlan30",
+                "/ip pool add name=pool-vlan30 ranges=10.30.0.100-10.30.0.200",
+                "/ip dhcp-server network add address=10.30.0.0/24 gateway=10.30.0.1 dns-server=1.1.1.1,9.9.9.9",
+                "/ip dhcp-server add name=dhcp-vlan30 interface=vlan30 address-pool=pool-vlan30 lease-time=1d disabled=no",
+            ],
+        ),
+        (
+            "routeros_mgmt_services",
+            json!({"prefixes": ["10.0.0.0/24"]}),
+            vec![
+                "/ip service set ssh address=10.0.0.0/24",
+                "/ip service set winbox address=10.0.0.0/24",
+                "/ip service set api address=10.0.0.0/24",
+                "/ip service set telnet disabled=yes",
+                "/ip service set ftp disabled=yes",
+                "/ip service set www disabled=yes",
+            ],
+        ),
+    ];
+
+    for (id, vars, expected) in &cases {
+        let rendered = lab
+            .app
+            .rpc(
+                "templates.render",
+                json!({"template_id": id, "device_ids": [lab.id("SW1")], "vars": vars}),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{id}: {err}"))[0]
+            .clone();
+        assert_eq!(rendered["ok"], json!(true), "{id}: {:?}", rendered["error"]);
+        assert_eq!(
+            rendered["lines"],
+            json!(expected),
+            "{id} rendered the wrong lines"
+        );
+    }
+
+    // Every built-in was covered by the table above.
+    let listed: Vec<String> = lab
+        .app
+        .rpc("templates.list", json!({}))
+        .await
+        .expect("templates.list")
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|template| template["builtin"] == json!(true))
+        .map(|template| template["id"].as_str().expect("id").to_string())
+        .collect();
+    for id in &listed {
+        assert!(
+            cases.iter().any(|(covered, ..)| covered == id),
+            "the built-in `{id}` has no render test"
+        );
+    }
+    assert_eq!(listed.len(), 16, "the built-ins: {listed:?}");
+}
+
+#[tokio::test]
+async fn no_built_in_template_asks_for_a_secret() {
+    // A rendered line goes into a change document, into job output and onto a
+    // screen. Secrets live in the vault; a built-in that took a password would
+    // put one in all three.
+    let lab = lab(&["SW1"]).await;
+    let listed = lab
+        .app
+        .rpc("templates.list", json!({}))
+        .await
+        .expect("templates.list");
+    for template in listed.as_array().expect("array") {
+        if template["builtin"] != json!(true) {
+            continue;
+        }
+        let id = template["id"].as_str().expect("id");
+        let haystack = format!(
+            "{} {}",
+            template["body"].as_str().unwrap_or_default().to_lowercase(),
+            serde_json::to_string(&template["variables"])
+                .unwrap_or_default()
+                .to_lowercase()
+        );
+        for forbidden in [
+            "password",
+            "secret",
+            "community",
+            "passphrase",
+            "private-key",
+        ] {
+            assert!(
+                !haystack.contains(forbidden),
+                "the built-in `{id}` mentions `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_configuration_template_becomes_a_change_and_sends_nothing() {
+    let lab = lab(&["SW1", "SW2"]).await;
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({
+                "id": "local_ntp", "name": "NTP", "kind": "config",
+                "body": "ntp server {{ server }}\n! for {{ device.name }}",
+                "variables": [{"name": "server", "kind": "ip", "required": true}],
+            }),
+        )
+        .await
+        .expect("templates.save");
+
+    let applied = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "local_ntp", "filter": {}, "vars": {"server": "192.0.2.1"},
+                   "title": "NTP everywhere"}),
+        )
+        .await
+        .expect("templates.apply");
+    assert_eq!(applied["change_id"], json!("chg-1"));
+
+    let created = lab.app.state::<Changes>();
+    let created = created.created.lock().expect("lock");
+    assert_eq!(created.len(), 1, "one change for the whole run");
+    let change = &created[0];
+    assert_eq!(change["title"], json!("NTP everywhere"));
+    assert_eq!(change["origin"], json!("template"));
+    let targets = change["targets"].as_array().expect("targets");
+    assert_eq!(targets.len(), 2, "one target per device");
+    assert_eq!(targets[0]["intent"]["type"], json!("lines"));
+    assert_eq!(
+        targets[0]["intent"]["lines"],
+        json!(["ntp server 192.0.2.1", "! for SW1"])
+    );
+    assert_eq!(
+        targets[1]["intent"]["lines"],
+        json!(["ntp server 192.0.2.1", "! for SW2"]),
+        "each device gets its own rendering"
+    );
+
+    for name in ["SW1", "SW2"] {
+        assert!(
+            lab.fake(name).seen().is_empty(),
+            "{name} was sent configuration directly"
+        );
+        assert!(!lab.fake(name).running_config().contains("ntp server"));
+    }
+}
+
+#[tokio::test]
+async fn a_dry_run_of_a_configuration_template_creates_no_change() {
+    let lab = lab(&["SW1"]).await;
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "local_ntp", "name": "NTP", "kind": "config",
+                   "body": "ntp server {{ server }}",
+                   "variables": [{"name": "server", "kind": "ip", "required": true}]}),
+        )
+        .await
+        .expect("templates.save");
+    let previewed = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "local_ntp", "filter": {},
+                   "vars": {"server": "192.0.2.1"}, "dry_run": true}),
+        )
+        .await
+        .expect("templates.apply");
+    assert_eq!(previewed["dry_run"], json!(true));
+    assert_eq!(
+        previewed["rendered"][0]["lines"],
+        json!(["ntp server 192.0.2.1"])
+    );
+    assert!(
+        lab.app
+            .state::<Changes>()
+            .created
+            .lock()
+            .expect("lock")
+            .is_empty(),
+        "a dry run creates nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_commands_template_becomes_a_run_of_read_only_commands() {
+    let lab = lab(&["SW1"]).await;
+    // The built-in health check is written for `cisco_ios`; this device type is
+    // the test one, so the same body is saved without a platform restriction.
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "health", "name": "Health", "kind": "commands",
+                   "body": "show version\nshow ip interface brief\nshow cdp neighbors\nshow logging"}),
+        )
+        .await
+        .expect("templates.save");
+    let started = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "health", "device_ids": [lab.id("SW1")]}),
+        )
+        .await
+        .expect("templates.apply");
+    let run_id = started["run_id"].as_str().expect("a run id").to_string();
+    common::finished(&lab.app, &started).await;
+    let results = common::results(&lab.app, &run_id).await;
+    assert_eq!(results.len(), 1);
+    let commands: Vec<&str> = results[0]["outputs"]
+        .as_array()
+        .expect("outputs")
+        .iter()
+        .map(|output| output["command"].as_str().expect("a command"))
+        .collect();
+    assert_eq!(
+        commands,
+        vec![
+            "show version",
+            "show ip interface brief",
+            "show cdp neighbors",
+            "show logging"
+        ]
+    );
+    assert!(
+        lab.app
+            .state::<Changes>()
+            .created
+            .lock()
+            .expect("lock")
+            .is_empty(),
+        "a commands template creates no change"
+    );
+}
+
+#[tokio::test]
+async fn a_commands_template_that_renders_a_change_is_refused_before_anything_is_sent() {
+    let lab = lab(&["SW1"]).await;
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "sneaky", "name": "Sneaky", "kind": "commands",
+                   "body": "show version\nreload in {{ minutes }}",
+                   "variables": [{"name": "minutes", "kind": "int", "required": true}]}),
+        )
+        .await
+        .expect("templates.save");
+    let err = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "sneaky", "device_ids": [lab.id("SW1")],
+                   "vars": {"minutes": 5}}),
+        )
+        .await
+        .expect_err("a command template cannot smuggle a change through");
+    assert_eq!(err.code, "forbidden");
+    assert!(err.message.contains("reload in 5"), "{}", err.message);
+    assert!(lab.fake("SW1").seen().is_empty());
+}
+
+#[tokio::test]
+async fn a_template_written_for_another_platform_is_refused_with_the_reason() {
+    let lab = lab(&["SW1"]).await;
+    let err = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "ios_ntp", "device_ids": [lab.id("SW1")],
+                   "vars": {"servers": ["192.0.2.1"]}}),
+        )
+        .await
+        .expect_err("SW1 is a test_ios device, not cisco_ios");
+    assert_eq!(err.code, "invalid");
+    assert!(
+        err.message.contains("cisco_ios") && err.message.contains("SW1"),
+        "{}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn built_ins_are_read_only_and_duplicating_one_makes_an_editable_copy() {
+    let lab = lab(&["SW1"]).await;
+    let err = lab
+        .app
+        .rpc(
+            "templates.save",
+            json!({"id": "ios_ntp", "name": "Mine", "body": "ntp server 1.1.1.1"}),
+        )
+        .await
+        .expect_err("built-ins are read-only");
+    assert_eq!(err.code, "forbidden");
+    assert!(err.message.contains("duplicate it"), "{}", err.message);
+    assert_eq!(
+        lab.app
+            .rpc("templates.delete", json!({"id": "ios_ntp"}))
+            .await
+            .expect_err("built-ins are read-only")
+            .code,
+        "forbidden"
+    );
+
+    let copy = lab
+        .app
+        .rpc("templates.duplicate", json!({"id": "ios_ntp"}))
+        .await
+        .expect("templates.duplicate");
+    assert_eq!(copy["builtin"], json!(false));
+    assert_eq!(copy["name"], json!("NTP servers (IOS) (copy)"));
+    assert_eq!(copy["variables"], {
+        let original = lab
+            .app
+            .rpc("templates.get", json!({"id": "ios_ntp"}))
+            .await
+            .expect("templates.get");
+        original["variables"].clone()
+    });
+    // And the copy can be edited.
+    let edited = lab
+        .app
+        .rpc(
+            "templates.save",
+            json!({"id": copy["id"], "name": "My NTP", "kind": "config",
+                   "body": "ntp server {{ server }}",
+                   "variables": [{"name": "server", "kind": "ip", "required": true}]}),
+        )
+        .await
+        .expect("the copy is editable");
+    assert_eq!(edited["name"], json!("My NTP"));
+    assert_eq!(
+        lab.app
+            .rpc("templates.delete", json!({"id": copy["id"]}))
+            .await
+            .expect("deleted")["deleted"],
+        json!(true)
+    );
+}
+
+#[tokio::test]
+async fn a_template_that_does_not_compile_is_not_saved() {
+    let lab = lab(&["SW1"]).await;
+    let err = lab
+        .app
+        .rpc(
+            "templates.save",
+            json!({"name": "Broken", "body": "{% if %}"}),
+        )
+        .await
+        .expect_err("it does not compile");
+    assert_eq!(err.code, "invalid");
+    assert!(
+        lab.app
+            .rpc("templates.list", json!({}))
+            .await
+            .expect("list")
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|template| template["builtin"] == json!(true)),
+        "nothing was stored"
+    );
+
+    let err = lab
+        .app
+        .rpc(
+            "templates.save",
+            json!({"name": "Choiceless", "body": "! {{ level }}",
+                   "variables": [{"name": "level", "kind": "choice"}]}),
+        )
+        .await
+        .expect_err("a choice with no choices");
+    assert!(err.message.contains("lists no choices"), "{}", err.message);
+}

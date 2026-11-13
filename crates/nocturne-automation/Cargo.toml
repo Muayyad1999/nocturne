@@ -26,10 +26,12 @@ serde_yaml_ng.workspace = true
 indexmap.workspace = true
 chrono.workspace = true
 csv.workspace = true
+# The Ansible interop writes a temporary inventory (0600) and removes it again.
+tempfile.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

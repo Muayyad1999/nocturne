@@ -11,11 +11,13 @@ publish.workspace = true
 # Feature crates are added here as they land; each exposes `init(&mut AppBuilder)`.
 nocturne-app.workspace = true
 nocturne-assistant.workspace = true
+nocturne-automation.workspace = true
 nocturne-changes.workspace = true
 nocturne-config.workspace = true
 nocturne-discovery.workspace = true
 nocturne-insights.workspace = true
 nocturne-lab.workspace = true
+nocturne-logs.workspace = true
 nocturne-monitor.workspace = true
 nocturne-terminal.workspace = true
 nocturne-topology.workspace = true

@@ -4028,11 +4028,13 @@ version = "0.1.0"
 dependencies = [
  "nocturne-app",
  "nocturne-assistant",
+ "nocturne-automation",
  "nocturne-changes",
  "nocturne-config",
  "nocturne-discovery",
  "nocturne-insights",
  "nocturne-lab",
+ "nocturne-logs",
  "nocturne-monitor",
  "nocturne-terminal",
  "nocturne-topology",
