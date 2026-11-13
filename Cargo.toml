@@ -116,6 +116,8 @@ pretty_assertions = "1"
 
 [profile.dev]
 debug = "line-tables-only"
+# Incremental caches cost gigabytes per build directory and the crates are small.
+incremental = false
 # Crypto-heavy dependencies (SSH key exchange, Argon2, SNMPv3 key localisation)
 # are unusably slow unoptimised, so dependencies get optimised once.
 [profile.dev.package."*"]
