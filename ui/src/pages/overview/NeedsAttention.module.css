@@ -1,0 +1,189 @@
+/* The ranked list. Dense enough to scan, calm enough to read at a glance. */
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto;
+  gap: var(--sp-12);
+  align-items: center;
+  padding: var(--sp-8) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.row:hover {
+  background: var(--bg-2);
+}
+
+/* The kind, as a word. Tone is the second signal, never the only one. */
+.word {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px var(--sp-6);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-badge);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.word[data-tone='crit'] {
+  border-color: var(--crit);
+  background: var(--crit-soft);
+  color: var(--crit);
+}
+
+.word[data-tone='warn'] {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.word[data-tone='info'] {
+  border-color: var(--info);
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.word[data-tone='idle'] {
+  color: var(--idle);
+}
+
+.what {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+/* One line, truncated: a table cell never wraps. */
+.title > :first-child,
+.where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title {
+  white-space: nowrap;
+}
+
+.where {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.dot {
+  color: var(--line-strong);
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* A link that carries a button's weight, because it really is a link. */
+.open {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: var(--control-sm);
+  padding: 0 var(--sp-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.open:hover {
+  background: var(--bg-3);
+}
+
+.open:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.rest {
+  padding: var(--sp-8) var(--sp-12);
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.calm {
+  padding: var(--sp-16) var(--sp-12);
+}
+
+/* What the list could not look at. Below the list, never hidden behind a filter. */
+.gaps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+}
+
+.gapsTitle {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.hidden {
+  visibility: hidden;
+}
+
+/* Narrow: the word keeps its line rather than taking one of its own — a row
+   that is three lines tall stops being a list. */
+@container page (max-width: 760px) {
+  .row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: var(--sp-8);
+    padding: var(--sp-6) var(--sp-8);
+  }
+
+  .word {
+    max-width: 88px;
+  }
+}

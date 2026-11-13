@@ -1,0 +1,71 @@
+/* The screen's frame: a toolbar, the row of readings, then two columns. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+  /* The tiles and the rows reflow on the width of the page, not the window:
+     the assistant dock takes 380px of it and the nav rail another 216px. */
+  container: page / inline-size;
+}
+
+.read {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.read[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.by {
+  color: var(--text-3);
+}
+
+/* Where the trouble is, by site: the toolbar's one piece of context. */
+.sites {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stale {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-card);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+/* Below this neither column has room to be itself; above it, 1280 without
+   the dock still gets its aside. */
+@container page (max-width: 880px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}

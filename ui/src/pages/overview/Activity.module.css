@@ -1,0 +1,67 @@
+/* The merged feed: time, kind, sentence. One line each, no wrapping. */
+
+.feed {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.line {
+  display: grid;
+  grid-template-columns: 56px 52px minmax(0, 1fr);
+  gap: var(--sp-8);
+  align-items: baseline;
+  padding: var(--sp-6) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.line:last-child {
+  border-bottom: 0;
+}
+
+.when {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.kind {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kind[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.kind[data-tone='info'] {
+  color: var(--info);
+}
+
+.text {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.text {
+  color: var(--text-1);
+  text-decoration: none;
+}
+
+a.text:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+a.text:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}

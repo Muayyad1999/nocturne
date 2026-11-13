@@ -1,0 +1,96 @@
+/* Running jobs: a title, a bar, and the numbers under it. */
+
+.failed {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.failed[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.job:last-child {
+  border-bottom: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.title {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.counts {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The engine's own words about what it is doing: a device said some of this. */
+.message {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.devices {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.origin {
+  font-family: var(--font-mono);
+}
+
+.dot {
+  color: var(--line-strong);
+}
+
+/* An idle engine: one line, not a block. */
+.idle {
+  display: flex;
+  gap: var(--sp-8);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.idle strong {
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
+}

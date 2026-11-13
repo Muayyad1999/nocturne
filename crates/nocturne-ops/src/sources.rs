@@ -281,8 +281,81 @@ pub struct AlertSummary {
     pub open: u64,
     #[serde(default)]
     pub by_severity: std::collections::BTreeMap<String, u64>,
-    #[serde(default)]
+    /// The newest open alert, or several if a build sends several.
+    ///
+    /// The monitoring feature sends one (`Alert | null`); this was written
+    /// expecting a list, so the whole answer failed to parse and every
+    /// overview quietly fell back to counting a capped `alerts.list` —
+    /// turning an exact number into "at least 500". Nothing said so, because
+    /// a fallback that works is the hardest kind of fault to notice. Both
+    /// shapes are read now, which is the right way round for a reader: the
+    /// feature it asks may be any version, or may not be the one we expect
+    /// at all.
+    #[serde(default, deserialize_with = "one_or_many")]
     pub newest: Vec<Alert>,
+}
+
+/// Accepts `null`, one alert, or a list of them — and anything else is read
+/// as none, because the count beside it is what an overview needs and losing
+/// the whole summary over this field is how the fallback went unnoticed.
+fn one_or_many<'de, D>(deserializer: D) -> Result<Vec<Alert>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect(),
+        Value::Object(_) => serde_json::from_value(value)
+            .map(|one| vec![one])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    })
+}
+
+#[cfg(test)]
+mod alert_summary_tests {
+    use super::*;
+
+    fn alert() -> Value {
+        json!({
+            "id": "a1",
+            "severity": "high",
+            "title": "SW1 is down",
+            "started_at": 1,
+            "state": "firing"
+        })
+    }
+
+    #[test]
+    fn the_newest_alert_is_read_whichever_shape_it_arrives_in() {
+        // `nocturne-monitor` sends one or null; another build might send a
+        // list. A reader asks whatever feature happens to be installed, so it
+        // takes all three rather than failing the whole summary over a field
+        // it could do without.
+        let one: AlertSummary =
+            serde_json::from_value(json!({"open": 3, "newest": alert()})).unwrap();
+        assert_eq!((one.open, one.newest.len()), (3, 1));
+
+        let many: AlertSummary =
+            serde_json::from_value(json!({"open": 3, "newest": [alert(), alert()]})).unwrap();
+        assert_eq!(many.newest.len(), 2);
+
+        let none: AlertSummary =
+            serde_json::from_value(json!({"open": 0, "newest": Value::Null})).unwrap();
+        assert!(none.newest.is_empty());
+
+        let absent: AlertSummary = serde_json::from_value(json!({"open": 0})).unwrap();
+        assert!(absent.newest.is_empty());
+
+        // And the count still arrives when the alert itself cannot be read,
+        // because the count is the part the overview actually needs.
+        let odd: AlertSummary =
+            serde_json::from_value(json!({"open": 7, "newest": "tomorrow"})).unwrap();
+        assert_eq!((odd.open, odd.newest.len()), (7, 0));
+    }
 }
 
 /// The alert summary, when this build has one.
@@ -598,13 +671,23 @@ pub async fn compliance(app: &App, status: Option<&str>) -> Result<Compliance, G
         truncated = page + 1 == COMPLIANCE_MAX_PAGES;
     }
     let (summary, run_at) = first.unwrap_or_default();
-    if summary.score_pct.is_none() && findings.is_empty() {
-        return Err(Gap::no_data("no compliance run has been made yet"));
-    }
     let run_at = match run_at {
         Some(at) => Some(at),
         None => latest_compliance_run(app).await,
     };
+    if summary.score_pct.is_none() && findings.is_empty() {
+        // A run that judged nothing is not the same as no run at all, and
+        // saying the second when the first happened is simply untrue — the
+        // screen quotes this sentence. Ask what has been run before deciding
+        // which it is, and do not guess at why a run judged nothing: that
+        // depends on what was stored, which this does not know.
+        return Err(match run_at {
+            Some(_) => Gap::no_data(
+                "a compliance run has been made, but it judged nothing and reached no score",
+            ),
+            None => Gap::no_data("no compliance run has been made yet"),
+        });
+    }
     Ok(Compliance {
         findings,
         summary,

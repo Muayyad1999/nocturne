@@ -1,0 +1,43 @@
+/* "There is no number here", and why. Never styled like a reading. */
+
+.note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.headline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  /* Not the 28px of a reading: nothing here is a measurement. */
+  line-height: var(--lh-tight);
+}
+
+.note[data-size='block'] .headline {
+  font-size: var(--fs-14);
+}
+
+.note[data-tone='warn'] .headline {
+  color: var(--warn);
+}
+
+.note[data-tone='idle'] .headline {
+  color: var(--idle);
+}
+
+.message {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.note[data-size='block'] .message {
+  max-width: 54ch;
+  color: var(--text-2);
+}

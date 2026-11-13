@@ -211,11 +211,16 @@ pub async fn lab(names: &[&str], with: With) -> Lab {
             }
             let mut newest = open.clone();
             newest.sort_by_key(|alert| std::cmp::Reverse(alert["started_at"].as_i64()));
-            newest.truncate(5);
+            // One alert or null, which is what `nocturne-monitor` really
+            // sends. This stub used to answer with a list — the shape this
+            // crate's reader expected — so the test agreed with the
+            // assumption instead of with the feature, and the mismatch only
+            // showed up when a screen noticed every overview was falling
+            // back to a capped list.
             Ok(json!({
                 "open": open.len(),
                 "by_severity": by_severity,
-                "newest": newest,
+                "newest": newest.first().cloned().unwrap_or(Value::Null),
             }))
         });
     }
