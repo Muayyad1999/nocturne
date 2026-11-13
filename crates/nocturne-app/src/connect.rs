@@ -88,7 +88,10 @@ pub fn connection_settings(app: &App) -> ConnectionSettings {
 /// Supplied by the lab module: opens a console on a simulated device.
 #[async_trait]
 pub trait SimConnector: Send + Sync {
-    async fn open(&self, lab: &LabRef, cols: u16, rows: u16) -> AppResult<Connection>;
+    /// Open a console on a simulated device. The application is passed in
+    /// rather than held: a connector that kept one would keep the whole
+    /// application alive, and with it the lock on the data directory.
+    async fn open(&self, app: &App, lab: &LabRef, cols: u16, rows: u16) -> AppResult<Connection>;
 }
 
 #[derive(Default)]
@@ -515,7 +518,7 @@ pub async fn open(app: &App, device: &Device, options: &OpenOptions) -> AppResul
             })?;
             let connector = app.state::<ConnectState>().sim.read().clone();
             match connector {
-                Some(connector) => connector.open(lab, options.cols, options.rows).await,
+                Some(connector) => connector.open(app, lab, options.cols, options.rows).await,
                 None => Err(AppError::unavailable(
                     "the lab simulator is not available in this build",
                 )),
@@ -1088,6 +1091,34 @@ mod tests {
         let lab = lab(builder(), &["R1"]).await;
         let id = lab.id("R1");
         (lab, id)
+    }
+
+    /// A feature that plugs the simulator in holds on to what it needs to
+    /// answer. If that includes the application itself, the application can
+    /// never be dropped — and the data directory it holds a lock on is never
+    /// released, so the next start is refused.
+    #[tokio::test]
+    async fn a_simulator_hook_does_not_keep_the_application_alive() {
+        struct HoldsTheApp;
+
+        #[async_trait]
+        impl SimConnector for HoldsTheApp {
+            async fn open(&self, _app: &App, _lab: &LabRef, _cols: u16, _rows: u16) -> AppResult<Connection> {
+                Err(AppError::unavailable("nothing to open in this test"))
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut builder = AppBuilder::new(crate::app::AppConfig::at(dir.path())).unwrap();
+            crate::init(&mut builder);
+            let app = builder.build();
+            app.state::<ConnectState>().set_sim_connector(Arc::new(HoldsTheApp));
+            app.shutdown();
+        }
+        // The application is out of scope: its lock must have gone with it.
+        AppBuilder::new(crate::app::AppConfig::at(dir.path()))
+            .expect("the data directory is free again once the application is dropped");
     }
 
     #[tokio::test]

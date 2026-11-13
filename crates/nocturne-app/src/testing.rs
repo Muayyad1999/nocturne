@@ -804,7 +804,7 @@ pub struct FakeSim {
 
 #[async_trait]
 impl SimConnector for FakeSim {
-    async fn open(&self, lab: &LabRef, _cols: u16, _rows: u16) -> AppResult<Connection> {
+    async fn open(&self, _app: &App, lab: &LabRef, _cols: u16, _rows: u16) -> AppResult<Connection> {
         self.devices
             .iter()
             .find(|device| device.hostname().eq_ignore_ascii_case(&lab.node))
