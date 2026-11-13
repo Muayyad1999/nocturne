@@ -40,8 +40,14 @@ impl Running {
             .find(|word| word.starts_with("http"))
             .unwrap_or_else(|| panic!("no address in `{line}`"))
             .to_string();
-        let (url, token) = url.split_once("#token=").expect("the address carries a token");
-        Running { child, url: url.to_string(), token: token.to_string() }
+        let (url, token) = url
+            .split_once("#token=")
+            .expect("the address carries a token");
+        Running {
+            child,
+            url: url.to_string(),
+            token: token.to_string(),
+        }
     }
 
     fn api(&self, path: &str) -> String {
@@ -73,7 +79,10 @@ fn read_line(stdout: &mut impl Read, patience: Duration) -> Option<String> {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(BINARY).args(args).output().expect("the binary runs");
+    let output = Command::new(BINARY)
+        .args(args)
+        .output()
+        .expect("the binary runs");
     (
         output.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&output.stdout).to_string(),
@@ -87,28 +96,50 @@ fn serve_prints_one_line_a_script_can_use_and_leaves_its_files_behind() {
     let server = Running::start(dir.path());
 
     // Port 0 means "pick one", and the line must carry the real port.
-    assert!(server.url.starts_with("http://127.0.0.1:"), "{}", server.url);
-    let port: u16 = server.url.trim_end_matches('/').rsplit(':').next().unwrap().parse().unwrap();
+    assert!(
+        server.url.starts_with("http://127.0.0.1:"),
+        "{}",
+        server.url
+    );
+    let port: u16 = server
+        .url
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(port > 0);
     assert_eq!(server.token.len(), 64, "a 32-byte token in hexadecimal");
 
     for name in ["nocturne.db", "server.token", "server.json", "vault.key"] {
-        assert!(dir.path().join(name).exists(), "{name} should have been created");
+        assert!(
+            dir.path().join(name).exists(),
+            "{name} should have been created"
+        );
     }
     // The token and the vault key are secrets: nobody else may read them.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         for name in ["server.token", "vault.key"] {
-            let mode = std::fs::metadata(dir.path().join(name)).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600, "{name} is readable by others");
         }
     }
 
     // `server.json` is how `call` finds a running instance without arguments.
     let instance: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("server.json")).unwrap()).unwrap();
-    assert_eq!(instance["url"].as_str().unwrap().trim_end_matches('/'), server.url.trim_end_matches('/'));
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("server.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        instance["url"].as_str().unwrap().trim_end_matches('/'),
+        server.url.trim_end_matches('/')
+    );
     assert!(instance["pid"].as_u64().unwrap() > 0);
 }
 
@@ -121,7 +152,10 @@ fn call_is_a_client_for_scripts() {
     // No URL and no token: it finds the instance through the data directory.
     let (code, out, _) = run(&["call", "devices.list", "--data-dir", &data]);
     assert_eq!(code, 0);
-    assert_eq!(serde_json::from_str::<Value>(&out).unwrap(), serde_json::json!([]));
+    assert_eq!(
+        serde_json::from_str::<Value>(&out).unwrap(),
+        serde_json::json!([])
+    );
 
     // Parameters as an argument; the result is the only thing on stdout, so
     // it can be piped straight into another program.
@@ -138,29 +172,59 @@ fn call_is_a_client_for_scripts() {
 
     let (code, out, _) = run(&["call", "devices.list", "--data-dir", &data]);
     assert_eq!(code, 0);
-    assert_eq!(serde_json::from_str::<Value>(&out).unwrap().as_array().unwrap().len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(&out)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     // An application error exits 1 and explains itself on standard error,
     // leaving standard output clean.
-    let (code, out, err) = run(&["call", "devices.get", r#"{"id":"gone"}"#, "--data-dir", &data]);
+    let (code, out, err) = run(&[
+        "call",
+        "devices.get",
+        r#"{"id":"gone"}"#,
+        "--data-dir",
+        &data,
+    ]);
     assert_eq!((code, out.trim()), (1, ""));
     assert!(err.contains("not_found"), "{err}");
 
     // A call that never arrives is a different kind of failure: exit 2.
-    let (code, _, err) = run(&["call", "devices.list", "--url", "http://127.0.0.1:1/", "--token", "x"]);
+    let (code, _, err) = run(&[
+        "call",
+        "devices.list",
+        "--url",
+        "http://127.0.0.1:1/",
+        "--token",
+        "x",
+    ]);
     assert_eq!(code, 2, "{err}");
 
     // The right token is required even from the command line. A refusal at
     // the door is exit 2, like an unreachable server: the method never ran,
     // which is what a script needs to tell apart from "it ran and said no".
-    let (code, _, err) = run(&["call", "devices.list", "--url", &server.api(""), "--token", "wrong"]);
+    let (code, _, err) = run(&[
+        "call",
+        "devices.list",
+        "--url",
+        &server.api(""),
+        "--token",
+        "wrong",
+    ]);
     assert_eq!(code, 2);
     assert!(err.contains("unauthorized"), "{err}");
 
     // `methods` lists what this build can do.
     let (code, out, _) = run(&["methods", "--data-dir", &data]);
     assert_eq!(code, 0);
-    assert!(out.contains("devices.list") && out.contains("app.info"), "{out}");
+    assert!(
+        out.contains("devices.list") && out.contains("app.info"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -191,7 +255,10 @@ fn a_public_bind_without_tls_is_refused_with_a_way_forward() {
     ]);
     assert_ne!(code, 0, "it must not serve the network in clear text");
     let err = err.to_lowercase();
-    assert!(err.contains("clear text") || err.contains("plain http"), "{err}");
+    assert!(
+        err.contains("clear text") || err.contains("plain http"),
+        "{err}"
+    );
     // And it says what to do instead, rather than only refusing.
     assert!(err.contains("tls") || err.contains("https"), "{err}");
     assert!(err.contains("allow-insecure-http"), "{err}");
@@ -207,7 +274,10 @@ fn ctrl_c_stops_it_cleanly_and_it_tidies_up() {
 
     // SIGTERM is what a service manager sends, and Ctrl-C is the same path.
     let pid = server.child.id().to_string();
-    let signalled = Command::new("kill").args(["-TERM", &pid]).status().expect("kill runs");
+    let signalled = Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .expect("kill runs");
     assert!(signalled.success());
 
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -218,8 +288,14 @@ fn ctrl_c_stops_it_cleanly_and_it_tidies_up() {
             None => std::thread::sleep(Duration::from_millis(100)),
         }
     };
-    assert!(status.success(), "a signalled shutdown is not a failure: {status}");
-    assert!(!instance.exists(), "server.json should be removed on the way out");
+    assert!(
+        status.success(),
+        "a signalled shutdown is not a failure: {status}"
+    );
+    assert!(
+        !instance.exists(),
+        "server.json should be removed on the way out"
+    );
 
     // The data directory is usable again: nothing is left locked.
     let second = Running::start(dir.path());

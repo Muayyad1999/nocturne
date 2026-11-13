@@ -12,7 +12,8 @@ use serde_json::Value;
 async fn with_ui() -> (tempfile::TempDir, TestServer) {
     let root = tempfile::tempdir().unwrap();
     let ui = write_ui_fixture(root.path());
-    let server = TestServer::start_with(move |options| options.ui_dir = Some(ui), Default::default()).await;
+    let server =
+        TestServer::start_with(move |options| options.ui_dir = Some(ui), Default::default()).await;
     (root, server)
 }
 
@@ -25,20 +26,45 @@ async fn the_interface_is_served_without_a_token_with_the_right_types_and_cachin
     let index = server.http.get(server.url("/")).send().await.unwrap();
     assert_eq!(index.status(), 200);
     let headers = index.headers().clone();
-    let header = |name: &str| headers.get(name).map(|value| value.to_str().unwrap().to_string());
-    assert!(header("content-type").unwrap().starts_with("text/html"), "{headers:?}");
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_string())
+    };
+    assert!(
+        header("content-type").unwrap().starts_with("text/html"),
+        "{headers:?}"
+    );
     assert_eq!(header("cache-control").as_deref(), Some("no-cache"));
     assert_security_headers(header, "the page");
-    assert_eq!(header("content-security-policy").as_deref(), Some(CONTENT_SECURITY_POLICY));
+    assert_eq!(
+        header("content-security-policy").as_deref(),
+        Some(CONTENT_SECURITY_POLICY)
+    );
     assert_eq!(index.text().await.unwrap(), INDEX_HTML);
 
     // A hashed asset is immutable: its name changes when its content does.
-    let script = server.http.get(server.url("/assets/app-3f9a1c.js")).send().await.unwrap();
+    let script = server
+        .http
+        .get(server.url("/assets/app-3f9a1c.js"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(script.status(), 200);
     let headers = script.headers().clone();
-    let header = |name: &str| headers.get(name).map(|value| value.to_str().unwrap().to_string());
-    assert!(header("content-type").unwrap().contains("javascript"), "{headers:?}");
-    assert_eq!(header("cache-control").as_deref(), Some("public, max-age=31536000, immutable"));
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_string())
+    };
+    assert!(
+        header("content-type").unwrap().contains("javascript"),
+        "{headers:?}"
+    );
+    assert_eq!(
+        header("cache-control").as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
     assert_security_headers(header, "an asset");
     assert_eq!(script.text().await.unwrap(), APP_JS);
 
@@ -48,18 +74,40 @@ async fn the_interface_is_served_without_a_token_with_the_right_types_and_cachin
     ] {
         let response = server.http.get(server.url(path)).send().await.unwrap();
         assert_eq!(response.status(), 200, "{path}");
-        let content_type = response.headers()["content-type"].to_str().unwrap().to_string();
+        let content_type = response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(content_type.starts_with(kind), "{path}: {content_type}");
         assert_eq!(response.text().await.unwrap(), body, "{path}");
     }
 
     // A binary file arrives intact, not re-encoded.
-    let font = server.http.get(server.url("/assets/font-51c2.woff2")).send().await.unwrap();
-    assert_eq!(font.bytes().await.unwrap().to_vec(), (0..=255u8).collect::<Vec<_>>());
+    let font = server
+        .http
+        .get(server.url("/assets/font-51c2.woff2"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        font.bytes().await.unwrap().to_vec(),
+        (0..=255u8).collect::<Vec<_>>()
+    );
 
     // A name with a space is a normal file name, not an excuse to fail.
-    let notes = server.http.get(server.url("/release%20notes.txt")).send().await.unwrap();
-    assert_eq!((notes.status(), notes.text().await.unwrap()), (reqwest::StatusCode::OK, "spaces works".replace("works", "work")));
+    let notes = server
+        .http
+        .get(server.url("/release%20notes.txt"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        (notes.status(), notes.text().await.unwrap()),
+        (
+            reqwest::StatusCode::OK,
+            "spaces works".replace("works", "work")
+        )
+    );
 }
 
 #[tokio::test]
@@ -77,16 +125,27 @@ async fn a_deep_link_gets_the_page_but_an_unknown_api_path_does_not() {
     // Deeper than that they would not, so the browser is sent to the top
     // instead of being handed a page whose scripts 404. Nothing is lost: the
     // interface routes on the fragment, so a nested path carries no state.
-    let nested = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let nested = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     for path in ["/devices/core-sw-1", "/settings/security"] {
         let response = nested.get(server.url(path)).send().await.unwrap();
         assert_eq!(response.status(), 302, "{path}");
-        assert_eq!(response.headers()["location"].to_str().unwrap(), "/", "{path}");
+        assert_eq!(
+            response.headers()["location"].to_str().unwrap(),
+            "/",
+            "{path}"
+        );
     }
 
     // A file that is missing is a missing file, not the page: a browser that
     // asked for JavaScript cannot do anything with HTML.
-    for path in ["/assets/gone-00000.js", "/missing.css", "/assets/nothing.woff2"] {
+    for path in [
+        "/assets/gone-00000.js",
+        "/missing.css",
+        "/assets/nothing.woff2",
+    ] {
         let response = server.http.get(server.url(path)).send().await.unwrap();
         assert_eq!(response.status(), 404, "{path}");
     }
@@ -131,7 +190,11 @@ async fn nothing_outside_the_interface_directory_can_be_reached() {
     }
 
     // The same through a raw request, so the client cannot normalise it first.
-    for path in ["/../secret.txt", "/..%2f..%2fsecret.txt", "/assets/../../secret.txt"] {
+    for path in [
+        "/../secret.txt",
+        "/..%2f..%2fsecret.txt",
+        "/assets/../../secret.txt",
+    ] {
         let response = raw_get(server.addr, path, &[]).await;
         let body = response.text();
         assert!(
@@ -147,7 +210,11 @@ async fn an_empty_interface_directory_does_not_stop_the_api() {
     // `--ui-dir` pointing somewhere empty: a mistake, but not a fatal one.
     let empty = tempfile::tempdir().unwrap();
     let path = empty.path().to_path_buf();
-    let server = TestServer::start_with(move |options| options.ui_dir = Some(path), Default::default()).await;
+    let server = TestServer::start_with(
+        move |options| options.ui_dir = Some(path),
+        Default::default(),
+    )
+    .await;
 
     // Nothing is invented: an empty directory has no page, and the answer
     // says so rather than showing something that is not the interface.
@@ -156,7 +223,10 @@ async fn an_empty_interface_directory_does_not_stop_the_api() {
     let body: Value = response.json().await.unwrap_or(Value::Null);
     assert_eq!(body["ok"], false);
     assert!(
-        body["error"]["message"].as_str().unwrap_or_default().contains("no file"),
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no file"),
         "the refusal should say what was not found: {body}"
     );
 
@@ -173,5 +243,8 @@ async fn the_head_of_a_page_is_the_page_without_its_body() {
     let response = server.http.head(server.url("/")).send().await.unwrap();
     assert_eq!(response.status(), 200);
     assert!(response.headers().get("content-type").is_some());
-    assert!(response.bytes().await.unwrap().is_empty(), "a HEAD has no body");
+    assert!(
+        response.bytes().await.unwrap().is_empty(),
+        "a HEAD has no body"
+    );
 }

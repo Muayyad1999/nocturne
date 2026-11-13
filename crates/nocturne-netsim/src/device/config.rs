@@ -1096,7 +1096,11 @@ mod tests {
         assert_eq!(router.vty.len(), 5);
         let switch = DeviceConfig::factory(model("switch").unwrap(), "SW1");
         assert!(!switch.ip_routing && switch.vlans.contains_key(&1));
-        assert!(switch.interfaces[&IfId::parse("fa0/1").unwrap()].l2.is_some());
+        assert!(
+            switch.interfaces[&IfId::parse("fa0/1").unwrap()]
+                .l2
+                .is_some()
+        );
         assert!(switch.interfaces[&IfId::vlan(1)].shutdown);
         assert_eq!(switch.vty.len(), 16);
     }
