@@ -14,6 +14,13 @@
  * selection, the find results — through a tiny store (`subscribe`/`view`).
  */
 
+// The stylesheet belongs with the module that creates the terminals, not
+// with whichever screen remembers to import it: without it, xterm's hidden
+// character-measuring element is painted over the output as a row of
+// repeated glyphs. The Lab screen found that out by being the second screen
+// to show a terminal. Anything that uses this registry now gets the styles
+// with it.
+import '@xterm/xterm/css/xterm.css';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';

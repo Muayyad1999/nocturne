@@ -29,7 +29,6 @@ import { terminals } from '@/pages/terminal/sessions';
 // xterm's own stylesheet. It is imported by whichever screen shows a
 // terminal, and without it xterm's hidden character-measuring element is
 // painted over the output as a row of repeated glyphs.
-import '@xterm/xterm/css/xterm.css';
 // The sixteen ANSI colours the terminal paints with. They are tokens that
 // belong in `design/tokens.css`; until they move, the Terminal screen's file
 // is the one place they exist, and a lab console needs them just as much.

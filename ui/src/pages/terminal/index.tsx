@@ -64,7 +64,6 @@ import { terminals } from './sessions';
 import { SftpPanel } from './SftpPanel';
 import { SnippetsDrawer } from './SnippetsDrawer';
 import './tokens.css';
-import '@xterm/xterm/css/xterm.css';
 
 const SESSION_TOPICS = ['terminal.opened', 'terminal.changed', 'terminal.closed', 'terminal.removed'];
 
