@@ -339,18 +339,19 @@ fn save(
     }
     device.monitor.interval_s = device.monitor.interval_s.clamp(5, 86_400);
 
-    let loaded;
-    let others = match others {
-        Some(others) => others,
-        None => {
-            loaded = app.store().list::<Device>(DEVICES)?;
-            &loaded
-        }
+    // A caller importing a hundred devices has the list already and passes it;
+    // one device at a time asks the store, which looks the name up in an index
+    // rather than reading every device to compare one field.
+    let taken = match others {
+        Some(others) => others
+            .iter()
+            .any(|other| other.id != device.id && other.name.eq_ignore_ascii_case(&device.name)),
+        None => app
+            .store()
+            .named(DEVICES, &device.name)?
+            .is_some_and(|id| id != device.id),
     };
-    if others
-        .iter()
-        .any(|other| other.id != device.id && other.name.eq_ignore_ascii_case(&device.name))
-    {
+    if taken {
         return Err(AppError::conflict(format!(
             "a device named `{}` already exists",
             device.name
@@ -370,7 +371,9 @@ fn save(
         if jump == &device.id {
             return Err(AppError::invalid("a device cannot be its own jump host"));
         }
-        // Follow the chain to refuse loops and absurd depths.
+        // Follow the chain to refuse loops and absurd depths. Five hops at
+        // most, so this reads at most five devices by id rather than all of
+        // them — and a caller that already holds the list is served from it.
         let mut hop = Some(jump.clone());
         let mut depth = 0;
         while let Some(current) = hop {
@@ -380,9 +383,11 @@ fn save(
                     "the jump-host chain loops or is more than five hops long",
                 ));
             }
-            hop = others
-                .iter()
-                .find(|other| other.id == current)
+            let found = match others {
+                Some(others) => others.iter().find(|other| other.id == current).cloned(),
+                None => app.store().get::<Device>(DEVICES, &current)?,
+            };
+            hop = found
                 .ok_or_else(|| AppError::invalid("the selected jump host no longer exists"))?
                 .jump_device_id
                 .clone();

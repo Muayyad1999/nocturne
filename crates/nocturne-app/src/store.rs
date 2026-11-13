@@ -100,6 +100,13 @@ const SCHEMA: &[&str] = &[
     );
     CREATE INDEX configs_device ON configs (device_id, kind, taken_at);
     ",
+    // v2
+    "
+    -- `named` below is the uniqueness check every create and rename makes.
+    -- Without this it reads and deserialises the whole collection, which made
+    -- adding a device quadratic in the number of devices already there.
+    CREATE INDEX docs_name ON docs (collection, lower(json_extract(body, '$.name')));
+    ",
 ];
 
 /// Raw samples older than this are served from 5-minute roll-ups…
@@ -305,6 +312,28 @@ impl Store {
     }
 
     // ------------------------------------------------------------- settings
+
+    /// The id of a document in `collection` whose `name` matches `name`,
+    /// ignoring case — the uniqueness check that every create and rename
+    /// makes, as a lookup rather than a scan.
+    ///
+    /// `lower()` here is SQLite's, which is ASCII-only, and so is
+    /// `str::eq_ignore_ascii_case` that callers use on an already-loaded
+    /// list: the two agree, and the index in schema v2 matches this
+    /// expression exactly so that it is used.
+    pub fn named(&self, collection: &str, name: &str) -> AppResult<Option<String>> {
+        self.with(|conn| {
+            conn.query_row(
+                "SELECT id FROM docs
+                  WHERE collection = ?1
+                    AND lower(json_extract(body, '$.name')) = lower(?2)
+                  LIMIT 1",
+                params![collection, name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        })
+    }
 
     pub fn kv_get<T: DeserializeOwned>(&self, key: &str) -> AppResult<Option<T>> {
         let value: Option<String> = self.with(|conn| {
@@ -745,6 +774,71 @@ mod tests {
         name: String,
         #[serde(default)]
         added_later: u32,
+    }
+
+    #[test]
+    fn a_name_is_found_by_index_whatever_its_case() {
+        let store = Store::in_memory().unwrap();
+        #[derive(Serialize)]
+        struct Named {
+            name: &'static str,
+        }
+        store
+            .put("devices", "a", &Named { name: "CORE-SW1" })
+            .unwrap();
+        store
+            .put("devices", "b", &Named { name: "acc-sw-2" })
+            .unwrap();
+        store
+            .put("other", "c", &Named { name: "CORE-SW1" })
+            .unwrap();
+
+        assert_eq!(
+            store.named("devices", "CORE-SW1").unwrap().as_deref(),
+            Some("a")
+        );
+        // The point of it: a rename only has to ask, not read everything.
+        assert_eq!(
+            store.named("devices", "core-sw1").unwrap().as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            store.named("devices", "Acc-SW-2").unwrap().as_deref(),
+            Some("b")
+        );
+        // A collection is its own namespace, and an absent name is absent.
+        assert_eq!(store.named("other", "acc-sw-2").unwrap(), None);
+        assert_eq!(store.named("devices", "nothing").unwrap(), None);
+
+        // A document with no name at all does not match an empty name.
+        #[derive(Serialize)]
+        struct Nameless {
+            note: &'static str,
+        }
+        store
+            .put(
+                "devices",
+                "d",
+                &Nameless {
+                    note: "no name here",
+                },
+            )
+            .unwrap();
+        assert_eq!(store.named("devices", "").unwrap(), None);
+
+        // And the index is really used, rather than the planner reading the table.
+        let plan: String = store
+            .with(|conn| {
+                conn.query_row(
+                    "EXPLAIN QUERY PLAN SELECT id FROM docs
+                      WHERE collection = ?1
+                        AND lower(json_extract(body, '$.name')) = lower(?2)",
+                    params!["devices", "x"],
+                    |row| row.get(3),
+                )
+            })
+            .unwrap();
+        assert!(plan.contains("docs_name"), "{plan}");
     }
 
     #[test]

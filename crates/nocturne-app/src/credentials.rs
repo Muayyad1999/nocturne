@@ -129,9 +129,10 @@ fn apply(app: &App, mut credential: Credential, input: CredentialInput) -> AppRe
     if credential.name.is_empty() {
         return Err(AppError::invalid("give the credential a name"));
     }
-    let clash = list(app)?.into_iter().any(|other| {
-        other.id != credential.id && other.name.eq_ignore_ascii_case(&credential.name)
-    });
+    let clash = app
+        .store()
+        .named(CREDENTIALS, &credential.name)?
+        .is_some_and(|id| id != credential.id);
     if clash {
         return Err(AppError::conflict(format!(
             "a credential named `{}` already exists",
