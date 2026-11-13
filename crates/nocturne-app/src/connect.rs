@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use nocturne_drivers::detect::{self, Detection};
 use nocturne_drivers::policy::{Classification, CommandClass};
 use nocturne_drivers::profile::Platform;
 use nocturne_drivers::session::{
@@ -469,11 +470,26 @@ pub struct Cli {
     pub device: Device,
     pub platform: Arc<Platform>,
     pub info: ConnectionInfo,
-    /// The profile was chosen by detection during this connection.
+    /// The profile was worked out during this connection rather than being known in advance.
     pub detected: bool,
+    /// How the profile was worked out, when it was. `profile_id` is `generic`
+    /// when nothing identified the device, and `evidence` then says what was tried.
+    pub detection: Option<Detection>,
     session: CliSession,
     transcript: UnboundedReceiver<Transcript>,
     _permit: OwnedSemaphorePermit,
+}
+
+impl std::fmt::Debug for Cli {
+    /// Enough to tell one session from another, and nothing a device said.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cli")
+            .field("device", &self.device.name)
+            .field("platform", &self.platform.profile.id)
+            .field("peer", &self.info.peer)
+            .field("detected", &self.detected)
+            .finish()
+    }
 }
 
 impl Cli {
@@ -540,35 +556,15 @@ fn gate(app: &App, device_id: &str, limit: u32) -> Arc<Semaphore> {
         .clone()
 }
 
-/// The profile to drive a device with, and whether it was detected just now.
-fn choose_platform(
-    app: &App,
-    device: &Device,
-    info: &ConnectionInfo,
-) -> AppResult<(Arc<Platform>, bool)> {
+/// The profile to drive a device with, or `None` when nothing says what the
+/// device is and it has to be found out by probing.
+fn which_platform(app: &App, device: &Device) -> AppResult<Option<Arc<Platform>>> {
     if !device.profile.is_empty() {
-        return Ok((profiles::platform(app, &device.profile)?, false));
+        return Ok(Some(profiles::platform(app, &device.profile)?));
     }
-    let registry = profiles::registry(app);
-    if let Some(remembered) = inventory::state_of(app, &device.id)?.detected_profile
-        && let Some(platform) = registry.get(&remembered)
-    {
-        return Ok((platform, false));
-    }
-    if let Some(platform) = info
-        .server_banner
-        .as_deref()
-        .and_then(|banner| registry.detect_banner(banner))
-    {
-        return Ok((platform, true));
-    }
-    match registry.get(GENERIC_PROFILE) {
-        Some(platform) => Ok((platform, false)),
-        None => Err(AppError::invalid(format!(
-            "Nocturne could not tell what kind of device `{}` is. Choose its device type and try again.",
-            device.name
-        ))),
-    }
+    // What probing found last time, as long as that profile still exists.
+    let remembered = inventory::state_of(app, &device.id)?.detected_profile;
+    Ok(remembered.and_then(|id| profiles::registry(app).get(&id)))
 }
 
 /// Connect to a device and log in to its CLI.
@@ -606,7 +602,7 @@ async fn cli_staged(
     let info = connection.info().clone();
 
     let logging_in = |err: AppError| ("login", err);
-    let (platform, detected) = choose_platform(app, &device, &info).map_err(logging_in)?;
+    let known = which_platform(app, &device).map_err(logging_in)?;
     let driver_credentials = Credentials {
         username: Some(credential.username.clone()).filter(|name| !name.is_empty()),
         password: credential
@@ -624,16 +620,43 @@ async fn cli_staged(
         init: true,
     };
     let (tap, transcript) = tokio::sync::mpsc::unbounded_channel();
-    let session = CliSession::start(
-        Box::new(ConnChannel { connection }),
-        platform.clone(),
-        &driver_credentials,
-        &session_options,
-        Some(tap),
-    )
-    .await
-    .map_err(|err| logging_in(login_error(&device, err)))?;
+    let channel = Box::new(ConnChannel { connection });
+    let (mut session, detection) = match known {
+        Some(platform) => {
+            let session = CliSession::start(
+                channel,
+                platform,
+                &driver_credentials,
+                &session_options,
+                Some(tap.clone()),
+            )
+            .await
+            .map_err(|err| logging_in(login_error(&device, err)))?;
+            (session, None)
+        }
+        // Nothing says what this device is: log in with the permissive profile,
+        // ask it, and rebind the session to whatever answers.
+        None => {
+            let registry = profiles::registry(app);
+            let (session, detection) = detect::probe_session(
+                channel,
+                &registry,
+                &driver_credentials,
+                &session_options,
+                info.server_banner.as_deref(),
+            )
+            .await
+            .map_err(|err| logging_in(login_error(&device, err)))?;
+            (session, Some(detection))
+        }
+    };
+    // `probe_session` keeps no transcript of its own probing; from here on it is tapped.
+    session.set_tap(Some(tap));
 
+    let platform = session.platform().clone();
+    let detected = detection
+        .as_ref()
+        .is_some_and(|detection| detection.profile_id != GENERIC_PROFILE);
     if detected {
         let id = platform.profile.id.clone();
         inventory::update_state(app, &device.id, |state| state.detected_profile = Some(id))
@@ -644,6 +667,7 @@ async fn cli_staged(
         platform,
         info,
         detected,
+        detection,
         session,
         transcript,
         _permit: permit,
@@ -679,6 +703,8 @@ pub struct ConnectionTest {
     pub hostname: Option<String>,
     pub profile: Option<String>,
     pub profile_detected: bool,
+    /// Present when the device type was worked out during this test: how, and from what.
+    pub detection: Option<Detection>,
     pub warnings: Vec<String>,
 }
 
@@ -712,6 +738,7 @@ pub async fn test(app: &App, device_id: &str) -> AppResult<ConnectionTest> {
                 hostname: Some(session.hostname().to_string()).filter(|name| !name.is_empty()),
                 profile: Some(session.platform.profile.id.clone()),
                 profile_detected: session.detected,
+                detection: session.detection.clone(),
                 warnings,
             };
             session.close().await;
@@ -726,6 +753,7 @@ pub async fn test(app: &App, device_id: &str) -> AppResult<ConnectionTest> {
             hostname: None,
             profile: None,
             profile_detected: false,
+            detection: None,
             warnings: Vec::new(),
         }),
     }
@@ -980,6 +1008,135 @@ mod tests {
             .await
             .unwrap();
         assert!(ok["outputs"][0]["output"].as_str().unwrap().contains("UTC"));
+    }
+
+    /// Add a device whose type nobody set, on the fake IOS device `R1`.
+    async fn mystery_device(lab: &Lab) -> String {
+        let device = lab
+            .app
+            .rpc(
+                "devices.create",
+                json!({"name": "mystery", "credential_id": lab.credential_id, "lab": {"lab_id": "testlab", "node": "R1"}}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            device["profile"], "",
+            "the device type is unknown to start with"
+        );
+        device["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn an_unidentified_device_is_identified_by_probing_and_remembered() {
+        let lab = lab(builder(), &["R1"]).await;
+        let app = &lab.app;
+        let id = mystery_device(&lab).await;
+
+        // The fake answers `show version` the way a 2960 running IOS 15.2 does,
+        // so the built-in pack should recognise it without being told anything.
+        let mut session = cli(app, &id, CliOptions::default()).await.unwrap();
+        assert_eq!(session.platform.profile.id, "cisco_ios");
+        assert!(session.detected);
+        let detection = session.detection.clone().expect("a detection");
+        assert_eq!(
+            detection.method,
+            nocturne_drivers::detect::DetectMethod::Probe
+        );
+        assert!(
+            detection.evidence.contains("Cisco IOS Software"),
+            "{detection:?}"
+        );
+
+        // The session really is bound to the detected platform: its prompts, its
+        // enable and its command policy all apply from here on.
+        assert_eq!(session.hostname(), "R1");
+        assert!(
+            session
+                .read("show clock")
+                .await
+                .unwrap()
+                .output
+                .contains("UTC")
+        );
+        assert_eq!(
+            session.read("configure terminal").await.unwrap_err().code,
+            "forbidden"
+        );
+        session.close().await;
+
+        // What was learned is remembered, so the next connection does not ask again.
+        let device = app.rpc("devices.get", json!({"id": id})).await.unwrap();
+        assert_eq!(device["state"]["detected_profile"], "cisco_ios");
+        assert_eq!(
+            device["profile"], "",
+            "the device's own setting is left alone"
+        );
+        lab.fake("R1").clear_seen();
+        let again = cli(app, &id, CliOptions::default()).await.unwrap();
+        assert_eq!(again.platform.profile.id, "cisco_ios");
+        assert!(!again.detected && again.detection.is_none());
+        again.close().await;
+        assert!(
+            !lab.fake("R1")
+                .seen()
+                .iter()
+                .any(|command| command == "show version"),
+            "probed again although the answer was known: {:?}",
+            lab.fake("R1").seen()
+        );
+
+        let test = app.rpc("devices.test", json!({"id": id})).await.unwrap();
+        assert_eq!(
+            (test["ok"].as_bool(), test["profile"].as_str()),
+            (Some(true), Some("cisco_ios"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_nothing_recognises_still_gets_a_usable_session() {
+        let lab = lab(builder(), &["R1"]).await;
+        let app = &lab.app;
+        // A device that answers, but says nothing any profile knows.
+        lab.fake("R1").with(|device| {
+            device.outputs.insert(
+                "show version".into(),
+                "Frobnicator 9000 firmware 1.0".into(),
+            );
+        });
+        let id = mystery_device(&lab).await;
+
+        let mut session = cli(app, &id, CliOptions::default()).await.unwrap();
+        assert_eq!(
+            session.platform.profile.id, "generic",
+            "the permissive profile is the fallback"
+        );
+        assert!(
+            !session.detected,
+            "nothing was identified, so nothing was learned"
+        );
+        let detection = session
+            .detection
+            .clone()
+            .expect("a detection that says it found nothing");
+        assert!(
+            detection.evidence.contains("nothing matched"),
+            "{detection:?}"
+        );
+        // Read-only commands still work, so the terminal and ad-hoc reads are usable.
+        assert!(
+            session
+                .read("show clock")
+                .await
+                .unwrap()
+                .output
+                .contains("UTC")
+        );
+        session.close().await;
+
+        // Nothing was remembered, so a later connection will try again.
+        let device = app.rpc("devices.get", json!({"id": id})).await.unwrap();
+        assert_eq!(device["state"]["detected_profile"], Value::Null);
     }
 
     #[tokio::test]
