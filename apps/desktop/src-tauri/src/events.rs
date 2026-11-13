@@ -23,7 +23,11 @@ pub struct Payload {
 
 impl From<Event> for Payload {
     fn from(event: Event) -> Self {
-        Payload { topic: event.topic, payload: event.payload, at: event.at }
+        Payload {
+            topic: event.topic,
+            payload: event.payload,
+            at: event.at,
+        }
     }
 }
 
@@ -73,9 +77,9 @@ mod tests {
     use super::*;
     use nocturne_suite::AppConfig;
     use std::sync::Arc;
-    use std::sync::mpsc;
+    use tokio::sync::mpsc;
 
-    struct Collect(mpsc::Sender<Payload>);
+    struct Collect(mpsc::UnboundedSender<Payload>);
 
     impl Windows for Arc<Collect> {
         fn emit(&self, payload: &Payload) {
@@ -86,16 +90,27 @@ mod tests {
     #[tokio::test]
     async fn events_reach_the_windows_in_order_and_stop_at_shutdown() {
         let app = nocturne_suite::start(AppConfig::in_memory()).unwrap();
-        let (sender, received) = mpsc::channel();
+        // A tokio channel, awaited: a blocking receive would hold the only
+        // thread of the test runtime and the forwarder could never be polled.
+        let (sender, mut received) = mpsc::unbounded_channel();
         let forwarder = tokio::spawn(forward(app.clone(), Arc::new(Collect(sender))));
         // Subscribing happens inside the task: wait for it before publishing.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         app.publish("one", &serde_json::json!({"n": 1}));
         app.publish("two", &serde_json::json!({"n": 2}));
-        let first = received.recv().unwrap();
-        let second = received.recv().unwrap();
-        assert_eq!((first.topic.as_str(), first.payload["n"].as_i64()), ("one", Some(1)));
+        async fn next(received: &mut mpsc::UnboundedReceiver<Payload>) -> Payload {
+            tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+                .await
+                .expect("an event reaches the windows")
+                .expect("the channel is open")
+        }
+        let first = next(&mut received).await;
+        let second = next(&mut received).await;
+        assert_eq!(
+            (first.topic.as_str(), first.payload["n"].as_i64()),
+            ("one", Some(1))
+        );
         assert_eq!(second.topic, "two");
         assert!(first.at > 0 && second.at >= first.at);
 

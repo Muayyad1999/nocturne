@@ -10,7 +10,7 @@ backend contract for a screen is the feature spec named in its heading
 
 1. **Real data only.** A screen renders what RPC returns. No sample rows, no
    hard-coded numbers, no "coming soon" tabs: if a backend method is missing
-   (`RpcError.code === 'not_found'` with "unknown method") the affected part
+   (`RpcError.code === 'unknown_method'`) the affected part
    shows a quiet "not available in this build" state, and nothing else breaks.
 2. **Three states, always**: loading (skeletons shaped like the content),
    empty (what this is for + the one action that fills it), error (the

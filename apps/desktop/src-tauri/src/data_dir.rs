@@ -15,7 +15,10 @@ pub fn resolve(argument: Option<&str>, from_env: Option<String>) -> anyhow::Resu
     if let Some(path) = argument.map(str::trim).filter(|path| !path.is_empty()) {
         return Ok(PathBuf::from(path));
     }
-    if let Some(path) = from_env.map(|path| path.trim().to_string()).filter(|path| !path.is_empty()) {
+    if let Some(path) = from_env
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+    {
         return Ok(PathBuf::from(path));
     }
     dirs::data_dir().map(|dir| dir.join("Nocturne")).ok_or_else(|| {
@@ -80,22 +83,46 @@ mod tests {
 
     #[test]
     fn the_argument_wins_over_the_environment_which_wins_over_the_platform() {
-        assert_eq!(resolve(Some("/tmp/a"), Some("/tmp/b".into())).unwrap(), PathBuf::from("/tmp/a"));
-        assert_eq!(resolve(None, Some("/tmp/b".into())).unwrap(), PathBuf::from("/tmp/b"));
+        assert_eq!(
+            resolve(Some("/tmp/a"), Some("/tmp/b".into())).unwrap(),
+            PathBuf::from("/tmp/a")
+        );
+        assert_eq!(
+            resolve(None, Some("/tmp/b".into())).unwrap(),
+            PathBuf::from("/tmp/b")
+        );
         // Blank is as good as absent: an empty variable must not mean "the current folder".
-        assert_eq!(resolve(Some("  "), Some("  ".into())).unwrap(), dirs::data_dir().unwrap().join("Nocturne"));
-        assert_eq!(resolve(None, None).unwrap().file_name().unwrap(), "Nocturne");
+        assert_eq!(
+            resolve(Some("  "), Some("  ".into())).unwrap(),
+            dirs::data_dir().unwrap().join("Nocturne")
+        );
+        assert_eq!(
+            resolve(None, None).unwrap().file_name().unwrap(),
+            "Nocturne"
+        );
     }
 
     #[test]
     fn arguments_are_parsed_in_both_spellings_and_the_rest_is_kept() {
         let parse = |line: &str| parse_arguments(line.split_whitespace().map(str::to_string));
-        assert_eq!(parse("--data-dir /tmp/x").data_dir.as_deref(), Some("/tmp/x"));
-        assert_eq!(parse("--data-dir=/tmp/x").data_dir.as_deref(), Some("/tmp/x"));
-        assert_eq!(parse("--log-level debug").log_level.as_deref(), Some("debug"));
+        assert_eq!(
+            parse("--data-dir /tmp/x").data_dir.as_deref(),
+            Some("/tmp/x")
+        );
+        assert_eq!(
+            parse("--data-dir=/tmp/x").data_dir.as_deref(),
+            Some("/tmp/x")
+        );
+        assert_eq!(
+            parse("--log-level debug").log_level.as_deref(),
+            Some("debug")
+        );
         assert!(parse("--version").version && parse("-V").version);
         assert!(parse("--help").help);
-        assert_eq!(parse("--nonsense x").unknown, vec!["--nonsense".to_string(), "x".to_string()]);
+        assert_eq!(
+            parse("--nonsense x").unknown,
+            vec!["--nonsense".to_string(), "x".to_string()]
+        );
         assert_eq!(parse("").data_dir, None);
     }
 }

@@ -61,7 +61,10 @@ pub fn run() {
         return;
     }
 
-    let data_dir = match data_dir::resolve(arguments.data_dir.as_deref(), std::env::var(data_dir::ENV).ok()) {
+    let data_dir = match data_dir::resolve(
+        arguments.data_dir.as_deref(),
+        std::env::var(data_dir::ENV).ok(),
+    ) {
         Ok(dir) => dir,
         Err(err) => fail_before_start("Nocturne cannot start", &format!("{err:#}")),
     };
@@ -72,7 +75,10 @@ pub fn run() {
 
     // The backend owns background tasks, so it needs a runtime that outlives
     // this function; Tauri is told to use the same one.
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(err) => fail_before_start("Nocturne cannot start", &format!("no async runtime: {err}")),
     };
@@ -82,7 +88,10 @@ pub fn run() {
     let backend = runtime.block_on(async { nocturne_suite::start(AppConfig::at(&data_dir)) });
 
     let state = match backend {
-        Ok(app) => Arc::new(State { app, notifications: Mutex::new(notify::Throttle::new()) }),
+        Ok(app) => Arc::new(State {
+            app,
+            notifications: Mutex::new(notify::Throttle::new()),
+        }),
         Err(err) => {
             tracing::error!(code = err.code, message = %err.message, "the backend did not start");
             fail_before_start("Nocturne cannot start", &err.message)
@@ -107,7 +116,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![rpc])
         .setup(move |app| {
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(events::forward(state.app.clone(), Windows(handle.clone())));
+            tauri::async_runtime::spawn(events::forward(
+                state.app.clone(),
+                Windows(handle.clone()),
+            ));
             watch_alerts(&handle, state.clone());
             open_main_window(&handle)?;
             Ok(())
@@ -123,19 +135,23 @@ pub fn run() {
         }),
         Err(err) => {
             tracing::error!(%err, "the window could not be created");
-            fail_before_start("Nocturne cannot start", &format!("the window could not be created: {err}"));
+            fail_before_start(
+                "Nocturne cannot start",
+                &format!("the window could not be created: {err}"),
+            );
         }
     }
 }
 
 /// Create the window the interface lives in.
 fn open_main_window(handle: &tauri::AppHandle) -> tauri::Result<()> {
-    let window = tauri::WebviewWindowBuilder::new(handle, MAIN_WINDOW, tauri::WebviewUrl::default())
-        .title("Nocturne")
-        .inner_size(1440.0, 900.0)
-        .min_inner_size(1100.0, 700.0)
-        .background_color(colour(BACKGROUND))
-        .build()?;
+    let window =
+        tauri::WebviewWindowBuilder::new(handle, MAIN_WINDOW, tauri::WebviewUrl::default())
+            .title("Nocturne")
+            .inner_size(1440.0, 900.0)
+            .min_inner_size(1100.0, 700.0)
+            .background_color(colour(BACKGROUND))
+            .build()?;
     // Closing the window quits: the backend has no reason to keep running
     // without an interface, and a half-stopped Nocturne would still be
     // polling devices.
@@ -172,10 +188,11 @@ fn watch_alerts(handle: &tauri::AppHandle, state: Arc<State>) {
             .get_webview_window(MAIN_WINDOW)
             .and_then(|window| window.is_focused().ok())
             .unwrap_or(false);
-        let shown = state
-            .notifications
-            .lock()
-            .consider(payload.get("payload").unwrap_or(&serde_json::Value::Null), focused, Instant::now());
+        let shown = state.notifications.lock().consider(
+            payload.get("payload").unwrap_or(&serde_json::Value::Null),
+            focused,
+            Instant::now(),
+        );
         if let Some(notification) = shown {
             use tauri_plugin_notification::NotificationExt;
             let _ = notifier

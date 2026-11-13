@@ -12,13 +12,17 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Start logging. Returns the guard that must live as long as the program:
 /// dropping it stops the file writer.
-pub fn start(data_dir: &Path, level: Option<&str>) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+pub fn start(
+    data_dir: &Path,
+    level: Option<&str>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let filter = || {
-        EnvFilter::try_from_env("NOCTURNE_LOG").unwrap_or_else(|_| {
-            EnvFilter::new(level.unwrap_or("info"))
-        })
+        EnvFilter::try_from_env("NOCTURNE_LOG")
+            .unwrap_or_else(|_| EnvFilter::new(level.unwrap_or("info")))
     };
-    let stderr = tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(filter());
+    let stderr = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(filter());
     use tracing_subscriber::layer::Layer;
 
     let logs = data_dir.join("logs");
@@ -38,7 +42,10 @@ pub fn start(data_dir: &Path, level: Option<&str>) -> Option<tracing_appender::n
                         .with_writer(writer)
                         .with_ansi(false)
                         .with_filter(filter());
-                    tracing_subscriber::registry().with(stderr).with(file).init();
+                    tracing_subscriber::registry()
+                        .with(stderr)
+                        .with(file)
+                        .init();
                     Some(guard)
                 }
                 None => {

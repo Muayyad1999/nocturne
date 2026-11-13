@@ -51,36 +51,53 @@ mod tests {
     async fn calls_methods_and_reports_failures_in_one_shape() {
         let app = nocturne_suite::start(AppConfig::in_memory()).unwrap();
 
-        assert_eq!(call(&app, "devices.list", None).await.unwrap(), serde_json::json!([]));
-        assert_eq!(call(&app, " app.info ", None).await.unwrap()["name"], "Nocturne");
+        assert_eq!(
+            call(&app, "devices.list", None).await.unwrap(),
+            serde_json::json!([])
+        );
+        assert_eq!(
+            call(&app, " app.info ", None).await.unwrap()["name"],
+            "Nocturne"
+        );
 
+        // A method this build does not have has its own code, so a screen can
+        // tell "the feature is not installed" from "that device is gone".
         let unknown = call(&app, "nope.nope", None).await.unwrap_err();
-        assert_eq!(unknown.code, "not_found");
+        assert_eq!(unknown.code, "unknown_method");
         assert_eq!(call(&app, "  ", None).await.unwrap_err().code, "invalid");
 
         // Parameters that do not fit are the backend's `invalid`, not a crash.
-        let bad = call(&app, "devices.get", Some(serde_json::json!({"id": 7}))).await.unwrap_err();
+        let bad = call(&app, "devices.get", Some(serde_json::json!({"id": 7})))
+            .await
+            .unwrap_err();
         assert_eq!(bad.code, "invalid");
 
         // The error serialises exactly as the interface expects.
         let json = serde_json::to_value(&unknown).unwrap();
-        assert_eq!(json["code"], "not_found");
+        assert_eq!(json["code"], "unknown_method");
         assert!(json["message"].is_string());
     }
 
     #[tokio::test]
     async fn a_panicking_method_does_not_take_the_window_down() {
         let mut builder = nocturne_suite::AppBuilder::new(AppConfig::in_memory()).unwrap();
-        builder.router.add("test.panic", |_app: nocturne_suite::App, _: serde_json::Value| async {
-            panic!("boom");
-            #[allow(unreachable_code)]
-            Ok(Value::Null)
-        });
+        builder.router.add(
+            "test.panic",
+            |_app: nocturne_suite::App, _: serde_json::Value| async {
+                panic!("boom");
+                #[allow(unreachable_code)]
+                Ok(Value::Null)
+            },
+        );
         let app = builder.build();
 
         let err = call(&app, "test.panic", None).await.unwrap_err();
         assert_eq!(err.code, "internal");
-        assert!(err.message.contains("stopped unexpectedly"), "{}", err.message);
+        assert!(
+            err.message.contains("stopped unexpectedly"),
+            "{}",
+            err.message
+        );
         // The application is still usable.
         assert!(call(&app, "app.methods", None).await.is_err() || true);
     }
