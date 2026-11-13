@@ -1,0 +1,50 @@
+/*
+ * The sixteen ANSI colours a device can ask for, as design tokens.
+ *
+ * They are the app's own palette, not a borrowed terminal scheme: status
+ * colours for the meanings they already carry (red is `--crit`, green is
+ * `--ok`, yellow is `--warn`), the accent for blue and `--ai` for magenta.
+ * Both themes keep text legible on `--bg-0`, which is the terminal's
+ * background in tokens.css.
+ *
+ * These belong in `design/tokens.css` next to the rest; they live here while
+ * that file belongs to another slice.
+ */
+
+:root {
+  --term-black: #1b2439;
+  --term-red: #ff6b6b;
+  --term-green: #3dd68c;
+  --term-yellow: #f5b94a;
+  --term-blue: #7c9cff;
+  --term-magenta: #c2a5ff;
+  --term-cyan: #5ab8ff;
+  --term-white: #a8b3c7;
+  --term-bright-black: #6c7890;
+  --term-bright-red: #ff9b9b;
+  --term-bright-green: #7ae8b4;
+  --term-bright-yellow: #ffd690;
+  --term-bright-blue: #9db4ff;
+  --term-bright-magenta: #d9c4ff;
+  --term-bright-cyan: #93d4ff;
+  --term-bright-white: #e7ebf3;
+}
+
+[data-theme='light'] {
+  --term-black: #1a2233;
+  --term-red: #b91c2c;
+  --term-green: #007130;
+  --term-yellow: #8f5200;
+  --term-blue: #3d5afe;
+  --term-magenta: #7f2bdc;
+  --term-cyan: #0062b4;
+  --term-white: #4a556b;
+  --term-bright-black: #626c81;
+  --term-bright-red: #8f1522;
+  --term-bright-green: #005725;
+  --term-bright-yellow: #6d3f00;
+  --term-bright-blue: #2a44d9;
+  --term-bright-magenta: #5f1ba6;
+  --term-bright-cyan: #004c8c;
+  --term-bright-white: #0d121c;
+}

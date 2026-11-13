@@ -1,0 +1,280 @@
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+/* The focused pane is where the keyboard goes: say so quietly. */
+.pane[data-focused] {
+  border-color: var(--line-strong);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+
+/* ------------------------------------------------------------- the header */
+
+.header {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: var(--sp-4);
+  min-height: 32px;
+  padding-right: var(--sp-4);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+  max-width: 220px;
+  padding: 0 var(--sp-8);
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-12);
+  background: none;
+  border: none;
+  border-right: 1px solid var(--line);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.tab:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+.tab[data-active] {
+  color: var(--text-1);
+  background: var(--bg-0);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab[data-dragging] {
+  opacity: 0.5;
+}
+
+.tabLabel {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tabClose {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-right: calc(-1 * var(--sp-4));
+  padding: 0;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  border-radius: var(--radius-badge);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.tab:hover .tabClose,
+.tab[data-active] .tabClose,
+.tabClose:focus-visible {
+  opacity: 1;
+}
+
+.tabClose:hover {
+  color: var(--text-1);
+  background: var(--bg-3);
+}
+
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-left: var(--sp-4);
+}
+
+.flag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-6);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-11);
+  line-height: 18px;
+  border-radius: var(--radius-badge);
+}
+
+.flag[data-kind='lab'] {
+  color: var(--maint);
+  background: var(--maint-soft);
+}
+
+.flag[data-kind='log'] {
+  color: var(--crit);
+  background: var(--crit-soft);
+}
+
+.flag[data-kind='legacy'] {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* The same warning colour as the broadcast banner above the panes. */
+.flag[data-kind='broadcast'] {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* --------------------------------------------------------------- the body */
+
+.body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.surface {
+  flex: 1;
+  min-height: 0;
+  padding: var(--sp-8) var(--sp-4) var(--sp-6) var(--sp-12);
+  overflow: hidden;
+}
+
+/* xterm paints its own glyphs; it only needs the box to fill. */
+.surface :global(.xterm) {
+  height: 100%;
+}
+
+/* xterm paints the viewport black for the sake of a macOS scrollbar; the
+   terminal's background is a token like everything else. */
+.surface :global(.xterm-viewport) {
+  background-color: var(--bg-0) !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.state {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  padding: var(--sp-24);
+}
+
+/* ------------------------------------------------------------ the overlays */
+
+.find {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-6) var(--sp-8);
+  background: var(--bg-1);
+  border-top: 1px solid var(--line);
+}
+
+.findField {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+}
+
+.findCount {
+  flex: none;
+  min-width: 68px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-11);
+  text-align: center;
+}
+
+.findCase {
+  flex: none;
+  font-size: var(--fs-11);
+}
+
+.findSpacer {
+  flex: 1;
+}
+
+.selection {
+  position: absolute;
+  right: var(--sp-16);
+  bottom: var(--sp-16);
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-float);
+}
+
+.selectionCount {
+  padding-left: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* The drop zones a dragged tab lands on. */
+.drop {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+}
+
+.dropZone {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-12);
+  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
+  border: 1px dashed var(--line-strong);
+}
+
+.dropZone[data-over] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.dropZone[data-kind='split'] {
+  flex: 0 0 38%;
+}
+
+/* A state that covers the terminal while it cannot be used. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-sticky);
+  display: grid;
+  place-items: center;
+  padding: var(--sp-24);
+  background: var(--bg-0);
+}

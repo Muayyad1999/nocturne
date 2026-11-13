@@ -1,0 +1,147 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-6) var(--sp-6) var(--sp-6) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-1);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.peer {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.path {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+}
+
+.pathText {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.entries {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  padding: var(--sp-6);
+  overflow-y: auto;
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-6);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.entry:hover {
+  background: var(--bg-3);
+}
+
+.entryName {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.entrySize {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-11);
+}
+
+/* The timestamp only has room in a wide panel. */
+.entryTime {
+  display: none;
+  grid-column: 2 / -1;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.note,
+.state {
+  padding: var(--sp-12);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.transfers {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+  border-top: 1px solid var(--line);
+}
+
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.transferTitle {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.transferDetail {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-11);
+}
