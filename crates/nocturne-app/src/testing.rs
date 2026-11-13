@@ -52,6 +52,32 @@ config:
 policy:
   read_only: ['^show ', '^ping ', '^traceroute ', '^terminal (length|width) ']
   dangerous: ['^reload', '^erase ', '^write erase', '^delete ', '^format ']
+collect:
+  facts:
+    - command: show version
+      parser: {regex: 'Version (?P<version>[^,\s]+)'}
+      map: {os_version: version, vendor: "'Cisco'", os: "'IOS'"}
+    - command: show version
+      parser: {regex: '(?m)^(?P<host>\S+) uptime is (?P<uptime>.+)$'}
+      map: {hostname: host, uptime_s: 'uptime | duration'}
+    - command: show version
+      parser: {regex: '(?m)^cisco (?P<model>\S+) .*processor'}
+      map: {model: model}
+    - command: show version
+      parser: {regex: 'Processor board ID (?P<serial>\S+)'}
+      map: {serial: serial}
+  interfaces:
+    - command: show ip interface brief
+      parser: {regex: '(?m)^(?P<name>[A-Z][\w/.\-]+)\s+(?P<ip>\S+)\s+YES\s+\S+\s+(?P<status>administratively down|up|down)\s+(?P<protocol>up|down)\s*$'}
+      map: {name: name, admin_up: "status != 'administratively down'", oper_up: "protocol == 'up'"}
+  neighbors:
+    - command: show cdp neighbors detail
+      parser: {regex: 'Device ID: (?P<device>\S+)[\s\S]*?IP address: (?P<address>\S+)[\s\S]*?Platform: (?P<platform>[^,]+),[\s\S]*?Interface: (?P<local>[^,]+),\s+Port ID \(outgoing port\): (?P<remote>\S+)'}
+      map: {device: device, address: address, platform: platform, local_interface: local, remote_interface: remote, protocol: "'cdp'"}
+  vlans:
+    - command: show vlan brief
+      parser: {regex: '(?m)^(?P<id>\d+)\s+(?P<name>\S+)\s+(?P<status>active|suspended)\s*(?P<ports>.*)$'}
+      map: {id: id, name: name, status: status}
 "#;
 
 /// One top-level configuration line and the lines beneath it.
@@ -84,6 +110,20 @@ pub struct FakeState {
     pub reload_cancelled: u32,
     /// Sessions opened so far.
     pub sessions: u32,
+    /// What `show cdp neighbors detail` reports.
+    pub neighbors: Vec<FakeNeighbor>,
+    /// Interfaces whose link is down (line protocol down although not shut).
+    pub link_down: Vec<String>,
+}
+
+/// A CDP neighbour of a [`FakeDevice`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct FakeNeighbor {
+    pub local_interface: String,
+    pub device: String,
+    pub remote_interface: String,
+    pub address: String,
+    pub platform: String,
 }
 
 /// Commands that start a configuration section.
@@ -214,6 +254,94 @@ impl FakeState {
 
     pub fn startup_config(&self) -> String {
         Self::render(&self.startup)
+    }
+
+    /// `show ip interface brief`, derived from the running configuration.
+    pub fn interface_brief(&self) -> String {
+        let mut text = String::from(
+            "Interface              IP-Address      OK? Method Status                Protocol\n",
+        );
+        for entry in self
+            .running
+            .iter()
+            .filter(|entry| entry.line.starts_with("interface "))
+        {
+            let name = entry.line.trim_start_matches("interface ").trim();
+            let address = entry
+                .children
+                .iter()
+                .find_map(|child| child.strip_prefix("ip address "))
+                .and_then(|rest| rest.split_whitespace().next())
+                .unwrap_or("unassigned");
+            let method = if address == "unassigned" {
+                "unset"
+            } else {
+                "manual"
+            };
+            let (status, protocol) = if entry.children.iter().any(|child| child == "shutdown") {
+                ("administratively down", "down")
+            } else if self.link_down.iter().any(|down| down == name) {
+                ("down", "down")
+            } else {
+                ("up", "up")
+            };
+            text.push_str(&format!(
+                "{name:<22} {address:<15} YES {method:<6} {status:<21} {protocol}\n"
+            ));
+        }
+        text
+    }
+
+    /// `show vlan brief`, derived from the running configuration.
+    pub fn vlan_brief(&self) -> String {
+        let mut text = String::from(
+            "VLAN Name                             Status    Ports\n---- -------------------------------- --------- -------------------------------\n",
+        );
+        for entry in self
+            .running
+            .iter()
+            .filter(|entry| entry.line.starts_with("vlan "))
+        {
+            let id = entry.line.trim_start_matches("vlan ").trim();
+            let name = entry
+                .children
+                .iter()
+                .find_map(|child| child.strip_prefix("name "))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("VLAN{id:0>4}"));
+            let access = format!("switchport access vlan {id}");
+            let ports: Vec<String> = self
+                .running
+                .iter()
+                .filter(|port| port.children.iter().any(|child| child == &access))
+                .map(|port| {
+                    port.line
+                        .trim_start_matches("interface ")
+                        .replace("GigabitEthernet", "Gi")
+                        .replace("FastEthernet", "Fa")
+                })
+                .collect();
+            text.push_str(&format!(
+                "{id:<4} {name:<32} active    {}\n",
+                ports.join(", ")
+            ));
+        }
+        text
+    }
+
+    /// `show cdp neighbors detail`.
+    pub fn cdp_neighbors_detail(&self) -> String {
+        let mut text = String::new();
+        for neighbor in &self.neighbors {
+            text.push_str(&format!(
+                "-------------------------\nDevice ID: {}\nEntry address(es): \n  IP address: {}\nPlatform: {},  Capabilities: Switch IGMP \nInterface: {},  Port ID (outgoing port): {}\nHoldtime : 150 sec\n\n",
+                neighbor.device, neighbor.address, neighbor.platform, neighbor.local_interface, neighbor.remote_interface
+            ));
+        }
+        if self.neighbors.is_empty() {
+            text.push_str("Total cdp entries displayed : 0\n");
+        }
+        text
     }
 
     pub fn saved(&self) -> bool {
@@ -403,6 +531,13 @@ impl FakeDevice {
              ip default-gateway 10.0.0.1\n\
              line vty 0 4\n transport input ssh\n"
         ));
+        state.neighbors.push(FakeNeighbor {
+            local_interface: "GigabitEthernet0/1".into(),
+            device: "CORE1.lab.example".into(),
+            remote_interface: "GigabitEthernet1/0/1".into(),
+            address: "10.0.0.1".into(),
+            platform: "cisco WS-C3850-24T".into(),
+        });
         FakeDevice {
             state: Arc::new(Mutex::new(state)),
         }
@@ -597,6 +732,18 @@ impl FakeDevice {
                                 .await;
                             }
                             "show clock" => send("12:00:00.000 UTC Fri Nov 13 2026\n".into()).await,
+                            "show ip interface brief" => {
+                                let text = self.state.lock().interface_brief();
+                                send(text).await;
+                            }
+                            "show vlan brief" => {
+                                let text = self.state.lock().vlan_brief();
+                                send(text).await;
+                            }
+                            "show cdp neighbors detail" => {
+                                let text = self.state.lock().cdp_neighbors_detail();
+                                send(text).await;
+                            }
                             other => {
                                 if let Some(minutes) = other
                                     .strip_prefix("reload in ")

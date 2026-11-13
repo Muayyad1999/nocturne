@@ -7,15 +7,19 @@
 //! the assistant) reads it back from here. The previous generation is kept so
 //! that "what changed since last time" can be answered.
 
+use nocturne_drivers::collect::Collector;
+pub use nocturne_drivers::collect::{Problem, ProblemCode, Snapshot, StepReport};
 use nocturne_drivers::model::{Facts, Kind};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::app::{App, AppBuilder};
+use crate::connect::{self, Cli, CliOptions};
 use crate::error::{AppError, AppResult};
-use crate::inventory;
+use crate::jobs::{self, JobSpec};
 use crate::util::now_ms;
+use crate::{inventory, profiles};
 
 fn collection(kind: Kind) -> String {
     format!("collected.{}", kind.as_str())
@@ -143,6 +147,67 @@ pub fn forget(app: &App, device_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// The kinds a platform's profile knows how to collect.
+pub fn supported_kinds(platform: &nocturne_drivers::profile::Platform) -> Vec<Kind> {
+    Kind::ALL
+        .into_iter()
+        .filter(|kind| {
+            platform
+                .profile
+                .collect
+                .get(kind)
+                .is_some_and(|steps| !steps.is_empty())
+        })
+        .collect()
+}
+
+/// Collect over a session the caller already holds, store what was read and
+/// announce it. `kinds` empty = everything the platform's profile defines.
+///
+/// The snapshot says per kind whether it was read (`Some`), and why not when
+/// it was not (`problems`): a kind that could not be read is never stored as
+/// empty, and what was stored before stays.
+pub async fn run_on(app: &App, cli: &mut Cli, kinds: &[Kind]) -> AppResult<Snapshot> {
+    let platform = cli.platform.clone();
+    let kinds: Vec<Kind> = if kinds.is_empty() {
+        supported_kinds(&platform)
+    } else {
+        kinds.to_vec()
+    };
+    let collector = Collector::new(profiles::expressions(app));
+    let snapshot = collector.collect(cli.session(), &platform, &kinds).await;
+    let data: Vec<(Kind, Vec<Value>)> = Kind::ALL
+        .into_iter()
+        .filter_map(|kind| snapshot.rows(kind).map(|rows| (kind, rows)))
+        .collect();
+    let source = if cli.device.lab.is_some() {
+        "lab"
+    } else {
+        "cli"
+    };
+    store_many(app, &cli.device.id, data, source)?;
+    Ok(snapshot)
+}
+
+/// Open a CLI session to the device, collect, and close it.
+pub async fn run(app: &App, device_id: &str, kinds: &[Kind]) -> AppResult<Snapshot> {
+    let mut cli = connect::cli(app, device_id, CliOptions::default()).await?;
+    let snapshot = run_on(app, &mut cli, kinds).await;
+    cli.close().await;
+    snapshot
+}
+
+/// The outcome of collecting from one device, for job results.
+#[derive(Debug, Serialize)]
+pub struct DeviceOutcome {
+    pub device_id: String,
+    pub name: String,
+    pub collected: Vec<Kind>,
+    pub problems: Vec<Problem>,
+    /// Set when the device could not be reached or logged in to at all.
+    pub error: Option<String>,
+}
+
 /// What has been collected from a device, without the rows.
 #[derive(Debug, Serialize)]
 pub struct KindStatus {
@@ -181,6 +246,18 @@ struct IdParams {
     id: String,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct RunParams {
+    device_ids: Vec<String>,
+    /// Convenience for a single device.
+    id: Option<String>,
+    /// Empty = everything each device's profile defines.
+    kinds: Vec<Kind>,
+    /// Who asked: `user` (default), `schedule`, `assistant`.
+    origin: Option<String>,
+}
+
 pub fn init(builder: &mut AppBuilder) {
     let router = &mut builder.router;
     router.add("collect.get", |app: App, params: GetParams| async move {
@@ -190,6 +267,83 @@ pub fn init(builder: &mut AppBuilder) {
         } else {
             latest(&app, &device.id, params.kind)
         }
+    });
+    router.add("collect.run", |app: App, params: RunParams| async move {
+        let mut ids = Vec::new();
+        for reference in params.device_ids.iter().chain(params.id.iter()) {
+            let device = inventory::find(&app, reference)?;
+            if !ids.contains(&device.id) {
+                ids.push(device.id);
+            }
+        }
+        if ids.is_empty() {
+            return Err(AppError::invalid("no devices given"));
+        }
+        let title = match ids.len() {
+            1 => format!("Collect from {}", inventory::get(&app, &ids[0])?.name),
+            count => format!("Collect from {count} devices"),
+        };
+        let kinds = params.kinds;
+        let spec = JobSpec::new("collect.run", title)
+            .devices(&ids)
+            .origin(params.origin.as_deref().unwrap_or("user"));
+        let job = jobs::start(&app, spec, move |ctx| async move {
+            let outcomes = ctx
+                .for_each(ids.clone(), 4, move |ctx, id| {
+                    let kinds = kinds.clone();
+                    async move {
+                        let app = ctx.app().clone();
+                        let name = inventory::get(&app, &id)
+                            .map(|device| device.name)
+                            .unwrap_or_default();
+                        let outcome = match run(&app, &id, &kinds).await {
+                            Ok(snapshot) => {
+                                for problem in &snapshot.problems {
+                                    let level = if problem.code == ProblemCode::Unsupported {
+                                        "info"
+                                    } else {
+                                        "warn"
+                                    };
+                                    ctx.device(
+                                        &id,
+                                        level,
+                                        format!("{}: {}", problem.kind, problem.message),
+                                    );
+                                }
+                                DeviceOutcome {
+                                    collected: Kind::ALL
+                                        .into_iter()
+                                        .filter(|kind| snapshot.has(*kind))
+                                        .collect(),
+                                    problems: snapshot.problems,
+                                    device_id: id,
+                                    name,
+                                    error: None,
+                                }
+                            }
+                            Err(err) => {
+                                ctx.device(&id, "error", err.message.clone());
+                                DeviceOutcome {
+                                    device_id: id,
+                                    name,
+                                    collected: Vec::new(),
+                                    problems: Vec::new(),
+                                    error: Some(err.message),
+                                }
+                            }
+                        };
+                        Ok(outcome)
+                    }
+                })
+                .await;
+            let devices: Vec<DeviceOutcome> = outcomes.into_iter().filter_map(Result::ok).collect();
+            let failed = devices
+                .iter()
+                .filter(|device| device.error.is_some())
+                .count();
+            Ok(json!({"devices": devices, "failed": failed}))
+        });
+        Ok(jobs::started(&job))
     });
     router.add("collect.status", |app: App, params: IdParams| async move {
         let device = inventory::find(&app, &params.id)?;
@@ -328,5 +482,129 @@ mod tests {
         assert!(latest_all(app, Kind::Interfaces).unwrap().is_empty());
         assert!(latest_all(app, Kind::Facts).unwrap().is_empty());
         assert_eq!(kind_from_str("mac_table").unwrap(), Kind::MacTable);
+    }
+
+    #[tokio::test]
+    async fn collects_from_a_device_through_its_profile() {
+        let lab = lab(builder(), &["SW1", "SW2"]).await;
+        let (app, id) = (&lab.app, lab.id("SW1"));
+
+        let snapshot = run(app, &id, &[]).await.unwrap();
+        let facts = snapshot.facts.as_ref().expect("facts");
+        assert_eq!(
+            (
+                facts.hostname.as_str(),
+                facts.model.as_str(),
+                facts.serial.as_str()
+            ),
+            ("SW1", "WS-C2960-24TT-L", "FOC1234X5YZ")
+        );
+        assert_eq!(facts.os_version, "15.2(4)E10");
+        assert_eq!(
+            facts.uptime_s,
+            Some(7 * 86_400 + 2 * 86_400 + 3 * 3600 + 4 * 60)
+        );
+        let interfaces = snapshot.interfaces.as_ref().expect("interfaces");
+        assert_eq!(interfaces.len(), 3);
+        assert!(
+            interfaces
+                .iter()
+                .all(|interface| interface.oper_up == Some(true))
+        );
+        let neighbors = snapshot.neighbors.as_ref().expect("neighbors");
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(
+            (
+                neighbors[0].device.as_str(),
+                neighbors[0].local_interface.as_str(),
+                neighbors[0].address.as_str()
+            ),
+            ("CORE1.lab.example", "GigabitEthernet0/1", "10.0.0.1")
+        );
+        assert_eq!(snapshot.vlans.as_ref().map(Vec::len), Some(2));
+        // Kinds the profile does not define are reported, not invented.
+        assert!(snapshot.routes.is_none());
+
+        // Stored, announced, and visible in the inventory.
+        assert_eq!(
+            latest(app, &id, Kind::Neighbors).unwrap().unwrap().source,
+            "lab"
+        );
+        assert_eq!(
+            app.rpc("devices.get", json!({"id": id})).await.unwrap()["state"]["facts"]["serial"],
+            "FOC1234X5YZ"
+        );
+
+        // A link goes down and a neighbour disappears: the next collection shows it and keeps the previous one.
+        lab.fake("SW1").with(|device| {
+            device.link_down.push("GigabitEthernet0/1".into());
+            device.neighbors.clear();
+        });
+        let after = run(app, &id, &[Kind::Interfaces, Kind::Neighbors])
+            .await
+            .unwrap();
+        let uplink = after
+            .interfaces
+            .unwrap()
+            .into_iter()
+            .find(|interface| interface.name == "GigabitEthernet0/1")
+            .unwrap();
+        assert_eq!((uplink.admin_up, uplink.oper_up), (Some(true), Some(false)));
+        assert_eq!(after.neighbors.map(|neighbors| neighbors.len()), Some(0));
+        assert_eq!(
+            previous(app, &id, Kind::Neighbors)
+                .unwrap()
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+
+        // Asking for a kind the profile lacks is a recorded problem and leaves stored data alone.
+        let unsupported = run(app, &id, &[Kind::Routes]).await.unwrap();
+        assert!(unsupported.problems.iter().any(
+            |problem| problem.kind == Kind::Routes && problem.code == ProblemCode::Unsupported
+        ));
+        assert_eq!(latest(app, &id, Kind::Routes).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn collect_run_is_a_job_over_many_devices() {
+        let lab = lab(builder(), &["SW1", "SW2"]).await;
+        let app = &lab.app;
+        let unreachable = app
+            .rpc(
+                "devices.create",
+                json!({"name": "ghost", "address": "192.0.2.9", "transport": "none"}),
+            )
+            .await
+            .unwrap();
+        let started = app
+            .rpc(
+                "collect.run",
+                json!({"device_ids": ["SW1", lab.id("SW2"), unreachable["id"]], "kinds": ["facts", "vlans"]}),
+            )
+            .await
+            .unwrap();
+        let job = jobs::wait(app, started["job_id"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(job.state, jobs::JobState::Succeeded);
+        let result = job.result.unwrap();
+        assert_eq!(result["failed"], 1);
+        let devices = result["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0]["collected"], json!(["facts", "vlans"]));
+        assert!(
+            devices[2]["error"]
+                .as_str()
+                .unwrap()
+                .contains("monitor-only")
+        );
+        assert_eq!(latest_all(app, Kind::Vlans).unwrap().len(), 2);
+        assert_eq!(
+            app.rpc("collect.run", json!({})).await.unwrap_err().code,
+            "invalid"
+        );
     }
 }
