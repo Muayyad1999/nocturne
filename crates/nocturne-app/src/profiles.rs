@@ -42,10 +42,12 @@ pub struct ProfileProblem {
 pub struct ProfilesState {
     registry: RwLock<Arc<Registry>>,
     problems: RwLock<Vec<ProfileProblem>>,
+    /// Profiles shipped by feature crates (see [`register`]).
+    extras: RwLock<Vec<String>>,
 }
 
 /// Built-ins first, then user profiles (parents before children).
-fn build(store: &Store) -> AppResult<(Registry, Vec<ProfileProblem>)> {
+fn build(store: &Store, extras: &[String]) -> AppResult<(Registry, Vec<ProfileProblem>)> {
     let (mut registry, errors) = Registry::builtin();
     let mut problems: Vec<ProfileProblem> = errors
         .into_iter()
@@ -55,6 +57,16 @@ fn build(store: &Store) -> AppResult<(Registry, Vec<ProfileProblem>)> {
             problems: err.problems,
         })
         .collect();
+    // Profiles that feature crates ship count as built-in.
+    for yaml in extras {
+        if let Err(err) = registry.add(yaml, Origin::Builtin) {
+            problems.push(ProfileProblem {
+                id: err.profile,
+                origin: Origin::Builtin,
+                problems: err.problems,
+            });
+        }
+    }
 
     let mut pending: Vec<StoredProfile> = store.list(COLLECTION)?;
     pending.sort_by(|a, b| a.id.cmp(&b.id));
@@ -103,8 +115,9 @@ fn build(store: &Store) -> AppResult<(Registry, Vec<ProfileProblem>)> {
 }
 
 fn rebuild(app: &App) -> AppResult<()> {
-    let (registry, problems) = build(app.store())?;
     let state = app.state::<ProfilesState>();
+    let extras = state.extras.read().clone();
+    let (registry, problems) = build(app.store(), &extras)?;
     *state.registry.write() = Arc::new(registry);
     *state.problems.write() = problems;
     Ok(())
@@ -131,6 +144,40 @@ pub fn problems(app: &App) -> Vec<ProfileProblem> {
     app.state::<ProfilesState>().problems.read().clone()
 }
 
+/// Ship a profile with a feature crate (e.g. the lab's simulated host). Call
+/// from the feature's `init`, after the core's. The profile counts as built-in:
+/// users can override it but not delete it.
+pub fn register(builder: &mut AppBuilder, yaml: &str) {
+    let state = builder.get::<ProfilesState>();
+    state.extras.write().push(yaml.to_string());
+    let extras = state.extras.read().clone();
+    match build(builder.store(), &extras) {
+        Ok((registry, problems)) => {
+            for problem in problems
+                .iter()
+                .filter(|problem| problem.origin == Origin::Builtin)
+            {
+                tracing::warn!(profile = %problem.id, problems = ?problem.problems, "device type could not be loaded");
+            }
+            *state.registry.write() = Arc::new(registry);
+            *state.problems.write() = problems;
+        }
+        Err(err) => {
+            tracing::error!(%err, "device types could not be rebuilt after registering a profile")
+        }
+    }
+}
+
+/// The profiles that exist without any user profile: the bundled pack and feature-registered ones.
+fn shipped(app: &App) -> Registry {
+    let extras = app.state::<ProfilesState>().extras.read().clone();
+    let mut registry = Registry::builtin().0;
+    for yaml in &extras {
+        let _ = registry.add(yaml, Origin::Builtin);
+    }
+    registry
+}
+
 #[derive(Serialize)]
 pub struct ProfileList {
     pub profiles: Vec<ProfileRow>,
@@ -147,23 +194,15 @@ pub struct ProfileRow {
     pub devices: usize,
 }
 
-fn builtin_ids() -> Vec<String> {
-    Registry::builtin()
-        .0
-        .list()
-        .into_iter()
-        .map(|summary| summary.id)
-        .collect()
-}
-
 pub fn list(app: &App) -> AppResult<ProfileList> {
     let devices: Vec<Device> = app.store().list(DEVICES)?;
-    let builtins = builtin_ids();
+    let builtins = shipped(app);
     let profiles = registry(app)
         .list()
         .into_iter()
         .map(|summary| ProfileRow {
-            overrides_builtin: summary.origin == Origin::User && builtins.contains(&summary.id),
+            overrides_builtin: summary.origin == Origin::User
+                && builtins.get(&summary.id).is_some(),
             devices: devices
                 .iter()
                 .filter(|device| device.profile == summary.id)
@@ -212,7 +251,8 @@ pub struct Validation {
 /// Check a profile without saving it.
 pub fn validate(app: &App, yaml: &str) -> AppResult<Validation> {
     // Validate against a scratch registry so a failed attempt cannot disturb the live one.
-    let (mut scratch, _) = build(app.store())?;
+    let extras = app.state::<ProfilesState>().extras.read().clone();
+    let (mut scratch, _) = build(app.store(), &extras)?;
     Ok(match scratch.add(yaml, Origin::User) {
         Ok(platform) => {
             let id = platform.profile.id.clone();
@@ -284,7 +324,7 @@ pub fn save(app: &App, yaml: &str) -> AppResult<ProfileDetail> {
     get(app, &checked.id)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Deleted {
     /// The built-in profile of the same id is active again.
     pub restored_builtin: bool,
@@ -308,8 +348,7 @@ pub fn delete(app: &App, id: &str) -> AppResult<Deleted> {
         .filter(|summary| summary.extends.as_deref() == Some(id) && summary.origin == Origin::User)
         .map(|summary| summary.id)
         .collect();
-    let restored_builtin = builtin_ids().iter().any(|builtin| builtin == id)
-        || Registry::builtin().0.get(id).is_some();
+    let restored_builtin = shipped(app).get(id).is_some();
     if !children.is_empty() && !restored_builtin {
         return Err(AppError::conflict(format!(
             "other device types extend `{id}` ({}); change or delete them first",
@@ -347,7 +386,7 @@ struct YamlParams {
 }
 
 pub fn init(builder: &mut AppBuilder) {
-    let (registry, problems) = match build(builder.store()) {
+    let (registry, problems) = match build(builder.store(), &[]) {
         Ok(built) => built,
         Err(err) => {
             tracing::error!(%err, "user device types could not be read; only the built-in pack is loaded");
@@ -369,6 +408,7 @@ pub fn init(builder: &mut AppBuilder) {
     builder.state(ProfilesState {
         registry: RwLock::new(Arc::new(registry)),
         problems: RwLock::new(problems),
+        extras: RwLock::new(Vec::new()),
     });
 
     let router = &mut builder.router;
@@ -577,6 +617,42 @@ mod tests {
                 .all(|problem| problem.origin == Origin::Builtin),
             "{:?}",
             problems(&app)
+        );
+    }
+
+    #[tokio::test]
+    async fn feature_crates_can_ship_profiles_that_users_override_but_cannot_delete() {
+        let mut builder = AppBuilder::new(AppConfig::in_memory()).unwrap();
+        init(&mut builder);
+        register(
+            &mut builder,
+            &testing::LAB_IOS.replace("id: test_ios", "id: shipped_ios"),
+        );
+        let app = builder.build();
+        assert_eq!(
+            platform(&app, "shipped_ios").unwrap().origin,
+            Origin::Builtin
+        );
+        assert_eq!(delete(&app, "shipped_ios").unwrap_err().code, "invalid");
+
+        // A user override wins, survives a rebuild, and deleting it restores the shipped one.
+        let custom = testing::LAB_IOS
+            .replace("id: test_ios", "id: shipped_ios")
+            .replace("name: Test IOS", "name: Mine");
+        save(&app, &custom).unwrap();
+        save(&app, testing::LAB_IOS).unwrap();
+        assert_eq!(platform(&app, "shipped_ios").unwrap().profile.name, "Mine");
+        let listed = list(&app).unwrap();
+        assert!(
+            listed
+                .profiles
+                .iter()
+                .any(|row| row.summary.id == "shipped_ios" && row.overrides_builtin)
+        );
+        assert!(delete(&app, "shipped_ios").unwrap().restored_builtin);
+        assert_eq!(
+            platform(&app, "shipped_ios").unwrap().profile.name,
+            "Test IOS"
         );
     }
 }
