@@ -27,12 +27,14 @@ impl Node {
             Role::L2Switch | Role::Bridge => 256 << 20,
             Role::Host => 4096 << 20,
         };
-        let tables = (self.rib.routes.len() + self.arp.rows(u64::MAX / 2).len()) as u64 * 2048 + self.log.entries.len() as u64 * 256;
+        let tables = (self.rib.routes.len() + self.arp.rows(u64::MAX / 2).len()) as u64 * 2048
+            + self.log.entries.len() as u64 * 256;
         (total, total * 3 / 10 + tables)
     }
 
     pub(crate) fn temperature(&self, at: SimTime, seed: u64) -> f32 {
-        let noise = (rng::hash(&[seed, u64::from(self.id), at / 30_000_000, 7]) % 100) as f32 / 100.0;
+        let noise =
+            (rng::hash(&[seed, u64::from(self.id), at / 30_000_000, 7]) % 100) as f32 / 100.0;
         36.0 + noise + self.cpu_percent(at, seed) * 0.12
     }
 }

@@ -51,7 +51,11 @@ pub(crate) enum Next {
     /// Follow a connection attempt; on success open a nested session.
     Connect { proc: u32, ssh_user: Option<String> },
     /// Ask for a line of text (hidden for passwords).
-    Ask { prompt: String, hidden: bool, tag: Tag },
+    Ask {
+        prompt: String,
+        hidden: bool,
+        tag: Tag,
+    },
     /// Wait for a single keypress.
     Key { prompt: String, tag: Tag },
     /// The session is over (logout).
@@ -74,7 +78,10 @@ pub(crate) struct Reply {
 
 impl Reply {
     pub(crate) fn text(out: impl Into<String>) -> Reply {
-        Reply { out: out.into(), ..Reply::default() }
+        Reply {
+            out: out.into(),
+            ..Reply::default()
+        }
     }
 }
 
@@ -143,10 +150,22 @@ impl Shell {
 #[derive(Clone, Debug)]
 enum Stage {
     Line,
-    Ask { tag: Tag, hidden: bool, buffer: String },
-    Key { tag: Tag },
-    More { lines: VecDeque<String> },
-    Job { proc: u32, shown: usize, connect: Option<Option<String>> },
+    Ask {
+        tag: Tag,
+        hidden: bool,
+        buffer: String,
+    },
+    Key {
+        tag: Tag,
+    },
+    More {
+        lines: VecDeque<String>,
+    },
+    Job {
+        proc: u32,
+        shown: usize,
+        connect: Option<Option<String>>,
+    },
     /// The device is powered off.
     Dead,
 }
@@ -165,6 +184,8 @@ pub(crate) struct Session {
     last_input: SimTime,
     /// Key under which the session is registered on its node.
     key: u64,
+    /// The address a remote session was opened to (`None` on the console).
+    reached: Option<Ipv4Addr>,
 }
 
 /// What happened to the session stack while handling input.
@@ -208,8 +229,23 @@ fn emit(out: &mut Vec<u8>, text: &str) {
 
 impl Session {
     /// Open a session on `node`; returns the session and its greeting text.
-    fn open(world: &mut World, node_id: NodeId, line: Option<(LineId, Ipv4Addr)>, key: u64) -> Result<(Session, Reply), LabError> {
-        let node = world.nodes.get(&node_id).ok_or(LabError::UnknownNode(node_id))?;
+    /// How the far end of a remote session is named when the connection ends.
+    fn reached_name(&self) -> String {
+        self.reached
+            .map(|address| address.to_string())
+            .unwrap_or_default()
+    }
+
+    fn open(
+        world: &mut World,
+        node_id: NodeId,
+        line: Option<(LineId, Ipv4Addr)>,
+        key: u64,
+    ) -> Result<(Session, Reply), LabError> {
+        let node = world
+            .nodes
+            .get(&node_id)
+            .ok_or(LabError::UnknownNode(node_id))?;
         let (epoch, log_cursor) = (node.epoch, node.log.next_seq);
         if !node.powered {
             return Err(LabError::PoweredOff(node.name.clone()));
@@ -226,7 +262,13 @@ impl Session {
         let now = world.now;
         let greeting = world
             .with_node(node_id, |node, fx| {
-                node.sessions.push(SessionInfo { key, line: line_id, user: String::new(), peer, last_input: now });
+                node.sessions.push(SessionInfo {
+                    key,
+                    line: line_id,
+                    user: String::new(),
+                    peer,
+                    last_input: now,
+                });
                 match &mut shell {
                     Shell::Ios(ios) => ios.greet(node, fx),
                     Shell::Host(_) => Reply::default(),
@@ -245,12 +287,17 @@ impl Session {
             log_cursor,
             last_input: now,
             key,
+            reached: None,
         };
         Ok((session, greeting))
     }
 
     fn prompt(&self, world: &World) -> String {
-        world.nodes.get(&self.node).map(|n| self.shell.prompt(n)).unwrap_or_default()
+        world
+            .nodes
+            .get(&self.node)
+            .map(|n| self.shell.prompt(n))
+            .unwrap_or_default()
     }
 
     fn close(&self, world: &mut World) {
@@ -273,7 +320,9 @@ impl Session {
                 emit(out, line);
             }
             emit(out, " --More-- ");
-            self.stage = Stage::More { lines: lines[page..].iter().map(|l| (*l).to_string()).collect() };
+            self.stage = Stage::More {
+                lines: lines[page..].iter().map(|l| (*l).to_string()).collect(),
+            };
             return Turn::Stay;
         }
         emit(out, &reply.out);
@@ -282,11 +331,31 @@ impl Session {
                 self.stage = Stage::Line;
                 self.show_prompt(world, out);
             }
-            Next::Job(proc) => self.stage = Stage::Job { proc, shown: 0, connect: None },
-            Next::Connect { proc, ssh_user } => self.stage = Stage::Job { proc, shown: 0, connect: Some(ssh_user) },
-            Next::Ask { prompt, hidden, tag } => {
+            Next::Job(proc) => {
+                self.stage = Stage::Job {
+                    proc,
+                    shown: 0,
+                    connect: None,
+                }
+            }
+            Next::Connect { proc, ssh_user } => {
+                self.stage = Stage::Job {
+                    proc,
+                    shown: 0,
+                    connect: Some(ssh_user),
+                }
+            }
+            Next::Ask {
+                prompt,
+                hidden,
+                tag,
+            } => {
                 emit(out, &prompt);
-                self.stage = Stage::Ask { tag, hidden, buffer: String::new() };
+                self.stage = Stage::Ask {
+                    tag,
+                    hidden,
+                    buffer: String::new(),
+                };
             }
             Next::Key { prompt, tag } => {
                 emit(out, &prompt);
@@ -319,9 +388,15 @@ impl Session {
         emit(out, &"\x08".repeat(self.line.len() - self.cursor));
     }
 
-    fn run_shell(&mut self, world: &mut World, f: impl FnOnce(&mut Shell, &mut Node, &mut Fx) -> Reply) -> Reply {
+    fn run_shell(
+        &mut self,
+        world: &mut World,
+        f: impl FnOnce(&mut Shell, &mut Node, &mut Fx) -> Reply,
+    ) -> Reply {
         let shell = &mut self.shell;
-        world.with_node(self.node, |node, fx| f(shell, node, fx)).unwrap_or_default()
+        world
+            .with_node(self.node, |node, fx| f(shell, node, fx))
+            .unwrap_or_default()
     }
 
     // ------------------------------------------------------------ line editing
@@ -352,7 +427,8 @@ impl Session {
         if count == 0 {
             return;
         }
-        self.line.replace_range(self.cursor - count..self.cursor, "");
+        self.line
+            .replace_range(self.cursor - count..self.cursor, "");
         self.cursor -= count;
         let tail = &self.line[self.cursor..];
         emit(out, &"\x08".repeat(count));
@@ -371,7 +447,10 @@ impl Session {
             (Some(_), false) => None,
             (None, _) => return,
         };
-        let text = pos.and_then(|p| entries.get(p)).cloned().unwrap_or_default();
+        let text = pos
+            .and_then(|p| entries.get(p))
+            .cloned()
+            .unwrap_or_default();
         self.history_pos = pos;
         self.replace_line(out, &text);
     }
@@ -398,10 +477,16 @@ impl Session {
         self.last_input = world.now;
         match std::mem::replace(&mut self.stage, Stage::Line) {
             Stage::Line => self.key_line(world, out, key),
-            Stage::Ask { tag, hidden, mut buffer } => match key {
+            Stage::Ask {
+                tag,
+                hidden,
+                mut buffer,
+            } => match key {
                 Key::Enter => {
                     emit(out, "\n");
-                    let reply = self.run_shell(world, |shell, node, fx| shell.answer(node, fx, tag, &buffer));
+                    let reply = self.run_shell(world, |shell, node, fx| {
+                        shell.answer(node, fx, tag, &buffer)
+                    });
                     self.apply(world, out, reply, false)
                 }
                 Key::Char(c) => {
@@ -411,14 +496,22 @@ impl Session {
                             emit(out, c.encode_utf8(&mut [0; 4]));
                         }
                     }
-                    self.stage = Stage::Ask { tag, hidden, buffer };
+                    self.stage = Stage::Ask {
+                        tag,
+                        hidden,
+                        buffer,
+                    };
                     Turn::Stay
                 }
                 Key::Backspace => {
                     if buffer.pop().is_some() && !hidden {
                         emit(out, "\x08 \x08");
                     }
-                    self.stage = Stage::Ask { tag, hidden, buffer };
+                    self.stage = Stage::Ask {
+                        tag,
+                        hidden,
+                        buffer,
+                    };
                     Turn::Stay
                 }
                 Key::Interrupt | Key::End => {
@@ -430,7 +523,11 @@ impl Session {
                     self.apply(world, out, reply, false)
                 }
                 _ => {
-                    self.stage = Stage::Ask { tag, hidden, buffer };
+                    self.stage = Stage::Ask {
+                        tag,
+                        hidden,
+                        buffer,
+                    };
                     Turn::Stay
                 }
             },
@@ -445,12 +542,16 @@ impl Session {
                     }
                 };
                 emit(out, "\n");
-                let reply = self.run_shell(world, |shell, node, fx| shell.answer(node, fx, tag, &text));
+                let reply =
+                    self.run_shell(world, |shell, node, fx| shell.answer(node, fx, tag, &text));
                 self.apply(world, out, reply, false)
             }
             Stage::More { mut lines } => {
                 // Erase the "--More--" marker the way a real terminal server does.
-                emit(out, "\x08\x08\x08\x08\x08\x08\x08\x08\x08        \x08\x08\x08\x08\x08\x08\x08\x08\x08");
+                emit(
+                    out,
+                    "\x08\x08\x08\x08\x08\x08\x08\x08\x08        \x08\x08\x08\x08\x08\x08\x08\x08\x08",
+                );
                 let count = match key {
                     Key::Char(' ') => self.page_len().max(1),
                     Key::Enter => 1,
@@ -471,13 +572,21 @@ impl Session {
                 }
                 Turn::Stay
             }
-            Stage::Job { proc, shown, connect } => {
+            Stage::Job {
+                proc,
+                shown,
+                connect,
+            } => {
                 if matches!(key, Key::Interrupt | Key::Abort) {
                     if let Some(node) = world.nodes.get_mut(&self.node) {
                         node.proc_abort(proc);
                     }
                 }
-                self.stage = Stage::Job { proc, shown, connect };
+                self.stage = Stage::Job {
+                    proc,
+                    shown,
+                    connect,
+                };
                 Turn::Stay
             }
             Stage::Dead => {
@@ -589,7 +698,9 @@ impl Session {
 
     /// Print what happened since the last call: process output and log messages.
     fn pump(&mut self, world: &mut World, out: &mut Vec<u8>) -> Turn {
-        let Some(node) = world.nodes.get_mut(&self.node) else { return Turn::Close };
+        let Some(node) = world.nodes.get_mut(&self.node) else {
+            return Turn::Close;
+        };
         if !node.powered {
             self.stage = Stage::Dead;
             self.epoch = node.epoch;
@@ -606,7 +717,12 @@ impl Session {
             }
         }
         let mut result = Turn::Stay;
-        if let Stage::Job { proc, shown, connect } = &mut self.stage {
+        if let Stage::Job {
+            proc,
+            shown,
+            connect,
+        } = &mut self.stage
+        {
             let (proc_id, connect) = (*proc, connect.clone());
             match node.procs.get(proc_id) {
                 Some(p) => {
@@ -640,48 +756,77 @@ impl Session {
         address: Option<Ipv4Addr>,
         connect: Option<Option<String>>,
     ) -> Turn {
-        let (Some(ssh_user), Outcome::Ok { .. }, Some(address)) = (connect, outcome, address) else {
+        let (Some(ssh_user), Outcome::Ok { .. }, Some(address)) = (connect, outcome, address)
+        else {
             self.show_prompt(world, out);
             return Turn::Stay;
         };
         // The connection opened: start a session on the far device's vty.
-        let source = world.nodes.get(&self.node).and_then(|n| n.source_for(address)).unwrap_or(Ipv4Addr::UNSPECIFIED);
+        let source = world
+            .nodes
+            .get(&self.node)
+            .and_then(|n| n.source_for(address))
+            .unwrap_or(Ipv4Addr::UNSPECIFIED);
         let target = world.node_by_ip(address);
-        let line = target
-            .and_then(|t| world.nodes.get(&t))
-            .map(|n| (0..n.cfg.vty.len() as u8).find(|i| !n.sessions.iter().any(|s| s.line == LineId::Vty(*i))));
+        let line = target.and_then(|t| world.nodes.get(&t)).map(|n| {
+            (0..n.cfg.vty.len() as u8)
+                .find(|i| !n.sessions.iter().any(|s| s.line == LineId::Vty(*i)))
+        });
         let opened = match (target, line) {
             (Some(target), Some(Some(vty))) => {
                 world.session_keys += 1;
-                Session::open(world, target, Some((LineId::Vty(vty), source)), world.session_keys).ok()
+                Session::open(
+                    world,
+                    target,
+                    Some((LineId::Vty(vty), source)),
+                    world.session_keys,
+                )
+                .ok()
             }
             (Some(target), None) => {
                 world.session_keys += 1;
-                Session::open(world, target, Some((LineId::Vty(0), source)), world.session_keys).ok()
+                Session::open(
+                    world,
+                    target,
+                    Some((LineId::Vty(0), source)),
+                    world.session_keys,
+                )
+                .ok()
             }
             _ => None,
         };
         match opened {
             Some((mut session, mut greeting)) => {
+                session.reached = Some(address);
                 if let (Shell::Ios(ios), Some(user)) = (&mut session.shell, ssh_user) {
                     // SSH carries the username; only the password is asked for.
-                    let reply = world.with_node(session.node, |node, fx| ios.ssh_login(node, fx, &user));
+                    let reply =
+                        world.with_node(session.node, |node, fx| ios.ssh_login(node, fx, &user));
                     greeting = reply.unwrap_or(greeting);
                 }
                 let mut text = Vec::new();
                 match session.apply(world, &mut text, greeting, false) {
-                    Turn::Stay => Turn::Push(Box::new(session), String::from_utf8_lossy(&text).into_owned()),
+                    Turn::Stay => Turn::Push(
+                        Box::new(session),
+                        String::from_utf8_lossy(&text).into_owned(),
+                    ),
                     _ => {
                         session.close(world);
                         emit(out, &String::from_utf8_lossy(&text));
-                        emit(out, &format!("\n[Connection to {address} closed by foreign host]\n"));
+                        emit(
+                            out,
+                            &format!("\n[Connection to {address} closed by foreign host]\n"),
+                        );
                         self.show_prompt(world, out);
                         Turn::Stay
                     }
                 }
             }
             None => {
-                emit(out, &format!("\n[Connection to {address} closed by foreign host]\n"));
+                emit(
+                    out,
+                    &format!("\n[Connection to {address} closed by foreign host]\n"),
+                );
                 self.show_prompt(world, out);
                 Turn::Stay
             }
@@ -691,7 +836,9 @@ impl Session {
     /// Unsolicited log messages appear on the console line (and on vty lines
     /// that asked with `terminal monitor`).
     fn pump_logs(&mut self, world: &World, out: &mut Vec<u8>) {
-        let Some(node) = world.nodes.get(&self.node) else { return };
+        let Some(node) = world.nodes.get(&self.node) else {
+            return;
+        };
         let Shell::Ios(ios) = &self.shell else { return };
         let from = self.log_cursor;
         self.log_cursor = node.log.next_seq;
@@ -713,10 +860,15 @@ impl Session {
     }
 
     fn timed_out(&self, world: &World) -> bool {
-        let Some(node) = world.nodes.get(&self.node) else { return false };
-        let Shell::Ios(ios) = &self.shell else { return false };
+        let Some(node) = world.nodes.get(&self.node) else {
+            return false;
+        };
+        let Shell::Ios(ios) = &self.shell else {
+            return false;
+        };
         let idle = world.now.saturating_sub(self.last_input);
-        matches!(self.stage, Stage::Line) && ios.exec_timeout(node).is_some_and(|limit| idle >= limit)
+        matches!(self.stage, Stage::Line)
+            && ios.exec_timeout(node).is_some_and(|limit| idle >= limit)
     }
 }
 
@@ -748,8 +900,14 @@ impl Console {
     pub(crate) fn open(world: &mut World, node: NodeId) -> Result<Console, LabError> {
         world.session_keys += 1;
         let (mut session, greeting) = Session::open(world, node, None, world.session_keys)?;
-        let mut console =
-            Console { stack: Vec::new(), out: Vec::new(), esc: Esc::None, last_was_cr: false, cols: 80, rows: 24 };
+        let mut console = Console {
+            stack: Vec::new(),
+            out: Vec::new(),
+            esc: Esc::None,
+            last_was_cr: false,
+            cols: 80,
+            rows: 24,
+        };
         emit(&mut console.out, "\n");
         let outcome = session.apply(world, &mut console.out, greeting, false);
         console.stack.push(session);
@@ -815,7 +973,9 @@ impl Console {
             self.esc = Esc::None;
             self.last_was_cr = byte == b'\r';
             let Some(key) = key else { continue };
-            let Some(session) = self.stack.last_mut() else { return };
+            let Some(session) = self.stack.last_mut() else {
+                return;
+            };
             let outcome = session.key(world, &mut self.out, key);
             self.settle(world, outcome);
         }
@@ -832,9 +992,15 @@ impl Console {
             }
             Turn::Close => self.pop(world),
             Turn::Reload => {
-                let Some(session) = self.stack.last() else { return };
+                let Some(session) = self.stack.last() else {
+                    return;
+                };
                 let node = session.node;
-                if world.nodes.get(&node).is_some_and(|n| n.powered && n.epoch == session.epoch) {
+                if world
+                    .nodes
+                    .get(&node)
+                    .is_some_and(|n| n.powered && n.epoch == session.epoch)
+                {
                     world.boot(node);
                     world.touch();
                     world.reconcile();
@@ -846,20 +1012,37 @@ impl Console {
 
     /// The top session ended: return to the one below, or start over at the root.
     fn pop(&mut self, world: &mut World) {
-        let Some(session) = self.stack.pop() else { return };
+        let Some(session) = self.stack.pop() else {
+            return;
+        };
         session.close(world);
-        let peer_name = world.nodes.get(&session.node).map(|n| n.cfg.hostname.clone()).unwrap_or_default();
         match self.stack.last_mut() {
             Some(below) => {
-                emit(&mut self.out, &format!("\n[Connection to {peer_name} closed by foreign host]\n"));
+                emit(
+                    &mut self.out,
+                    &format!(
+                        "\n[Connection to {} closed by foreign host]\n",
+                        session.reached_name()
+                    ),
+                );
                 below.stage = Stage::Line;
                 below.show_prompt(world, &mut self.out);
             }
             None => {
                 // Logging out of the console line starts a fresh session on it.
                 world.session_keys += 1;
-                if let Ok((mut fresh, greeting)) = Session::open(world, session.node, None, world.session_keys) {
-                    emit(&mut self.out, &format!("\n{peer_name} con0 is now available\n\n\n\n"));
+                let hostname = world
+                    .nodes
+                    .get(&session.node)
+                    .map(|n| n.cfg.hostname.clone())
+                    .unwrap_or_default();
+                if let Ok((mut fresh, greeting)) =
+                    Session::open(world, session.node, None, world.session_keys)
+                {
+                    emit(
+                        &mut self.out,
+                        &format!("\n{hostname} con0 is now available\n\n\n\n"),
+                    );
                     let outcome = fresh.apply(world, &mut self.out, greeting, false);
                     self.stack.push(fresh);
                     self.settle(world, outcome);
@@ -870,11 +1053,18 @@ impl Console {
 
     /// The device under the top session restarted: sessions on it start afresh.
     fn restart_top(&mut self, world: &mut World) {
-        let Some(session) = self.stack.pop() else { return };
+        let Some(session) = self.stack.pop() else {
+            return;
+        };
         session.close(world);
         if !self.stack.is_empty() {
-            let name = world.nodes.get(&session.node).map(|n| n.name.clone()).unwrap_or_default();
-            emit(&mut self.out, &format!("\n[Connection to {name} closed by foreign host]\n"));
+            emit(
+                &mut self.out,
+                &format!(
+                    "\n[Connection to {} closed by foreign host]\n",
+                    session.reached_name()
+                ),
+            );
             if let Some(below) = self.stack.last_mut() {
                 below.stage = Stage::Line;
                 below.show_prompt(world, &mut self.out);
@@ -901,7 +1091,19 @@ impl Console {
     /// Flush process output, log messages and timeouts for the active session.
     pub(crate) fn pump(&mut self, world: &mut World) {
         for _ in 0..4 {
-            let Some(session) = self.stack.last_mut() else { return };
+            // A remote session does not outlive the device it runs on.
+            let remote_gone = self.stack.len() > 1
+                && self
+                    .stack
+                    .last()
+                    .is_some_and(|s| world.nodes.get(&s.node).is_none_or(|n| !n.powered));
+            if remote_gone {
+                self.restart_top(world);
+                continue;
+            }
+            let Some(session) = self.stack.last_mut() else {
+                return;
+            };
             let outcome = session.pump(world, &mut self.out);
             let again = !matches!(outcome, Turn::Stay);
             self.settle(world, outcome);
@@ -913,6 +1115,8 @@ impl Console {
 
     /// Is the active session waiting for a process to finish?
     pub(crate) fn busy(&self) -> bool {
-        self.stack.last().is_some_and(|s| matches!(s.stage, Stage::Job { .. }))
+        self.stack
+            .last()
+            .is_some_and(|s| matches!(s.stage, Stage::Job { .. }))
     }
 }

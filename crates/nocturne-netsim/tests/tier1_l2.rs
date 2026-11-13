@@ -18,26 +18,48 @@ fn two_hosts_on_a_switch_first_ping_loses_one_packet_to_arp() {
     let first = exec(&mut lab, a, "ping 192.168.1.11 -n 5");
     assert!(first.contains("Request timed out."), "{first}");
     assert_eq!(replies(&first), 4, "{first}");
-    assert!(first.contains("Packets: Sent = 5, Received = 4, Lost = 1 (20% loss)"), "{first}");
+    assert!(
+        first.contains("Packets: Sent = 5, Received = 4, Lost = 1 (20% loss)"),
+        "{first}"
+    );
     let second = exec(&mut lab, a, "ping 192.168.1.11 -n 5");
     assert_eq!(replies(&second), 5, "{second}");
-    assert!(second.contains("Reply from 192.168.1.11: bytes=32 time<1ms TTL=128"), "{second}");
+    assert!(
+        second.contains("Reply from 192.168.1.11: bytes=32 time<1ms TTL=128"),
+        "{second}"
+    );
 
     // The same from an IOS device: the classic `.!!!!` then `!!!!!`.
-    cfg(&mut lab, sw, "interface vlan 1\n ip address 192.168.1.2 255.255.255.0\n no shutdown");
+    cfg(
+        &mut lab,
+        sw,
+        "interface vlan 1\n ip address 192.168.1.2 255.255.255.0\n no shutdown",
+    );
     lab.settle(30 * SECOND);
     let out = exec(&mut lab, sw, "ping 192.168.1.10");
     assert_eq!(ping_marks(&out), ".!!!!", "{out}");
     assert!(out.contains("Success rate is 80 percent (4/5)"), "{out}");
     let out = exec(&mut lab, sw, "ping 192.168.1.10");
     assert_eq!(ping_marks(&out), "!!!!!", "{out}");
-    assert!(out.contains("Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/1 ms"), "{out}");
+    assert!(
+        out.contains("Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/1 ms"),
+        "{out}"
+    );
 
     // The switch learned both hosts.
     let table = exec(&mut lab, sw, "show mac address-table");
-    assert!(table.contains("Fa0/1") && table.contains("Fa0/2"), "{table}");
+    assert!(
+        table.contains("Fa0/1") && table.contains("Fa0/2"),
+        "{table}"
+    );
     let macs = lab.node_tables(sw).unwrap().mac;
-    assert_eq!(macs.iter().filter(|m| m.vlan == 1 && m.kind == "DYNAMIC").count(), 2, "{macs:?}");
+    assert_eq!(
+        macs.iter()
+            .filter(|m| m.vlan == 1 && m.kind == "DYNAMIC")
+            .count(),
+        2,
+        "{macs:?}"
+    );
 }
 
 #[test]
@@ -62,7 +84,12 @@ fn link_lights_follow_cabling_shutdown_and_spanning_tree() {
     assert_eq!(light(&lab, "Fa0/1"), Light::Red);
     assert!(!lab.snapshot().links[0].up);
     let events = lab.take_events();
-    assert!(events.iter().any(|e| matches!(e, nocturne_netsim::LabEvent::LinkState { up: false, .. })), "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, nocturne_netsim::LabEvent::LinkState { up: false, .. })),
+        "{events:?}"
+    );
     let logged: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
@@ -71,7 +98,9 @@ fn link_lights_follow_cabling_shutdown_and_spanning_tree() {
         })
         .collect();
     assert!(
-        logged.iter().any(|l| l.contains("%LINK-5-CHANGED: Interface FastEthernet0/1, changed state to administratively down")),
+        logged.iter().any(|l| l.contains(
+            "%LINK-5-CHANGED: Interface FastEthernet0/1, changed state to administratively down"
+        )),
         "{logged:#?}"
     );
     cfg(&mut lab, sw, "interface fa0/1\n no shutdown");
@@ -111,36 +140,70 @@ fn vlans_isolate_and_trunks_carry_them() {
     assert_eq!(ping(&mut lab, a10, "10.0.10.4"), 0);
 
     // Pruning VLAN 20 from the trunk cuts only VLAN 20.
-    cfg(&mut lab, s1, "interface gi0/1\n switchport trunk allowed vlan remove 20");
+    cfg(
+        &mut lab,
+        s1,
+        "interface gi0/1\n switchport trunk allowed vlan remove 20",
+    );
     lab.settle(30 * SECOND);
     assert_eq!(ping(&mut lab, a10, "10.0.10.2"), 2);
     assert_eq!(ping(&mut lab, a20, "10.0.10.4"), 0);
     let trunk = exec(&mut lab, s1, "show interfaces trunk");
     assert!(trunk.contains("Gi0/1       1-19,21-4094"), "{trunk}");
-    cfg(&mut lab, s1, "interface gi0/1\n switchport trunk allowed vlan add 20");
+    cfg(
+        &mut lab,
+        s1,
+        "interface gi0/1\n switchport trunk allowed vlan add 20",
+    );
     lab.settle(30 * SECOND);
     assert_eq!(ping(&mut lab, a20, "10.0.10.4"), 2);
 
     // Native VLAN: untagged frames on the trunk belong to VLAN 10 on both ends,
     // so VLAN 10 still works, and a mismatch leaks between VLANs.
-    cfg(&mut lab, s1, "interface gi0/1\n switchport trunk native vlan 10");
-    cfg(&mut lab, s2, "interface gi0/1\n switchport trunk native vlan 10");
+    cfg(
+        &mut lab,
+        s1,
+        "interface gi0/1\n switchport trunk native vlan 10",
+    );
+    cfg(
+        &mut lab,
+        s2,
+        "interface gi0/1\n switchport trunk native vlan 10",
+    );
     lab.settle(30 * SECOND);
     assert_eq!(ping(&mut lab, a10, "10.0.10.2"), 2);
-    cfg(&mut lab, s2, "interface gi0/1\n switchport trunk native vlan 20");
+    cfg(
+        &mut lab,
+        s2,
+        "interface gi0/1\n switchport trunk native vlan 20",
+    );
     lab.settle(30 * SECOND);
     // SW1 sends VLAN 10 untagged; SW2 puts untagged frames into VLAN 20.
     assert_eq!(ping(&mut lab, a10, "10.0.10.4"), 2);
     assert_eq!(ping(&mut lab, a10, "10.0.10.2"), 0);
 
     // A VLAN that does not exist on a switch is not forwarded there.
-    cfg(&mut lab, s2, "interface gi0/1\n switchport trunk native vlan 1\nno vlan 20");
-    cfg(&mut lab, s1, "interface gi0/1\n switchport trunk native vlan 1");
+    cfg(
+        &mut lab,
+        s2,
+        "interface gi0/1\n switchport trunk native vlan 1\nno vlan 20",
+    );
+    cfg(
+        &mut lab,
+        s1,
+        "interface gi0/1\n switchport trunk native vlan 1",
+    );
     lab.settle(30 * SECOND);
     assert_eq!(ping(&mut lab, a20, "10.0.10.4"), 0);
     let vlans = exec(&mut lab, s1, "show vlan brief");
-    assert!(vlans.contains("10   Staff                            active    Fa0/1"), "{vlans}");
-    assert!(vlans.contains("20   Guest                            active    Fa0/2"), "{vlans}");
+    assert!(
+        vlans.contains("10   Staff                            active    Fa0/1"),
+        "{vlans}"
+    );
+    assert!(
+        vlans.contains("20   Guest                            active    Fa0/2"),
+        "{vlans}"
+    );
 }
 
 #[test]
@@ -151,14 +214,25 @@ fn dynamic_trunk_negotiation() {
     link(&mut lab, s1, "gi0/1", s2, "gi0/1");
     let mode = |lab: &mut Lab, node| {
         let out = exec(lab, node, "show interfaces gi0/1 switchport");
-        out.lines().find(|l| l.starts_with("Operational Mode:")).unwrap().to_string()
+        out.lines()
+            .find(|l| l.starts_with("Operational Mode:"))
+            .unwrap()
+            .to_string()
     };
     // Two ports in the default dynamic auto mode stay access ports.
     assert_eq!(mode(&mut lab, s1), "Operational Mode: static access");
-    cfg(&mut lab, s1, "interface gi0/1\n switchport mode dynamic desirable");
+    cfg(
+        &mut lab,
+        s1,
+        "interface gi0/1\n switchport mode dynamic desirable",
+    );
     assert_eq!(mode(&mut lab, s1), "Operational Mode: trunk");
     assert_eq!(mode(&mut lab, s2), "Operational Mode: trunk");
-    cfg(&mut lab, s1, "interface gi0/1\n switchport mode trunk\n switchport nonegotiate");
+    cfg(
+        &mut lab,
+        s1,
+        "interface gi0/1\n switchport mode trunk\n switchport nonegotiate",
+    );
     // Without DTP frames the dynamic side falls back to access.
     assert_eq!(mode(&mut lab, s1), "Operational Mode: trunk");
     assert_eq!(mode(&mut lab, s2), "Operational Mode: static access");
@@ -182,16 +256,28 @@ fn spanning_tree_blocks_one_port_of_a_triangle_and_fails_over() {
     lab.settle(60 * SECOND);
 
     let stp = |lab: &Lab, node| lab.node_tables(node).unwrap().stp;
-    assert!(stp(&lab, s1).iter().all(|r| r.is_root && r.state == "FWD" && r.role == "Desg"), "{:?}", stp(&lab, s1));
+    assert!(
+        stp(&lab, s1)
+            .iter()
+            .all(|r| r.is_root && r.state == "FWD" && r.role == "Desg"),
+        "{:?}",
+        stp(&lab, s1)
+    );
     let all: Vec<_> = [s1, s2, s3].iter().flat_map(|n| stp(&lab, *n)).collect();
     let blocked: Vec<_> = all.iter().filter(|r| r.state == "BLK").collect();
     assert_eq!(blocked.len(), 1, "exactly one blocked port: {all:#?}");
     assert_eq!(blocked[0].role, "Altn");
-    assert!(all.iter().all(|r| r.root_id.starts_with("4097 ")), "{all:#?}");
+    assert!(
+        all.iter().all(|r| r.root_id.starts_with("4097 ")),
+        "{all:#?}"
+    );
     let show = exec(&mut lab, s1, "show spanning-tree");
     assert!(show.contains("This bridge is the root"), "{show}");
     let show = exec(&mut lab, s2, "show spanning-tree vlan 1");
-    assert!(show.contains("Root ID    Priority    4097") && show.contains("Root FWD 4"), "{show}");
+    assert!(
+        show.contains("Root ID    Priority    4097") && show.contains("Root FWD 4"),
+        "{show}"
+    );
 
     exec(&mut lab, h1, "ping 10.0.0.2 -n 2");
     assert_eq!(replies(&exec(&mut lab, h1, "ping 10.0.0.2 -n 3")), 3);
@@ -200,6 +286,9 @@ fn spanning_tree_blocks_one_port_of_a_triangle_and_fails_over() {
     lab.remove_link(l12).unwrap();
     lab.settle(60 * SECOND);
     let all: Vec<_> = [s1, s2, s3].iter().flat_map(|n| stp(&lab, *n)).collect();
-    assert!(all.iter().all(|r| r.state == "FWD"), "no loop left, nothing blocked: {all:#?}");
+    assert!(
+        all.iter().all(|r| r.state == "FWD"),
+        "no loop left, nothing blocked: {all:#?}"
+    );
     assert_eq!(replies(&exec(&mut lab, h1, "ping 10.0.0.2 -n 3")), 3);
 }

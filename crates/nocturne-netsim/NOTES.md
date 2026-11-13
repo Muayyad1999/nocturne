@@ -28,24 +28,21 @@ Build: `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/netsim cargo test -p 
 
 (see bottom of file — updated as work proceeds)
 
-## Done
+## Done (all compiled and tested unless noted)
 
-- [x] util (net, mac, rng, regex, crypt, clock, text) — unit tested
-- [x] api.rs / catalog.rs / ifname.rs / device/config.rs (config model) / device/hostcfg.rs
-- [x] sim core written (NOT YET COMPILED TOGETHER): frame, fx, syslog, node, mod (World),
-      reconcile, port, switching, stp, arp, rib, ip, acl, procs (ping/connect/traceroute/dns),
-      probe (traces + instant probes on scratch clone), flows, faults, edit
-- [x] placeholders (to be replaced): sim/{nat,dhcp,neighbors,ospf,rip,hsrp}.rs
-- [x] device/cli/grammar.rs (pattern DSL -> NFA; parse/help/complete) + tests
-- [x] device/cli/mod.rs (Console, Session, line discipline, pager, nested sessions)
-- [x] device/ios/mod.rs (IosShell: modes, prompts, login, dispatch, output filters, help)
-- [ ] device/ios/{exec,config,config_if,config_sub,help,runcfg,boot}.rs + show/*
-- [ ] device/host.rs (host shell)
-- [ ] lab.rs (public API), spec.rs, views (snapshot/tables/metrics)
-- [ ] first full compile + tier-1 scenario tests
-- [ ] Tier 2: OSPF, DHCP, NAT, EtherChannel show, CDP/LLDP, tracing polish, demo
-- [ ] Tier 3: RIP, HSRP, port security shows, long-tail shows
-- [ ] fuzz + determinism tests, tests/ntc_validate.py, examples/dump.rs
+- [x] util, api, catalog, ifname, device/config (model), device/hostcfg, device/host (shell)
+- [x] sim core: frame, fx, syslog, node, mod (World), reconcile, port, switching, stp, arp,
+      rib, ip, acl, procs, probe, flows, faults, edit, health
+- [x] device/cli (grammar NFA, Console/Session line discipline, pager, nested sessions)
+- [x] device/ios (shell, exec, config, config_if, config_sub, help, runcfg, boot, show/*)
+- [x] lab.rs (public API), views.rs (snapshot/tables/metrics)
+- [x] Tier 2 real: neighbors (CDP/LLDP), dhcp, acl, nat (tests/tier2_nat.rs)
+- [x] OSPF: sim/ospf.rs (hello/DR/adjacency machine) + sim/ospf_spf.rs (analytic SPF) +
+      show ip ospf [neighbor [detail] | interface [brief] | database] — compiled, unit tests
+      for SPF pass, SCENARIO TESTS NOT WRITTEN YET (tests/tier2_ospf.rs)
+- [ ] sim/rip.rs, sim/hsrp.rs are still PLACEHOLDERS (commands exist in grammar + runcfg;
+      `show ip rip database`, `show standby` not registered) -> implement or remove
+- [ ] demo.rs is a placeholder (empty demo_campus/examples)
 
 ## Module map (planned)
 
@@ -71,12 +68,25 @@ Build: `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/netsim cargo test -p 
 
 ## In progress / next
 
-Tier-1 code compiles; tests green so far: tests/tier1_l2.rs (5), tier1_l3.rs (5),
-tier1_cli.rs (7), unit tests (36). `examples/console.rs` = scratch console driver
-(`cargo run --example console -- "en" "show vlan" ...`, NODE=R1|PC1 selects device).
+GREEN (88 tests): unit 40, tier1_l2 5, tier1_l3 5, tier1_cli 7, tier1_lab 8,
+tier2_services 5, tier2_nat 2, tier2_ospf 7, tier2_switching 3, tier3_rip 4, tier3_hsrp 2.
 
-Next: tests/tier1_lab.rs (config round trip, power cycle, spec round trip, flows, faults,
-traces, determinism, host shell, API errors). Then replace placeholders: neighbors
-(CDP/LLDP), dhcp, nat, ospf, rip, hsrp + show/protocols.rs (table entries were removed
-from show/mod.rs until then), demo.rs; fuzz test; ntc_validate.py + examples/dump.rs;
-clippy + fmt (-p nocturne-netsim only!).
+DONE since last note: RIP (sim/rip.rs real: v1/v2, split horizon, poison, triggered updates,
+`show ip rip database`), HSRP (sim/hsrp.rs real: RFC 2281 state machine, vMAC, resign,
+`show standby [brief]`), EtherChannel compat/suspend, port-security sticky conversion.
+
+OSPF notes: SPF is analytic per "flooding component" (routers joined by mutual FULL
+adjacencies); a router keeps stale adverts (`node.ospf.learned`) of routers it lost silently
+until its dead timer fires. `ospf_converging(now)` is true while a neighbour missed a hello.
+
+Next, in order: telnet/ssh nested session test (tests/tier3_sessions.rs), full-feature
+running-config round-trip test, demo.rs (demo_campus + 5 examples), fuzz test,
+tests/ntc_validate.py + examples/dump.rs, dead-code cleanup, clippy -D warnings,
+fmt (-p nocturne-netsim only!), final report via SubagentHandback.
+
+Known decisions to report: ARP miss drops everywhere; `show ip dhcp binding` expiry is one
+token (template limitation); NodeSpec gained vlan_dat + rsa_key_bits; PacketEvent gained
+interface + parent; exec() returns device error text as Ok; real IOS ordering nat->route->acl;
+single OSPF process; no L3 port-channels; console cable uses pseudo-ports Console/RS232;
+channel members that find no partner do not forward (like `port-channel standalone-disable`);
+RIP has no holddown (poison + triggered updates instead); HSRP timers fixed 3/10 s.

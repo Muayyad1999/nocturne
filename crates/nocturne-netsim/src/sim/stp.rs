@@ -113,12 +113,18 @@ impl Stp {
     /// State of a port in a VLAN. Ports spanning tree does not know are not
     /// forwarding: a switch never forwards on a port it has not vetted.
     pub(crate) fn state(&self, vlan: u16, port: IfId) -> PortState {
-        self.vlans.get(&vlan).and_then(|v| v.ports.get(&port)).map_or(PortState::Blocking, |p| p.state)
+        self.vlans
+            .get(&vlan)
+            .and_then(|v| v.ports.get(&port))
+            .map_or(PortState::Blocking, |p| p.state)
     }
 
     /// Is the port forwarding in every VLAN it carries?
     pub(crate) fn all_forwarding(&self, port: IfId) -> bool {
-        self.vlans.values().filter_map(|v| v.ports.get(&port)).all(|p| p.state == PortState::Forwarding)
+        self.vlans
+            .values()
+            .filter_map(|v| v.ports.get(&port))
+            .all(|p| p.state == PortState::Forwarding)
     }
 
     /// Any port still listening or learning (used to judge quiescence).
@@ -143,11 +149,18 @@ impl Node {
             (true, false) => (15_000_000, 20_000_000),
             (false, false) => (1_000_000, 6_000_000),
         };
-        StpTimers { hello: 2_000_000, forward_delay, max_age }
+        StpTimers {
+            hello: 2_000_000,
+            forward_delay,
+            max_age,
+        }
     }
 
     pub(crate) fn bridge_id(&self, vlan: u16) -> BridgeId {
-        BridgeId { priority: self.cfg.stp.priority_of(vlan).saturating_add(vlan), mac: self.base_mac }
+        BridgeId {
+            priority: self.cfg.stp.priority_of(vlan).saturating_add(vlan),
+            mac: self.base_mac,
+        }
     }
 
     /// Port identifier: priority in the high byte, port number in the low byte.
@@ -155,9 +168,17 @@ impl Node {
         let number = if port.kind == IfKind::PortChannel {
             200 + port.number().min(55)
         } else {
-            self.model.ports.iter().position(|p| *p == port).map_or(0, |i| i as u32 + 1)
+            self.model
+                .ports
+                .iter()
+                .position(|p| *p == port)
+                .map_or(0, |i| i as u32 + 1)
         };
-        let priority = self.cfg.iface(port).and_then(|c| c.stp.port_priority).unwrap_or(128);
+        let priority = self
+            .cfg
+            .iface(port)
+            .and_then(|c| c.stp.port_priority)
+            .unwrap_or(128);
         u16::from(priority) << 8 | (number as u16 & 0xff)
     }
 
@@ -166,7 +187,11 @@ impl Node {
             return cost;
         }
         let speed: u32 = if port.kind == IfKind::PortChannel {
-            self.members_of(port).iter().filter_map(|m| self.ifs.get(m)).map(|s| s.speed).sum()
+            self.members_of(port)
+                .iter()
+                .filter_map(|m| self.ifs.get(m))
+                .map(|s| s.speed)
+                .sum()
         } else {
             self.ifs.get(&port).map_or(0, |s| s.speed)
         };
@@ -184,13 +209,21 @@ impl Node {
 
     /// Is PortFast in effect on the port by configuration?
     pub(crate) fn stp_portfast(&self, port: IfId) -> bool {
-        let Some(cfg) = self.cfg.iface(port) else { return false };
-        cfg.stp.portfast.unwrap_or(self.cfg.stp.portfast_default && !self.is_trunk(port))
+        let Some(cfg) = self.cfg.iface(port) else {
+            return false;
+        };
+        cfg.stp
+            .portfast
+            .unwrap_or(self.cfg.stp.portfast_default && !self.is_trunk(port))
     }
 
     fn stp_bpduguard(&self, port: IfId) -> bool {
-        let Some(cfg) = self.cfg.iface(port) else { return false };
-        cfg.stp.bpduguard.unwrap_or(self.cfg.stp.bpduguard_default && self.stp_portfast(port))
+        let Some(cfg) = self.cfg.iface(port) else {
+            return false;
+        };
+        cfg.stp
+            .bpduguard
+            .unwrap_or(self.cfg.stp.bpduguard_default && self.stp_portfast(port))
     }
 
     /// Align the per-VLAN port sets with the up layer-2 ports, then recompute.
@@ -199,12 +232,22 @@ impl Node {
             return;
         }
         let ports = self.l2_ports();
-        let vlans: Vec<u16> = self.cfg.vlans.iter().filter(|(_, v)| v.active).map(|(id, _)| *id).collect();
+        let vlans: Vec<u16> = self
+            .cfg
+            .vlans
+            .iter()
+            .filter(|(_, v)| v.active)
+            .map(|(id, _)| *id)
+            .collect();
         self.stp.vlans.retain(|id, _| vlans.contains(id));
         let timers = self.stp_timers(fx);
         for vlan in vlans {
             let own = self.bridge_id(vlan);
-            let wanted: Vec<IfId> = ports.iter().copied().filter(|p| self.port_carries(*p, vlan)).collect();
+            let wanted: Vec<IfId> = ports
+                .iter()
+                .copied()
+                .filter(|p| self.port_carries(*p, vlan))
+                .collect();
             let edges: Vec<bool> = wanted.iter().map(|p| self.stp_portfast(*p)).collect();
             let stp = &mut self.stp;
             let instance = stp.vlans.entry(vlan).or_insert_with(|| StpVlan {
@@ -236,13 +279,31 @@ impl Node {
                     None => {
                         stp.next_token += 1;
                         let token = stp.next_token;
-                        let state = if edge { PortState::Forwarding } else { PortState::Listening };
+                        let state = if edge {
+                            PortState::Forwarding
+                        } else {
+                            PortState::Listening
+                        };
                         instance.ports.insert(
                             *port,
-                            StpPort { state, role: PortRole::Designated, heard: None, edge, tc_until: 0, token },
+                            StpPort {
+                                state,
+                                role: PortRole::Designated,
+                                heard: None,
+                                edge,
+                                tc_until: 0,
+                                token,
+                            },
                         );
                         if !edge {
-                            fx.arm(timers.forward_delay, Timer::StpForward { vlan, port: *port, token });
+                            fx.arm(
+                                timers.forward_delay,
+                                Timer::StpForward {
+                                    vlan,
+                                    port: *port,
+                                    token,
+                                },
+                            );
                         }
                         ports_changed = true;
                     }
@@ -267,7 +328,9 @@ impl Node {
     fn stp_recompute(&mut self, fx: &mut Fx, vlan: u16, announce: bool) {
         let own = self.bridge_id(vlan);
         let timers = self.stp_timers(fx);
-        let Some(instance) = self.stp.vlans.get(&vlan) else { return };
+        let Some(instance) = self.stp.vlans.get(&vlan) else {
+            return;
+        };
         let ports: Vec<IfId> = instance.ports.keys().copied().collect();
         let costs: Vec<u32> = ports.iter().map(|p| self.stp_path_cost(*p)).collect();
         let ids: Vec<u16> = ports.iter().map(|p| self.stp_port_id(*p)).collect();
@@ -275,12 +338,24 @@ impl Node {
         // Best path to a root learned from a neighbour, if any beats being root ourselves.
         let mut best: Option<(Vector, u16, IfId)> = None;
         for ((port, cost), id) in ports.iter().zip(&costs).zip(&ids) {
-            let Some((heard, _)) = instance.ports.get(port).and_then(|p| p.heard) else { continue };
+            let Some((heard, _)) = instance.ports.get(port).and_then(|p| p.heard) else {
+                continue;
+            };
             if heard.bridge == own {
                 continue;
             }
-            let candidate = (Vector { cost: heard.cost.saturating_add(*cost), ..heard }, *id, *port);
-            if best.as_ref().is_none_or(|b| (candidate.0, candidate.1) < (b.0, b.1)) {
+            let candidate = (
+                Vector {
+                    cost: heard.cost.saturating_add(*cost),
+                    ..heard
+                },
+                *id,
+                *port,
+            );
+            if best
+                .as_ref()
+                .is_none_or(|b| (candidate.0, candidate.1) < (b.0, b.1))
+            {
                 best = Some(candidate);
             }
         }
@@ -293,7 +368,9 @@ impl Node {
         let mut changed = false;
         let mut arm = Vec::new();
         let stp = &mut self.stp;
-        let Some(instance) = stp.vlans.get_mut(&vlan) else { return };
+        let Some(instance) = stp.vlans.get_mut(&vlan) else {
+            return;
+        };
         if (instance.root, instance.root_cost, instance.root_port) != (root, root_cost, root_port) {
             instance.root = root;
             instance.root_cost = root_cost;
@@ -301,14 +378,25 @@ impl Node {
             changed = true;
         }
         for (port, id) in ports.iter().zip(&ids) {
-            let Some(p) = instance.ports.get_mut(port) else { continue };
-            let ours = Vector { root, cost: root_cost, bridge: own, port: *id };
+            let Some(p) = instance.ports.get_mut(port) else {
+                continue;
+            };
+            let ours = Vector {
+                root,
+                cost: root_cost,
+                bridge: own,
+                port: *id,
+            };
             let role = if Some(*port) == root_port {
                 PortRole::Root
             } else {
                 match p.heard {
                     Some((heard, _)) if heard < ours => {
-                        if heard.bridge == own { PortRole::Backup } else { PortRole::Alternate }
+                        if heard.bridge == own {
+                            PortRole::Backup
+                        } else {
+                            PortRole::Alternate
+                        }
                     }
                     _ => PortRole::Designated,
                 }
@@ -323,7 +411,14 @@ impl Node {
                         stp.next_token += 1;
                         p.token = stp.next_token;
                         p.state = PortState::Listening;
-                        arm.push((timers.forward_delay, Timer::StpForward { vlan, port: *port, token: p.token }));
+                        arm.push((
+                            timers.forward_delay,
+                            Timer::StpForward {
+                                vlan,
+                                port: *port,
+                                token: p.token,
+                            },
+                        ));
                         changed = true;
                     }
                 }
@@ -354,7 +449,9 @@ impl Node {
     /// Transmit this bridge's BPDU on the designated ports of a VLAN (or one port).
     fn stp_send(&mut self, fx: &mut Fx, vlan: u16, only: Option<IfId>) {
         let own = self.bridge_id(vlan);
-        let Some(instance) = self.stp.vlans.get(&vlan) else { return };
+        let Some(instance) = self.stp.vlans.get(&vlan) else {
+            return;
+        };
         let targets: Vec<(IfId, bool)> = instance
             .ports
             .iter()
@@ -363,15 +460,27 @@ impl Node {
             .collect();
         let (root, cost) = (instance.root, instance.root_cost);
         for (port, topology_change) in targets {
-            let Some(sw) = self.cfg.iface(port).and_then(|c| c.l2.as_ref()) else { continue };
+            let Some(sw) = self.cfg.iface(port).and_then(|c| c.l2.as_ref()) else {
+                continue;
+            };
             let tag = (self.is_trunk(port) && sw.native_vlan != vlan).then_some(vlan);
-            let bpdu = Bpdu { vlan, root, cost, bridge: own, port: self.stp_port_id(port), topology_change };
+            let bpdu = Bpdu {
+                vlan,
+                root,
+                cost,
+                bridge: own,
+                port: self.stp_port_id(port),
+                topology_change,
+            };
             let mut frame = Frame {
                 src: self.mac_for(port),
                 dst: MAC_PVST,
                 tag,
                 body: Body::Bpdu(bpdu),
-                meta: Meta { pdu: fx.new_pdu(), ..Meta::default() },
+                meta: Meta {
+                    pdu: fx.new_pdu(),
+                    ..Meta::default()
+                },
             };
             frame.meta.via = fx.note(self.id, crate::api::PacketEventKind::Created, &frame, Some(port), None, || {
                 format!(
@@ -384,9 +493,22 @@ impl Node {
     }
 
     /// A BPDU arrived on layer-2 port `port` (physical member `phys`).
-    pub(crate) fn stp_rx(&mut self, fx: &mut Fx, port: IfId, phys: IfId, bpdu: Bpdu, frame: &Frame) {
-        let Some(sw) = self.cfg.iface(port).and_then(|c| c.l2.as_ref()) else { return };
-        let vlan = if self.is_trunk(port) { frame.tag.unwrap_or(sw.native_vlan) } else { sw.access_vlan };
+    pub(crate) fn stp_rx(
+        &mut self,
+        fx: &mut Fx,
+        port: IfId,
+        phys: IfId,
+        bpdu: Bpdu,
+        frame: &Frame,
+    ) {
+        let Some(sw) = self.cfg.iface(port).and_then(|c| c.l2.as_ref()) else {
+            return;
+        };
+        let vlan = if self.is_trunk(port) {
+            frame.tag.unwrap_or(sw.native_vlan)
+        } else {
+            sw.access_vlan
+        };
         if self.stp_bpduguard(port) {
             let short = phys.short();
             self.log(
@@ -401,7 +523,9 @@ impl Node {
                 4,
                 "PM",
                 "ERR_DISABLE",
-                format!("bpduguard error detected on {short}, putting {short} in err-disable state"),
+                format!(
+                    "bpduguard error detected on {short}, putting {short} in err-disable state"
+                ),
             );
             if let Some(state) = self.ifs.get_mut(&phys) {
                 state.errdisabled = Some("bpduguard");
@@ -417,15 +541,30 @@ impl Node {
         let own = self.bridge_id(vlan);
         let own_port_id = self.stp_port_id(port);
         let timers = self.stp_timers(fx);
-        let Some(instance) = self.stp.vlans.get_mut(&vlan) else { return };
+        let Some(instance) = self.stp.vlans.get_mut(&vlan) else {
+            return;
+        };
         let (root, root_cost) = (instance.root, instance.root_cost);
-        let Some(p) = instance.ports.get_mut(&port) else { return };
-        let heard = Vector { root: bpdu.root, cost: bpdu.cost, bridge: bpdu.bridge, port: bpdu.port };
+        let Some(p) = instance.ports.get_mut(&port) else {
+            return;
+        };
+        let heard = Vector {
+            root: bpdu.root,
+            cost: bpdu.cost,
+            bridge: bpdu.bridge,
+            port: bpdu.port,
+        };
         // A port that hears a BPDU is not an edge port, whatever the configuration says.
         p.edge = false;
         p.heard = Some((heard, fx.now.saturating_add(timers.max_age)));
-        let accepts_tc = matches!(p.role, PortRole::Root | PortRole::Designated) && p.state == PortState::Forwarding;
-        let ours = Vector { root, cost: root_cost, bridge: own, port: own_port_id };
+        let accepts_tc = matches!(p.role, PortRole::Root | PortRole::Designated)
+            && p.state == PortState::Forwarding;
+        let ours = Vector {
+            root,
+            cost: root_cost,
+            bridge: own,
+            port: own_port_id,
+        };
         fx.note(self.id, crate::api::PacketEventKind::Delivered, frame, Some(port), None, || {
             format!(
                 "The switch compares the BPDU (root {}, cost {}) with its own information for VLAN {vlan} (root {root}, cost {root_cost}): the neighbour's is {}.",
@@ -439,8 +578,12 @@ impl Node {
         }
         self.stp_recompute(fx, vlan, false);
         // Still designated after hearing a worse BPDU: answer so the neighbour learns.
-        let still_designated =
-            self.stp.vlans.get(&vlan).and_then(|v| v.ports.get(&port)).is_some_and(|p| p.role == PortRole::Designated);
+        let still_designated = self
+            .stp
+            .vlans
+            .get(&vlan)
+            .and_then(|v| v.ports.get(&port))
+            .is_some_and(|p| p.role == PortRole::Designated);
         if still_designated && ours < heard {
             self.stp_send(fx, vlan, Some(port));
         }
@@ -451,7 +594,9 @@ impl Node {
     fn stp_topology_change(&mut self, fx: &mut Fx, vlan: u16, from: Option<IfId>) {
         self.macs.flush_vlan(vlan, from);
         let hello = self.stp_timers(fx).hello;
-        let Some(instance) = self.stp.vlans.get_mut(&vlan) else { return };
+        let Some(instance) = self.stp.vlans.get_mut(&vlan) else {
+            return;
+        };
         if from.is_none() {
             instance.topology_changes += 1;
             instance.last_change = Some(fx.now);
@@ -495,7 +640,14 @@ impl Node {
     /// Listening → learning → forwarding.
     pub(crate) fn stp_forward_timer(&mut self, fx: &mut Fx, vlan: u16, port: IfId, token: u32) {
         let delay = self.stp_timers(fx).forward_delay;
-        let Some(p) = self.stp.vlans.get_mut(&vlan).and_then(|v| v.ports.get_mut(&port)) else { return };
+        let Some(p) = self
+            .stp
+            .vlans
+            .get_mut(&vlan)
+            .and_then(|v| v.ports.get_mut(&port))
+        else {
+            return;
+        };
         if p.token != token {
             return;
         }

@@ -16,17 +16,32 @@ pub(crate) fn arp(node: &Node, now: SimTime) -> String {
     let mut rows: Vec<(Ipv4Addr, String, String, String)> = Vec::new();
     for (iface, addr) in &node.rib.addrs {
         if iface.kind != crate::ifname::IfKind::Loopback {
-            rows.push((addr.ip, "-".to_string(), node.mac_for(*iface).to_string(), iface.name()));
+            rows.push((
+                addr.ip,
+                "-".to_string(),
+                node.mac_for(*iface).to_string(),
+                iface.name(),
+            ));
         }
     }
     for (ip, entry) in node.arp.rows(now) {
         let minutes = now.saturating_sub(entry.learned) / 60_000_000;
-        rows.push((ip, minutes.to_string(), entry.mac.to_string(), entry.iface.name()));
+        rows.push((
+            ip,
+            minutes.to_string(),
+            entry.mac.to_string(),
+            entry.iface.name(),
+        ));
     }
     rows.sort_by_key(|(ip, ..)| *ip);
-    let mut out = String::from("Protocol  Address          Age (min)  Hardware Addr   Type   Interface\n");
+    let mut out =
+        String::from("Protocol  Address          Age (min)  Hardware Addr   Type   Interface\n");
     for (ip, age, mac, iface) in rows {
-        let _ = writeln!(out, "Internet  {:<15}{age:>11}  {mac}  ARPA   {iface}", ip.to_string());
+        let _ = writeln!(
+            out,
+            "Internet  {:<15}{age:>11}  {mac}  ARPA   {iface}",
+            ip.to_string()
+        );
     }
     out
 }
@@ -42,18 +57,6 @@ const CODES: &str = "Codes: L - local, C - connected, S - static, R - RIP, M - m
        + - replicated route, % - next hop override, p - overrides from PfR
 ";
 
-/// Route code with the candidate-default star where it belongs: `S*`, `O*E2`.
-fn code(route: &Route) -> String {
-    let base = route.source.code();
-    if route.prefix.len != 0 {
-        return base.to_string();
-    }
-    match base.split_once(' ') {
-        Some((head, tail)) => format!("{head}*{tail}"),
-        None => format!("{base}*"),
-    }
-}
-
 /// What follows the prefix on a route line, one string per next hop.
 fn hops(route: &Route, now: SimTime) -> Vec<String> {
     let age = age_compact(now.saturating_sub(route.since));
@@ -61,24 +64,46 @@ fn hops(route: &Route, now: SimTime) -> Vec<String> {
         .hops
         .iter()
         .map(|hop| match (route.source, hop.via, hop.iface) {
-            (Source::Connected | Source::Local, _, Some(iface)) => format!("is directly connected, {}", iface.name()),
-            (Source::Static, None, Some(iface)) => format!("is directly connected, {}", iface.name()),
+            (Source::Connected | Source::Local, _, Some(iface)) => {
+                format!("is directly connected, {}", iface.name())
+            }
+            (Source::Static, None, Some(iface)) => {
+                format!("is directly connected, {}", iface.name())
+            }
             (Source::Static, Some(via), Some(iface)) => {
-                format!("[{}/{}] via {via}, {}", route.distance, route.metric, iface.name())
+                format!(
+                    "[{}/{}] via {via}, {}",
+                    route.distance,
+                    route.metric,
+                    iface.name()
+                )
             }
-            (Source::Static, Some(via), None) => format!("[{}/{}] via {via}", route.distance, route.metric),
+            (Source::Static, Some(via), None) => {
+                format!("[{}/{}] via {via}", route.distance, route.metric)
+            }
             (_, Some(via), Some(iface)) => {
-                format!("[{}/{}] via {via}, {age}, {}", route.distance, route.metric, iface.name())
+                format!(
+                    "[{}/{}] via {via}, {age}, {}",
+                    route.distance,
+                    route.metric,
+                    iface.name()
+                )
             }
-            (_, Some(via), None) => format!("[{}/{}] via {via}, {age}", route.distance, route.metric),
+            (_, Some(via), None) => {
+                format!("[{}/{}] via {via}, {age}", route.distance, route.metric)
+            }
             (_, None, _) => "is directly connected".to_string(),
         })
         .collect()
 }
 
 fn route_lines(out: &mut String, route: &Route, now: SimTime, code_width: usize, with_len: bool) {
-    let prefix = if with_len { route.prefix.to_string() } else { route.prefix.net.to_string() };
-    let head = format!("{:<code_width$}{prefix} ", code(route));
+    let prefix = if with_len {
+        route.prefix.to_string()
+    } else {
+        route.prefix.net.to_string()
+    };
+    let head = format!("{:<code_width$}{prefix} ", route.code());
     for (index, hop) in hops(route, now).iter().enumerate() {
         if index == 0 {
             let _ = writeln!(out, "{head}{hop}");
@@ -98,7 +123,10 @@ fn wanted(route: &Route, a: &Args) -> bool {
 pub(crate) fn ip_route(node: &Node, now: SimTime, a: &Args) -> String {
     if !node.routes_packets() {
         // A layer-2 switch has no routing table, only a default gateway.
-        let gateway = node.cfg.default_gateway.map_or("not set".to_string(), |g| g.to_string());
+        let gateway = node
+            .cfg
+            .default_gateway
+            .map_or("not set".to_string(), |g| g.to_string());
         return format!(
             "Default gateway is {gateway}\n\nHost               Gateway           Last Use    Total Uses  Interface\nICMP redirect cache is empty\n"
         );
@@ -132,8 +160,11 @@ pub(crate) fn ip_route(node: &Node, now: SimTime, a: &Args) -> String {
             index += 1;
             continue;
         }
-        let group: Vec<&Route> =
-            routes[index..].iter().copied().take_while(|r| r.prefix.len >= major.len && major.contains(r.prefix.net)).collect();
+        let group: Vec<&Route> = routes[index..]
+            .iter()
+            .copied()
+            .take_while(|r| r.prefix.len >= major.len && major.contains(r.prefix.net))
+            .collect();
         index += group.len();
         // The heading describes the whole major network even when a filter
         // (`show ip route static`) hides some of its subnets.
@@ -149,7 +180,13 @@ pub(crate) fn ip_route(node: &Node, now: SimTime, a: &Args) -> String {
         masks.sort_unstable();
         masks.dedup();
         if masks.len() == 1 {
-            let _ = writeln!(out, "      {}/{} is subnetted, {} subnets", major.net, masks[0], group.len());
+            let _ = writeln!(
+                out,
+                "      {}/{} is subnetted, {} subnets",
+                major.net,
+                masks[0],
+                group.len()
+            );
         } else {
             let _ = writeln!(
                 out,
@@ -193,14 +230,25 @@ fn route_detail(node: &Node, now: SimTime, ip: Ipv4Addr) -> String {
         _ => "",
     };
     let known = if matches!(route.source, Source::Connected | Source::Local) {
-        format!("  Known via \"connected\", distance 0, metric 0 (connected{})", if route.source == Source::Local { ", via interface" } else { ", via interface" })
+        format!(
+            "  Known via \"connected\", distance 0, metric 0 (connected{})",
+            if route.source == Source::Local {
+                ", via interface"
+            } else {
+                ", via interface"
+            }
+        )
     } else {
         format!(
             "  Known via \"{}\", distance {}, metric {}{}{kind}",
             source_name(node, route.source),
             route.distance,
             route.metric,
-            if route.prefix.len == 0 { ", candidate default path" } else { "" }
+            if route.prefix.len == 0 {
+                ", candidate default path"
+            } else {
+                ""
+            }
         )
     };
     let _ = writeln!(out, "{known}");
@@ -218,31 +266,53 @@ fn route_detail(node: &Node, now: SimTime, ip: Ipv4Addr) -> String {
             }
             (None, None) => {}
         }
-        let _ = writeln!(out, "      Route metric is {}, traffic share count is 1", route.metric);
+        let _ = writeln!(
+            out,
+            "      Route metric is {}, traffic share count is 1",
+            route.metric
+        );
     }
     out
 }
 
 fn route_summary(node: &Node) -> String {
-    let mut out = String::from("IP routing table name is default (0x0)\nIP routing table maximum-paths is 32\n");
-    out.push_str("Route Source    Networks    Subnets     Replicates  Overhead    Memory (bytes)\n");
+    let mut out = String::from(
+        "IP routing table name is default (0x0)\nIP routing table maximum-paths is 32\n",
+    );
+    out.push_str(
+        "Route Source    Networks    Subnets     Replicates  Overhead    Memory (bytes)\n",
+    );
     let mut totals = (0usize, 0usize);
     let sources: [(&str, &dyn Fn(Source) -> bool); 4] = [
-        ("connected", &|s| matches!(s, Source::Connected | Source::Local)),
+        ("connected", &|s| {
+            matches!(s, Source::Connected | Source::Local)
+        }),
         ("static", &|s| s == Source::Static),
         ("ospf", &|s| s.is_ospf()),
         ("rip", &|s| s == Source::Rip),
     ];
     for (name, matches) in sources {
-        let routes: Vec<&Route> = node.rib.routes.iter().filter(|r| matches(r.source)).collect();
+        let routes: Vec<&Route> = node
+            .rib
+            .routes
+            .iter()
+            .filter(|r| matches(r.source))
+            .collect();
         if routes.is_empty() && matches!(name, "ospf" | "rip") {
             continue;
         }
-        let networks = routes.iter().filter(|r| r.prefix.len <= Prefix::classful(r.prefix.net).len).count();
+        let networks = routes
+            .iter()
+            .filter(|r| r.prefix.len <= Prefix::classful(r.prefix.net).len)
+            .count();
         let subnets = routes.len() - networks;
         totals.0 += networks;
         totals.1 += subnets;
-        let label = if name == "ospf" { source_name(node, Source::OspfIntra) } else { name.to_string() };
+        let label = if name == "ospf" {
+            source_name(node, Source::OspfIntra)
+        } else {
+            name.to_string()
+        };
         let _ = writeln!(
             out,
             "{label:<16}{networks:<12}{subnets:<12}{:<12}{:<12}{}",
@@ -262,8 +332,21 @@ fn route_summary(node: &Node) -> String {
         }
     }
     let all = totals.0 + totals.1;
-    let _ = writeln!(out, "{:<16}{:<12}{:<12}{:<12}{:<12}{}", "internal", 1, "", "", "", 1416);
-    let _ = writeln!(out, "{:<16}{:<12}{:<12}{:<12}{:<12}{}", "Total", totals.0 + 1, totals.1, 0, all * 96, all * 304 + 1416);
+    let _ = writeln!(
+        out,
+        "{:<16}{:<12}{:<12}{:<12}{:<12}{}",
+        "internal", 1, "", "", "", 1416
+    );
+    let _ = writeln!(
+        out,
+        "{:<16}{:<12}{:<12}{:<12}{:<12}{}",
+        "Total",
+        totals.0 + 1,
+        totals.1,
+        0,
+        all * 96,
+        all * 304 + 1416
+    );
     out
 }
 
@@ -272,14 +355,19 @@ pub(crate) fn ip_protocols(node: &Node, now: SimTime) -> String {
     if node.routes_packets() {
         out.push_str("*** IP Routing is NSF aware ***\n\n");
     }
-    out.push_str(&crate::sim::ospf::show_protocols(node, now));
-    out.push_str(&crate::sim::rip::show_protocols(node, now));
+    out.push_str(&super::protocols::ospf_protocols(node, now));
+    out.push_str(&super::protocols::rip_protocols(node, now));
     out
 }
 
 pub(crate) fn access_lists(node: &Node, only: Option<&str>) -> String {
     let mut out = String::new();
-    for acl in node.cfg.acls.iter().filter(|acl| only.is_none_or(|name| acl.name == name)) {
+    for acl in node
+        .cfg
+        .acls
+        .iter()
+        .filter(|acl| only.is_none_or(|name| acl.name == name))
+    {
         let _ = writeln!(
             out,
             "{} IP access list {}",
@@ -293,7 +381,12 @@ pub(crate) fn access_lists(node: &Node, only: Option<&str>) -> String {
                 1 => " (1 match)".to_string(),
                 n => format!(" ({n} matches)"),
             };
-            let _ = writeln!(out, "    {} {}{matched}", rule.seq, rule_show_text(rule, acl.extended));
+            let _ = writeln!(
+                out,
+                "    {} {}{matched}",
+                rule.seq,
+                rule_show_text(rule, acl.extended)
+            );
         }
     }
     out

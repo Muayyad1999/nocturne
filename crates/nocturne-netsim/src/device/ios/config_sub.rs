@@ -4,8 +4,8 @@
 use crate::device::cli::LineId;
 use crate::device::cli::grammar::Args;
 use crate::device::config::{
-    AclItem, AclProto, AclRule, AddrSpec, Area, IcmpClass, Lease, LineConfig, LoginMode, OspfNetwork, PortSpec, Transport,
-    Vlan,
+    AclItem, AclProto, AclRule, AddrSpec, Area, IcmpClass, Lease, LineConfig, LoginMode,
+    OspfNetwork, PortSpec, Transport, Vlan,
 };
 use crate::device::ios::config::{selected_lines, sync_vlan_dat, typed_secret};
 use crate::device::ios::{Cx, Mode, Table, c, n};
@@ -23,7 +23,14 @@ fn end(cx: &mut Cx, _: &Args) {
 }
 
 fn common() -> Table {
-    vec![c("exit", "Exit from the current configuration mode", exit_to_config), c("end", "Exit from configure mode", end)]
+    vec![
+        c(
+            "exit",
+            "Exit from the current configuration mode",
+            exit_to_config,
+        ),
+        c("end", "Exit from configure mode", end),
+    ]
 }
 
 // -------------------------------------------------------------------- VLAN
@@ -31,33 +38,54 @@ fn common() -> Table {
 pub(crate) fn vlan_table() -> Table {
     let mut t = common();
     t.extend(vec![
-        n("name ~ <word:name;The ascii name for the VLAN>", "Ascii name of the VLAN", |cx, a| {
-            let Mode::Vlan(ids) = cx.sh.mode.clone() else { return };
-            if ids.len() > 1 && !a.no {
-                return cx.fail("%Command is only allowed on a single VLAN.");
-            }
-            let name = a.text("name").map(str::to_string);
-            if let Some(name) = &name
-                && cx.n.cfg.vlans.iter().any(|(id, v)| v.name == *name && !ids.contains(id))
-            {
-                return cx.fail(format!("%VLAN name {name} is already in use."));
-            }
-            for id in ids {
-                if let Some(vlan) = cx.cfg().vlans.get_mut(&id) {
-                    vlan.name = if a.no { Vlan::default_name(id) } else { name.clone().unwrap_or_default() };
+        n(
+            "name ~ <word:name;The ascii name for the VLAN>",
+            "Ascii name of the VLAN",
+            |cx, a| {
+                let Mode::Vlan(ids) = cx.sh.mode.clone() else {
+                    return;
+                };
+                if ids.len() > 1 && !a.no {
+                    return cx.fail("%Command is only allowed on a single VLAN.");
                 }
-            }
-            sync_vlan_dat(cx);
-        }),
-        n("state ~ (active | suspend)", "Operational state of the VLAN", |cx, a| {
-            let Mode::Vlan(ids) = cx.sh.mode.clone() else { return };
-            for id in ids {
-                if let Some(vlan) = cx.cfg().vlans.get_mut(&id) {
-                    vlan.active = a.no || !a.has("suspend");
+                let name = a.text("name").map(str::to_string);
+                if let Some(name) = &name
+                    && cx
+                        .n
+                        .cfg
+                        .vlans
+                        .iter()
+                        .any(|(id, v)| v.name == *name && !ids.contains(id))
+                {
+                    return cx.fail(format!("%VLAN name {name} is already in use."));
                 }
-            }
-            sync_vlan_dat(cx);
-        }),
+                for id in ids {
+                    if let Some(vlan) = cx.cfg().vlans.get_mut(&id) {
+                        vlan.name = if a.no {
+                            Vlan::default_name(id)
+                        } else {
+                            name.clone().unwrap_or_default()
+                        };
+                    }
+                }
+                sync_vlan_dat(cx);
+            },
+        ),
+        n(
+            "state ~ (active | suspend)",
+            "Operational state of the VLAN",
+            |cx, a| {
+                let Mode::Vlan(ids) = cx.sh.mode.clone() else {
+                    return;
+                };
+                for id in ids {
+                    if let Some(vlan) = cx.cfg().vlans.get_mut(&id) {
+                        vlan.active = a.no || !a.has("suspend");
+                    }
+                }
+                sync_vlan_dat(cx);
+            },
+        ),
     ]);
     t
 }
@@ -208,7 +236,10 @@ pub(crate) fn ospf_table() -> Table {
             if let Some(ospf) = cx.cfg().ospf.as_mut() {
                 ospf.router_id = id;
             }
-            if !a.no {
+            // A process that already has neighbours keeps its identity until it is reset.
+            if cx.n.ospf.ifaces.values().all(|state| state.neighbors.is_empty()) {
+                cx.n.ospf.router_id = None;
+            } else if !a.no {
                 cx.say("% OSPF: Reload or use \"clear ip ospf process\" command, for this to take effect");
             }
         }),
@@ -260,33 +291,61 @@ pub(crate) fn ospf_table() -> Table {
 pub(crate) fn rip_table() -> Table {
     let mut t = common();
     t.extend(vec![
-        n("version ~ <1-2:version>", "Set routing protocol version", |cx, a| {
-            let version = if a.no { None } else { a.num("version").map(|v| v as u8) };
-            if let Some(rip) = cx.cfg().rip.as_mut() {
-                rip.version = version;
-            }
-        }),
-        n("network <ip:network;Network number>", "Enable routing on an IP network", |cx, a| {
-            let Some(network) = a.ip("network") else { return };
-            // RIP networks are classful.
-            let network = Prefix::classful(network).net;
-            let Some(rip) = cx.cfg().rip.as_mut() else { return };
-            rip.networks.retain(|n| *n != network);
-            if !a.no {
-                rip.networks.push(network);
-            }
-        }),
-        n("auto-summary", "Enable automatic network number summarization", |cx, a| {
-            if let Some(rip) = cx.cfg().rip.as_mut() {
-                rip.auto_summary = !a.no;
-            }
-        }),
-        n("passive-interface (default | <if>)", "Suppress routing updates on an interface", |cx, a| passive_interface(cx, a, false)),
-        n("default-information originate", "Control distribution of default information", |cx, a| {
-            if let Some(rip) = cx.cfg().rip.as_mut() {
-                rip.default_originate = !a.no;
-            }
-        }),
+        n(
+            "version ~ <1-2:version>",
+            "Set routing protocol version",
+            |cx, a| {
+                let version = if a.no {
+                    None
+                } else {
+                    a.num("version").map(|v| v as u8)
+                };
+                if let Some(rip) = cx.cfg().rip.as_mut() {
+                    rip.version = version;
+                }
+            },
+        ),
+        n(
+            "network <ip:network;Network number>",
+            "Enable routing on an IP network",
+            |cx, a| {
+                let Some(network) = a.ip("network") else {
+                    return;
+                };
+                // RIP networks are classful.
+                let network = Prefix::classful(network).net;
+                let Some(rip) = cx.cfg().rip.as_mut() else {
+                    return;
+                };
+                rip.networks.retain(|n| *n != network);
+                if !a.no {
+                    rip.networks.push(network);
+                }
+            },
+        ),
+        n(
+            "auto-summary",
+            "Enable automatic network number summarization",
+            |cx, a| {
+                if let Some(rip) = cx.cfg().rip.as_mut() {
+                    rip.auto_summary = !a.no;
+                }
+            },
+        ),
+        n(
+            "passive-interface (default | <if>)",
+            "Suppress routing updates on an interface",
+            |cx, a| passive_interface(cx, a, false),
+        ),
+        n(
+            "default-information originate",
+            "Control distribution of default information",
+            |cx, a| {
+                if let Some(rip) = cx.cfg().rip.as_mut() {
+                    rip.default_originate = !a.no;
+                }
+            },
+        ),
     ]);
     t
 }
@@ -295,7 +354,9 @@ pub(crate) fn rip_table() -> Table {
 
 pub(crate) fn dhcp_table() -> Table {
     fn pool<'c>(cx: &'c mut Cx) -> Option<&'c mut crate::device::config::DhcpPool> {
-        let Mode::DhcpPool(name) = cx.sh.mode.clone() else { return None };
+        let Mode::DhcpPool(name) = cx.sh.mode.clone() else {
+            return None;
+        };
         cx.cfg().dhcp_pools.iter_mut().find(|p| p.name == name)
     }
     let mut t = common();
@@ -380,29 +441,45 @@ pub(crate) fn acl_table(extended: bool) -> Table {
         );
         t.push(n(entry, "Specify packets to forward or reject", acl_entry));
     } else {
-        t.push(n(STANDARD_ENTRY, "Specify packets to forward or reject", acl_entry));
+        t.push(n(
+            STANDARD_ENTRY,
+            "Specify packets to forward or reject",
+            acl_entry,
+        ));
     }
-    t.push(n("remark <line:text;Comment up to 100 characters>", "Access list entry comment", |cx, a| {
-        let Some(name) = acl_name(cx) else { return };
-        let text = a.text("text").unwrap_or("").to_string();
-        let Some(acl) = cx.cfg().acl_mut(&name) else { return };
-        acl.items.retain(|item| !matches!(item, AclItem::Remark(t) if *t == text));
-        if !a.no {
-            acl.items.push(AclItem::Remark(text));
-        }
-    }));
-    t.push(n("<1-2147483647:seq;Sequence number of the entry to delete>", "", |cx, a| {
-        // Only meaningful as `no 20`: delete entry 20.
-        if !a.no {
-            return cx.invalid();
-        }
-        let Some(name) = acl_name(cx) else { return };
-        let seq = a.num("seq").unwrap_or(0) as u32;
-        if let Some(acl) = cx.cfg().acl_mut(&name) {
-            acl.items.retain(|item| !matches!(item, AclItem::Rule(r) if r.seq == seq));
-        }
-        cx.n.acl_hits.remove(&(name, seq));
-    }));
+    t.push(n(
+        "remark <line:text;Comment up to 100 characters>",
+        "Access list entry comment",
+        |cx, a| {
+            let Some(name) = acl_name(cx) else { return };
+            let text = a.text("text").unwrap_or("").to_string();
+            let Some(acl) = cx.cfg().acl_mut(&name) else {
+                return;
+            };
+            acl.items
+                .retain(|item| !matches!(item, AclItem::Remark(t) if *t == text));
+            if !a.no {
+                acl.items.push(AclItem::Remark(text));
+            }
+        },
+    ));
+    t.push(n(
+        "<1-2147483647:seq;Sequence number of the entry to delete>",
+        "",
+        |cx, a| {
+            // Only meaningful as `no 20`: delete entry 20.
+            if !a.no {
+                return cx.invalid();
+            }
+            let Some(name) = acl_name(cx) else { return };
+            let seq = a.num("seq").unwrap_or(0) as u32;
+            if let Some(acl) = cx.cfg().acl_mut(&name) {
+                acl.items
+                    .retain(|item| !matches!(item, AclItem::Rule(r) if r.seq == seq));
+            }
+            cx.n.acl_hits.remove(&(name, seq));
+        },
+    ));
     t
 }
 
@@ -415,15 +492,25 @@ fn acl_name(cx: &Cx) -> Option<String> {
 }
 
 /// Build a port match from the operator keyword and the typed port(s).
-fn port_spec(a: &Args, proto: AclProto, which: &str, operator: Option<&str>) -> Result<Option<PortSpec>, ()> {
-    let Some(first) = a.text(which) else { return Ok(None) };
+fn port_spec(
+    a: &Args,
+    proto: AclProto,
+    which: &str,
+    operator: Option<&str>,
+) -> Result<Option<PortSpec>, ()> {
+    let Some(first) = a.text(which) else {
+        return Ok(None);
+    };
     if !matches!(proto, AclProto::Tcp | AclProto::Udp) {
         return Err(());
     }
     let port = parse_port(proto, first).ok_or(())?;
     Ok(Some(match operator {
         Some("range") => {
-            let end = a.text(&format!("{which}_end")).and_then(|t| parse_port(proto, t)).ok_or(())?;
+            let end = a
+                .text(&format!("{which}_end"))
+                .and_then(|t| parse_port(proto, t))
+                .ok_or(())?;
             PortSpec::Range(port.min(end), port.max(end))
         }
         Some("neq") => PortSpec::Neq(port),
@@ -436,9 +523,10 @@ fn port_spec(a: &Args, proto: AclProto, which: &str, operator: Option<&str>) -> 
 fn addr_spec(a: &Args, addr: &str, wildcard: &str) -> AddrSpec {
     match (a.ip(addr), a.ip(wildcard)) {
         (Some(ip), Some(wildcard)) if u32::from(wildcard) == 0 => AddrSpec::Host(ip),
-        (Some(ip), Some(wildcard)) => {
-            AddrSpec::Net(std::net::Ipv4Addr::from(u32::from(ip) & !u32::from(wildcard)), wildcard)
-        }
+        (Some(ip), Some(wildcard)) => AddrSpec::Net(
+            std::net::Ipv4Addr::from(u32::from(ip) & !u32::from(wildcard)),
+            wildcard,
+        ),
         // `host A`, or a bare address in a standard list: one host.
         (Some(ip), None) => AddrSpec::Host(ip),
         (None, _) => AddrSpec::Any,
@@ -458,11 +546,23 @@ fn acl_entry(cx: &mut Cx, a: &Args) {
     };
     // Operator keywords come in typing order: the source port's (if a source
     // port was given) before the destination port's.
-    let operators: Vec<&str> = a.keywords().iter().copied().filter(|k| OPERATORS.contains(k)).collect();
+    let operators: Vec<&str> = a
+        .keywords()
+        .iter()
+        .copied()
+        .filter(|k| OPERATORS.contains(k))
+        .collect();
     let has_sport = a.text("sport").is_some();
-    let sport_op = if has_sport { operators.first().copied() } else { None };
+    let sport_op = if has_sport {
+        operators.first().copied()
+    } else {
+        None
+    };
     let dport_op = operators.get(usize::from(has_sport)).copied();
-    let (Ok(sport), Ok(dport)) = (port_spec(a, proto, "sport", sport_op), port_spec(a, proto, "dport", dport_op)) else {
+    let (Ok(sport), Ok(dport)) = (
+        port_spec(a, proto, "sport", sport_op),
+        port_spec(a, proto, "dport", dport_op),
+    ) else {
         return cx.invalid();
     };
     let icmp = [
@@ -489,8 +589,18 @@ fn acl_entry(cx: &mut Cx, a: &Args) {
         established: a.has("established"),
         log: a.has("log"),
     };
-    let Some(acl) = cx.cfg().acl_mut(&name) else { return };
-    let same = |r: &AclRule, wanted: &AclRule| AclRule { seq: 0, ..r.clone() } == AclRule { seq: 0, ..wanted.clone() };
+    let Some(acl) = cx.cfg().acl_mut(&name) else {
+        return;
+    };
+    let same = |r: &AclRule, wanted: &AclRule| {
+        AclRule {
+            seq: 0,
+            ..r.clone()
+        } == AclRule {
+            seq: 0,
+            ..wanted.clone()
+        }
+    };
     if a.no {
         // `no permit ...` removes the entry with the same definition.
         acl.items.retain(|item| !matches!(item, AclItem::Rule(r) if same(r, &rule) || (rule.seq != 0 && r.seq == rule.seq)));

@@ -15,18 +15,51 @@ use crate::sim::frame::Frame;
 #[derive(Clone, Debug)]
 pub(crate) enum Timer {
     StpHello,
-    StpForward { vlan: u16, port: IfId, token: u32 },
+    StpForward {
+        vlan: u16,
+        port: IfId,
+        token: u32,
+    },
     /// Periodic CDP/LLDP advertisement.
     Advert,
-    Proc { id: u32, token: u32 },
-    DhcpClient { iface: IfId, token: u32 },
-    OspfHello { iface: IfId, token: u32 },
+    Proc {
+        id: u32,
+        token: u32,
+    },
+    DhcpClient {
+        iface: IfId,
+        token: u32,
+    },
+    /// A DHCP client is still looking for its default gateway.
+    GatewayProbe {
+        iface: IfId,
+        token: u32,
+        left: u8,
+    },
+    OspfHello {
+        iface: IfId,
+        token: u32,
+    },
     /// Adjacency progress or dead-interval check for one neighbour.
-    OspfNeighbor { iface: IfId, router_id: Ipv4Addr, token: u32 },
-    OspfWait { iface: IfId, token: u32 },
-    RipUpdate { token: u32 },
+    OspfNeighbor {
+        iface: IfId,
+        router_id: Ipv4Addr,
+        token: u32,
+        dead: bool,
+    },
+    OspfWait {
+        iface: IfId,
+        token: u32,
+    },
+    RipUpdate {
+        token: u32,
+    },
     RipTriggered,
-    Hsrp { iface: IfId, group: u16, token: u32 },
+    Hsrp {
+        iface: IfId,
+        group: u16,
+        token: u32,
+    },
 }
 
 /// How much a dropped frame says about why a traced PDU failed.
@@ -79,7 +112,14 @@ pub(crate) struct Fx {
 }
 
 impl Fx {
-    pub(crate) fn new(now: SimTime, realistic: bool, seed: u64, capture: bool, seq_base: u32, pdu_base: u64) -> Fx {
+    pub(crate) fn new(
+        now: SimTime,
+        realistic: bool,
+        seed: u64,
+        capture: bool,
+        seq_base: u32,
+        pdu_base: u64,
+    ) -> Fx {
         Fx {
             now,
             realistic,
@@ -131,7 +171,10 @@ impl Fx {
         if !self.watching(frame) {
             return frame.meta.via;
         }
-        let seq = self.seq_base.wrapping_add(self.notes.len() as u32).wrapping_add(1);
+        let seq = self
+            .seq_base
+            .wrapping_add(self.notes.len() as u32)
+            .wrapping_add(1);
         self.notes.push(Note {
             event: PacketEvent {
                 trace: frame.meta.trace,
@@ -155,7 +198,21 @@ impl Fx {
     }
 
     /// Shorthand for a `Dropped` event.
-    pub(crate) fn dropped(&mut self, node: NodeId, frame: &Frame, iface: Option<IfId>, why: Why, decision: impl FnOnce() -> String) {
-        self.note(node, PacketEventKind::Dropped, frame, iface, Some(why), decision);
+    pub(crate) fn dropped(
+        &mut self,
+        node: NodeId,
+        frame: &Frame,
+        iface: Option<IfId>,
+        why: Why,
+        decision: impl FnOnce() -> String,
+    ) {
+        self.note(
+            node,
+            PacketEventKind::Dropped,
+            frame,
+            iface,
+            Some(why),
+            decision,
+        );
     }
 }

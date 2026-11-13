@@ -35,13 +35,18 @@ pub(crate) struct Neighbors {
     ticks: u32,
     /// Protocols that were running when last synchronised (CDP, LLDP).
     was_running: (bool, bool),
+    /// What the last advertisements said about us: name and management address.
+    announced: (String, Option<std::net::Ipv4Addr>),
 }
 
 impl Neighbors {
     /// Live entries of one protocol, ordered by local interface.
     pub(crate) fn entries(&self, lldp: bool, now: SimTime) -> Vec<&Neighbor> {
-        let mut out: Vec<&Neighbor> =
-            self.list.iter().filter(|n| n.advert.lldp == lldp && n.hold_left(now) > 0).collect();
+        let mut out: Vec<&Neighbor> = self
+            .list
+            .iter()
+            .filter(|n| n.advert.lldp == lldp && n.hold_left(now) > 0)
+            .collect();
         out.sort_by_key(|n| n.local);
         out
     }
@@ -58,7 +63,13 @@ impl Node {
             .cfg
             .iface(l2_port)
             .and_then(|c| c.l2.as_ref())
-            .map(|sw| if self.is_trunk(l2_port) { sw.native_vlan } else { sw.access_vlan });
+            .map(|sw| {
+                if self.is_trunk(l2_port) {
+                    sw.native_vlan
+                } else {
+                    sw.access_vlan
+                }
+            });
         let capabilities = match (lldp, self.role()) {
             (true, Role::Router) => "R",
             (true, Role::L2Switch) => "B",
@@ -66,7 +77,11 @@ impl Node {
             (true, _) => "S",
             (false, _) => self.model.capabilities,
         };
-        let description = self.cfg.iface(port).map(|c| c.description.clone()).filter(|d| !d.is_empty());
+        let description = self
+            .cfg
+            .iface(port)
+            .map(|c| c.description.clone())
+            .filter(|d| !d.is_empty());
         Advert {
             lldp,
             device: self.hostname().to_string(),
@@ -88,12 +103,15 @@ impl Node {
 
     fn send_adverts(&mut self, fx: &mut Fx, ports: &[IfId], cdp: bool, lldp: bool) {
         for port in ports {
-            let Some(cfg) = self.cfg.iface(*port) else { continue };
+            let Some(cfg) = self.cfg.iface(*port) else {
+                continue;
+            };
             if !port.is_physical() || !self.is_up(*port) {
                 continue;
             }
             let lldp_tx = self.cfg.lldp_run && cfg.lldp_transmit;
-            for (is_lldp, enabled) in [(false, cdp && self.cdp_on(*port)), (true, lldp && lldp_tx)] {
+            for (is_lldp, enabled) in [(false, cdp && self.cdp_on(*port)), (true, lldp && lldp_tx)]
+            {
                 if !enabled {
                     continue;
                 }
@@ -103,7 +121,10 @@ impl Node {
                     dst: if is_lldp { MAC_LLDP } else { MAC_CDP },
                     tag: None,
                     body: Body::Advert(Box::new(advert)),
-                    meta: Meta { pdu: fx.new_pdu(), ..Meta::default() },
+                    meta: Meta {
+                        pdu: fx.new_pdu(),
+                        ..Meta::default()
+                    },
                 };
                 let noun = self.noun();
                 frame.meta.via = fx.note(self.id, PacketEventKind::Created, &frame, Some(*port), None, || {
@@ -124,13 +145,33 @@ impl Node {
         if !self.model.is_network_os() {
             return;
         }
-        let up: Vec<IfId> = self.ifs.iter().filter(|(id, s)| id.is_physical() && s.up).map(|(id, _)| *id).collect();
+        let up: Vec<IfId> = self
+            .ifs
+            .iter()
+            .filter(|(id, s)| id.is_physical() && s.up)
+            .map(|(id, _)| *id)
+            .collect();
         let running = (self.cfg.cdp_run, self.cfg.lldp_run);
-        self.neighbors.list.retain(|n| up.contains(&n.local) && if n.advert.lldp { running.1 } else { running.0 });
-        // A protocol that was just switched on introduces itself everywhere.
+        self.neighbors
+            .list
+            .retain(|n| up.contains(&n.local) && if n.advert.lldp { running.1 } else { running.0 });
+        // A protocol that was just switched on introduces itself everywhere,
+        // and so does a device whose name or management address changed.
+        let identity = (self.hostname().to_string(), self.mgmt_ip());
+        let renamed =
+            std::mem::replace(&mut self.neighbors.announced, identity.clone()) != identity;
         let (was_cdp, was_lldp) = std::mem::replace(&mut self.neighbors.was_running, running);
-        self.send_adverts(fx, &up, running.0 && !was_cdp, running.1 && !was_lldp);
-        let fresh: Vec<IfId> = came_up.iter().copied().filter(|id| id.is_physical()).collect();
+        self.send_adverts(
+            fx,
+            &up,
+            running.0 && (!was_cdp || renamed),
+            running.1 && (!was_lldp || renamed),
+        );
+        let fresh: Vec<IfId> = came_up
+            .iter()
+            .copied()
+            .filter(|id| id.is_physical())
+            .collect();
         self.send_adverts(fx, &fresh, was_cdp, was_lldp);
         if !self.neighbors.armed {
             self.neighbors.armed = true;
@@ -163,7 +204,10 @@ impl Node {
         if !listening {
             let noun = self.noun();
             fx.dropped(self.id, frame, Some(port), Why::Ignored, || {
-                format!("The {noun} does not run {protocol} on {}: the advertisement is ignored.", port.short())
+                format!(
+                    "The {noun} does not run {protocol} on {}: the advertisement is ignored.",
+                    port.short()
+                )
             });
             return;
         }
@@ -175,14 +219,23 @@ impl Node {
                 port.short()
             )
         });
-        match self.neighbors.list.iter_mut().find(|n| n.advert.lldp == advert.lldp && n.local == port) {
+        match self
+            .neighbors
+            .list
+            .iter_mut()
+            .find(|n| n.advert.lldp == advert.lldp && n.local == port)
+        {
             Some(entry) => {
                 fx.changed |= entry.advert.device != advert.device;
                 entry.advert = advert.clone();
                 entry.heard = fx.now;
             }
             None => {
-                self.neighbors.list.push(Neighbor { local: port, advert: advert.clone(), heard: fx.now });
+                self.neighbors.list.push(Neighbor {
+                    local: port,
+                    advert: advert.clone(),
+                    heard: fx.now,
+                });
                 fx.changed = true;
             }
         }
@@ -206,7 +259,13 @@ impl Node {
             self.log(fx, 4, "CDP", "NATIVE_VLAN_MISMATCH", message);
         }
         if own.full_duplex != advert.full_duplex {
-            let word = |full: bool| if full { "not half duplex" } else { "half duplex" };
+            let word = |full: bool| {
+                if full {
+                    "not half duplex"
+                } else {
+                    "half duplex"
+                }
+            };
             let message = format!(
                 "duplex mismatch discovered on {} ({}), with {} {} ({}).",
                 port.name(),
@@ -229,7 +288,11 @@ impl Node {
                     device: n.advert.device.clone(),
                     remote_if: n.advert.port.clone(),
                     platform: n.advert.platform.clone(),
-                    mgmt_ip: n.advert.mgmt_ip.map(|ip| ip.to_string()).unwrap_or_default(),
+                    mgmt_ip: n
+                        .advert
+                        .mgmt_ip
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                 });
             }
         }

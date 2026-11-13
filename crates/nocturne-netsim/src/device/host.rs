@@ -44,7 +44,9 @@ impl HostShell {
 
     pub(crate) fn execute(&mut self, node: &mut Node, fx: &mut Fx, line: &str) -> Reply {
         let words: Vec<&str> = line.split_whitespace().collect();
-        let Some(command) = words.first().map(|w| w.to_ascii_lowercase()) else { return Reply::default() };
+        let Some(command) = words.first().map(|w| w.to_ascii_lowercase()) else {
+            return Reply::default();
+        };
         let args = &words[1..];
         match command.as_str() {
             "ipconfig" => ipconfig(node, fx, args),
@@ -55,25 +57,39 @@ impl HostShell {
                 host.ip = None;
                 host.mask = None;
                 host.gateway = None;
-                apply(node, host, "DHCP is now enabled; the address will be requested from the network.\n")
+                apply(
+                    node,
+                    host,
+                    "DHCP is now enabled; the address will be requested from the network.\n",
+                )
             }
             "ping" => ping(node, fx, args),
             "tracert" | "traceroute" => match args.first().and_then(|a| parse_ip(a)) {
-                Some(dst) => Reply { next: Next::Job(node.start_traceroute(fx, dst, Style::Windows)), ..Reply::default() },
+                Some(dst) => Reply {
+                    next: Next::Job(node.start_traceroute(fx, dst, Style::Windows)),
+                    ..Reply::default()
+                },
                 None => Reply::text("Usage: tracert <address>\n"),
             },
             "arp" => arp(node, fx),
-            "nslookup" => match (args.first(), node.cfg.name_servers.first()) {
-                (Some(name), Some(server)) => {
-                    Reply { next: Next::Job(node.start_lookup(fx, name, *server, None, false)), ..Reply::default() }
-                }
+            "nslookup" => match (args.first(), node.dns_server()) {
+                (Some(name), Some(server)) => Reply {
+                    next: Next::Job(node.start_lookup(fx, name, server, None, false)),
+                    ..Reply::default()
+                },
                 (Some(_), None) => Reply::text("*** No DNS server is configured on this host\n"),
                 (None, _) => Reply::text("Usage: nslookup <name>\n"),
             },
             "telnet" => match args.first().and_then(|a| parse_ip(a)) {
                 Some(dst) => {
                     let proc = node.start_connect(fx, dst, 23, Style::Windows, None);
-                    Reply { next: Next::Connect { proc, ssh_user: None }, ..Reply::default() }
+                    Reply {
+                        next: Next::Connect {
+                            proc,
+                            ssh_user: None,
+                        },
+                        ..Reply::default()
+                    }
                 }
                 None => Reply::text("Usage: telnet <address>\n"),
             },
@@ -82,7 +98,10 @@ impl HostShell {
             "hostname" => Reply::text(format!("{}\n", node.name)),
             "cls" | "clear" => Reply::text("\x1b[2J\x1b[H"),
             "help" | "?" => Reply::text(HELP),
-            "exit" | "logout" | "quit" => Reply { next: Next::Close, ..Reply::default() },
+            "exit" | "logout" | "quit" => Reply {
+                next: Next::Close,
+                ..Reply::default()
+            },
             _ => Reply {
                 out: format!(
                     "'{}' is not recognized as an internal or external command,\noperable program or batch file.\n",
@@ -98,20 +117,39 @@ impl HostShell {
 /// Store new host settings and rebuild the configuration model from them.
 fn apply(node: &mut Node, host: HostConfig, message: &str) -> Reply {
     if let Err(error) = hostcfg::validate(node.model, &host) {
-        return Reply { out: format!("{error}\n"), error: true, ..Reply::default() };
+        return Reply {
+            out: format!("{error}\n"),
+            error: true,
+            ..Reply::default()
+        };
     }
     node.host = Some(host);
     hostcfg::apply(node);
-    Reply { out: message.to_string(), touched: true, ..Reply::default() }
+    Reply {
+        out: message.to_string(),
+        touched: true,
+        ..Reply::default()
+    }
 }
 
 fn set_static(node: &mut Node, args: &[&str]) -> Reply {
-    let usage = || Reply { out: "Usage: ip <address> <mask> [gateway]\n".to_string(), error: true, ..Reply::default() };
-    let (Some(ip), Some(mask)) = (args.first().and_then(|a| parse_ip(a)), args.get(1).and_then(|a| parse_ip(a))) else {
+    let usage = || Reply {
+        out: "Usage: ip <address> <mask> [gateway]\n".to_string(),
+        error: true,
+        ..Reply::default()
+    };
+    let (Some(ip), Some(mask)) = (
+        args.first().and_then(|a| parse_ip(a)),
+        args.get(1).and_then(|a| parse_ip(a)),
+    ) else {
         return usage();
     };
     if len_from_mask(mask).is_none() {
-        return Reply { out: "Invalid subnet mask.\n".to_string(), error: true, ..Reply::default() };
+        return Reply {
+            out: "Invalid subnet mask.\n".to_string(),
+            error: true,
+            ..Reply::default()
+        };
     }
     let gateway = match args.get(2) {
         Some(text) => match parse_ip(text) {
@@ -133,7 +171,11 @@ fn ipconfig(node: &mut Node, fx: &mut Fx, args: &[&str]) -> Reply {
     match option.as_deref() {
         Some("/release") => {
             node.dhcp_release_all(fx);
-            return Reply { out: "\nWindows IP Configuration\n\nThe DHCP lease was released.\n".to_string(), touched: true, ..Reply::default() };
+            return Reply {
+                out: "\nWindows IP Configuration\n\nThe DHCP lease was released.\n".to_string(),
+                touched: true,
+                ..Reply::default()
+            };
         }
         Some("/renew") => {
             node.dhcp_release_all(fx);
@@ -144,34 +186,63 @@ fn ipconfig(node: &mut Node, fx: &mut Fx, args: &[&str]) -> Reply {
             };
         }
         Some("/all") | None => {}
-        Some(other) => return Reply { out: format!("Error: unrecognized or incomplete command line: {other}\n"), error: true, ..Reply::default() },
+        Some(other) => {
+            return Reply {
+                out: format!("Error: unrecognized or incomplete command line: {other}\n"),
+                error: true,
+                ..Reply::default()
+            };
+        }
     }
     let all = option.is_some();
     let mut out = String::from("\nWindows IP Configuration\n\n");
     if all {
         let _ = writeln!(out, "   Host Name . . . . . . . . . . . . : {}", node.name);
-        let _ = writeln!(out, "   IP Routing Enabled. . . . . . . . : {}\n", if node.routes_packets() { "Yes" } else { "No" });
+        let _ = writeln!(
+            out,
+            "   IP Routing Enabled. . . . . . . . : {}\n",
+            if node.routes_packets() { "Yes" } else { "No" }
+        );
     }
     let gateway = node.cfg.default_gateway.or(node.rib.dhcp_gateway);
     for id in node.model.ports.clone() {
-        let Some(cfg) = node.cfg.iface(id) else { continue };
+        let Some(cfg) = node.cfg.iface(id) else {
+            continue;
+        };
         let _ = writeln!(out, "\nEthernet adapter {}:\n", id.name());
         if !node.is_up(id) {
             out.push_str("   Media State . . . . . . . . . . . : Media disconnected\n");
         }
         let dhcp = cfg.addr == Some(L3Addr::Dhcp);
         if all {
-            let _ = writeln!(out, "   Description . . . . . . . . . . . : Nocturne Virtual Ethernet Adapter");
-            let _ = writeln!(out, "   Physical Address. . . . . . . . . : {}", node.mac_for(id).dashed());
-            let _ = writeln!(out, "   DHCP Enabled. . . . . . . . . . . : {}", if dhcp { "Yes" } else { "No" });
+            let _ = writeln!(
+                out,
+                "   Description . . . . . . . . . . . : Nocturne Virtual Ethernet Adapter"
+            );
+            let _ = writeln!(
+                out,
+                "   Physical Address. . . . . . . . . : {}",
+                node.mac_for(id).dashed()
+            );
+            let _ = writeln!(
+                out,
+                "   DHCP Enabled. . . . . . . . . . . : {}",
+                if dhcp { "Yes" } else { "No" }
+            );
         }
         out.push_str("   Connection-specific DNS Suffix  . :\n");
         match node.addr(id) {
             Some(addr) => {
                 let _ = writeln!(out, "   IPv4 Address. . . . . . . . . . . : {}", addr.ip);
-                let _ = writeln!(out, "   Subnet Mask . . . . . . . . . . . : {}", addr.mask());
+                let _ = writeln!(
+                    out,
+                    "   Subnet Mask . . . . . . . . . . . : {}",
+                    addr.mask()
+                );
             }
-            None if dhcp => out.push_str("   IPv4 Address. . . . . . . . . . . : (waiting for DHCP)\n"),
+            None if dhcp => {
+                out.push_str("   IPv4 Address. . . . . . . . . . . : (waiting for DHCP)\n")
+            }
             None => out.push_str("   IPv4 Address. . . . . . . . . . . : (not configured)\n"),
         }
         let _ = writeln!(
@@ -183,8 +254,18 @@ fn ipconfig(node: &mut Node, fx: &mut Fx, args: &[&str]) -> Reply {
             if let Some(server) = node.dhcp_server_of(id) {
                 let _ = writeln!(out, "   DHCP Server . . . . . . . . . . . : {server}");
             }
-            let dns: Vec<String> = node.cfg.name_servers.iter().chain(node.rib.dhcp_dns.iter()).map(|d| d.to_string()).collect();
-            let _ = writeln!(out, "   DNS Servers . . . . . . . . . . . : {}", dns.join("\n                                       "));
+            let dns: Vec<String> = node
+                .cfg
+                .name_servers
+                .iter()
+                .chain(node.rib.dhcp_dns.iter())
+                .map(|d| d.to_string())
+                .collect();
+            let _ = writeln!(
+                out,
+                "   DNS Servers . . . . . . . . . . . : {}",
+                dns.join("\n                                       ")
+            );
         }
     }
     Reply::text(out)
@@ -197,26 +278,59 @@ fn ping(node: &mut Node, fx: &mut Fx, args: &[&str]) -> Reply {
     while let Some(arg) = iter.next() {
         match arg.to_ascii_lowercase().as_str() {
             "-t" => count = u32::MAX,
-            "-n" => match iter.next().and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0) {
+            "-n" => match iter
+                .next()
+                .and_then(|n| n.parse::<u32>().ok())
+                .filter(|n| *n > 0)
+            {
                 Some(n) => count = n,
-                None => return Reply { out: "Bad value for option -n, valid range is from 1 to 4294967295.\n".to_string(), error: true, ..Reply::default() },
+                None => {
+                    return Reply {
+                        out: "Bad value for option -n, valid range is from 1 to 4294967295.\n"
+                            .to_string(),
+                        error: true,
+                        ..Reply::default()
+                    };
+                }
             },
             _ if target.is_none() => target = Some(*arg),
-            _ => return Reply { out: format!("Bad parameter {arg}.\n"), error: true, ..Reply::default() },
+            _ => {
+                return Reply {
+                    out: format!("Bad parameter {arg}.\n"),
+                    error: true,
+                    ..Reply::default()
+                };
+            }
         }
     }
     let Some(target) = target else {
         return Reply::text("\nUsage: ping [-t] [-n count] target_name\n");
     };
-    let spec = |dst: Ipv4Addr| PingSpec { dst, src: None, count, timeout_micros: 2_000_000, size: 32, style: Style::Windows, label: None };
-    match (parse_ip(target), node.cfg.name_servers.first().or(node.rib.dhcp_dns.first()).copied()) {
-        (Some(dst), _) => Reply { next: Next::Job(node.start_ping(fx, spec(dst), None)), ..Reply::default() },
+    let spec = |dst: Ipv4Addr| PingSpec {
+        dst,
+        src: None,
+        count,
+        timeout_micros: 2_000_000,
+        size: 32,
+        style: Style::Windows,
+        label: None,
+    };
+    match (parse_ip(target), node.dns_server()) {
+        (Some(dst), _) => Reply {
+            next: Next::Job(node.start_ping(fx, spec(dst), None)),
+            ..Reply::default()
+        },
         (None, Some(server)) => {
             let then = spec(Ipv4Addr::UNSPECIFIED);
-            Reply { next: Next::Job(node.start_lookup(fx, target, server, Some(then), true)), ..Reply::default() }
+            Reply {
+                next: Next::Job(node.start_lookup(fx, target, server, Some(then), true)),
+                ..Reply::default()
+            }
         }
         (None, None) => Reply {
-            out: format!("Ping request could not find host {target}. Please check the name and try again.\n"),
+            out: format!(
+                "Ping request could not find host {target}. Please check the name and try again.\n"
+            ),
             error: true,
             ..Reply::default()
         },
@@ -234,10 +348,20 @@ fn arp(node: &Node, fx: &Fx) -> Reply {
         if entries.is_empty() {
             continue;
         }
-        let _ = writeln!(out, "\nInterface: {} --- 0x{:x}", addr.ip, iface.number() + 2);
+        let _ = writeln!(
+            out,
+            "\nInterface: {} --- 0x{:x}",
+            addr.ip,
+            iface.number() + 2
+        );
         out.push_str("  Internet Address      Physical Address      Type\n");
         for (ip, entry) in entries {
-            let _ = writeln!(out, "  {:<22}{:<22}dynamic", ip.to_string(), entry.mac.dashed().to_ascii_lowercase());
+            let _ = writeln!(
+                out,
+                "  {:<22}{:<22}dynamic",
+                ip.to_string(),
+                entry.mac.dashed().to_ascii_lowercase()
+            );
         }
     }
     Reply::text(out)
@@ -255,15 +379,27 @@ fn ssh(node: &mut Node, fx: &mut Fx, args: &[&str]) -> Reply {
     match (user, target) {
         (Some(user), Some(dst)) => {
             let proc = node.start_connect(fx, dst, 22, Style::Windows, None);
-            Reply { next: Next::Connect { proc, ssh_user: Some(user.to_string()) }, ..Reply::default() }
+            Reply {
+                next: Next::Connect {
+                    proc,
+                    ssh_user: Some(user.to_string()),
+                },
+                ..Reply::default()
+            }
         }
         _ => Reply::text("Usage: ssh -l <user> <address>\n"),
     }
 }
 
 fn netstat(node: &Node) -> Reply {
-    let mut out = String::from("\nActive Connections\n\n  Proto  Local Address          Foreign Address        State\n");
-    let services = node.host.as_ref().map(|h| h.services.clone()).unwrap_or_default();
+    let mut out = String::from(
+        "\nActive Connections\n\n  Proto  Local Address          Foreign Address        State\n",
+    );
+    let services = node
+        .host
+        .as_ref()
+        .map(|h| h.services.clone())
+        .unwrap_or_default();
     for service in services {
         let (proto, port) = match service.to_ascii_lowercase().as_str() {
             "http" => ("TCP", 80),
@@ -276,7 +412,12 @@ fn netstat(node: &Node) -> Reply {
             "telnet" => ("TCP", 23),
             _ => continue,
         };
-        let _ = writeln!(out, "  {proto:<7}{:<23}{:<23}LISTENING", format!("0.0.0.0:{port}"), "0.0.0.0:0");
+        let _ = writeln!(
+            out,
+            "  {proto:<7}{:<23}{:<23}LISTENING",
+            format!("0.0.0.0:{port}"),
+            "0.0.0.0:0"
+        );
     }
     Reply::text(out)
 }

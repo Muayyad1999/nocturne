@@ -23,7 +23,9 @@ impl Node {
             self.bridge_rx(fx, port, frame);
             return;
         }
-        let Some(cfg) = self.cfg.iface(port) else { return };
+        let Some(cfg) = self.cfg.iface(port) else {
+            return;
+        };
         if cfg.l2.is_some() || cfg.channel_group.is_some() {
             match self.l2_port(port) {
                 Some(l2) => self.switch_rx(fx, l2, port, frame),
@@ -45,9 +47,11 @@ impl Node {
             return;
         }
         let sub = match frame.tag {
-            Some(vlan) => {
-                self.cfg.subinterfaces(port).find(|(_, cfg)| cfg.dot1q.is_some_and(|(v, _)| v == vlan)).map(|(id, _)| id)
-            }
+            Some(vlan) => self
+                .cfg
+                .subinterfaces(port)
+                .find(|(_, cfg)| cfg.dot1q.is_some_and(|(v, _)| v == vlan))
+                .map(|(id, _)| id),
             None => self
                 .cfg
                 .subinterfaces(port)
@@ -71,7 +75,9 @@ impl Node {
 
     /// A frame reached a layer-3 interface (routed port, sub-interface or SVI).
     pub(crate) fn l3_rx(&mut self, fx: &mut Fx, iface: IfId, frame: Frame) {
-        let mine = frame.dst == self.mac_for(iface) || frame.dst.is_multicast() || self.hsrp_owns_mac(iface, frame.dst);
+        let mine = frame.dst == self.mac_for(iface)
+            || frame.dst.is_multicast()
+            || self.hsrp_owns_mac(iface, frame.dst);
         if !mine {
             let noun = self.noun();
             fx.dropped(self.id, &frame, Some(iface), Why::Ignored, || {
@@ -89,7 +95,9 @@ impl Node {
             state.counters.in_octets += frame.wire_len();
             state.counters.last_in = Some(fx.now);
         }
-        let Frame { src, body, meta, .. } = frame;
+        let Frame {
+            src, body, meta, ..
+        } = frame;
         match body {
             Body::Arp(arp) => self.arp_rx(fx, iface, arp, meta),
             Body::Ip(packet) => self.ip_rx(fx, iface, packet, meta, src),
@@ -98,8 +106,22 @@ impl Node {
     }
 
     /// Send a layer-2 payload out of a layer-3 interface.
-    pub(crate) fn l3_tx(&mut self, fx: &mut Fx, iface: IfId, src: Mac, dst: Mac, body: Body, meta: Meta) {
-        let mut frame = Frame { src, dst, tag: None, body, meta };
+    pub(crate) fn l3_tx(
+        &mut self,
+        fx: &mut Fx,
+        iface: IfId,
+        src: Mac,
+        dst: Mac,
+        body: Body,
+        meta: Meta,
+    ) {
+        let mut frame = Frame {
+            src,
+            dst,
+            tag: None,
+            body,
+            meta,
+        };
         if !iface.is_physical()
             && let Some(state) = self.ifs.get_mut(&iface)
         {
@@ -130,11 +152,18 @@ impl Node {
         if !frame.src.is_multicast() {
             self.macs.learn(vlan, frame.src, port, fx.now);
         }
-        let known = (!frame.dst.is_multicast()).then(|| self.macs.lookup(vlan, frame.dst, fx.now)).flatten();
+        let known = (!frame.dst.is_multicast())
+            .then(|| self.macs.lookup(vlan, frame.dst, fx.now))
+            .flatten();
         let out: Vec<IfId> = match known {
             Some(p) if p == port => Vec::new(),
             Some(p) => vec![p],
-            None => self.ifs.iter().filter(|(id, s)| **id != port && s.up).map(|(id, _)| *id).collect(),
+            None => self
+                .ifs
+                .iter()
+                .filter(|(id, s)| **id != port && s.up)
+                .map(|(id, _)| *id)
+                .collect(),
         };
         frame.meta.via = fx.note(self.id, PacketEventKind::Forwarded, &frame, None, None, || {
             format!(
@@ -151,21 +180,41 @@ impl Node {
     pub(crate) fn on_timer(&mut self, fx: &mut Fx, timer: Timer) {
         match timer {
             Timer::StpHello => self.stp_hello(fx),
-            Timer::StpForward { vlan, port, token } => self.stp_forward_timer(fx, vlan, port, token),
+            Timer::StpForward { vlan, port, token } => {
+                self.stp_forward_timer(fx, vlan, port, token)
+            }
             Timer::Advert => self.advert_timer(fx),
             Timer::Proc { id, token } => self.proc_timer(fx, id, token),
             Timer::DhcpClient { iface, token } => self.dhcp_client_timer(fx, iface, token),
+            Timer::GatewayProbe { iface, token, left } => {
+                self.dhcp_gateway_probe(fx, iface, token, left)
+            }
             Timer::OspfHello { iface, token } => self.ospf_hello_timer(fx, iface, token),
-            Timer::OspfNeighbor { iface, router_id, token } => self.ospf_neighbor_timer(fx, iface, router_id, token),
+            Timer::OspfNeighbor {
+                iface,
+                router_id,
+                token,
+                dead,
+            } => {
+                self.ospf_neighbor_timer(fx, iface, router_id, token, dead);
+            }
             Timer::OspfWait { iface, token } => self.ospf_wait_timer(fx, iface, token),
             Timer::RipUpdate { token } => self.rip_update_timer(fx, token),
             Timer::RipTriggered => self.rip_triggered(fx),
-            Timer::Hsrp { iface, group, token } => self.hsrp_timer(fx, iface, group, token),
+            Timer::Hsrp {
+                iface,
+                group,
+                token,
+            } => self.hsrp_timer(fx, iface, group, token),
         }
     }
 }
 
 /// `Fa0/1, Gi0/2` for explanations.
 pub(crate) fn short_list(ports: &[IfId]) -> String {
-    ports.iter().map(|p| p.short()).collect::<Vec<_>>().join(", ")
+    ports
+        .iter()
+        .map(|p| p.short())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

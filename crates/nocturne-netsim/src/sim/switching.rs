@@ -51,14 +51,28 @@ impl MacTable {
                 moved || !fresh
             }
             None => {
-                self.entries.insert((vlan, mac), MacEntry { port, seen: now, is_static: false });
+                self.entries.insert(
+                    (vlan, mac),
+                    MacEntry {
+                        port,
+                        seen: now,
+                        is_static: false,
+                    },
+                );
                 true
             }
         }
     }
 
     pub(crate) fn set_static(&mut self, vlan: u16, mac: Mac, port: IfId, now: SimTime) {
-        self.entries.insert((vlan, mac), MacEntry { port, seen: now, is_static: true });
+        self.entries.insert(
+            (vlan, mac),
+            MacEntry {
+                port,
+                seen: now,
+                is_static: true,
+            },
+        );
     }
 
     /// Keep only entries on ports that are still usable.
@@ -68,7 +82,8 @@ impl MacTable {
 
     /// Forget dynamic entries of a VLAN, except those on `keep` (topology change).
     pub(crate) fn flush_vlan(&mut self, vlan: u16, keep: Option<IfId>) {
-        self.entries.retain(|(v, _), e| *v != vlan || e.is_static || Some(e.port) == keep);
+        self.entries
+            .retain(|(v, _), e| *v != vlan || e.is_static || Some(e.port) == keep);
     }
 
     pub(crate) fn flush_port(&mut self, port: IfId) {
@@ -134,7 +149,11 @@ impl Node {
     fn flood_ports(&self, vlan: u16, except: Option<IfId>) -> Vec<IfId> {
         self.l2_ports()
             .into_iter()
-            .filter(|p| Some(*p) != except && self.port_carries(*p, vlan) && self.stp.state(vlan, *p) == PortState::Forwarding)
+            .filter(|p| {
+                Some(*p) != except
+                    && self.port_carries(*p, vlan)
+                    && self.stp.state(vlan, *p) == PortState::Forwarding
+            })
             .collect()
     }
 
@@ -212,7 +231,9 @@ impl Node {
             }
         }
 
-        let known = (!frame.dst.is_multicast()).then(|| self.macs.lookup(vlan, frame.dst, fx.now)).flatten();
+        let known = (!frame.dst.is_multicast())
+            .then(|| self.macs.lookup(vlan, frame.dst, fx.now))
+            .flatten();
         let out = match known {
             Some(p) if p == port => {
                 fx.dropped(self.id, &frame, Some(port), Why::Ignored, || {
@@ -224,7 +245,12 @@ impl Node {
                 });
                 return;
             }
-            Some(p) if self.stp.state(vlan, p) == PortState::Forwarding && self.port_carries(p, vlan) => vec![p],
+            Some(p)
+                if self.stp.state(vlan, p) == PortState::Forwarding
+                    && self.port_carries(p, vlan) =>
+            {
+                vec![p]
+            }
             Some(_) => Vec::new(),
             None => self.flood_ports(vlan, Some(port)),
         };
@@ -269,19 +295,28 @@ impl Node {
             .copied()
             .filter(|p| {
                 self.is_trunk(*p)
-                    && self.cfg.iface(*p).and_then(|c| c.l2.as_ref()).is_some_and(|sw| sw.native_vlan != vlan)
+                    && self
+                        .cfg
+                        .iface(*p)
+                        .and_then(|c| c.l2.as_ref())
+                        .is_some_and(|sw| sw.native_vlan != vlan)
             })
             .collect();
         if tagged.is_empty() {
             String::new()
         } else {
-            format!(" On trunk {} the frame carries an 802.1Q tag for VLAN {vlan}.", short_list(&tagged))
+            format!(
+                " On trunk {} the frame carries an 802.1Q tag for VLAN {vlan}.",
+                short_list(&tagged)
+            )
         }
     }
 
     /// Send a frame of `vlan` out of layer-2 port `port`, tagging as required.
     fn egress(&mut self, fx: &mut Fx, port: IfId, vlan: u16, mut frame: Frame) {
-        let Some(sw) = self.cfg.iface(port).and_then(|cfg| cfg.l2.as_ref()) else { return };
+        let Some(sw) = self.cfg.iface(port).and_then(|cfg| cfg.l2.as_ref()) else {
+            return;
+        };
         frame.tag = if self.is_trunk(port) {
             (sw.native_vlan != vlan).then_some(vlan)
         } else {
@@ -299,9 +334,16 @@ impl Node {
 
     /// A frame originated by the switch's own interface `VlanN`.
     pub(crate) fn switch_tx_from_cpu(&mut self, fx: &mut Fx, vlan: u16, frame: Frame) {
-        let known = (!frame.dst.is_multicast()).then(|| self.macs.lookup(vlan, frame.dst, fx.now)).flatten();
+        let known = (!frame.dst.is_multicast())
+            .then(|| self.macs.lookup(vlan, frame.dst, fx.now))
+            .flatten();
         let out = match known {
-            Some(p) if self.stp.state(vlan, p) == PortState::Forwarding && self.port_carries(p, vlan) => vec![p],
+            Some(p)
+                if self.stp.state(vlan, p) == PortState::Forwarding
+                    && self.port_carries(p, vlan) =>
+            {
+                vec![p]
+            }
             Some(_) => Vec::new(),
             None => self.flood_ports(vlan, None),
         };
@@ -319,7 +361,12 @@ impl Node {
 
     /// Port security: may this source address use the port?
     fn port_security_admits(&mut self, fx: &mut Fx, phys: IfId, vlan: u16, frame: &Frame) -> bool {
-        let Some(ps) = self.cfg.iface(phys).and_then(|c| c.l2.as_ref()).map(|sw| &sw.port_security) else {
+        let Some(ps) = self
+            .cfg
+            .iface(phys)
+            .and_then(|c| c.l2.as_ref())
+            .map(|sw| &sw.port_security)
+        else {
             return true;
         };
         if !ps.enabled || frame.src.is_multicast() {
@@ -329,7 +376,9 @@ impl Node {
         let (maximum, violation, sticky) = (ps.maximum, ps.violation, ps.sticky);
         let configured = ps.macs.len();
         let known_static = ps.macs.iter().any(|(m, _)| *m == src);
-        let Some(state) = self.ifs.get_mut(&phys) else { return true };
+        let Some(state) = self.ifs.get_mut(&phys) else {
+            return true;
+        };
         if known_static || state.secure_macs.contains(&(src, vlan)) {
             state.last_secure_src = Some((src, vlan));
             return true;
@@ -337,7 +386,12 @@ impl Node {
         if configured + state.secure_macs.len() < maximum as usize {
             state.last_secure_src = Some((src, vlan));
             if sticky {
-                if let Some(sw) = self.cfg.interfaces.get_mut(&phys).and_then(|c| c.l2.as_mut()) {
+                if let Some(sw) = self
+                    .cfg
+                    .interfaces
+                    .get_mut(&phys)
+                    .and_then(|c| c.l2.as_mut())
+                {
                     sw.port_security.macs.push((src, true));
                 }
             } else {
@@ -372,7 +426,9 @@ impl Node {
                     2,
                     "PORT_SECURITY",
                     "PSECURE_VIOLATION",
-                    format!("Security violation occurred, caused by MAC address {src} on port {name}."),
+                    format!(
+                        "Security violation occurred, caused by MAC address {src} on port {name}."
+                    ),
                 );
             }
             Violation::Restrict => self.log(
@@ -400,7 +456,11 @@ impl Node {
 }
 
 fn list_or_none(ports: &[IfId]) -> String {
-    if ports.is_empty() { "no port qualifies".to_string() } else { short_list(ports) }
+    if ports.is_empty() {
+        "no port qualifies".to_string()
+    } else {
+        short_list(ports)
+    }
 }
 
 fn mac_bits(mac: Mac) -> u64 {

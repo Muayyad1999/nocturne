@@ -54,7 +54,9 @@ impl World {
     }
 
     fn reconcile_node(&mut self, id: NodeId) {
-        let Some(node) = self.nodes.get(&id) else { return };
+        let Some(node) = self.nodes.get(&id) else {
+            return;
+        };
         let links: Vec<LinkId> = node.ifs.values().filter_map(|state| state.link).collect();
         for link in links {
             self.refresh_link(link);
@@ -69,9 +71,11 @@ impl World {
         let state = node.ifs.get(&end.1)?;
         // A channel member negotiates trunking with its port-channel's settings.
         let l2 = match cfg.channel_group {
-            Some((group, _)) => {
-                node.cfg.iface(IfId::port_channel(group)).and_then(|po| po.l2.as_ref()).or(cfg.l2.as_ref())
-            }
+            Some((group, _)) => node
+                .cfg
+                .iface(IfId::port_channel(group))
+                .and_then(|po| po.l2.as_ref())
+                .or(cfg.l2.as_ref()),
             None => cfg.l2.as_ref(),
         };
         Some(PortFacts {
@@ -87,12 +91,16 @@ impl World {
 
     /// Recompute carrier and negotiation results for both ends of a cable.
     fn refresh_link(&mut self, id: LinkId) {
-        let Some(link) = self.links.get(&id) else { return };
+        let Some(link) = self.links.get(&id) else {
+            return;
+        };
         let (a, b) = (link.a, link.b);
         let faulted = link.fault_down || link.flap_down;
         let duplex_fault = link.duplex_fault;
         let was_up = link.up;
-        let (Some(fa), Some(fb)) = (self.port_facts(a), self.port_facts(b)) else { return };
+        let (Some(fa), Some(fb)) = (self.port_facts(a), self.port_facts(b)) else {
+            return;
+        };
 
         let (speed, speed_ok) = match (fa.speed, fb.speed) {
             (None, None) => (fa.max_speed.min(fb.max_speed), true),
@@ -122,7 +130,13 @@ impl World {
                 nonegotiate: other.nonegotiate,
                 channel: other.channel,
             };
-            let Some(state) = self.nodes.get_mut(&end.0).and_then(|n| n.ifs.get_mut(&end.1)) else { continue };
+            let Some(state) = self
+                .nodes
+                .get_mut(&end.0)
+                .and_then(|n| n.ifs.get_mut(&end.1))
+            else {
+                continue;
+            };
             let unchanged = state.carrier == up
                 && state.speed == speed
                 && state.full_duplex == full
@@ -150,7 +164,7 @@ impl Node {
             return;
         }
         self.sync_interfaces();
-        self.derive_channels();
+        self.derive_channels(fx);
         self.derive_trunking();
         let came_up = self.derive_line_state(fx);
         self.stp_sync(fx);
@@ -168,7 +182,8 @@ impl Node {
     /// Make the runtime interface table match the configured interfaces.
     fn sync_interfaces(&mut self) {
         let configured: Vec<IfId> = self.cfg.interfaces.keys().copied().collect();
-        self.ifs.retain(|id, _| id.is_physical() || configured.contains(id));
+        self.ifs
+            .retain(|id, _| id.is_physical() || configured.contains(id));
         for id in configured {
             if !self.ifs.contains_key(&id) {
                 let mut state = IfState::new(self.mac_for(id), 0);
@@ -177,7 +192,12 @@ impl Node {
             }
         }
         // A port-channel takes its address from its first member, which can change.
-        let channels: Vec<IfId> = self.ifs.keys().filter(|id| id.kind == IfKind::PortChannel).copied().collect();
+        let channels: Vec<IfId> = self
+            .ifs
+            .keys()
+            .filter(|id| id.kind == IfKind::PortChannel)
+            .copied()
+            .collect();
         for id in channels {
             let mac = self.mac_for(id);
             if let Some(state) = self.ifs.get_mut(&id) {
@@ -187,50 +207,136 @@ impl Node {
     }
 
     /// Decide which channel-group members are bundled.
-    fn derive_channels(&mut self) {
-        let groups: std::collections::BTreeSet<u32> =
-            self.cfg.interfaces.values().filter_map(|cfg| cfg.channel_group.map(|(g, _)| g)).collect();
+    fn derive_channels(&mut self, fx: &mut Fx) {
+        let groups: std::collections::BTreeSet<u32> = self
+            .cfg
+            .interfaces
+            .values()
+            .filter_map(|cfg| cfg.channel_group.map(|(g, _)| g))
+            .collect();
         for group in groups {
+            let po = IfId::port_channel(group);
             let mut partner: Option<(NodeId, u32)> = None;
             let mut speed: Option<u32> = None;
+            let mut total = 0;
             for member in self.cfg.channel_members(group) {
-                let Some((_, mode)) = self.cfg.iface(member).and_then(|c| c.channel_group) else { continue };
-                let Some(state) = self.ifs.get(&member) else { continue };
-                let mut ok = state.carrier;
+                let Some((_, mode)) = self.cfg.iface(member).and_then(|c| c.channel_group) else {
+                    continue;
+                };
+                // A member whose switch-port settings differ from the channel's is suspended.
+                let difference = self.channel_difference(member, po);
+                let Some(state) = self.ifs.get_mut(&member) else {
+                    continue;
+                };
+                let newly = difference.is_some() && !state.mismatched && state.carrier;
+                state.mismatched = difference.is_some() && state.carrier;
+                if let (true, Some(why)) = (newly, &difference) {
+                    let text = format!(
+                        "{} is not compatible with {} and will be suspended ({why})",
+                        member.short(),
+                        po.short()
+                    );
+                    self.log(fx, 5, "EC", "CANNOT_BUNDLE2", text);
+                }
+                let Some(state) = self.ifs.get(&member) else {
+                    continue;
+                };
+                let mut ok = state.carrier && difference.is_none();
+                let mut alone = false;
                 if ok && mode != ChannelMode::On {
                     // A negotiating member needs a compatible far end, and every
                     // member must reach the same partner channel.
-                    match state.peer.as_ref().and_then(|p| p.channel.map(|(g, m)| (p.node, g, m))) {
+                    match state
+                        .peer
+                        .as_ref()
+                        .and_then(|p| p.channel.map(|(g, m)| (p.node, g, m)))
+                    {
                         Some((node, peer_group, peer_mode)) if mode.compatible(peer_mode) => {
                             ok = *partner.get_or_insert((node, peer_group)) == (node, peer_group);
                         }
-                        _ => ok = false,
+                        _ => (ok, alone) = (false, true),
                     }
                 }
                 if ok {
                     ok = *speed.get_or_insert(state.speed) == state.speed;
                 }
+                if ok {
+                    total += state.speed;
+                }
                 if let Some(state) = self.ifs.get_mut(&member) {
                     state.bundled = ok;
+                    state.standalone = alone;
                 }
+            }
+            if let Some(state) = self.ifs.get_mut(&po) {
+                state.speed = total;
+                state.full_duplex = true;
             }
         }
         for (id, state) in &mut self.ifs {
-            if self.cfg.interfaces.get(id).is_none_or(|cfg| cfg.channel_group.is_none()) {
-                state.bundled = false;
+            if self
+                .cfg
+                .interfaces
+                .get(id)
+                .is_none_or(|cfg| cfg.channel_group.is_none())
+            {
+                (state.bundled, state.mismatched, state.standalone) = (false, false, false);
             }
+        }
+    }
+
+    /// Why a member cannot join its port-channel, in the words of the syslog message.
+    fn channel_difference(&self, member: IfId, po: IfId) -> Option<String> {
+        let own = self.cfg.iface(member)?.l2.as_ref()?;
+        let channel = self.cfg.iface(po)?.l2.as_ref()?;
+        let (m, p) = (member.short(), po.short());
+        let word = |mode: SwMode| match mode {
+            SwMode::Access => "access",
+            SwMode::Trunk => "trunk",
+            SwMode::DynamicAuto | SwMode::DynamicDesirable => "dynamic",
+        };
+        if own.mode != channel.mode {
+            Some(format!(
+                "trunk mode of {m} is {}, {p} is {}",
+                word(own.mode),
+                word(channel.mode)
+            ))
+        } else if own.access_vlan != channel.access_vlan && own.mode == SwMode::Access {
+            Some(format!(
+                "access vlan of {m} is {}, {p} id {}",
+                own.access_vlan, channel.access_vlan
+            ))
+        } else if own.native_vlan != channel.native_vlan {
+            Some(format!(
+                "native vlan of {m} is {}, {p} id {}",
+                own.native_vlan, channel.native_vlan
+            ))
+        } else if own.allowed != channel.allowed {
+            Some(format!("vlan mask is different on {m} and {p}"))
+        } else {
+            None
         }
     }
 
     /// Operational access/trunk mode of every switch port (a simple DTP outcome).
     fn derive_trunking(&mut self) {
-        let ports: Vec<IfId> =
-            self.cfg.interfaces.iter().filter(|(_, cfg)| cfg.l2.is_some()).map(|(id, _)| *id).collect();
+        let ports: Vec<IfId> = self
+            .cfg
+            .interfaces
+            .iter()
+            .filter(|(_, cfg)| cfg.l2.is_some())
+            .map(|(id, _)| *id)
+            .collect();
         for port in ports {
-            let Some(sw) = self.cfg.iface(port).and_then(|cfg| cfg.l2.as_ref()) else { continue };
+            let Some(sw) = self.cfg.iface(port).and_then(|cfg| cfg.l2.as_ref()) else {
+                continue;
+            };
             // A port-channel negotiates through its first bundled member.
             let via = if port.kind == IfKind::PortChannel {
-                self.cfg.channel_members(port.number()).into_iter().find(|m| self.ifs.get(m).is_some_and(|s| s.bundled))
+                self.cfg
+                    .channel_members(port.number())
+                    .into_iter()
+                    .find(|m| self.ifs.get(m).is_some_and(|s| s.bundled))
             } else {
                 Some(port)
             };
@@ -247,7 +353,10 @@ impl Node {
                                 && matches!(
                                     (dynamic, p.sw_mode),
                                     (SwMode::DynamicDesirable, Some(_))
-                                        | (SwMode::DynamicAuto, Some(SwMode::Trunk | SwMode::DynamicDesirable))
+                                        | (
+                                            SwMode::DynamicAuto,
+                                            Some(SwMode::Trunk | SwMode::DynamicDesirable)
+                                        )
                                 )
                                 && p.sw_mode != Some(SwMode::Access)
                         })
@@ -274,10 +383,14 @@ impl Node {
             ids
         };
         for id in order {
-            let Some(cfg) = self.cfg.iface(id) else { continue };
+            let Some(cfg) = self.cfg.iface(id) else {
+                continue;
+            };
             let shutdown = cfg.shutdown;
             let carrier = self.carrier_of(id, cfg);
-            let Some(state) = self.ifs.get_mut(&id) else { continue };
+            let Some(state) = self.ifs.get_mut(&id) else {
+                continue;
+            };
             if !id.is_physical() {
                 state.carrier = carrier;
             }
@@ -296,10 +409,22 @@ impl Node {
             fx.changed = true;
             let name = id.name();
             if shutdown && !was_shutdown {
-                self.log(fx, 5, "LINK", "CHANGED", format!("Interface {name}, changed state to administratively down"));
+                self.log(
+                    fx,
+                    5,
+                    "LINK",
+                    "CHANGED",
+                    format!("Interface {name}, changed state to administratively down"),
+                );
             } else if up != was_up || !shutdown && was_shutdown {
                 let word = if up { "up" } else { "down" };
-                self.log(fx, 3, "LINK", "UPDOWN", format!("Interface {name}, changed state to {word}"));
+                self.log(
+                    fx,
+                    3,
+                    "LINK",
+                    "UPDOWN",
+                    format!("Interface {name}, changed state to {word}"),
+                );
             }
             if up != was_up {
                 let word = if up { "up" } else { "down" };
@@ -323,13 +448,19 @@ impl Node {
         match id.kind {
             _ if id.is_sub() => self.is_up(id.parent()) && cfg.dot1q.is_some(),
             IfKind::Loopback => true,
-            IfKind::PortChannel => {
-                self.cfg.channel_members(id.number()).iter().any(|m| self.ifs.get(m).is_some_and(|s| s.bundled))
-            }
+            IfKind::PortChannel => self
+                .cfg
+                .channel_members(id.number())
+                .iter()
+                .any(|m| self.ifs.get(m).is_some_and(|s| s.bundled)),
             // An SVI is up while its VLAN exists and some up port carries it.
             IfKind::Vlan => {
                 let vlan = id.number() as u16;
-                self.cfg.vlan_active(vlan) && self.l2_ports().iter().any(|port| self.port_carries(*port, vlan))
+                self.cfg.vlan_active(vlan)
+                    && self
+                        .l2_ports()
+                        .iter()
+                        .any(|port| self.port_carries(*port, vlan))
             }
             _ => self.ifs.get(&id).is_some_and(|s| s.carrier),
         }
@@ -339,10 +470,20 @@ impl Node {
     fn prune_tables(&mut self) {
         let l2_ports = self.l2_ports();
         self.macs.retain_ports(&l2_ports);
-        let live: Vec<IfId> = self.ifs.iter().filter(|(_, s)| s.up).map(|(id, _)| *id).collect();
+        let live: Vec<IfId> = self
+            .ifs
+            .iter()
+            .filter(|(_, s)| s.up)
+            .map(|(id, _)| *id)
+            .collect();
         self.arp.retain_ifaces(&live);
         for (id, state) in &mut self.ifs {
-            if !state.up && !self.cfg.interfaces.get(id).is_some_and(|c| c.l2.as_ref().is_some_and(|sw| sw.port_security.sticky))
+            if !state.up
+                && !self
+                    .cfg
+                    .interfaces
+                    .get(id)
+                    .is_some_and(|c| c.l2.as_ref().is_some_and(|sw| sw.port_security.sticky))
             {
                 state.secure_macs.clear();
             }

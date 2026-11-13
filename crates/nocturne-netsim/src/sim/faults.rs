@@ -15,11 +15,16 @@ impl World {
                     return Err(LabError::UnknownLink(*link));
                 }
             }
-            Fault::InterfaceErrors { node, interface, .. } => {
+            Fault::InterfaceErrors {
+                node, interface, ..
+            } => {
                 let n = self.nodes.get(node).ok_or(LabError::UnknownNode(*node))?;
                 let known = IfId::parse(interface).is_some_and(|id| n.ifs.contains_key(&id));
                 if !known {
-                    return Err(LabError::UnknownInterface { node: n.name.clone(), interface: interface.clone() });
+                    return Err(LabError::UnknownInterface {
+                        node: n.name.clone(),
+                        interface: interface.clone(),
+                    });
                 }
             }
             Fault::HighCpu { node, .. } | Fault::PowerOff { node } => {
@@ -39,7 +44,9 @@ impl World {
                 self.schedule_flap(id);
                 self.refresh_link_faults(link);
             }
-            Fault::LinkDown { link } | Fault::PacketLoss { link, .. } | Fault::DuplexMismatch { link } => {
+            Fault::LinkDown { link }
+            | Fault::PacketLoss { link, .. }
+            | Fault::DuplexMismatch { link } => {
                 self.refresh_link_faults(link);
             }
             Fault::PowerOff { node } => self.set_power(node, false),
@@ -55,7 +62,9 @@ impl World {
 
     pub(crate) fn clear_fault(&mut self, id: FaultId) {
         self.account_error_faults();
-        let Some(fault) = self.faults.remove(&id) else { return };
+        let Some(fault) = self.faults.remove(&id) else {
+            return;
+        };
         self.fault_clock.remove(&id);
         match fault {
             Fault::LinkDown { link }
@@ -63,7 +72,10 @@ impl World {
             | Fault::DuplexMismatch { link }
             | Fault::Flapping { link, .. } => self.refresh_link_faults(link),
             Fault::PowerOff { node } => {
-                let still_off = self.faults.values().any(|f| matches!(f, Fault::PowerOff { node: n } if *n == node));
+                let still_off = self
+                    .faults
+                    .values()
+                    .any(|f| matches!(f, Fault::PowerOff { node: n } if *n == node));
                 if !still_off {
                     self.set_power(node, true);
                 }
@@ -100,13 +112,17 @@ impl World {
         for fault in self.faults.values() {
             match fault {
                 Fault::LinkDown { link: l } if *l == link => down = true,
-                Fault::PacketLoss { link: l, percent } if *l == link => loss = loss.max((*percent).min(100)),
+                Fault::PacketLoss { link: l, percent } if *l == link => {
+                    loss = loss.max((*percent).min(100))
+                }
                 Fault::DuplexMismatch { link: l } if *l == link => duplex = true,
                 Fault::Flapping { link: l, .. } if *l == link => flapping = true,
                 _ => {}
             }
         }
-        let Some(l) = self.links.get_mut(&link) else { return };
+        let Some(l) = self.links.get_mut(&link) else {
+            return;
+        };
         l.fault_down = down;
         l.loss_percent = loss;
         l.duplex_fault = duplex;
@@ -132,22 +148,32 @@ impl World {
             .faults
             .iter()
             .filter_map(|(id, fault)| match fault {
-                Fault::InterfaceErrors { node, interface, crc_per_s } => {
-                    Some((*id, *node, interface.clone(), *crc_per_s, self.fault_clock.get(id).copied().unwrap_or(now)))
-                }
+                Fault::InterfaceErrors {
+                    node,
+                    interface,
+                    crc_per_s,
+                } => Some((
+                    *id,
+                    *node,
+                    interface.clone(),
+                    *crc_per_s,
+                    self.fault_clock.get(id).copied().unwrap_or(now),
+                )),
                 _ => None,
             })
             .collect();
         for (id, node, interface, rate, since) in due {
             // Whole errors only; the remainder of the interval is carried over.
             let elapsed = now.saturating_sub(since);
-            let errors = elapsed / 1_000_000 * u64::from(rate) + elapsed % 1_000_000 * u64::from(rate) / 1_000_000;
+            let errors = elapsed / 1_000_000 * u64::from(rate)
+                + elapsed % 1_000_000 * u64::from(rate) / 1_000_000;
             if errors == 0 {
                 continue;
             }
             let used = errors * 1_000_000 / u64::from(rate.max(1));
             self.fault_clock.insert(id, since + used.min(elapsed));
-            let state = IfId::parse(&interface).and_then(|i| self.nodes.get_mut(&node).and_then(|n| n.ifs.get_mut(&i)));
+            let state = IfId::parse(&interface)
+                .and_then(|i| self.nodes.get_mut(&node).and_then(|n| n.ifs.get_mut(&i)));
             if let Some(state) = state {
                 state.counters.crc += errors;
                 state.counters.in_errors += errors;
@@ -158,7 +184,9 @@ impl World {
 
 /// A flapping link changes state.
 pub(crate) fn flap(world: &mut World, fault: FaultId) {
-    let Some(Fault::Flapping { link, .. }) = world.faults.get(&fault) else { return };
+    let Some(Fault::Flapping { link, .. }) = world.faults.get(&fault) else {
+        return;
+    };
     let link = *link;
     if let Some(l) = world.links.get_mut(&link) {
         l.flap_down = !l.flap_down;

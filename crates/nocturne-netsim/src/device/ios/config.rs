@@ -4,8 +4,9 @@ use crate::catalog::Role;
 use crate::device::cli::LineId;
 use crate::device::cli::grammar::Args;
 use crate::device::config::{
-    Acl, DhcpPool, IfConfig, NatPool, NatProto, NatRule, NatStatic, NatTarget, OspfConfig, RipConfig, Secret, Slot,
-    SnmpCommunity, StaticRoute, StpMode, SwMode, Switchport, Timestamps, Timezone, User, Vlan, VtpMode, can_create,
+    Acl, DhcpPool, IfConfig, LineConfig, NatPool, NatProto, NatRule, NatStatic, NatTarget,
+    OspfConfig, RipConfig, Secret, Slot, SnmpCommunity, StaticRoute, StpMode, SwMode, Switchport,
+    Timestamps, Timezone, User, Vlan, VtpMode, can_create,
 };
 use crate::device::ios::{Cx, LineSel, Mode, Table, c, n};
 use crate::ifname::{IfId, IfKind};
@@ -16,89 +17,273 @@ use crate::util::text::parse_ranges;
 
 pub(crate) fn table(role: Role) -> Table {
     let mut t: Table = vec![
-        n("hostname ~ <word:name;This system's network name>", "Set system's network name", hostname),
-        n("enable secret ~ [0 | 5] <word:secret;The ENABLE secret>", "Assign the privileged level secret", enable_secret),
-        n("enable password ~ [0 | 7] <word:password;The ENABLE password>", "Assign the privileged level password", enable_password),
-        n("service password-encryption", "Encrypt system passwords", service_encryption),
-        n("service timestamps (debug | log) ~ [uptime | datetime [msec]]", "Timestamp debug/log messages", service_timestamps),
+        n(
+            "hostname ~ <word:name;This system's network name>",
+            "Set system's network name",
+            hostname,
+        ),
+        n(
+            "enable secret ~ [0 | 5] <word:secret;The ENABLE secret>",
+            "Assign the privileged level secret",
+            enable_secret,
+        ),
+        n(
+            "enable password ~ [0 | 7] <word:password;The ENABLE password>",
+            "Assign the privileged level password",
+            enable_password,
+        ),
+        n(
+            "service password-encryption",
+            "Encrypt system passwords",
+            service_encryption,
+        ),
+        n(
+            "service timestamps (debug | log) ~ [uptime | datetime [msec]]",
+            "Timestamp debug/log messages",
+            service_timestamps,
+        ),
         c("version <word:version>", "", |_, _| {}),
         c("boot-start-marker", "", |_, _| {}),
         c("boot-end-marker", "", |_, _| {}),
-        n("ip domain-lookup", "Enable IP Domain Name System hostname translation", domain_lookup),
-        n("ip domain lookup", "Enable IP Domain Name System hostname translation", domain_lookup),
-        n("ip domain-name ~ <word:domain;Default domain name>", "Define the default domain name", domain_name),
-        n("ip domain name ~ <word:domain;Default domain name>", "Define the default domain name", domain_name),
-        n("ip name-server ~ <ip:server;Domain server IP address> {<ip:server>}", "Specify address of name server to use", name_server),
+        n(
+            "ip domain-lookup",
+            "Enable IP Domain Name System hostname translation",
+            domain_lookup,
+        ),
+        n(
+            "ip domain lookup",
+            "Enable IP Domain Name System hostname translation",
+            domain_lookup,
+        ),
+        n(
+            "ip domain-name ~ <word:domain;Default domain name>",
+            "Define the default domain name",
+            domain_name,
+        ),
+        n(
+            "ip domain name ~ <word:domain;Default domain name>",
+            "Define the default domain name",
+            domain_name,
+        ),
+        n(
+            "ip name-server ~ <ip:server;Domain server IP address> {<ip:server>}",
+            "Specify address of name server to use",
+            name_server,
+        ),
         n(
             "username <word:name;User name> ~ {privilege <0-15:level;User privilege level> | (secret | password) [0 | 5 | 7] <word:secret;The user's password>}",
             "Establish User Name Authentication",
             username,
         ),
-        n("banner (motd | login) ~ <line:text;c banner-text c, where 'c' is a delimiting character>", "Define a login banner", banner),
-        c("line (con | console) 0", "Configure a terminal line", |cx, _| cx.sh.mode = Mode::Line(LineSel::Console)),
-        c("line vty <0-15:first;First Line number> [<0-15:last;Last Line number>]", "Configure a terminal line", line_vty),
-        c("crypto key generate rsa {modulus <360-4096:bits;size of the key modulus> | general-keys}", "Generate RSA keys", crypto_key),
+        n(
+            "banner (motd | login) ~ <line:text;c banner-text c, where 'c' is a delimiting character>",
+            "Define a login banner",
+            banner,
+        ),
+        c(
+            "line (con | console) 0",
+            "Configure a terminal line",
+            |cx, _| cx.sh.mode = Mode::Line(LineSel::Console),
+        ),
+        c(
+            "line vty <0-15:first;First Line number> [<0-15:last;Last Line number>]",
+            "Configure a terminal line",
+            line_vty,
+        ),
+        c(
+            "crypto key generate rsa {modulus <360-4096:bits;size of the key modulus> | general-keys}",
+            "Generate RSA keys",
+            crypto_key,
+        ),
         c("crypto key zeroize rsa", "Remove RSA keys", |cx, _| {
             cx.n.rsa_bits = None;
             cx.say("% All keys will be removed.");
         }),
-        n("ip ssh version ~ <1-2:version>", "Specify protocol version to be supported", |cx, a| {
-            cx.cfg().ssh_version = if a.no { None } else { a.num("version").map(|v| v as u8) };
-        }),
-        n("ip default-gateway ~ <ip:gateway;IP address of default gateway>", "Specify default gateway (if not routing IP)", |cx, a| {
-            cx.cfg().default_gateway = if a.no { None } else { a.ip("gateway") };
-        }),
-        n("ip default-network <ip:network;IP address of default network>", "Flags networks as candidates for default routes", default_network),
-        n("ip access-list (standard | extended) <word:name;Access-list name>", "Named access-list", ip_access_list),
-        n("access-list <1-2699:number;IP access list> ~ <line:entry>", "Add an access list entry", numbered_acl),
-        n("ip dhcp excluded-address <ip:low;Low IP address> [<ip:high;High IP address>]", "Prevent DHCP from assigning certain addresses", dhcp_excluded),
-        n("ip dhcp pool <word:name;Pool name>", "Configure DHCP address pools", dhcp_pool),
-        n("logging host <ip:host;IP address of the syslog server>", "Set syslog server IP address and parameters", logging_host),
-        n("logging <ip:host;IP address of the logging host>", "Modify message logging facilities", logging_host),
-        n("logging buffered ~ [<4096-2147483647:size;Logging buffer size>]", "Set buffered logging parameters", |cx, a| {
-            cx.cfg().logging.buffered = if a.no { None } else { Some(a.num("size").unwrap_or(4096) as u32) };
-        }),
-        n("logging console", "Set console logging parameters", |cx, a| cx.cfg().logging.console = !a.no),
-        n("logging trap ~ <word:level;Logging severity level>", "Set syslog server logging level", |cx, a| {
-            cx.cfg().logging.trap = if a.no { None } else { a.text("level").map(str::to_string) };
-        }),
-        n("ntp server <ip:server;IP address of peer>", "Configure NTP server", ntp_server),
-        n("clock timezone ~ <word:zone;name of time zone> <word:hours;Hours offset from UTC> [<0-59:minutes;Minutes offset from UTC>]", "Configure time zone", clock_timezone),
-        n("snmp-server community <word:name;SNMP community string> ~ [ro | rw] [<word:acl;Access-list name>]", "Enable SNMP; set community string and access privs", snmp_community),
-        n("snmp-server location ~ <line:text;The physical location of this node>", "Text for mib object sysLocation", |cx, a| {
-            cx.cfg().snmp.location = if a.no { None } else { a.text("text").map(str::to_string) };
-        }),
-        n("snmp-server contact ~ <line:text;identification of the contact person for this managed node>", "Text for mib object sysContact", |cx, a| {
-            cx.cfg().snmp.contact = if a.no { None } else { a.text("text").map(str::to_string) };
-        }),
-        n("snmp-server host <line:rest>", "Specify hosts to receive SNMP notifications", |cx, a| snmp_stored(cx, a, "snmp-server host")),
-        n("snmp-server enable traps ~ [<line:rest>]", "Enable SNMP Traps", |cx, a| snmp_stored(cx, a, "snmp-server enable traps")),
+        n(
+            "ip ssh version ~ <1-2:version>",
+            "Specify protocol version to be supported",
+            |cx, a| {
+                cx.cfg().ssh_version = if a.no {
+                    None
+                } else {
+                    a.num("version").map(|v| v as u8)
+                };
+            },
+        ),
+        n(
+            "ip default-gateway ~ <ip:gateway;IP address of default gateway>",
+            "Specify default gateway (if not routing IP)",
+            |cx, a| {
+                cx.cfg().default_gateway = if a.no { None } else { a.ip("gateway") };
+            },
+        ),
+        n(
+            "ip default-network <ip:network;IP address of default network>",
+            "Flags networks as candidates for default routes",
+            default_network,
+        ),
+        n(
+            "ip access-list (standard | extended) <word:name;Access-list name>",
+            "Named access-list",
+            ip_access_list,
+        ),
+        n(
+            "access-list <1-2699:number;IP access list> ~ <line:entry>",
+            "Add an access list entry",
+            numbered_acl,
+        ),
+        n(
+            "ip dhcp excluded-address <ip:low;Low IP address> [<ip:high;High IP address>]",
+            "Prevent DHCP from assigning certain addresses",
+            dhcp_excluded,
+        ),
+        n(
+            "ip dhcp pool <word:name;Pool name>",
+            "Configure DHCP address pools",
+            dhcp_pool,
+        ),
+        n(
+            "logging host <ip:host;IP address of the syslog server>",
+            "Set syslog server IP address and parameters",
+            logging_host,
+        ),
+        n(
+            "logging <ip:host;IP address of the logging host>",
+            "Modify message logging facilities",
+            logging_host,
+        ),
+        n(
+            "logging buffered ~ [<4096-2147483647:size;Logging buffer size>]",
+            "Set buffered logging parameters",
+            |cx, a| {
+                cx.cfg().logging.buffered = if a.no {
+                    None
+                } else {
+                    Some(a.num("size").unwrap_or(4096) as u32)
+                };
+            },
+        ),
+        n(
+            "logging console",
+            "Set console logging parameters",
+            |cx, a| cx.cfg().logging.console = !a.no,
+        ),
+        n(
+            "logging trap ~ <word:level;Logging severity level>",
+            "Set syslog server logging level",
+            |cx, a| {
+                cx.cfg().logging.trap = if a.no {
+                    None
+                } else {
+                    a.text("level").map(str::to_string)
+                };
+            },
+        ),
+        n(
+            "ntp server <ip:server;IP address of peer>",
+            "Configure NTP server",
+            ntp_server,
+        ),
+        n(
+            "clock timezone ~ <word:zone;name of time zone> <word:hours;Hours offset from UTC> [<0-59:minutes;Minutes offset from UTC>]",
+            "Configure time zone",
+            clock_timezone,
+        ),
+        n(
+            "snmp-server community <word:name;SNMP community string> ~ [ro | rw] [<word:acl;Access-list name>]",
+            "Enable SNMP; set community string and access privs",
+            snmp_community,
+        ),
+        n(
+            "snmp-server location ~ <line:text;The physical location of this node>",
+            "Text for mib object sysLocation",
+            |cx, a| {
+                cx.cfg().snmp.location = if a.no {
+                    None
+                } else {
+                    a.text("text").map(str::to_string)
+                };
+            },
+        ),
+        n(
+            "snmp-server contact ~ <line:text;identification of the contact person for this managed node>",
+            "Text for mib object sysContact",
+            |cx, a| {
+                cx.cfg().snmp.contact = if a.no {
+                    None
+                } else {
+                    a.text("text").map(str::to_string)
+                };
+            },
+        ),
+        n(
+            "snmp-server host <line:rest>",
+            "Specify hosts to receive SNMP notifications",
+            |cx, a| snmp_stored(cx, a, "snmp-server host"),
+        ),
+        n(
+            "snmp-server enable traps ~ [<line:rest>]",
+            "Enable SNMP Traps",
+            |cx, a| snmp_stored(cx, a, "snmp-server enable traps"),
+        ),
         n("cdp run", "Enable CDP", |cx, a| cx.cfg().cdp_run = !a.no),
         n("lldp run", "Enable LLDP", |cx, a| cx.cfg().lldp_run = !a.no),
-        n("ip http server", "Enable http server", |cx, a| stored(cx, a, Slot::Http, "ip http server".to_string())),
-        n("ip http secure-server", "Enable HTTP secure server", |cx, a| stored(cx, a, Slot::Http, "ip http secure-server".to_string())),
-        n("aaa new-model", "Enable NEW access control commands and functions", |cx, a| {
-            if a.no {
-                cx.cfg().stored.retain(|(slot, _)| *slot != Slot::Aaa);
-            } else {
-                stored(cx, a, Slot::Aaa, "aaa new-model".to_string());
-            }
+        n("ip http server", "Enable http server", |cx, a| {
+            stored(cx, a, Slot::Http, "ip http server".to_string())
         }),
-        n("aaa <line:rest>", "Authentication, Authorization and Accounting", |cx, a| {
-            let line = format!("aaa {}", a.text("rest").unwrap_or(""));
-            if !a.no && !cx.n.cfg.stored.iter().any(|(_, l)| l == "aaa new-model") {
-                return cx.invalid();
-            }
-            stored(cx, a, Slot::Aaa, line);
+        n(
+            "ip http secure-server",
+            "Enable HTTP secure server",
+            |cx, a| stored(cx, a, Slot::Http, "ip http secure-server".to_string()),
+        ),
+        n(
+            "aaa new-model",
+            "Enable NEW access control commands and functions",
+            |cx, a| {
+                if a.no {
+                    cx.cfg().stored.retain(|(slot, _)| *slot != Slot::Aaa);
+                } else {
+                    stored(cx, a, Slot::Aaa, "aaa new-model".to_string());
+                }
+            },
+        ),
+        n(
+            "aaa <line:rest>",
+            "Authentication, Authorization and Accounting",
+            |cx, a| {
+                let line = format!("aaa {}", a.text("rest").unwrap_or(""));
+                if !a.no && !cx.n.cfg.stored.iter().any(|(_, l)| l == "aaa new-model") {
+                    return cx.invalid();
+                }
+                stored(cx, a, Slot::Aaa, line);
+            },
+        ),
+        n("archive", "Archive the configuration", |cx, a| {
+            stored(cx, a, Slot::Archive, "archive".to_string())
         }),
-        n("archive", "Archive the configuration", |cx, a| stored(cx, a, Slot::Archive, "archive".to_string())),
-        n("errdisable recovery <line:rest>", "Error disable recovery", |cx, a| {
-            let line = format!("errdisable recovery {}", a.text("rest").unwrap_or(""));
-            stored(cx, a, Slot::Errdisable, line);
-        }),
-        n("interface <if>", "Select an interface to configure", interface),
-        c("interface range <line:ports;Interface range>", "interface range command", interface_range),
-        c("default interface <if>", "Set a command to its defaults", default_interface),
+        n(
+            "errdisable recovery <line:rest>",
+            "Error disable recovery",
+            |cx, a| {
+                let line = format!("errdisable recovery {}", a.text("rest").unwrap_or(""));
+                stored(cx, a, Slot::Errdisable, line);
+            },
+        ),
+        n(
+            "interface <if>",
+            "Select an interface to configure",
+            interface,
+        ),
+        c(
+            "interface range <line:ports;Interface range>",
+            "interface range command",
+            interface_range,
+        ),
+        c(
+            "default interface <if>",
+            "Set a command to its defaults",
+            default_interface,
+        ),
         c("end", "Exit from configure mode", end),
         c("exit", "Exit from configure mode", end),
     ];
@@ -119,7 +304,7 @@ pub(crate) fn table(role: Role) -> Table {
                 nat_static,
             ),
             n(
-                "ip nat inside source list <word:acl;Access list name or number for local addresses> (interface <if> | pool <word:pool;Name pool of global addresses>) [overload]",
+                "ip nat inside source list <word:acl;Access list name or number for local addresses> ~ (interface <if> | pool <word:pool;Name pool of global addresses>) [overload]",
                 "Specify access list describing local addresses",
                 nat_rule,
             ),
@@ -190,7 +375,12 @@ fn snmp_stored(cx: &mut Cx, a: &Args, prefix: &str) {
 
 /// Hash a password the way "secret" passwords are stored.
 pub(crate) fn hash_secret(cx: &mut Cx, plain: &str) -> Secret {
-    let dice = rng::hash(&[cx.fx.seed, u64::from(cx.n.id), u64::from(cx.n.fresh_ident()), cx.fx.now]);
+    let dice = rng::hash(&[
+        cx.fx.seed,
+        u64::from(cx.n.id),
+        u64::from(cx.n.fresh_ident()),
+        cx.fx.now,
+    ]);
     let salt: String = (0..4).map(|i| crypt::salt_char(dice >> (i * 6))).collect();
     Secret::Md5(crypt::md5_crypt(plain, &salt))
 }
@@ -221,7 +411,11 @@ pub(crate) fn typed_secret(cx: &mut Cx, a: &Args, text: &str, is_secret: bool) -
         }
         return Some(Secret::Type7(text.to_string()));
     }
-    Some(if is_secret { hash_secret(cx, text) } else { store_password(cx, text) })
+    Some(if is_secret {
+        hash_secret(cx, text)
+    } else {
+        store_password(cx, text)
+    })
 }
 
 /// Persist the VLAN database the way a switch writes `vlan.dat` on every change.
@@ -238,14 +432,20 @@ fn end(cx: &mut Cx, _: &Args) {
 
 fn hostname(cx: &mut Cx, a: &Args) {
     if a.no {
-        let default = if cx.n.model.is_switch() { "Switch" } else { "Router" };
+        let default = if cx.n.model.is_switch() {
+            "Switch"
+        } else {
+            "Router"
+        };
         cx.cfg().hostname = default.to_string();
         return;
     }
     let name = a.text("name").unwrap_or("");
     let valid = name.len() <= 63
         && name.starts_with(|c: char| c.is_ascii_alphabetic())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
     if !valid {
         return cx.fail("% Hostname contains one or more illegal characters.");
     }
@@ -289,8 +489,12 @@ fn service_encryption(cx: &mut Cx, a: &Args) {
     let cfg = cx.cfg();
     encrypt(&mut cfg.enable_password);
     encrypt(&mut cfg.console.password);
-    cfg.vty.iter_mut().for_each(|line| encrypt(&mut line.password));
-    cfg.users.iter_mut().for_each(|user| encrypt(&mut user.secret));
+    cfg.vty
+        .iter_mut()
+        .for_each(|line| encrypt(&mut line.password));
+    cfg.users
+        .iter_mut()
+        .for_each(|user| encrypt(&mut user.secret));
 }
 
 fn service_timestamps(cx: &mut Cx, a: &Args) {
@@ -300,7 +504,9 @@ fn service_timestamps(cx: &mut Cx, a: &Args) {
         Timestamps::Uptime
     } else {
         // `service timestamps log` alone means datetime without milliseconds.
-        Timestamps::Datetime { msec: a.has("msec") }
+        Timestamps::Datetime {
+            msec: a.has("msec"),
+        }
     };
     let services = &mut cx.cfg().services;
     if a.has("debug") {
@@ -315,7 +521,11 @@ fn domain_lookup(cx: &mut Cx, a: &Args) {
 }
 
 fn domain_name(cx: &mut Cx, a: &Args) {
-    cx.cfg().domain_name = if a.no { None } else { a.text("domain").map(str::to_string) };
+    cx.cfg().domain_name = if a.no {
+        None
+    } else {
+        a.text("domain").map(str::to_string)
+    };
 }
 
 fn name_server(cx: &mut Cx, a: &Args) {
@@ -360,7 +570,11 @@ fn username(cx: &mut Cx, a: &Args) {
                 user.secret = secret;
             }
         }
-        None => users.push(User { name, privilege: privilege.unwrap_or(1), secret }),
+        None => users.push(User {
+            name,
+            privilege: privilege.unwrap_or(1),
+            secret,
+        }),
     }
 }
 
@@ -375,7 +589,9 @@ fn banner(cx: &mut Cx, a: &Args) {
         }
         return;
     }
-    let reply = cx.sh.begin_banner(cx.n, login, a.text("text").unwrap_or(""));
+    let reply = cx
+        .sh
+        .begin_banner(cx.n, login, a.text("text").unwrap_or(""));
     cx.out.push_str(&reply.out);
     cx.touched |= reply.touched;
 }
@@ -383,9 +599,15 @@ fn banner(cx: &mut Cx, a: &Args) {
 fn line_vty(cx: &mut Cx, a: &Args) {
     let first = a.num("first").unwrap_or(0) as u8;
     let last = a.num("last").map_or(first, |l| l as u8);
-    let lines = cx.n.cfg.vty.len() as u8;
-    if first > last || last >= lines {
+    let lines = cx.n.cfg.vty.len();
+    if first > last || usize::from(first) > lines {
         return cx.invalid();
+    }
+    // Naming lines beyond the ones that exist creates them, as on a real device.
+    if usize::from(last) >= lines {
+        cx.cfg()
+            .vty
+            .resize(usize::from(last) + 1, LineConfig::vty());
     }
     cx.sh.mode = Mode::Line(LineSel::Vty(first, last));
 }
@@ -395,16 +617,30 @@ fn crypto_key(cx: &mut Cx, a: &Args) {
         return cx.fail("% Please define a domain-name first.");
     }
     let bits = a.num("bits").unwrap_or(1024) as u16;
-    let name = format!("{}.{}", cx.n.cfg.hostname, cx.n.cfg.domain_name.clone().unwrap_or_default());
+    let name = format!(
+        "{}.{}",
+        cx.n.cfg.hostname,
+        cx.n.cfg.domain_name.clone().unwrap_or_default()
+    );
     cx.say(format!("The name for the keys will be: {name}"));
     cx.say(format!("% The key modulus size is {bits} bits"));
-    cx.say(format!("% Generating {bits} bit RSA keys, keys will be non-exportable...[OK]"));
+    cx.say(format!(
+        "% Generating {bits} bit RSA keys, keys will be non-exportable...[OK]"
+    ));
     cx.n.rsa_bits = Some(bits);
-    cx.n.log(cx.fx, 5, "SSH", "ENABLED", "SSH 1.99 has been enabled".to_string());
+    cx.n.log(
+        cx.fx,
+        5,
+        "SSH",
+        "ENABLED",
+        "SSH 1.99 has been enabled".to_string(),
+    );
 }
 
 fn default_network(cx: &mut Cx, a: &Args) {
-    let Some(network) = a.ip("network") else { return };
+    let Some(network) = a.ip("network") else {
+        return;
+    };
     let list = &mut cx.cfg().default_networks;
     list.retain(|n| *n != network);
     if !a.no {
@@ -434,14 +670,24 @@ fn ip_access_list(cx: &mut Cx, a: &Args) {
             ));
         }
         Some(_) => {}
-        None => cx.cfg().acls.push(Acl { name: name.clone(), extended, items: Vec::new() }),
+        None => cx.cfg().acls.push(Acl {
+            name: name.clone(),
+            extended,
+            items: Vec::new(),
+        }),
     }
-    cx.sh.mode = if extended { Mode::AclExt(name) } else { Mode::AclStd(name) };
+    cx.sh.mode = if extended {
+        Mode::AclExt(name)
+    } else {
+        Mode::AclStd(name)
+    };
 }
 
 fn numbered_acl(cx: &mut Cx, a: &Args) {
     let number = a.num("number").unwrap_or(0) as u32;
-    let Some(extended) = Acl::is_extended_number(number) else { return cx.invalid() };
+    let Some(extended) = Acl::is_extended_number(number) else {
+        return cx.invalid();
+    };
     let name = number.to_string();
     let Some(entry) = a.text("entry").map(str::to_string) else {
         // `no access-list N` removes the whole list.
@@ -450,12 +696,18 @@ fn numbered_acl(cx: &mut Cx, a: &Args) {
         return;
     };
     if cx.n.cfg.acl(&name).is_none() {
-        cx.cfg().acls.push(Acl { name: name.clone(), extended, items: Vec::new() });
+        cx.cfg().acls.push(Acl {
+            name: name.clone(),
+            extended,
+            items: Vec::new(),
+        });
     }
     crate::device::ios::run_acl_entry(cx, extended, &name, &entry, a.no);
     // An entry that failed to parse must not leave an empty list behind.
     if cx.error {
-        cx.n.cfg.acls.retain(|acl| acl.name != name || !acl.items.is_empty());
+        cx.n.cfg
+            .acls
+            .retain(|acl| acl.name != name || !acl.items.is_empty());
     }
 }
 
@@ -507,7 +759,11 @@ fn clock_timezone(cx: &mut Cx, a: &Args) {
         cx.cfg().clock_timezone = None;
         return;
     }
-    let Some(hours) = a.text("hours").and_then(|h| h.parse::<i8>().ok()).filter(|h| (-23..=23).contains(h)) else {
+    let Some(hours) = a
+        .text("hours")
+        .and_then(|h| h.parse::<i8>().ok())
+        .filter(|h| (-23..=23).contains(h))
+    else {
         return cx.invalid();
     };
     cx.cfg().clock_timezone = Some(Timezone {
@@ -522,7 +778,11 @@ fn snmp_community(cx: &mut Cx, a: &Args) {
     let list = &mut cx.cfg().snmp.communities;
     list.retain(|c| c.name != name);
     if !a.no {
-        list.push(SnmpCommunity { name, rw: a.has("rw"), acl: a.text("acl").map(str::to_string) });
+        list.push(SnmpCommunity {
+            name,
+            rw: a.has("rw"),
+            acl: a.text("acl").map(str::to_string),
+        });
     }
 }
 
@@ -572,7 +832,11 @@ fn parse_range(spec: &str) -> Option<Vec<IfId>> {
         let compact: String = part.chars().filter(|c| !c.is_whitespace()).collect();
         let (first, last) = match compact.rsplit_once('-') {
             // "Port-channel1" contains a dash that is not a range separator.
-            Some((head, tail)) if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) && IfId::parse(head).is_some() => {
+            Some((head, tail))
+                if !tail.is_empty()
+                    && tail.bytes().all(|b| b.is_ascii_digit())
+                    && IfId::parse(head).is_some() =>
+            {
                 (IfId::parse(head)?, tail.parse::<u32>().ok()?)
             }
             _ => {
@@ -591,7 +855,9 @@ fn parse_range(spec: &str) -> Option<Vec<IfId>> {
 }
 
 fn interface_range(cx: &mut Cx, a: &Args) {
-    let Some(ids) = parse_range(a.text("ports").unwrap_or("")) else { return cx.invalid() };
+    let Some(ids) = parse_range(a.text("ports").unwrap_or("")) else {
+        return cx.invalid();
+    };
     for id in &ids {
         if cx.n.cfg.interfaces.contains_key(id) {
             continue;
@@ -611,23 +877,33 @@ fn default_interface(cx: &mut Cx, a: &Args) {
         return cx.invalid();
     }
     let fresh = if id.is_physical() {
-        crate::device::config::DeviceConfig::factory(cx.n.model, "").interfaces.remove(&id).map(|mut cfg| {
-            // Defaulting a port leaves it enabled.
-            cfg.shutdown = false;
-            cfg
-        })
+        crate::device::config::DeviceConfig::factory(cx.n.model, "")
+            .interfaces
+            .remove(&id)
+            .map(|mut cfg| {
+                // Defaulting a port leaves it enabled.
+                cfg.shutdown = false;
+                cfg
+            })
     } else {
         Some(new_logical(cx, id))
     };
     if let Some(fresh) = fresh {
         cx.cfg().interfaces.insert(id, fresh);
-        cx.say(format!("Interface {} set to default configuration", id.name()));
+        cx.say(format!(
+            "Interface {} set to default configuration",
+            id.name()
+        ));
     }
 }
 
 fn ip_route(cx: &mut Cx, a: &Args) {
-    let (Some(prefix), Some(mask)) = (a.ip("prefix"), a.ip("mask")) else { return };
-    let Some(len) = len_from_mask(mask) else { return cx.fail("%Inconsistent address and mask") };
+    let (Some(prefix), Some(mask)) = (a.ip("prefix"), a.ip("mask")) else {
+        return;
+    };
+    let Some(len) = len_from_mask(mask) else {
+        return cx.fail("%Inconsistent address and mask");
+    };
     let prefix_net = Prefix::new(prefix, len);
     if prefix_net.net != prefix {
         return cx.fail("%Inconsistent address and mask");
@@ -636,7 +912,8 @@ fn ip_route(cx: &mut Cx, a: &Args) {
     if a.no {
         // Without a next hop every route to the prefix goes.
         cx.cfg().static_routes.retain(|r| {
-            r.prefix != prefix_net || (via.is_some() || iface.is_some()) && (r.via, r.iface) != (via, iface)
+            r.prefix != prefix_net
+                || (via.is_some() || iface.is_some()) && (r.via, r.iface) != (via, iface)
         });
         return;
     }
@@ -645,10 +922,20 @@ fn ip_route(cx: &mut Cx, a: &Args) {
     {
         return cx.invalid();
     }
-    if via.is_some_and(|v| cx.n.cfg.interfaces.values().any(|c| c.static_addr().is_some_and(|addr| addr.ip == v))) {
+    if via.is_some_and(|v| {
+        cx.n.cfg
+            .interfaces
+            .values()
+            .any(|c| c.static_addr().is_some_and(|addr| addr.ip == v))
+    }) {
         return cx.fail("%Invalid next hop address (it's this router)");
     }
-    let route = StaticRoute { prefix: prefix_net, via, iface, distance: a.num("distance").unwrap_or(1) as u8 };
+    let route = StaticRoute {
+        prefix: prefix_net,
+        via,
+        iface,
+        distance: a.num("distance").unwrap_or(1) as u8,
+    };
     let routes = &mut cx.cfg().static_routes;
     routes.retain(|r| (r.prefix, r.via, r.iface) != (route.prefix, route.via, route.iface));
     routes.push(route);
@@ -664,7 +951,9 @@ fn router_ospf(cx: &mut Cx, a: &Args) {
     }
     match cx.n.cfg.ospf.as_ref().map(|o| o.pid) {
         Some(existing) if existing != pid => {
-            return cx.fail(format!("% Only one OSPF process is supported; process {existing} is already configured"));
+            return cx.fail(format!(
+                "% Only one OSPF process is supported; process {existing} is already configured"
+            ));
         }
         Some(_) => {}
         None => {
@@ -692,12 +981,26 @@ fn router_rip(cx: &mut Cx, a: &Args) {
 }
 
 fn nat_static(cx: &mut Cx, a: &Args) {
-    let (Some(local), Some(global)) = (a.ip("local"), a.ip("global")) else { return };
+    let (Some(local), Some(global)) = (a.ip("local"), a.ip("global")) else {
+        return;
+    };
     let ports = match (a.num("lport"), a.num("gport")) {
-        (Some(l), Some(g)) => Some((if a.has("tcp") { NatProto::Tcp } else { NatProto::Udp }, l as u16, g as u16)),
+        (Some(l), Some(g)) => Some((
+            if a.has("tcp") {
+                NatProto::Tcp
+            } else {
+                NatProto::Udp
+            },
+            l as u16,
+            g as u16,
+        )),
         _ => None,
     };
-    let entry = NatStatic { local, global, ports };
+    let entry = NatStatic {
+        local,
+        global,
+        ports,
+    };
     let list = &mut cx.cfg().nat.statics;
     list.retain(|e| *e != entry);
     if !a.no {
@@ -710,7 +1013,11 @@ fn nat_rule(cx: &mut Cx, a: &Args) {
     let target = match (a.iface("if"), a.text("pool")) {
         (Some(iface), _) => NatTarget::Interface(iface),
         (None, Some(pool)) => NatTarget::Pool(pool.to_string()),
-        (None, None) => return,
+        (None, None) => {
+            // `no ip nat inside source list N`: remove the rule for that list.
+            cx.cfg().nat.rules.retain(|r| r.acl != acl);
+            return;
+        }
     };
     if let NatTarget::Pool(pool) = &target
         && !a.no
@@ -721,40 +1028,66 @@ fn nat_rule(cx: &mut Cx, a: &Args) {
     let list = &mut cx.cfg().nat.rules;
     list.retain(|r| r.acl != acl);
     if !a.no {
-        list.push(NatRule { acl, target, overload: a.has("overload") });
+        list.push(NatRule {
+            acl,
+            target,
+            overload: a.has("overload"),
+        });
     }
 }
 
 fn nat_pool(cx: &mut Cx, a: &Args) {
     let name = a.text("name").unwrap_or("").to_string();
     if a.no {
-        if cx.n.cfg.nat.rules.iter().any(|r| r.target == NatTarget::Pool(name.clone())) {
+        if cx
+            .n
+            .cfg
+            .nat
+            .rules
+            .iter()
+            .any(|r| r.target == NatTarget::Pool(name.clone()))
+        {
             return cx.fail(format!("%Pool {name} in use, cannot destroy"));
         }
         cx.cfg().nat.pools.retain(|p| p.name != name);
         return;
     }
-    let (Some(start), Some(end)) = (a.ip("start"), a.ip("end")) else { return };
+    let (Some(start), Some(end)) = (a.ip("start"), a.ip("end")) else {
+        return;
+    };
     let prefix_len = match (a.ip("mask").map(len_from_mask), a.num("len")) {
         (Some(Some(len)), _) => len,
         (None, Some(len)) => len as u8,
         _ => return cx.fail("%Invalid netmask"),
     };
-    if u32::from(end) < u32::from(start) || Prefix::new(start, prefix_len) != Prefix::new(end, prefix_len) {
+    if u32::from(end) < u32::from(start)
+        || Prefix::new(start, prefix_len) != Prefix::new(end, prefix_len)
+    {
         return cx.fail("%End address less than start address, or not in the same subnet");
     }
     let pools = &mut cx.cfg().nat.pools;
     pools.retain(|p| p.name != name);
-    pools.push(NatPool { name, start, end, prefix_len, as_prefix: a.has("prefix-length") });
+    pools.push(NatPool {
+        name,
+        start,
+        end,
+        prefix_len,
+        as_prefix: a.has("prefix-length"),
+    });
 }
 
 fn vlan(cx: &mut Cx, a: &Args) {
-    let Some(ids) = parse_ranges(a.text("list").unwrap_or(""), 1, 4094) else { return cx.invalid() };
+    let Some(ids) = parse_ranges(a.text("list").unwrap_or(""), 1, 4094) else {
+        return cx.invalid();
+    };
     if cx.n.cfg.vtp.mode == VtpMode::Client {
         return cx.fail("VTP VLAN configuration not allowed when device is in CLIENT mode.");
     }
     if let Some(reserved) = ids.iter().find(|id| (1002..=1005).contains(*id)) {
-        return cx.fail(format!("%Default VLAN {reserved} may not be {} .", if a.no { "deleted" } else { "configured" }));
+        return cx.fail(format!(
+            "%Default VLAN {reserved} may not be {} .",
+            if a.no { "deleted" } else { "configured" }
+        ));
     }
     if a.no {
         if ids.contains(&1) {
@@ -797,7 +1130,9 @@ fn vtp_mode(cx: &mut Cx, a: &Args) {
 }
 
 fn stp_priority(cx: &mut Cx, a: &Args) {
-    let Some(vlans) = parse_ranges(a.text("vlans").unwrap_or(""), 1, 4094) else { return cx.invalid() };
+    let Some(vlans) = parse_ranges(a.text("vlans").unwrap_or(""), 1, 4094) else {
+        return cx.invalid();
+    };
     if a.no {
         for vlan in vlans {
             cx.cfg().stp.priority.remove(&vlan);
@@ -822,16 +1157,24 @@ fn stp_priority(cx: &mut Cx, a: &Args) {
 }
 
 fn stp_root(cx: &mut Cx, a: &Args) {
-    let Some(vlans) = parse_ranges(a.text("vlans").unwrap_or(""), 1, 4094) else { return cx.invalid() };
+    let Some(vlans) = parse_ranges(a.text("vlans").unwrap_or(""), 1, 4094) else {
+        return cx.invalid();
+    };
     for vlan in vlans {
         // The macro picks a priority that beats the current root where it can.
-        let current_root = cx.n.stp.vlans.get(&vlan).map(|v| v.root.priority.saturating_sub(vlan));
+        let current_root =
+            cx.n.stp
+                .vlans
+                .get(&vlan)
+                .map(|v| v.root.priority.saturating_sub(vlan));
         let own = cx.n.cfg.stp.priority_of(vlan);
         let priority = if a.has("secondary") {
             28672
         } else {
             match current_root {
-                Some(root) if root < 24576 + 1 && root != own => root.saturating_sub(4096) / 4096 * 4096,
+                Some(root) if root < 24576 + 1 && root != own => {
+                    root.saturating_sub(4096) / 4096 * 4096
+                }
                 _ => 24576,
             }
         };
@@ -854,11 +1197,22 @@ mod tests {
 
     #[test]
     fn interface_ranges() {
-        let names = |spec: &str| parse_range(spec).map(|ids| ids.iter().map(|i| i.short()).collect::<Vec<_>>().join(","));
-        assert_eq!(names("fa0/1 - 4").as_deref(), Some("Fa0/1,Fa0/2,Fa0/3,Fa0/4"));
+        let names = |spec: &str| {
+            parse_range(spec).map(|ids| ids.iter().map(|i| i.short()).collect::<Vec<_>>().join(","))
+        };
+        assert_eq!(
+            names("fa0/1 - 4").as_deref(),
+            Some("Fa0/1,Fa0/2,Fa0/3,Fa0/4")
+        );
         assert_eq!(names("fa0/1-2,gi0/1").as_deref(), Some("Fa0/1,Fa0/2,Gi0/1"));
-        assert_eq!(names("FastEthernet0/23 - 24 , GigabitEthernet0/1 - 2").as_deref(), Some("Fa0/23,Fa0/24,Gi0/1,Gi0/2"));
-        assert_eq!(names("gi1/0/1-3").as_deref(), Some("Gi1/0/1,Gi1/0/2,Gi1/0/3"));
+        assert_eq!(
+            names("FastEthernet0/23 - 24 , GigabitEthernet0/1 - 2").as_deref(),
+            Some("Fa0/23,Fa0/24,Gi0/1,Gi0/2")
+        );
+        assert_eq!(
+            names("gi1/0/1-3").as_deref(),
+            Some("Gi1/0/1,Gi1/0/2,Gi1/0/3")
+        );
         assert_eq!(names("po1").as_deref(), Some("Po1"));
         assert_eq!(names("Port-channel1").as_deref(), Some("Po1"));
         assert_eq!(names("vlan 10 - 12").as_deref(), Some("Vl10,Vl11,Vl12"));

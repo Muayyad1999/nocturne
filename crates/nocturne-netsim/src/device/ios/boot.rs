@@ -9,7 +9,12 @@ use crate::sim::node::Node;
 
 /// Apply configuration text line by line in global configuration mode.
 /// Returns the lines that were rejected, with the device's response.
-pub(crate) fn apply_lines(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, text: &str) -> Vec<(String, String)> {
+pub(crate) fn apply_lines(
+    shell: &mut IosShell,
+    node: &mut Node,
+    fx: &mut Fx,
+    text: &str,
+) -> Vec<(String, String)> {
     let mut rejected = Vec::new();
     for line in text.lines() {
         let reply = shell.execute(node, fx, line);

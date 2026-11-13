@@ -77,11 +77,18 @@ pub(crate) struct Vlan {
 
 impl Vlan {
     pub(crate) fn default_name(id: u16) -> String {
-        if id == 1 { "default".to_string() } else { format!("VLAN{id:04}") }
+        if id == 1 {
+            "default".to_string()
+        } else {
+            format!("VLAN{id:04}")
+        }
     }
 
     pub(crate) fn new(id: u16) -> Vlan {
-        Vlan { name: Vlan::default_name(id), active: true }
+        Vlan {
+            name: Vlan::default_name(id),
+            active: true,
+        }
     }
 }
 
@@ -159,7 +166,11 @@ impl VlanSet {
 
 impl std::fmt::Debug for VlanSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_all() { f.write_str("ALL") } else { f.write_str(&self.to_ranges()) }
+        if self.is_all() {
+            f.write_str("ALL")
+        } else {
+            f.write_str(&self.to_ranges())
+        }
     }
 }
 
@@ -232,7 +243,13 @@ pub(crate) struct PortSecurity {
 
 impl Default for PortSecurity {
     fn default() -> Self {
-        PortSecurity { enabled: false, maximum: 1, violation: Violation::Shutdown, sticky: false, macs: Vec::new() }
+        PortSecurity {
+            enabled: false,
+            maximum: 1,
+            violation: Violation::Shutdown,
+            sticky: false,
+            macs: Vec::new(),
+        }
     }
 }
 
@@ -299,7 +316,11 @@ impl ChannelMode {
         use ChannelMode::{Active, Auto, Desirable, On, Passive};
         matches!(
             (self, other),
-            (On, On) | (Active, Active | Passive) | (Passive, Active) | (Desirable, Desirable | Auto) | (Auto, Desirable)
+            (On, On)
+                | (Active, Active | Passive)
+                | (Passive, Active)
+                | (Desirable, Desirable | Auto)
+                | (Auto, Desirable)
         )
     }
 }
@@ -433,13 +454,20 @@ impl Area {
         if let Ok(id) = text.parse::<u32>() {
             return Some(Area { id, dotted: false });
         }
-        crate::util::net::parse_ip(text).map(|ip| Area { id: u32::from(ip), dotted: true })
+        crate::util::net::parse_ip(text).map(|ip| Area {
+            id: u32::from(ip),
+            dotted: true,
+        })
     }
 }
 
 impl std::fmt::Display for Area {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.dotted { write!(f, "{}", Ipv4Addr::from(self.id)) } else { write!(f, "{}", self.id) }
+        if self.dotted {
+            write!(f, "{}", Ipv4Addr::from(self.id))
+        } else {
+            write!(f, "{}", self.id)
+        }
     }
 }
 
@@ -484,7 +512,11 @@ impl OspfConfig {
     }
 
     pub(crate) fn is_passive(&self, iface: IfId) -> bool {
-        if self.passive_default { !self.active.contains(&iface) } else { self.passive.contains(&iface) }
+        if self.passive_default {
+            !self.active.contains(&iface)
+        } else {
+            self.passive.contains(&iface)
+        }
     }
 }
 
@@ -514,7 +546,11 @@ impl RipConfig {
     }
 
     pub(crate) fn is_passive(&self, iface: IfId) -> bool {
-        if self.passive_default { !self.active.contains(&iface) } else { self.passive.contains(&iface) }
+        if self.passive_default {
+            !self.active.contains(&iface)
+        } else {
+            self.passive.contains(&iface)
+        }
     }
 }
 
@@ -649,13 +685,17 @@ impl Acl {
     }
 
     pub(crate) fn next_seq(&self) -> u32 {
-        self.rules().map(|r| r.seq).max().map_or(10, |max| max.saturating_add(10))
+        self.rules()
+            .map(|r| r.seq)
+            .max()
+            .map_or(10, |max| max.saturating_add(10))
     }
 
     /// Insert keeping rules ordered by sequence number; an existing rule with the
     /// same sequence number is replaced.
     pub(crate) fn insert(&mut self, rule: AclRule) {
-        self.items.retain(|item| !matches!(item, AclItem::Rule(r) if r.seq == rule.seq));
+        self.items
+            .retain(|item| !matches!(item, AclItem::Rule(r) if r.seq == rule.seq));
         let at = self
             .items
             .iter()
@@ -723,7 +763,9 @@ pub(crate) enum Lease {
 impl Lease {
     pub(crate) fn seconds(self) -> Option<u64> {
         match self {
-            Lease::Time(d, h, m) => Some(u64::from(d) * 86_400 + u64::from(h) * 3600 + u64::from(m) * 60),
+            Lease::Time(d, h, m) => {
+                Some(u64::from(d) * 86_400 + u64::from(h) * 3600 + u64::from(m) * 60)
+            }
             Lease::Infinite => None,
         }
     }
@@ -799,7 +841,10 @@ impl LineConfig {
     }
 
     pub(crate) fn vty() -> LineConfig {
-        LineConfig { login: LoginMode::Password, ..LineConfig::console() }
+        LineConfig {
+            login: LoginMode::Password,
+            ..LineConfig::console()
+        }
     }
 
     /// Idle time after which the session is logged out, `None` = never.
@@ -898,7 +943,9 @@ impl DeviceConfig {
             match model.role {
                 // Router ports are administratively down until configured.
                 Role::Router => cfg.shutdown = true,
-                Role::L2Switch | Role::L3Switch => cfg.l2 = Some(Switchport::new(SwMode::DynamicAuto)),
+                Role::L2Switch | Role::L3Switch => {
+                    cfg.l2 = Some(Switchport::new(SwMode::DynamicAuto))
+                }
                 Role::Host | Role::Cloud | Role::Bridge => {}
             }
             interfaces.insert(*port, cfg);
@@ -930,7 +977,10 @@ impl DeviceConfig {
             default_networks: Vec::new(),
             dhcp_excluded: Vec::new(),
             dhcp_pools: Vec::new(),
-            vtp: Vtp { mode: VtpMode::Server, domain: String::new() },
+            vtp: Vtp {
+                mode: VtpMode::Server,
+                domain: String::new(),
+            },
             vlans,
             stp: StpConfig {
                 mode: StpMode::Pvst,
@@ -944,7 +994,12 @@ impl DeviceConfig {
             static_routes: Vec::new(),
             acls: Vec::new(),
             nat: NatConfig::default(),
-            logging: Logging { console: true, buffered: None, hosts: Vec::new(), trap: None },
+            logging: Logging {
+                console: true,
+                buffered: None,
+                hosts: Vec::new(),
+                trap: None,
+            },
             snmp: Snmp::default(),
             ntp_servers: Vec::new(),
             banner_motd: None,
@@ -990,7 +1045,10 @@ impl DeviceConfig {
 
     /// Sub-interfaces of a physical port.
     pub(crate) fn subinterfaces(&self, parent: IfId) -> impl Iterator<Item = (IfId, &IfConfig)> {
-        self.interfaces.iter().filter(move |(id, _)| id.is_sub() && id.parent() == parent).map(|(id, cfg)| (*id, cfg))
+        self.interfaces
+            .iter()
+            .filter(move |(id, _)| id.is_sub() && id.parent() == parent)
+            .map(|(id, cfg)| (*id, cfg))
     }
 }
 
@@ -1001,7 +1059,9 @@ pub(crate) fn can_create(model: &Model, id: IfId) -> bool {
         (IfKind::Vlan, false) => model.is_switch() && (1..=4094).contains(&id.number()),
         (IfKind::PortChannel, false) => model.is_switch() && (1..=48).contains(&id.number()),
         (_, true) => {
-            id.kind.is_physical() && model.ports.contains(&id.parent()) && matches!(model.role, Role::Router | Role::L3Switch)
+            id.kind.is_physical()
+                && model.ports.contains(&id.parent())
+                && matches!(model.role, Role::Router | Role::L3Switch)
         }
         _ => false,
     }
@@ -1015,7 +1075,13 @@ mod tests {
     #[test]
     fn vlan_sets() {
         let mut set = VlanSet::all();
-        assert!(set.is_all() && set.contains(1) && set.contains(4094) && !set.contains(0) && !set.contains(4095));
+        assert!(
+            set.is_all()
+                && set.contains(1)
+                && set.contains(4094)
+                && !set.contains(0)
+                && !set.contains(4095)
+        );
         set.remove(10);
         assert!(!set.is_all() && !set.contains(10));
         let set = VlanSet::from_ids(&[10, 20, 30, 31, 32]);
@@ -1026,7 +1092,13 @@ mod tests {
     #[test]
     fn factory_defaults() {
         let router = DeviceConfig::factory(model("router").unwrap(), "R1");
-        assert!(router.ip_routing && router.interfaces.values().all(|i| i.shutdown && i.l2.is_none()));
+        assert!(
+            router.ip_routing
+                && router
+                    .interfaces
+                    .values()
+                    .all(|i| i.shutdown && i.l2.is_none())
+        );
         assert_eq!(router.vty.len(), 5);
         let switch = DeviceConfig::factory(model("switch").unwrap(), "SW1");
         assert!(!switch.ip_routing && switch.vlans.contains_key(&1));
@@ -1061,7 +1133,11 @@ mod tests {
             established: false,
             log: false,
         };
-        let mut acl = Acl { name: "T".into(), extended: false, items: Vec::new() };
+        let mut acl = Acl {
+            name: "T".into(),
+            extended: false,
+            items: Vec::new(),
+        };
         assert_eq!(acl.next_seq(), 10);
         acl.insert(rule(10));
         acl.insert(rule(30));

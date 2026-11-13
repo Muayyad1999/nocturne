@@ -11,7 +11,9 @@ use crate::catalog::Role;
 use crate::device::config::NatSide;
 use crate::ifname::IfId;
 use crate::sim::acl::Verdict;
-use crate::sim::frame::{Body, Frame, Icmp, L4, Meta, Packet, TcpFlags, UdpApp, Unreach, multicast_mac};
+use crate::sim::frame::{
+    Body, Frame, Icmp, L4, Meta, Packet, TcpFlags, UdpApp, Unreach, multicast_mac,
+};
 use crate::sim::fx::{Fx, Why};
 use crate::sim::node::Node;
 use crate::sim::rib::{Resolved, Source};
@@ -59,12 +61,25 @@ impl Node {
         if !(fx.capture || meta.trace.is_some()) {
             return meta.via;
         }
-        let frame = Frame { src: l2.0, dst: l2.1, tag: None, body: Body::Ip(packet.clone()), meta: *meta };
+        let frame = Frame {
+            src: l2.0,
+            dst: l2.1,
+            tag: None,
+            body: Body::Ip(packet.clone()),
+            meta: *meta,
+        };
         fx.note(self.id, kind, &frame, iface, why, decision)
     }
 
     /// An IPv4 packet arrived on layer-3 interface `iface`.
-    pub(crate) fn ip_rx(&mut self, fx: &mut Fx, iface: IfId, mut packet: Packet, meta: Meta, l2_src: Mac) {
+    pub(crate) fn ip_rx(
+        &mut self,
+        fx: &mut Fx,
+        iface: IfId,
+        mut packet: Packet,
+        meta: Meta,
+        l2_src: Mac,
+    ) {
         let l2 = (l2_src, self.mac_for(iface));
         let noun = self.noun();
         let (acl_in, nat_side) = match self.cfg.iface(iface) {
@@ -74,10 +89,28 @@ impl Node {
         if let Some(name) = acl_in
             && let Verdict::Deny(line) = self.acl_eval(fx, &name, &packet)
         {
-            self.ip_note(fx, PacketEventKind::Dropped, &packet, &meta, l2, Some(iface), Some(Why::Fatal), || {
-                format!("The {noun}'s inbound ACL {name} on {} {line}: the packet is dropped.", iface.short())
-            });
-            self.icmp_error(fx, Some(iface), &packet, &meta, IcmpError::Unreachable(Unreach::AdminProhibited));
+            self.ip_note(
+                fx,
+                PacketEventKind::Dropped,
+                &packet,
+                &meta,
+                l2,
+                Some(iface),
+                Some(Why::Fatal),
+                || {
+                    format!(
+                        "The {noun}'s inbound ACL {name} on {} {line}: the packet is dropped.",
+                        iface.short()
+                    )
+                },
+            );
+            self.icmp_error(
+                fx,
+                Some(iface),
+                &packet,
+                &meta,
+                IcmpError::Unreachable(Unreach::AdminProhibited),
+            );
             return;
         }
         let mut remark = String::new();
@@ -103,7 +136,10 @@ impl Node {
         dst.is_broadcast()
             || is_multicast(dst)
             || self.rib.addrs.iter().any(|(_, a)| a.ip == dst)
-            || self.addrs(iface).iter().any(|a| a.len < 31 && a.subnet().broadcast() == dst)
+            || self
+                .addrs(iface)
+                .iter()
+                .any(|a| a.len < 31 && a.subnet().broadcast() == dst)
             || self.hsrp_owns_ip(dst)
     }
 
@@ -147,21 +183,45 @@ impl Node {
                 }
             });
             if transit {
-                self.icmp_error(fx, in_iface, &packet, &meta, IcmpError::Unreachable(Unreach::Host));
+                self.icmp_error(
+                    fx,
+                    in_iface,
+                    &packet,
+                    &meta,
+                    IcmpError::Unreachable(Unreach::Host),
+                );
             }
             return Sent::NoRoute;
         };
         let out = resolved.iface;
         let out_cfg = self.cfg.iface(out);
-        let (acl_out, out_nat) = (out_cfg.and_then(|c| c.acl_out.clone()), out_cfg.and_then(|c| c.nat));
+        let (acl_out, out_nat) = (
+            out_cfg.and_then(|c| c.acl_out.clone()),
+            out_cfg.and_then(|c| c.nat),
+        );
         let in_nat = in_iface.and_then(|i| self.cfg.iface(i)).and_then(|c| c.nat);
         if in_nat == Some(NatSide::Inside) && out_nat == Some(NatSide::Outside) {
             match self.nat_outbound(fx, &mut packet, out) {
                 Ok(Some(text)) => remark.push_str(&text),
                 Ok(None) => {}
                 Err(text) => {
-                    self.ip_note(fx, PacketEventKind::Dropped, &packet, &meta, l2, in_iface, Some(Why::Fatal), || text);
-                    self.icmp_error(fx, in_iface, &packet, &meta, IcmpError::Unreachable(Unreach::Host));
+                    self.ip_note(
+                        fx,
+                        PacketEventKind::Dropped,
+                        &packet,
+                        &meta,
+                        l2,
+                        in_iface,
+                        Some(Why::Fatal),
+                        || text,
+                    );
+                    self.icmp_error(
+                        fx,
+                        in_iface,
+                        &packet,
+                        &meta,
+                        IcmpError::Unreachable(Unreach::Host),
+                    );
                     return Sent::Refused;
                 }
             }
@@ -170,10 +230,28 @@ impl Node {
             && let Some(name) = acl_out
             && let Verdict::Deny(line) = self.acl_eval(fx, &name, &packet)
         {
-            self.ip_note(fx, PacketEventKind::Dropped, &packet, &meta, l2, Some(out), Some(Why::Fatal), || {
-                format!("The {noun}'s outbound ACL {name} on {} {line}: the packet is dropped.", out.short())
-            });
-            self.icmp_error(fx, in_iface, &packet, &meta, IcmpError::Unreachable(Unreach::AdminProhibited));
+            self.ip_note(
+                fx,
+                PacketEventKind::Dropped,
+                &packet,
+                &meta,
+                l2,
+                Some(out),
+                Some(Why::Fatal),
+                || {
+                    format!(
+                        "The {noun}'s outbound ACL {name} on {} {line}: the packet is dropped.",
+                        out.short()
+                    )
+                },
+            );
+            self.icmp_error(
+                fx,
+                in_iface,
+                &packet,
+                &meta,
+                IcmpError::Unreachable(Unreach::AdminProhibited),
+            );
             return Sent::Refused;
         }
         if transit {
@@ -195,9 +273,21 @@ impl Node {
             return Sent::ArpPending;
         };
         let src_mac = self.mac_for(out);
-        meta.via = self.ip_note(fx, PacketEventKind::Forwarded, &packet, &meta, (src_mac, mac), Some(out), None, || {
-            format!("{remark}{}", self.route_text(&resolved, &packet, mac, transit))
-        });
+        meta.via = self.ip_note(
+            fx,
+            PacketEventKind::Forwarded,
+            &packet,
+            &meta,
+            (src_mac, mac),
+            Some(out),
+            None,
+            || {
+                format!(
+                    "{remark}{}",
+                    self.route_text(&resolved, &packet, mac, transit)
+                )
+            },
+        );
         self.l3_tx(fx, out, src_mac, mac, Body::Ip(packet), meta);
         Sent::Ok
     }
@@ -221,7 +311,11 @@ impl Node {
                 "the longest match for {dst} is {} {}{} via {}, out of {out}; the frame is addressed to the next hop's MAC {mac}",
                 source.code(),
                 route.prefix,
-                if route.prefix.len == 0 { " (the default route)" } else { "" },
+                if route.prefix.len == 0 {
+                    " (the default route)"
+                } else {
+                    ""
+                },
                 resolved.next_hop
             ),
         };
@@ -246,7 +340,12 @@ impl Node {
     ) -> (u64, Sent) {
         let mut meta = match cause {
             Some(cause) => self.caused(fx, cause),
-            None => Meta { pdu: fx.new_pdu(), trace, via: 0, hops: 0 },
+            None => Meta {
+                pdu: fx.new_pdu(),
+                trace,
+                via: 0,
+                hops: 0,
+            },
         };
         let noun = self.noun();
         let l2 = (Mac::ZERO, Mac::ZERO);
@@ -264,34 +363,80 @@ impl Node {
                 }
             }
         }
-        meta.via = self.ip_note(fx, PacketEventKind::Created, &packet, &meta, l2, None, None, || {
-            format!("The {noun} builds the packet: {}.", packet.summary())
-        });
+        meta.via = self.ip_note(
+            fx,
+            PacketEventKind::Created,
+            &packet,
+            &meta,
+            l2,
+            None,
+            None,
+            || format!("The {noun} builds the packet: {}.", packet.summary()),
+        );
         let pdu = meta.pdu;
-        if let Some((iface, _)) = self.rib.addrs.iter().find(|(_, a)| a.ip == packet.dst).copied() {
+        if let Some((iface, _)) = self
+            .rib
+            .addrs
+            .iter()
+            .find(|(_, a)| a.ip == packet.dst)
+            .copied()
+        {
             self.ip_local(fx, iface, packet, meta, l2);
             return (pdu, Sent::Ok);
         }
-        (pdu, self.ip_forward(fx, None, packet, meta, l2, String::new()))
+        (
+            pdu,
+            self.ip_forward(fx, None, packet, meta, l2, String::new()),
+        )
     }
 
     /// Originate a link-local packet (broadcast or multicast) on one interface.
-    pub(crate) fn ip_send_on(&mut self, fx: &mut Fx, iface: IfId, packet: Packet, cause: Option<&Meta>, why: impl FnOnce() -> String) {
+    pub(crate) fn ip_send_on(
+        &mut self,
+        fx: &mut Fx,
+        iface: IfId,
+        packet: Packet,
+        cause: Option<&Meta>,
+        why: impl FnOnce() -> String,
+    ) {
         if !self.is_up(iface) {
             return;
         }
         let mut meta = match cause {
             Some(cause) => self.caused(fx, cause),
-            None => Meta { pdu: fx.new_pdu(), ..Meta::default() },
+            None => Meta {
+                pdu: fx.new_pdu(),
+                ..Meta::default()
+            },
         };
-        let dst_mac = if is_multicast(packet.dst) { multicast_mac(packet.dst) } else { Mac::BROADCAST };
+        let dst_mac = if is_multicast(packet.dst) {
+            multicast_mac(packet.dst)
+        } else {
+            Mac::BROADCAST
+        };
         let src_mac = self.mac_for(iface);
-        meta.via = self.ip_note(fx, PacketEventKind::Created, &packet, &meta, (src_mac, dst_mac), Some(iface), None, why);
+        meta.via = self.ip_note(
+            fx,
+            PacketEventKind::Created,
+            &packet,
+            &meta,
+            (src_mac, dst_mac),
+            Some(iface),
+            None,
+            why,
+        );
         self.l3_tx(fx, iface, src_mac, dst_mac, Body::Ip(packet), meta);
     }
 
     /// Send an ICMP error about `original` back to its source.
-    pub(crate) fn icmp_error(&mut self, fx: &mut Fx, in_iface: Option<IfId>, original: &Packet, meta: &Meta, error: IcmpError) {
+    pub(crate) fn icmp_error(
+        &mut self,
+        fx: &mut Fx,
+        in_iface: Option<IfId>,
+        original: &Packet,
+        meta: &Meta,
+        error: IcmpError,
+    ) {
         if original.is_icmp_error()
             || original.dst.is_broadcast()
             || is_multicast(original.dst)
@@ -299,19 +444,34 @@ impl Node {
         {
             return;
         }
-        let src = in_iface.and_then(|i| self.addr(i)).map(|a| a.ip).unwrap_or(Ipv4Addr::UNSPECIFIED);
+        let src = in_iface
+            .and_then(|i| self.addr(i))
+            .map(|a| a.ip)
+            .unwrap_or(Ipv4Addr::UNSPECIFIED);
         let icmp = match error {
-            IcmpError::TimeExceeded => Icmp::TimeExceeded { orig: original.orig() },
-            IcmpError::Unreachable(code) => Icmp::Unreachable { code, orig: original.orig() },
+            IcmpError::TimeExceeded => Icmp::TimeExceeded {
+                orig: original.orig(),
+            },
+            IcmpError::Unreachable(code) => Icmp::Unreachable {
+                code,
+                orig: original.orig(),
+            },
         };
-        let packet = Packet { src, dst: original.src, ttl: self.default_ttl(), size: 56, l4: L4::Icmp(icmp) };
+        let packet = Packet {
+            src,
+            dst: original.src,
+            ttl: self.default_ttl(),
+            size: 56,
+            l4: L4::Icmp(icmp),
+        };
         self.ip_send(fx, packet, None, Some(meta));
     }
 
     /// A packet addressed to this node.
     fn ip_local(&mut self, fx: &mut Fx, iface: IfId, packet: Packet, meta: Meta, l2: (Mac, Mac)) {
         let noun = self.noun();
-        let owned = self.rib.addrs.iter().any(|(_, a)| a.ip == packet.dst) || self.hsrp_owns_ip(packet.dst);
+        let owned =
+            self.rib.addrs.iter().any(|(_, a)| a.ip == packet.dst) || self.hsrp_owns_ip(packet.dst);
         match &packet.l4 {
             L4::Icmp(Icmp::EchoRequest { id, seq }) => {
                 // Answer unicast and broadcast pings, not multicast ones.
@@ -339,15 +499,40 @@ impl Node {
                 self.ip_send(fx, reply, None, Some(&Meta { via, ..meta }));
             }
             L4::Icmp(Icmp::EchoReply { id, seq }) => {
-                self.ip_note(fx, PacketEventKind::Delivered, &packet, &meta, l2, Some(iface), None, || {
-                    format!("The echo reply from {} reaches the {noun} that sent the request.", packet.src)
-                });
+                self.ip_note(
+                    fx,
+                    PacketEventKind::Delivered,
+                    &packet,
+                    &meta,
+                    l2,
+                    Some(iface),
+                    None,
+                    || {
+                        format!(
+                            "The echo reply from {} reaches the {noun} that sent the request.",
+                            packet.src
+                        )
+                    },
+                );
                 self.proc_echo_reply(fx, &packet, *id, *seq);
             }
             L4::Icmp(icmp @ (Icmp::Unreachable { .. } | Icmp::TimeExceeded { .. })) => {
-                self.ip_note(fx, PacketEventKind::Delivered, &packet, &meta, l2, Some(iface), None, || {
-                    format!("{} reports a problem with a packet this {noun} sent: {}.", packet.src, packet.summary())
-                });
+                self.ip_note(
+                    fx,
+                    PacketEventKind::Delivered,
+                    &packet,
+                    &meta,
+                    l2,
+                    Some(iface),
+                    None,
+                    || {
+                        format!(
+                            "{} reports a problem with a packet this {noun} sent: {}.",
+                            packet.src,
+                            packet.summary()
+                        )
+                    },
+                );
                 self.proc_icmp_error(fx, packet.src, *icmp);
             }
             L4::Udp { .. } => self.udp_rx(fx, iface, packet, meta, l2, owned),
@@ -359,9 +544,19 @@ impl Node {
         }
     }
 
-    fn udp_rx(&mut self, fx: &mut Fx, iface: IfId, packet: Packet, meta: Meta, l2: (Mac, Mac), owned: bool) {
+    fn udp_rx(
+        &mut self,
+        fx: &mut Fx,
+        iface: IfId,
+        packet: Packet,
+        meta: Meta,
+        l2: (Mac, Mac),
+        owned: bool,
+    ) {
         let noun = self.noun();
-        let L4::Udp { sport, dport, app } = &packet.l4 else { return };
+        let L4::Udp { sport, dport, app } = &packet.l4 else {
+            return;
+        };
         match app {
             UdpApp::Dhcp(msg) => {
                 let msg = msg.clone();
@@ -378,9 +573,16 @@ impl Node {
             }
             UdpApp::Syslog | UdpApp::Data if !owned => {}
             UdpApp::Syslog if self.has_service("syslog") => {
-                self.ip_note(fx, PacketEventKind::Delivered, &packet, &meta, l2, Some(iface), None, || {
-                    format!("The syslog service on this {noun} stores the message.")
-                });
+                self.ip_note(
+                    fx,
+                    PacketEventKind::Delivered,
+                    &packet,
+                    &meta,
+                    l2,
+                    Some(iface),
+                    None,
+                    || format!("The syslog service on this {noun} stores the message."),
+                );
             }
             UdpApp::Syslog | UdpApp::Data => {
                 // Nothing listens: the datagram arrived, which is what a UDP
@@ -395,14 +597,35 @@ impl Node {
                     )
                 });
                 let _ = sport;
-                self.icmp_error(fx, Some(iface), &packet, &Meta { via, ..meta }, IcmpError::Unreachable(Unreach::Port));
+                self.icmp_error(
+                    fx,
+                    Some(iface),
+                    &packet,
+                    &Meta { via, ..meta },
+                    IcmpError::Unreachable(Unreach::Port),
+                );
             }
         }
     }
 
-    fn tcp_rx(&mut self, fx: &mut Fx, iface: IfId, packet: Packet, meta: Meta, l2: (Mac, Mac), owned: bool) {
+    fn tcp_rx(
+        &mut self,
+        fx: &mut Fx,
+        iface: IfId,
+        packet: Packet,
+        meta: Meta,
+        l2: (Mac, Mac),
+        owned: bool,
+    ) {
         let noun = self.noun();
-        let L4::Tcp { sport, dport, flags } = packet.l4 else { return };
+        let L4::Tcp {
+            sport,
+            dport,
+            flags,
+        } = packet.l4
+        else {
+            return;
+        };
         if !owned {
             return;
         }
@@ -424,7 +647,11 @@ impl Node {
                     l4: L4::Tcp {
                         sport: dport,
                         dport: sport,
-                        flags: if open { TcpFlags::SynAck } else { TcpFlags::Rst },
+                        flags: if open {
+                            TcpFlags::SynAck
+                        } else {
+                            TcpFlags::Rst
+                        },
                     },
                 };
                 self.ip_send(fx, reply, None, Some(&Meta { via, ..meta }));
@@ -449,8 +676,16 @@ impl Node {
             return match port {
                 23 => self.vty_accepts(false, from),
                 22 => self.vty_accepts(true, from),
-                80 => self.cfg.stored.iter().any(|(_, line)| line == "ip http server"),
-                443 => self.cfg.stored.iter().any(|(_, line)| line == "ip http secure-server"),
+                80 => self
+                    .cfg
+                    .stored
+                    .iter()
+                    .any(|(_, line)| line == "ip http server"),
+                443 => self
+                    .cfg
+                    .stored
+                    .iter()
+                    .any(|(_, line)| line == "ip http secure-server"),
                 _ => false,
             };
         }
@@ -466,8 +701,12 @@ impl Node {
 
     /// Is a vty line reachable with the given protocol from `from`?
     pub(crate) fn vty_accepts(&mut self, ssh: bool, from: Ipv4Addr) -> bool {
-        let Some(line) = self.cfg.vty.first().cloned() else { return false };
-        let transport = line.transport_input.is_none_or(|t| if ssh { t.ssh } else { t.telnet });
+        let Some(line) = self.cfg.vty.first().cloned() else {
+            return false;
+        };
+        let transport = line
+            .transport_input
+            .is_none_or(|t| if ssh { t.ssh } else { t.telnet });
         // SSH additionally needs host keys.
         let keys = !ssh || self.rsa_bits.is_some();
         let allowed = match &line.access_class_in {
@@ -478,6 +717,8 @@ impl Node {
     }
 
     pub(crate) fn has_service(&self, name: &str) -> bool {
-        self.host.as_ref().is_some_and(|h| h.services.iter().any(|s| s.eq_ignore_ascii_case(name)))
+        self.host
+            .as_ref()
+            .is_some_and(|h| h.services.iter().any(|s| s.eq_ignore_ascii_case(name)))
     }
 }

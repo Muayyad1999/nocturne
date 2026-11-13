@@ -76,7 +76,8 @@ impl IfKind {
             return None;
         }
         IfKind::ALL.into_iter().find(|kind| {
-            crate::util::text::is_abbrev(word, kind.full()) || word.eq_ignore_ascii_case(kind.short())
+            crate::util::text::is_abbrev(word, kind.full())
+                || word.eq_ignore_ascii_case(kind.short())
         })
     }
 }
@@ -99,7 +100,12 @@ impl IfId {
         for (slot, value) in unit.iter_mut().zip(path) {
             *slot = *value;
         }
-        IfId { kind, unit, depth: depth as u8, sub: 0 }
+        IfId {
+            kind,
+            unit,
+            depth: depth as u8,
+            sub: 0,
+        }
     }
 
     pub(crate) fn vlan(id: u16) -> IfId {
@@ -203,7 +209,8 @@ impl IfId {
 
     /// Is `word` (no digits) a valid, possibly abbreviated, interface type name?
     pub(crate) fn is_type_word(word: &str) -> bool {
-        word.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-') && IfKind::from_abbrev(word).is_some()
+        word.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-')
+            && IfKind::from_abbrev(word).is_some()
     }
 }
 
@@ -226,31 +233,68 @@ mod tests {
     #[test]
     fn every_usual_spelling() {
         let gi = IfId::new(IfKind::GigabitEthernet, &[0, 1]);
-        for s in ["g0/1", "gi0/1", "gig0/1", "Gi0/1", "GigabitEthernet0/1", "gigabitethernet 0/1", "GIG0/1"] {
+        for s in [
+            "g0/1",
+            "gi0/1",
+            "gig0/1",
+            "Gi0/1",
+            "GigabitEthernet0/1",
+            "gigabitethernet 0/1",
+            "GIG0/1",
+        ] {
             assert_eq!(IfId::parse(s), Some(gi), "{s}");
         }
         assert_eq!(IfId::parse("fa0/24").unwrap().name(), "FastEthernet0/24");
-        assert_eq!(IfId::parse("te1/1/1").unwrap().name(), "TenGigabitEthernet1/1/1");
+        assert_eq!(
+            IfId::parse("te1/1/1").unwrap().name(),
+            "TenGigabitEthernet1/1/1"
+        );
         assert_eq!(IfId::parse("po1").unwrap().name(), "Port-channel1");
         assert_eq!(IfId::parse("port-channel 12").unwrap().short(), "Po12");
         assert_eq!(IfId::parse("vl10").unwrap().name(), "Vlan10");
         assert_eq!(IfId::parse("lo0").unwrap().name(), "Loopback0");
         assert_eq!(IfId::parse("e0").unwrap().name(), "Ethernet0");
-        assert_eq!(IfId::parse("g0/0.10").unwrap().name(), "GigabitEthernet0/0.10");
-        assert_eq!(IfId::parse("g0/0.10").unwrap().parent(), IfId::parse("g0/0").unwrap());
-        for bad in ["", "g", "0/1", "x0/1", "g0/", "g0//1", "g0/1/2/3", "g0/1.0", "vl10.5", "g0/1.x", "g99999999999"] {
+        assert_eq!(
+            IfId::parse("g0/0.10").unwrap().name(),
+            "GigabitEthernet0/0.10"
+        );
+        assert_eq!(
+            IfId::parse("g0/0.10").unwrap().parent(),
+            IfId::parse("g0/0").unwrap()
+        );
+        for bad in [
+            "",
+            "g",
+            "0/1",
+            "x0/1",
+            "g0/",
+            "g0//1",
+            "g0/1/2/3",
+            "g0/1.0",
+            "vl10.5",
+            "g0/1.x",
+            "g99999999999",
+        ] {
             assert_eq!(IfId::parse(bad), None, "{bad}");
         }
     }
 
     #[test]
     fn running_config_order() {
-        let mut ids: Vec<IfId> = ["vl1", "g0/1", "fa0/2", "lo0", "g0/0.20", "g0/0", "po1", "fa0/10", "g0/0.3", "te1/1/1"]
-            .iter()
-            .map(|s| IfId::parse(s).unwrap())
-            .collect();
+        let mut ids: Vec<IfId> = [
+            "vl1", "g0/1", "fa0/2", "lo0", "g0/0.20", "g0/0", "po1", "fa0/10", "g0/0.3", "te1/1/1",
+        ]
+        .iter()
+        .map(|s| IfId::parse(s).unwrap())
+        .collect();
         ids.sort();
         let names: Vec<String> = ids.iter().map(|i| i.short()).collect();
-        assert_eq!(names, ["Lo0", "Po1", "Fa0/2", "Fa0/10", "Gi0/0", "Gi0/0.3", "Gi0/0.20", "Gi0/1", "Te1/1/1", "Vl1"]);
+        assert_eq!(
+            names,
+            [
+                "Lo0", "Po1", "Fa0/2", "Fa0/10", "Gi0/0", "Gi0/0.3", "Gi0/0.20", "Gi0/1",
+                "Te1/1/1", "Vl1"
+            ]
+        );
     }
 }

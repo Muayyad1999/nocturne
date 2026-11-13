@@ -2,8 +2,8 @@
 //! per-node tables and health metrics.
 
 use crate::api::{
-    ArpRow, CableKind, IfCounters, IfView, LabSnapshot, Light, LinkView, MacRow, NodeMetrics, NodeTables, NodeView,
-    NoteSpec, RouteRow, StpRow, VlanRow,
+    ArpRow, CableKind, IfCounters, IfView, LabSnapshot, Light, LinkView, MacRow, NodeMetrics,
+    NodeTables, NodeView, NoteSpec, RouteRow, StpRow, VlanRow,
 };
 use crate::catalog::Role;
 use crate::device::ios::show::switching::vlan_ports;
@@ -14,7 +14,9 @@ use crate::sim::rib::Source;
 use crate::sim::stp::PortRole;
 
 fn light(node: &Node, id: IfId) -> Light {
-    let Some(state) = node.ifs.get(&id) else { return Light::Off };
+    let Some(state) = node.ifs.get(&id) else {
+        return Light::Off;
+    };
     if !node.powered || state.link.is_none() {
         return Light::Off;
     }
@@ -26,12 +28,20 @@ fn light(node: &Node, id: IfId) -> Light {
     let cfg = node.cfg.iface(id);
     let suspended = cfg.is_some_and(|c| c.channel_group.is_some()) && !state.bundled;
     let port = node.l2_port(id).unwrap_or(id);
-    let blocked = node.model.is_switch() && cfg.is_some_and(|c| c.l2.is_some() || c.channel_group.is_some()) && !node.stp.all_forwarding(port);
-    if suspended || blocked { Light::Amber } else { Light::Green }
+    let blocked = node.model.is_switch()
+        && cfg.is_some_and(|c| c.l2.is_some() || c.channel_group.is_some())
+        && !node.stp.all_forwarding(port);
+    if suspended || blocked {
+        Light::Amber
+    } else {
+        Light::Green
+    }
 }
 
 fn mode(node: &Node, id: IfId) -> String {
-    let Some(cfg) = node.cfg.iface(id) else { return String::new() };
+    let Some(cfg) = node.cfg.iface(id) else {
+        return String::new();
+    };
     match (&cfg.l2, node.role()) {
         (Some(_), _) if node.is_trunk(id) => "trunk".to_string(),
         (Some(sw), _) => format!("access {}", sw.access_vlan),
@@ -67,7 +77,10 @@ fn node_view(node: &Node) -> NodeView {
                 admin_up: !cfg.shutdown,
                 oper_up: node.is_up(*id),
                 light: light(node, *id),
-                ip: node.addr(*id).filter(|_| node.is_l3(*id)).map(|a| a.to_string()),
+                ip: node
+                    .addr(*id)
+                    .filter(|_| node.is_l3(*id))
+                    .map(|a| a.to_string()),
                 mode: mode(node, *id),
                 description: cfg.description.clone(),
             })
@@ -81,7 +94,12 @@ pub(crate) fn snapshot(world: &World, notes: &[NoteSpec]) -> LabSnapshot {
         .links
         .iter()
         .map(|(id, link)| {
-            let end_light = |(node, port): (u32, IfId)| world.nodes.get(&node).map_or(Light::Off, |n| light(n, port));
+            let end_light = |(node, port): (u32, IfId)| {
+                world
+                    .nodes
+                    .get(&node)
+                    .map_or(Light::Off, |n| light(n, port))
+            };
             LinkView {
                 id: *id,
                 a: link.a.0,
@@ -127,14 +145,19 @@ pub(crate) fn snapshot(world: &World, notes: &[NoteSpec]) -> LabSnapshot {
 }
 
 pub(crate) fn tables(node: &Node, now: u64) -> NodeTables {
-    let routes = node
+    // Listed like `show ip route`: by network, shorter masks first.
+    let mut best: Vec<&crate::sim::rib::Route> = node
         .rib
         .routes
         .iter()
         .filter(|r| r.source != Source::Local)
+        .collect();
+    best.sort_by_key(|r| (r.prefix.net, r.prefix.len));
+    let routes = best
+        .into_iter()
         .flat_map(|r| {
             r.hops.iter().map(move |hop| RouteRow {
-                code: if r.prefix.len == 0 && r.source == Source::Static { "S*".to_string() } else { r.source.code().to_string() },
+                code: r.code(),
                 prefix: r.prefix.to_string(),
                 ad: u32::from(r.distance),
                 metric: r.metric,
@@ -148,7 +171,12 @@ pub(crate) fn tables(node: &Node, now: u64) -> NodeTables {
         .addrs
         .iter()
         .filter(|(iface, _)| iface.kind != crate::ifname::IfKind::Loopback)
-        .map(|(iface, addr)| ArpRow { ip: addr.ip.to_string(), mac: node.mac_for(*iface).to_string(), interface: iface.name(), age_s: 0 })
+        .map(|(iface, addr)| ArpRow {
+            ip: addr.ip.to_string(),
+            mac: node.mac_for(*iface).to_string(),
+            interface: iface.name(),
+            age_s: 0,
+        })
         .collect();
     arp.extend(node.arp.rows(now).into_iter().map(|(ip, entry)| ArpRow {
         ip: ip.to_string(),
@@ -214,11 +242,23 @@ pub(crate) fn metrics(node: &Node, now: u64, seed: u64) -> NodeMetrics {
     let (mem_total, mem_used) = node.memory();
     NodeMetrics {
         hostname: node.cfg.hostname.clone(),
-        uptime_s: if node.powered { node.uptime(now) / 1_000_000 } else { 0 },
-        cpu_pct: if node.powered { node.cpu_percent(now, seed) } else { 0.0 },
+        uptime_s: if node.powered {
+            node.uptime(now) / 1_000_000
+        } else {
+            0
+        },
+        cpu_pct: if node.powered {
+            node.cpu_percent(now, seed)
+        } else {
+            0.0
+        },
         mem_used: if node.powered { mem_used } else { 0 },
         mem_total,
-        temperature_c: if node.powered { node.temperature(now, seed) } else { 20.0 },
+        temperature_c: if node.powered {
+            node.temperature(now, seed)
+        } else {
+            20.0
+        },
         interfaces: node
             .cfg
             .interfaces
@@ -226,7 +266,11 @@ pub(crate) fn metrics(node: &Node, now: u64, seed: u64) -> NodeMetrics {
             .filter_map(|(id, cfg)| {
                 let state = node.ifs.get(id)?;
                 let c = &state.counters;
-                let speed = if state.speed > 0 { state.speed } else { id.kind.max_mbps().max(1000) };
+                let speed = if state.speed > 0 {
+                    state.speed
+                } else {
+                    id.kind.max_mbps().max(1000)
+                };
                 Some(IfCounters {
                     name: id.name(),
                     description: cfg.description.clone(),

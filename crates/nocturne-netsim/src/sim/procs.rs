@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 
 use crate::api::{SimTime, TraceId};
-use crate::sim::frame::{DnsMsg, Flow, Icmp, L4, Meta, PORT_DNS, PORT_TRACEROUTE, Packet, TcpFlags, UdpApp, Unreach};
+use crate::sim::frame::{
+    DnsMsg, Flow, Icmp, L4, Meta, PORT_DNS, PORT_TRACEROUTE, Packet, TcpFlags, UdpApp, Unreach,
+};
 use crate::sim::fx::{Fx, Timer};
 use crate::sim::ip::Sent;
 use crate::sim::node::Node;
@@ -26,7 +28,9 @@ pub(crate) enum Style {
 pub(crate) enum Outcome {
     Pending,
     /// Succeeded; round-trip time in microseconds.
-    Ok { rtt: u64 },
+    Ok {
+        rtt: u64,
+    },
     Failed,
 }
 
@@ -100,7 +104,14 @@ struct Lookup {
 impl Lookup {
     /// Stand-in used for the instant between creating a process and giving it its job.
     fn placeholder() -> Lookup {
-        Lookup { name: String::new(), server: Ipv4Addr::UNSPECIFIED, ident: 0, attempts: 0, then_ping: None, silent: true }
+        Lookup {
+            name: String::new(),
+            server: Ipv4Addr::UNSPECIFIED,
+            ident: 0,
+            attempts: 0,
+            then_ping: None,
+            silent: true,
+        }
     }
 }
 
@@ -168,14 +179,24 @@ impl Node {
         let id = self.procs.next_id;
         self.procs.list.insert(
             id,
-            Proc { out: String::new(), done: false, outcome: Outcome::Pending, address: None, token: 0, trace, kind },
+            Proc {
+                out: String::new(),
+                done: false,
+                outcome: Outcome::Pending,
+                address: None,
+                token: 0,
+                trace,
+                kind,
+            },
         );
         id
     }
 
     /// Stop a process as if the user pressed the abort key.
     pub(crate) fn proc_abort(&mut self, id: u32) {
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
         if proc.done {
             return;
         }
@@ -195,7 +216,12 @@ impl Node {
 
     // ------------------------------------------------------------------ ping
 
-    pub(crate) fn start_ping(&mut self, fx: &mut Fx, spec: PingSpec, trace: Option<TraceId>) -> u32 {
+    pub(crate) fn start_ping(
+        &mut self,
+        fx: &mut Fx,
+        spec: PingSpec,
+        trace: Option<TraceId>,
+    ) -> u32 {
         let id = self.spawn(Kind::Lookup(Lookup::placeholder()), trace);
         self.ping_begin(fx, id, spec);
         id
@@ -219,11 +245,16 @@ impl Node {
                 text
             }
             Style::Windows => match &spec.label {
-                Some(name) => format!("\nPinging {name} [{}] with {} bytes of data:\n", spec.dst, spec.size),
+                Some(name) => format!(
+                    "\nPinging {name} [{}] with {} bytes of data:\n",
+                    spec.dst, spec.size
+                ),
                 None => format!("\nPinging {} with {} bytes of data:\n", spec.dst, spec.size),
             },
         };
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
         proc.out.push_str(&header);
         proc.kind = Kind::Ping(Ping {
             spec,
@@ -244,8 +275,12 @@ impl Node {
     /// Send the next echo request, or finish.
     fn ping_next(&mut self, fx: &mut Fx, id: u32) {
         let default_ttl = self.default_ttl();
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Ping(ping) = &mut proc.kind else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Ping(ping) = &mut proc.kind else {
+            return;
+        };
         if ping.sent >= ping.spec.count {
             proc.out.push_str(&ping_summary(ping));
             proc.done = true;
@@ -270,10 +305,17 @@ impl Node {
             dst: ping.spec.dst,
             ttl: default_ttl,
             size,
-            l4: L4::Icmp(Icmp::EchoRequest { id: ping.ident, seq: ping.seq }),
+            l4: L4::Icmp(Icmp::EchoRequest {
+                id: ping.ident,
+                seq: ping.seq,
+            }),
         };
         let (_, sent) = self.ip_send(fx, packet, trace, None);
-        if let Some(Proc { kind: Kind::Ping(ping), .. }) = self.procs.list.get_mut(&id) {
+        if let Some(Proc {
+            kind: Kind::Ping(ping),
+            ..
+        }) = self.procs.list.get_mut(&id)
+        {
             ping.last_send = sent;
         }
         fx.arm(timeout, Timer::Proc { id, token });
@@ -281,8 +323,12 @@ impl Node {
 
     /// Record the result of the probe in flight and schedule what comes next.
     fn ping_result(&mut self, fx: &mut Fx, id: u32, text: &str, rtt: Option<u64>) {
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Ping(ping) = &mut proc.kind else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Ping(ping) = &mut proc.kind else {
+            return;
+        };
         ping.awaiting = false;
         proc.out.push_str(text);
         if let Some(rtt) = rtt {
@@ -301,7 +347,13 @@ impl Node {
         let gap = ping.spec.style == Style::Windows && rtt.is_some() && ping.sent < ping.spec.count;
         if gap {
             proc.token = proc.token.wrapping_add(1);
-            fx.arm(WINDOWS_PING_GAP_MICROS, Timer::Proc { id, token: proc.token });
+            fx.arm(
+                WINDOWS_PING_GAP_MICROS,
+                Timer::Proc {
+                    id,
+                    token: proc.token,
+                },
+            );
         } else {
             self.ping_next(fx, id);
         }
@@ -311,18 +363,36 @@ impl Node {
         if self.proc_traceroute_echo(fx, packet.src, ident, seq) {
             return;
         }
-        let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-            Kind::Ping(p) if !proc.done && p.awaiting && p.ident == ident && p.seq == seq => {
-                Some((*id, p.spec.style, p.spec.size, fx.now.saturating_sub(p.sent_at)))
-            }
-            _ => None,
-        });
-        let Some((id, style, size, rtt)) = hit else { return };
+        let hit = self
+            .procs
+            .list
+            .iter()
+            .find_map(|(id, proc)| match &proc.kind {
+                Kind::Ping(p) if !proc.done && p.awaiting && p.ident == ident && p.seq == seq => {
+                    Some((
+                        *id,
+                        p.spec.style,
+                        p.spec.size,
+                        fx.now.saturating_sub(p.sent_at),
+                    ))
+                }
+                _ => None,
+            });
+        let Some((id, style, size, rtt)) = hit else {
+            return;
+        };
         let text = match style {
             Style::Ios => "!".to_string(),
             Style::Windows => {
-                let time = if rtt < 1000 { "time<1ms".to_string() } else { format!("time={}ms", rtt / 1000) };
-                format!("Reply from {}: bytes={size} {time} TTL={}\n", packet.src, packet.ttl)
+                let time = if rtt < 1000 {
+                    "time<1ms".to_string()
+                } else {
+                    format!("time={}ms", rtt / 1000)
+                };
+                format!(
+                    "Reply from {}: bytes={size} {time} TTL={}\n",
+                    packet.src, packet.ttl
+                )
             }
         };
         self.ping_result(fx, id, &text, Some(rtt));
@@ -336,7 +406,9 @@ impl Node {
         };
         let verdict = match code {
             _ if expired => format!("{from} reports that the packet's TTL expired on the way."),
-            Some(Unreach::AdminProhibited) => format!("{from} reports that the packet was administratively prohibited (an access list)."),
+            Some(Unreach::AdminProhibited) => format!(
+                "{from} reports that the packet was administratively prohibited (an access list)."
+            ),
             Some(Unreach::Port) => format!("{from} reports that nothing listens on that port."),
             _ => format!("{from} reports that the destination is unreachable."),
         };
@@ -347,51 +419,93 @@ impl Node {
             .filter(|p| !p.done)
             .filter(|p| match (&p.kind, orig.flow) {
                 (Kind::Ping(ping), Flow::Icmp { id, seq }) => ping.ident == id && ping.seq == seq,
-                (Kind::Connect(c), Flow::Tcp { sport, dport }) => c.sport == sport && c.port == dport,
+                (Kind::Connect(c), Flow::Tcp { sport, dport }) => {
+                    c.sport == sport && c.port == dport
+                }
                 _ => false,
             })
             .filter_map(|p| p.trace)
             .collect();
-        fx.trace_verdict.extend(traced.into_iter().map(|t| (t, verdict.clone())));
+        fx.trace_verdict
+            .extend(traced.into_iter().map(|t| (t, verdict.clone())));
         match orig.flow {
             Flow::Icmp { id: ident, seq } => {
-                let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-                    Kind::Ping(p) if !proc.done && p.awaiting && p.ident == ident && p.seq == seq => {
-                        Some((*id, p.spec.style))
-                    }
-                    Kind::Traceroute(t) if !proc.done && t.awaiting && t.ident == ident && u16::from(t.probe_seq()) == seq => {
-                        Some((*id, t.style))
-                    }
-                    _ => None,
-                });
+                let hit = self
+                    .procs
+                    .list
+                    .iter()
+                    .find_map(|(id, proc)| match &proc.kind {
+                        Kind::Ping(p)
+                            if !proc.done && p.awaiting && p.ident == ident && p.seq == seq =>
+                        {
+                            Some((*id, p.spec.style))
+                        }
+                        Kind::Traceroute(t)
+                            if !proc.done
+                                && t.awaiting
+                                && t.ident == ident
+                                && u16::from(t.probe_seq()) == seq =>
+                        {
+                            Some((*id, t.style))
+                        }
+                        _ => None,
+                    });
                 let Some((id, style)) = hit else { return };
-                if matches!(self.procs.list.get(&id).map(|p| &p.kind), Some(Kind::Traceroute(_))) {
+                if matches!(
+                    self.procs.list.get(&id).map(|p| &p.kind),
+                    Some(Kind::Traceroute(_))
+                ) {
                     self.traceroute_answer(fx, id, from, expired, code);
                     return;
                 }
                 let text = match (style, expired) {
                     (Style::Ios, _) => "U".to_string(),
-                    (Style::Windows, true) => format!("Reply from {from}: TTL expired in transit.\n"),
-                    (Style::Windows, false) => format!("Reply from {from}: Destination host unreachable.\n"),
+                    (Style::Windows, true) => {
+                        format!("Reply from {from}: TTL expired in transit.\n")
+                    }
+                    (Style::Windows, false) => {
+                        format!("Reply from {from}: Destination host unreachable.\n")
+                    }
                 };
                 self.ping_result(fx, id, &text, None);
             }
             Flow::Udp { sport, dport } => {
-                let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-                    Kind::Traceroute(t) if !proc.done && t.awaiting && t.sport == sport && t.dport() == dport => Some(*id),
-                    _ => None,
-                });
+                let hit = self
+                    .procs
+                    .list
+                    .iter()
+                    .find_map(|(id, proc)| match &proc.kind {
+                        Kind::Traceroute(t)
+                            if !proc.done
+                                && t.awaiting
+                                && t.sport == sport
+                                && t.dport() == dport =>
+                        {
+                            Some(*id)
+                        }
+                        _ => None,
+                    });
                 if let Some(id) = hit {
                     self.traceroute_answer(fx, id, from, expired, code);
                 }
             }
             Flow::Tcp { sport, dport } => {
-                let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-                    Kind::Connect(c) if !proc.done && c.sport == sport && c.port == dport => Some(*id),
-                    _ => None,
-                });
+                let hit = self
+                    .procs
+                    .list
+                    .iter()
+                    .find_map(|(id, proc)| match &proc.kind {
+                        Kind::Connect(c) if !proc.done && c.sport == sport && c.port == dport => {
+                            Some(*id)
+                        }
+                        _ => None,
+                    });
                 if let Some(id) = hit {
-                    self.connect_finish(id, None, "% Destination unreachable; gateway or host down");
+                    self.connect_finish(
+                        id,
+                        None,
+                        "% Destination unreachable; gateway or host down",
+                    );
                 }
             }
             Flow::Other => {}
@@ -401,9 +515,26 @@ impl Node {
     // -------------------------------------------------------------- connect
 
     /// Try to open a TCP connection (telnet, ssh, or a reachability probe).
-    pub(crate) fn start_connect(&mut self, fx: &mut Fx, dst: Ipv4Addr, port: u16, style: Style, trace: Option<TraceId>) -> u32 {
+    pub(crate) fn start_connect(
+        &mut self,
+        fx: &mut Fx,
+        dst: Ipv4Addr,
+        port: u16,
+        style: Style,
+        trace: Option<TraceId>,
+    ) -> u32 {
         let sport = 49152 + self.fresh_ident() % 16000;
-        let id = self.spawn(Kind::Connect(Connect { dst, port, sport, style, attempts: 0, started: fx.now }), trace);
+        let id = self.spawn(
+            Kind::Connect(Connect {
+                dst,
+                port,
+                sport,
+                style,
+                attempts: 0,
+                started: fx.now,
+            }),
+            trace,
+        );
         if let Some(proc) = self.procs.list.get_mut(&id) {
             proc.out.push_str(&match style {
                 Style::Ios => format!("Trying {dst} ... "),
@@ -416,8 +547,12 @@ impl Node {
 
     fn connect_send(&mut self, fx: &mut Fx, id: u32) {
         let ttl = self.default_ttl();
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Connect(connect) = &mut proc.kind else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Connect(connect) = &mut proc.kind else {
+            return;
+        };
         if connect.attempts >= SYN_ATTEMPTS {
             let style = connect.style;
             self.connect_finish(
@@ -438,15 +573,23 @@ impl Node {
             dst: connect.dst,
             ttl,
             size: 44,
-            l4: L4::Tcp { sport: connect.sport, dport: connect.port, flags: TcpFlags::Syn },
+            l4: L4::Tcp {
+                sport: connect.sport,
+                dport: connect.port,
+                flags: TcpFlags::Syn,
+            },
         };
         self.ip_send(fx, packet, trace, None);
         fx.arm(SYN_RETRY_MICROS, Timer::Proc { id, token });
     }
 
     fn connect_finish(&mut self, id: u32, rtt: Option<u64>, text: &str) {
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Connect(connect) = &proc.kind else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Connect(connect) = &proc.kind else {
+            return;
+        };
         proc.address = Some(connect.dst);
         proc.out.push_str(text);
         proc.out.push('\n');
@@ -458,14 +601,29 @@ impl Node {
         };
     }
 
-    pub(crate) fn proc_tcp_reply(&mut self, fx: &mut Fx, from: Ipv4Addr, sport: u16, dport: u16, open: bool) {
-        let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-            Kind::Connect(c) if !proc.done && c.dst == from && c.port == sport && c.sport == dport => {
-                Some((*id, c.style, fx.now.saturating_sub(c.started), proc.trace))
-            }
-            _ => None,
-        });
-        let Some((id, style, rtt, trace)) = hit else { return };
+    pub(crate) fn proc_tcp_reply(
+        &mut self,
+        fx: &mut Fx,
+        from: Ipv4Addr,
+        sport: u16,
+        dport: u16,
+        open: bool,
+    ) {
+        let hit = self
+            .procs
+            .list
+            .iter()
+            .find_map(|(id, proc)| match &proc.kind {
+                Kind::Connect(c)
+                    if !proc.done && c.dst == from && c.port == sport && c.sport == dport =>
+                {
+                    Some((*id, c.style, fx.now.saturating_sub(c.started), proc.trace))
+                }
+                _ => None,
+            });
+        let Some((id, style, rtt, trace)) = hit else {
+            return;
+        };
         if open {
             if let Some(trace) = trace {
                 fx.trace_ok.push(trace);
@@ -521,8 +679,12 @@ impl Node {
     }
 
     fn traceroute_send(&mut self, fx: &mut Fx, id: u32) {
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Traceroute(t) = &mut proc.kind else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Traceroute(t) = &mut proc.kind else {
+            return;
+        };
         if t.probe == 0 {
             proc.out.push_str(&match t.style {
                 Style::Ios => format!("{:>3} ", t.ttl),
@@ -535,18 +697,42 @@ impl Node {
         let token = proc.token;
         // Network devices probe with UDP to unlikely ports, hosts with ICMP echo.
         let l4 = match t.style {
-            Style::Ios => L4::Udp { sport: t.sport, dport: t.dport(), app: UdpApp::Data },
-            Style::Windows => L4::Icmp(Icmp::EchoRequest { id: t.ident, seq: u16::from(t.probe_seq()) }),
+            Style::Ios => L4::Udp {
+                sport: t.sport,
+                dport: t.dport(),
+                app: UdpApp::Data,
+            },
+            Style::Windows => L4::Icmp(Icmp::EchoRequest {
+                id: t.ident,
+                seq: u16::from(t.probe_seq()),
+            }),
         };
-        let packet = Packet { src: Ipv4Addr::UNSPECIFIED, dst: t.dst, ttl: t.ttl, size: 60, l4 };
+        let packet = Packet {
+            src: Ipv4Addr::UNSPECIFIED,
+            dst: t.dst,
+            ttl: t.ttl,
+            size: 60,
+            l4,
+        };
         self.ip_send(fx, packet, None, None);
         fx.arm(TRACEROUTE_TIMEOUT_MICROS, Timer::Proc { id, token });
     }
 
     /// A probe was answered (`from` is `None` on timeout).
-    fn traceroute_step(&mut self, fx: &mut Fx, id: u32, from: Option<Ipv4Addr>, reached: bool, unreachable: bool) {
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Traceroute(t) = &mut proc.kind else { return };
+    fn traceroute_step(
+        &mut self,
+        fx: &mut Fx,
+        id: u32,
+        from: Option<Ipv4Addr>,
+        reached: bool,
+        unreachable: bool,
+    ) {
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Traceroute(t) = &mut proc.kind else {
+            return;
+        };
         t.awaiting = false;
         let rtt = fx.now.saturating_sub(t.sent_at);
         match (t.style, from) {
@@ -558,7 +744,11 @@ impl Node {
             }
             (Style::Ios, None) => proc.out.push_str("*  "),
             (Style::Windows, Some(_)) => {
-                proc.out.push_str(&if rtt < 1000 { "  <1 ms  ".to_string() } else { format!("{:>4} ms  ", rtt / 1000) });
+                proc.out.push_str(&if rtt < 1000 {
+                    "  <1 ms  ".to_string()
+                } else {
+                    format!("{:>4} ms  ", rtt / 1000)
+                });
             }
             (Style::Windows, None) => proc.out.push_str("   *     "),
         }
@@ -590,7 +780,11 @@ impl Node {
             if t.style == Style::Windows {
                 proc.out.push_str("\nTrace complete.\n");
             }
-            proc.outcome = if t.reached { Outcome::Ok { rtt } } else { Outcome::Failed };
+            proc.outcome = if t.reached {
+                Outcome::Ok { rtt }
+            } else {
+                Outcome::Failed
+            };
             proc.done = true;
             proc.token = proc.token.wrapping_add(1);
             return;
@@ -601,7 +795,14 @@ impl Node {
         self.traceroute_send(fx, id);
     }
 
-    fn traceroute_answer(&mut self, fx: &mut Fx, id: u32, from: Ipv4Addr, expired: bool, code: Option<Unreach>) {
+    fn traceroute_answer(
+        &mut self,
+        fx: &mut Fx,
+        id: u32,
+        from: Ipv4Addr,
+        expired: bool,
+        code: Option<Unreach>,
+    ) {
         // Port unreachable from the target means the probe arrived; any other
         // unreachable means the path ends here.
         let reached = !expired && code == Some(Unreach::Port);
@@ -611,10 +812,21 @@ impl Node {
 
     /// Echo replies end a host-style traceroute.
     fn proc_traceroute_echo(&mut self, fx: &mut Fx, from: Ipv4Addr, ident: u16, seq: u16) -> bool {
-        let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-            Kind::Traceroute(t) if !proc.done && t.awaiting && t.ident == ident && u16::from(t.probe_seq()) == seq => Some(*id),
-            _ => None,
-        });
+        let hit = self
+            .procs
+            .list
+            .iter()
+            .find_map(|(id, proc)| match &proc.kind {
+                Kind::Traceroute(t)
+                    if !proc.done
+                        && t.awaiting
+                        && t.ident == ident
+                        && u16::from(t.probe_seq()) == seq =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            });
         match hit {
             Some(id) => {
                 self.traceroute_step(fx, id, Some(from), true, false);
@@ -637,7 +849,14 @@ impl Node {
     ) -> u32 {
         let ident = self.fresh_ident();
         let id = self.spawn(
-            Kind::Lookup(Lookup { name: name.to_string(), server, ident, attempts: 0, then_ping, silent }),
+            Kind::Lookup(Lookup {
+                name: name.to_string(),
+                server,
+                ident,
+                attempts: 0,
+                then_ping,
+                silent,
+            }),
             None,
         );
         self.lookup_send(fx, id);
@@ -646,13 +865,23 @@ impl Node {
 
     fn lookup_send(&mut self, fx: &mut Fx, id: u32) {
         let ttl = self.default_ttl();
-        let Some(proc) = self.procs.list.get_mut(&id) else { return };
-        let Kind::Lookup(lookup) = &mut proc.kind else { return };
+        let Some(proc) = self.procs.list.get_mut(&id) else {
+            return;
+        };
+        let Kind::Lookup(lookup) = &mut proc.kind else {
+            return;
+        };
         if lookup.attempts >= 3 {
             let text = if lookup.then_ping.is_some() {
-                format!("Ping request could not find host {}. Please check the name and try again.\n", lookup.name)
+                format!(
+                    "Ping request could not find host {}. Please check the name and try again.\n",
+                    lookup.name
+                )
             } else {
-                format!("DNS request timed out.\n    timeout was 2 seconds.\n*** Request to {} timed-out\n", lookup.server)
+                format!(
+                    "DNS request timed out.\n    timeout was 2 seconds.\n*** Request to {} timed-out\n",
+                    lookup.server
+                )
             };
             proc.out.push_str(&text);
             proc.done = true;
@@ -670,7 +899,11 @@ impl Node {
             l4: L4::Udp {
                 sport: 49152 + lookup.ident % 16000,
                 dport: PORT_DNS,
-                app: UdpApp::Dns(DnsMsg { id: lookup.ident, name: lookup.name.clone(), answer: None }),
+                app: UdpApp::Dns(DnsMsg {
+                    id: lookup.ident,
+                    name: lookup.name.clone(),
+                    answer: None,
+                }),
             },
         };
         self.ip_send(fx, packet, None, None);
@@ -687,21 +920,46 @@ impl Node {
         l2: (Mac, Mac),
         iface: crate::ifname::IfId,
     ) {
-        let L4::Udp { sport, dport, .. } = packet.l4 else { return };
+        let L4::Udp { sport, dport, .. } = packet.l4 else {
+            return;
+        };
         match msg.answer {
             None => {
                 if !self.has_service("dns") {
-                    self.icmp_error(fx, Some(iface), packet, meta, crate::sim::ip::IcmpError::Unreachable(Unreach::Port));
+                    self.icmp_error(
+                        fx,
+                        Some(iface),
+                        packet,
+                        meta,
+                        crate::sim::ip::IcmpError::Unreachable(Unreach::Port),
+                    );
                     return;
                 }
-                let answer = self.dns_zone.iter().find(|(n, _)| n.eq_ignore_ascii_case(&msg.name)).map(|(_, ip)| *ip);
+                let answer = self
+                    .dns_zone
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(&msg.name))
+                    .map(|(_, ip)| *ip);
                 let noun = self.noun();
-                let via = self.ip_note(fx, crate::api::PacketEventKind::Delivered, packet, meta, l2, Some(iface), None, || {
-                    match answer {
-                        Some(ip) => format!("The DNS service on this {noun} knows {}: it answers {ip}.", msg.name),
-                        None => format!("The DNS service on this {noun} has no record for {}.", msg.name),
-                    }
-                });
+                let via = self.ip_note(
+                    fx,
+                    crate::api::PacketEventKind::Delivered,
+                    packet,
+                    meta,
+                    l2,
+                    Some(iface),
+                    None,
+                    || match answer {
+                        Some(ip) => format!(
+                            "The DNS service on this {noun} knows {}: it answers {ip}.",
+                            msg.name
+                        ),
+                        None => format!(
+                            "The DNS service on this {noun} has no record for {}.",
+                            msg.name
+                        ),
+                    },
+                );
                 let reply = Packet {
                     src: packet.dst,
                     dst: packet.src,
@@ -710,19 +968,31 @@ impl Node {
                     l4: L4::Udp {
                         sport: dport,
                         dport: sport,
-                        app: UdpApp::Dns(DnsMsg { id: msg.id, name: msg.name.clone(), answer: Some(answer) }),
+                        app: UdpApp::Dns(DnsMsg {
+                            id: msg.id,
+                            name: msg.name.clone(),
+                            answer: Some(answer),
+                        }),
                     },
                 };
                 self.ip_send(fx, reply, None, Some(&Meta { via, ..*meta }));
             }
             Some(answer) => {
-                let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
-                    Kind::Lookup(l) if !proc.done && l.ident == msg.id => Some(*id),
-                    _ => None,
-                });
+                let hit = self
+                    .procs
+                    .list
+                    .iter()
+                    .find_map(|(id, proc)| match &proc.kind {
+                        Kind::Lookup(l) if !proc.done && l.ident == msg.id => Some(*id),
+                        _ => None,
+                    });
                 let Some(id) = hit else { return };
-                let Some(proc) = self.procs.list.get_mut(&id) else { return };
-                let Kind::Lookup(lookup) = &mut proc.kind else { return };
+                let Some(proc) = self.procs.list.get_mut(&id) else {
+                    return;
+                };
+                let Kind::Lookup(lookup) = &mut proc.kind else {
+                    return;
+                };
                 proc.token = proc.token.wrapping_add(1);
                 proc.address = answer;
                 let then_ping = lookup.then_ping.take();
@@ -754,7 +1024,11 @@ impl Node {
                             });
                         }
                         proc.done = true;
-                        proc.outcome = if answer.is_some() { Outcome::Ok { rtt: 0 } } else { Outcome::Failed };
+                        proc.outcome = if answer.is_some() {
+                            Outcome::Ok { rtt: 0 }
+                        } else {
+                            Outcome::Failed
+                        };
                     }
                 }
             }
@@ -764,7 +1038,9 @@ impl Node {
     // --------------------------------------------------------------- timers
 
     pub(crate) fn proc_timer(&mut self, fx: &mut Fx, id: u32, token: u32) {
-        let Some(proc) = self.procs.list.get(&id) else { return };
+        let Some(proc) = self.procs.list.get(&id) else {
+            return;
+        };
         if proc.done || proc.token != token {
             return;
         }
@@ -786,11 +1062,15 @@ impl Node {
     /// What a Windows host prints for a probe nobody answered.
     fn windows_timeout_text(&self, ping: &Ping) -> String {
         let own = self.source_for(ping.spec.dst);
-        let unresolved = self.route_lookup(ping.spec.dst).is_some_and(|r| self.arp.is_pending(r.next_hop));
+        let unresolved = self
+            .route_lookup(ping.spec.dst)
+            .is_some_and(|r| self.arp.is_pending(r.next_hop));
         match (ping.last_send, own) {
             (Sent::NoRoute, _) => "Destination host unreachable.\n".to_string(),
             // The neighbour (or gateway) never answered ARP.
-            (_, Some(own)) if unresolved => format!("Reply from {own}: Destination host unreachable.\n"),
+            (_, Some(own)) if unresolved => {
+                format!("Reply from {own}: Destination host unreachable.\n")
+            }
             _ => "Request timed out.\n".to_string(),
         }
     }
@@ -799,7 +1079,10 @@ impl Node {
 impl Traceroute {
     /// Each probe uses its own destination port / sequence number.
     fn probe_seq(&self) -> u8 {
-        self.ttl.wrapping_sub(1).wrapping_mul(3).wrapping_add(self.probe)
+        self.ttl
+            .wrapping_sub(1)
+            .wrapping_mul(3)
+            .wrapping_add(self.probe)
     }
 
     fn dport(&self) -> u16 {
@@ -809,11 +1092,22 @@ impl Traceroute {
 
 fn ping_summary(ping: &Ping) -> String {
     // A probe still in flight when the ping was interrupted was never counted.
-    let sent = if ping.awaiting { ping.sent.saturating_sub(1) } else { ping.sent };
+    let sent = if ping.awaiting {
+        ping.sent.saturating_sub(1)
+    } else {
+        ping.sent
+    };
     match ping.spec.style {
         Style::Ios => {
-            let percent = if sent == 0 { 0 } else { u64::from(ping.received) * 100 / u64::from(sent) };
-            let mut text = format!("\nSuccess rate is {percent} percent ({}/{sent})", ping.received);
+            let percent = if sent == 0 {
+                0
+            } else {
+                u64::from(ping.received) * 100 / u64::from(sent)
+            };
+            let mut text = format!(
+                "\nSuccess rate is {percent} percent ({}/{sent})",
+                ping.received
+            );
             if ping.received > 0 {
                 text.push_str(&format!(
                     ", round-trip min/avg/max = {}/{}/{} ms",
@@ -827,7 +1121,11 @@ fn ping_summary(ping: &Ping) -> String {
         }
         Style::Windows => {
             let lost = sent.saturating_sub(ping.received);
-            let percent = if sent == 0 { 0 } else { u64::from(lost) * 100 / u64::from(sent) };
+            let percent = if sent == 0 {
+                0
+            } else {
+                u64::from(lost) * 100 / u64::from(sent)
+            };
             let mut text = format!(
                 "\nPing statistics for {}:\n    Packets: Sent = {sent}, Received = {}, Lost = {lost} ({percent}% loss),\n",
                 ping.spec.dst, ping.received

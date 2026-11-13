@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 
 use crate::api::{
-    CableKind, CliKind, ConfigLineResult, ConfigOutcome, ConsoleId, Endpoint, Fault, FaultId, FlowId, FlowSpec, FlowState,
-    HostConfig, LabError, LabEvent, LabSnapshot, LabSpec, LinkId, LinkSpec, NodeId, NodeMetrics, NodeSpec, NodeTables,
-    NoteSpec, PduKind, ProbeResult, SimTime, TraceId,
+    CableKind, CliKind, ConfigLineResult, ConfigOutcome, ConsoleId, Endpoint, Fault, FaultId,
+    FlowId, FlowSpec, FlowState, HostConfig, LabError, LabEvent, LabSnapshot, LabSpec, LinkId,
+    LinkSpec, NodeId, NodeMetrics, NodeSpec, NodeTables, NoteSpec, PduKind, ProbeResult, SimTime,
+    TraceId,
 };
 use crate::device::cli::{Console, Next, Reply, Shell, Tag};
 use crate::device::config::Vlan;
@@ -57,11 +58,19 @@ fn parse_vlan_dat(text: &str) -> Result<BTreeMap<u16, Vlan>, LabError> {
     let bad = |line: &str| LabError::InvalidSpec(format!("vlan_dat: cannot understand \"{line}\""));
     let mut vlans = BTreeMap::from([(1, Vlan::new(1))]);
     let mut current: Option<u16> = None;
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('!')) {
+    for line in text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('!'))
+    {
         let words: Vec<&str> = line.split_whitespace().collect();
         match (words.as_slice(), current) {
             (["vlan", id], _) => {
-                let id: u16 = id.parse().ok().filter(|id| (1..=4094).contains(id)).ok_or_else(|| bad(line))?;
+                let id: u16 = id
+                    .parse()
+                    .ok()
+                    .filter(|id| (1..=4094).contains(id))
+                    .ok_or_else(|| bad(line))?;
                 vlans.entry(id).or_insert_with(|| Vlan::new(id));
                 current = Some(id);
             }
@@ -84,7 +93,12 @@ fn parse_vlan_dat(text: &str) -> Result<BTreeMap<u16, Vlan>, LabError> {
 impl Lab {
     /// An empty lab.
     pub fn new(name: &str) -> Lab {
-        Lab { world: World::new(name, 0), consoles: BTreeMap::new(), next_console: 1, notes: Vec::new() }
+        Lab {
+            world: World::new(name, 0),
+            consoles: BTreeMap::new(),
+            next_console: 1,
+            notes: Vec::new(),
+        }
     }
 
     /// Build a lab from its saved form. Devices boot from their startup
@@ -94,8 +108,12 @@ impl Lab {
         lab.world = World::new(&spec.name, spec.seed);
         lab.world.description = spec.description.clone();
         for node in &spec.nodes {
-            let id = lab.world.insert_node(&node.model, Some(&node.name), node.x, node.y)?;
-            let Some(n) = lab.world.nodes.get_mut(&id) else { continue };
+            let id = lab
+                .world
+                .insert_node(&node.model, Some(&node.name), node.x, node.y)?;
+            let Some(n) = lab.world.nodes.get_mut(&id) else {
+                continue;
+            };
             if n.model.is_network_os() {
                 n.startup = node.startup_config.clone();
                 n.rsa_bits = node.rsa_key_bits;
@@ -112,9 +130,14 @@ impl Lab {
             }
         }
         for link in &spec.links {
-            let find = |end: &Endpoint| lab.world.node_by_name(&end.node).ok_or_else(|| LabError::UnknownNodeName(end.node.clone()));
+            let find = |end: &Endpoint| {
+                lab.world
+                    .node_by_name(&end.node)
+                    .ok_or_else(|| LabError::UnknownNodeName(end.node.clone()))
+            };
             let (a, b) = (find(&link.a)?, find(&link.b)?);
-            lab.world.add_link(a, &link.a.interface, b, &link.b.interface, link.cable)?;
+            lab.world
+                .add_link(a, &link.a.interface, b, &link.b.interface, link.cable)?;
         }
         lab.notes = spec.notes.clone();
         for flow in &spec.flows {
@@ -132,7 +155,13 @@ impl Lab {
     /// behaves identically. `startup_config` is each device's *startup*
     /// configuration, so unsaved running configuration is not included.
     pub fn to_spec(&self) -> LabSpec {
-        let name_of = |id: NodeId| self.world.nodes.get(&id).map(|n| n.name.clone()).unwrap_or_default();
+        let name_of = |id: NodeId| {
+            self.world
+                .nodes
+                .get(&id)
+                .map(|n| n.name.clone())
+                .unwrap_or_default()
+        };
         let nodes = self
             .world
             .nodes
@@ -143,9 +172,17 @@ impl Lab {
                 x: n.x,
                 y: n.y,
                 powered: n.powered,
-                startup_config: if n.model.is_network_os() { n.startup.clone() } else { None },
+                startup_config: if n.model.is_network_os() {
+                    n.startup.clone()
+                } else {
+                    None
+                },
                 host: n.host.clone(),
-                vlan_dat: n.vlan_dat.as_ref().filter(|_| n.model.is_switch()).map(vlan_dat_text),
+                vlan_dat: n
+                    .vlan_dat
+                    .as_ref()
+                    .filter(|_| n.model.is_switch())
+                    .map(vlan_dat_text),
                 rsa_key_bits: n.rsa_bits,
             })
             .collect();
@@ -155,8 +192,14 @@ impl Lab {
             .iter()
             .map(|(id, l)| {
                 let spec = LinkSpec {
-                    a: Endpoint { node: name_of(l.a.0), interface: l.a.1.name() },
-                    b: Endpoint { node: name_of(l.b.0), interface: l.b.1.name() },
+                    a: Endpoint {
+                        node: name_of(l.a.0),
+                        interface: l.a.1.name(),
+                    },
+                    b: Endpoint {
+                        node: name_of(l.b.0),
+                        interface: l.b.1.name(),
+                    },
                     cable: l.cable,
                 };
                 (*id, spec)
@@ -164,8 +207,14 @@ impl Lab {
             .collect();
         links.extend(self.world.console_links.iter().map(|(id, l)| {
             let spec = LinkSpec {
-                a: Endpoint { node: name_of(l.a.0), interface: l.a.1.clone() },
-                b: Endpoint { node: name_of(l.b.0), interface: l.b.1.clone() },
+                a: Endpoint {
+                    node: name_of(l.a.0),
+                    interface: l.a.1.clone(),
+                },
+                b: Endpoint {
+                    node: name_of(l.b.0),
+                    interface: l.b.1.clone(),
+                },
                 cable: CableKind::Console,
             };
             (*id, spec)
@@ -177,7 +226,15 @@ impl Lab {
             nodes,
             links: links.into_iter().map(|(_, spec)| spec).collect(),
             notes: self.notes.clone(),
-            flows: self.world.flows.values().map(|f| FlowSpec { src: name_of(f.src), ..f.spec.clone() }).collect(),
+            flows: self
+                .world
+                .flows
+                .values()
+                .map(|f| FlowSpec {
+                    src: name_of(f.src),
+                    ..f.spec.clone()
+                })
+                .collect(),
             seed: self.world.seed,
         }
     }
@@ -197,7 +254,13 @@ impl Lab {
     // ------------------------------------------------------------ editing
 
     /// Add a device of a catalog model. Without a name one is chosen (`R1`, `SW2`, ...).
-    pub fn add_node(&mut self, model: &str, name: Option<&str>, x: f32, y: f32) -> Result<NodeId, LabError> {
+    pub fn add_node(
+        &mut self,
+        model: &str,
+        name: Option<&str>,
+        x: f32,
+        y: f32,
+    ) -> Result<NodeId, LabError> {
         let id = self.world.add_node(model, name, x, y)?;
         self.pump();
         Ok(id)
@@ -206,8 +269,12 @@ impl Lab {
     /// Remove a device together with its links, flows, faults and consoles.
     pub fn remove_node(&mut self, id: NodeId) -> Result<(), LabError> {
         self.world.remove_node(id)?;
-        let orphaned: Vec<ConsoleId> =
-            self.consoles.iter().filter(|(_, c)| c.root_node() == Some(id)).map(|(cid, _)| *cid).collect();
+        let orphaned: Vec<ConsoleId> = self
+            .consoles
+            .iter()
+            .filter(|(_, c)| c.root_node() == Some(id))
+            .map(|(cid, _)| *cid)
+            .collect();
         for console in orphaned {
             self.console_close(console);
         }
@@ -237,7 +304,11 @@ impl Lab {
 
     /// Replace an end host's addressing and services.
     pub fn set_host_config(&mut self, id: NodeId, cfg: HostConfig) -> Result<(), LabError> {
-        let node = self.world.nodes.get_mut(&id).ok_or(LabError::UnknownNode(id))?;
+        let node = self
+            .world
+            .nodes
+            .get_mut(&id)
+            .ok_or(LabError::UnknownNode(id))?;
         if node.model.is_network_os() {
             return Err(LabError::NotAHost(node.name.clone()));
         }
@@ -258,7 +329,14 @@ impl Lab {
     }
 
     /// Cable two interfaces. Interface names may be abbreviated (`g0/1`).
-    pub fn add_link(&mut self, a: NodeId, a_if: &str, b: NodeId, b_if: &str, cable: CableKind) -> Result<LinkId, LabError> {
+    pub fn add_link(
+        &mut self,
+        a: NodeId,
+        a_if: &str,
+        b: NodeId,
+        b_if: &str,
+        cable: CableKind,
+    ) -> Result<LinkId, LabError> {
         let id = self.world.add_link(a, a_if, b, b_if, cable)?;
         self.pump();
         Ok(id)
@@ -272,7 +350,9 @@ impl Lab {
 
     /// Full names of the node's interfaces that have no cable.
     pub fn free_interfaces(&self, id: NodeId) -> Vec<String> {
-        let Some(node) = self.world.nodes.get(&id) else { return Vec::new() };
+        let Some(node) = self.world.nodes.get(&id) else {
+            return Vec::new();
+        };
         node.model
             .ports
             .iter()
@@ -315,7 +395,8 @@ impl Lab {
             if quiet >= QUIET_MICROS && !self.world.converging() {
                 break;
             }
-            self.world.run_until((self.world.now + SETTLE_STEP_MICROS).min(deadline));
+            self.world
+                .run_until((self.world.now + SETTLE_STEP_MICROS).min(deadline));
         }
         self.pump();
     }
@@ -347,7 +428,10 @@ impl Lab {
 
     /// Drain the console's pending output.
     pub fn console_output(&mut self, console: ConsoleId) -> Vec<u8> {
-        self.consoles.get_mut(&console).map(Console::take_output).unwrap_or_default()
+        self.consoles
+            .get_mut(&console)
+            .map(Console::take_output)
+            .unwrap_or_default()
     }
 
     pub fn console_resize(&mut self, console: ConsoleId, cols: u16, rows: u16) {
@@ -378,7 +462,11 @@ impl Lab {
     // --------------------------------------------------------- automation
 
     fn cli_node(&self, node: NodeId) -> Result<&Node, LabError> {
-        let n = self.world.nodes.get(&node).ok_or(LabError::UnknownNode(node))?;
+        let n = self
+            .world
+            .nodes
+            .get(&node)
+            .ok_or(LabError::UnknownNode(node))?;
         if n.model.cli == CliKind::None {
             return Err(LabError::NoCli(n.name.clone()));
         }
@@ -390,7 +478,13 @@ impl Lab {
 
     /// Carry a shell reply through to the end: apply configuration changes,
     /// wait for processes, answer questions with their defaults.
-    fn finish(&mut self, node: NodeId, shell: &mut Shell, mut reply: Reply, out: &mut String) -> bool {
+    fn finish(
+        &mut self,
+        node: NodeId,
+        shell: &mut Shell,
+        mut reply: Reply,
+        out: &mut String,
+    ) -> bool {
         let mut error = false;
         for _ in 0..8 {
             if reply.touched {
@@ -412,9 +506,14 @@ impl Lab {
                         Tag::ClearOspf => "yes",
                         _ => "",
                     };
-                    self.world.with_node(node, |n, fx| shell.answer(n, fx, tag, answer)).unwrap_or_default()
+                    self.world
+                        .with_node(node, |n, fx| shell.answer(n, fx, tag, answer))
+                        .unwrap_or_default()
                 }
-                Next::Key { tag, .. } => self.world.with_node(node, |n, fx| shell.answer(n, fx, tag, "\n")).unwrap_or_default(),
+                Next::Key { tag, .. } => self
+                    .world
+                    .with_node(node, |n, fx| shell.answer(n, fx, tag, "\n"))
+                    .unwrap_or_default(),
                 Next::Reload => {
                     self.world.boot(node);
                     self.world.touch();
@@ -429,14 +528,22 @@ impl Lab {
     /// Advance simulated time until a process finishes; returns its output.
     fn wait_for(&mut self, node: NodeId, proc: u32) -> String {
         let limit = self.world.now.saturating_add(EXEC_LIMIT_MICROS);
-        let running = |world: &World| world.nodes.get(&node).and_then(|n| n.procs.get(proc)).is_some_and(|p| !p.done);
+        let running = |world: &World| {
+            world
+                .nodes
+                .get(&node)
+                .and_then(|n| n.procs.get(proc))
+                .is_some_and(|p| !p.done)
+        };
         while running(&self.world) {
             match self.world.next_event_at() {
                 Some(at) if at <= limit => self.world.run_until(at),
                 _ => break,
             }
         }
-        let Some(n) = self.world.nodes.get_mut(&node) else { return String::new() };
+        let Some(n) = self.world.nodes.get_mut(&node) else {
+            return String::new();
+        };
         n.proc_abort(proc);
         let text = n.procs.get(proc).map(|p| p.out.clone()).unwrap_or_default();
         n.procs.remove(proc);
@@ -453,7 +560,10 @@ impl Lab {
             CliKind::Ios => Shell::Ios(IosShell::automation(Mode::Priv)),
             _ => Shell::Host(HostShell::new()),
         };
-        let reply = self.world.with_node(node, |n, fx| shell.execute(n, fx, command)).unwrap_or_default();
+        let reply = self
+            .world
+            .with_node(node, |n, fx| shell.execute(n, fx, command))
+            .unwrap_or_default();
         let mut out = String::new();
         self.finish(node, &mut shell, reply, &mut out);
         self.pump();
@@ -469,13 +579,23 @@ impl Lab {
             return Err(LabError::NoCli(n.name.clone()));
         }
         let mut shell = Shell::Ios(IosShell::automation(Mode::Config));
-        let mut outcome = ConfigOutcome { lines: Vec::new(), ok: true };
+        let mut outcome = ConfigOutcome {
+            lines: Vec::new(),
+            ok: true,
+        };
         for line in lines {
-            let reply = self.world.with_node(node, |n, fx| shell.execute(n, fx, line)).unwrap_or_default();
+            let reply = self
+                .world
+                .with_node(node, |n, fx| shell.execute(n, fx, line))
+                .unwrap_or_default();
             let mut output = String::new();
             let error = self.finish(node, &mut shell, reply, &mut output);
             outcome.ok &= !error;
-            outcome.lines.push(ConfigLineResult { line: line.clone(), output, error });
+            outcome.lines.push(ConfigLineResult {
+                line: line.clone(),
+                output,
+                error,
+            });
         }
         if let Shell::Ios(ios) = &mut shell
             && ios.in_config()
@@ -497,7 +617,11 @@ impl Lab {
 
     /// The saved configuration; empty if the device was never saved.
     pub fn startup_config(&self, node: NodeId) -> Result<String, LabError> {
-        let n = self.world.nodes.get(&node).ok_or(LabError::UnknownNode(node))?;
+        let n = self
+            .world
+            .nodes
+            .get(&node)
+            .ok_or(LabError::UnknownNode(node))?;
         if n.model.cli != CliKind::Ios {
             return Err(LabError::NoCli(n.name.clone()));
         }
@@ -507,7 +631,11 @@ impl Lab {
     /// Startup-configuration lines the device rejected when it last booted,
     /// each with the device's response.
     pub fn startup_errors(&self, node: NodeId) -> Vec<(String, String)> {
-        self.world.nodes.get(&node).map(|n| n.boot_errors.clone()).unwrap_or_default()
+        self.world
+            .nodes
+            .get(&node)
+            .map(|n| n.boot_errors.clone())
+            .unwrap_or_default()
     }
 
     // --------------------------------------------------------- inspection
@@ -517,12 +645,20 @@ impl Lab {
     }
 
     pub fn node_tables(&self, node: NodeId) -> Result<NodeTables, LabError> {
-        let n = self.world.nodes.get(&node).ok_or(LabError::UnknownNode(node))?;
+        let n = self
+            .world
+            .nodes
+            .get(&node)
+            .ok_or(LabError::UnknownNode(node))?;
         Ok(views::tables(n, self.world.now))
     }
 
     pub fn metrics(&self, node: NodeId) -> Result<NodeMetrics, LabError> {
-        let n = self.world.nodes.get(&node).ok_or(LabError::UnknownNode(node))?;
+        let n = self
+            .world
+            .nodes
+            .get(&node)
+            .ok_or(LabError::UnknownNode(node))?;
         Ok(views::metrics(n, self.world.now, self.world.seed))
     }
 
@@ -531,12 +667,16 @@ impl Lab {
     /// Can `from` ping `dst` right now? No simulated time passes and nothing
     /// in the lab changes (ARP caches, counters and logs are untouched).
     pub fn probe_ping(&mut self, from: NodeId, dst: Ipv4Addr) -> ProbeResult {
-        self.world.probe(from, dst, PduKind::Icmp, false).into_result(&self.world)
+        self.world
+            .probe(from, dst, PduKind::Icmp, false)
+            .into_result(&self.world)
     }
 
     /// Can `from` open a TCP connection to `dst:port` right now?
     pub fn probe_tcp(&mut self, from: NodeId, dst: Ipv4Addr, port: u16) -> ProbeResult {
-        self.world.probe(from, dst, PduKind::Tcp { port }, false).into_result(&self.world)
+        self.world
+            .probe(from, dst, PduKind::Tcp { port }, false)
+            .into_result(&self.world)
     }
 
     // ----------------------------------------------------- simulation mode
@@ -549,7 +689,12 @@ impl Lab {
     /// Inject one PDU and trace it (and the ARP and replies it causes). Its
     /// events carry the returned id whether or not capture is on, and a
     /// `TraceDone` event reports how it ended.
-    pub fn start_trace(&mut self, from: NodeId, dst: Ipv4Addr, pdu: PduKind) -> Result<TraceId, LabError> {
+    pub fn start_trace(
+        &mut self,
+        from: NodeId,
+        dst: Ipv4Addr,
+        pdu: PduKind,
+    ) -> Result<TraceId, LabError> {
         let trace = self.world.start_trace(from, dst, pdu)?;
         self.pump();
         Ok(trace)
@@ -559,18 +704,29 @@ impl Lab {
     pub fn take_events(&mut self) -> Vec<LabEvent> {
         let mut events = std::mem::take(&mut self.world.events);
         let changed = std::mem::take(&mut self.world.changed);
-        events.extend(changed.into_iter().filter(|id| self.world.nodes.contains_key(id)).map(|node| LabEvent::NodeChanged { node }));
+        events.extend(
+            changed
+                .into_iter()
+                .filter(|id| self.world.nodes.contains_key(id))
+                .map(|node| LabEvent::NodeChanged { node }),
+        );
         events
     }
 
     // -------------------------------------------------- traffic and faults
 
     pub fn add_flow(&mut self, flow: FlowSpec) -> Result<FlowId, LabError> {
-        let src = self.world.node_by_name(&flow.src).ok_or_else(|| LabError::UnknownNodeName(flow.src.clone()))?;
-        let dst = parse_ip(flow.dst_ip.trim()).ok_or_else(|| LabError::InvalidAddress(flow.dst_ip.clone()))?;
+        let src = self
+            .world
+            .node_by_name(&flow.src)
+            .ok_or_else(|| LabError::UnknownNodeName(flow.src.clone()))?;
+        let dst = parse_ip(flow.dst_ip.trim())
+            .ok_or_else(|| LabError::InvalidAddress(flow.dst_ip.clone()))?;
         let id = self.world.next_flow;
         self.world.next_flow += 1;
-        self.world.flows.insert(id, FlowRuntime::new(flow, src, dst, self.world.now));
+        self.world
+            .flows
+            .insert(id, FlowRuntime::new(flow, src, dst, self.world.now));
         self.world.arm_flow_tick();
         Ok(id)
     }
@@ -584,8 +740,20 @@ impl Lab {
             .flows
             .iter()
             .map(|(id, flow)| {
-                let name = self.world.nodes.get(&flow.src).map(|n| n.name.clone()).unwrap_or_default();
-                (*id, FlowSpec { src: name, ..flow.spec.clone() }, flow.state(&self.world))
+                let name = self
+                    .world
+                    .nodes
+                    .get(&flow.src)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_default();
+                (
+                    *id,
+                    FlowSpec {
+                        src: name,
+                        ..flow.spec.clone()
+                    },
+                    flow.state(&self.world),
+                )
             })
             .collect()
     }
@@ -602,6 +770,10 @@ impl Lab {
     }
 
     pub fn faults(&self) -> Vec<(FaultId, Fault)> {
-        self.world.faults.iter().map(|(id, fault)| (*id, fault.clone())).collect()
+        self.world
+            .faults
+            .iter()
+            .map(|(id, fault)| (*id, fault.clone()))
+            .collect()
     }
 }

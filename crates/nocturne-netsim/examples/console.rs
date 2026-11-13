@@ -22,11 +22,17 @@ fn main() {
         },
     )
     .unwrap();
-    lab.add_link(pc, "Ethernet0", sw, "fa0/1", CableKind::Auto).unwrap();
-    lab.add_link(r1, "g0/0", sw, "gi0/1", CableKind::Auto).unwrap();
+    lab.add_link(pc, "Ethernet0", sw, "fa0/1", CableKind::Auto)
+        .unwrap();
+    lab.add_link(r1, "g0/0", sw, "gi0/1", CableKind::Auto)
+        .unwrap();
     lab.configure(
         r1,
-        &["interface g0/0".to_string(), "ip address 192.168.1.1 255.255.255.0".to_string(), "no shutdown".to_string()],
+        &[
+            "interface g0/0".to_string(),
+            "ip address 192.168.1.1 255.255.255.0".to_string(),
+            "no shutdown".to_string(),
+        ],
     )
     .unwrap();
     lab.settle(60_000_000);

@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 
 use crate::catalog::Role;
 use crate::device::config::{
-    AclItem, Duplex, IfConfig, L3Addr, Lease, LineConfig, LoginMode, NatSide, NatTarget, Secret, Slot,
-    StpMode, SwMode, Switchport, Timestamps, Violation, VtpMode,
+    AclItem, Duplex, IfConfig, L3Addr, Lease, LineConfig, LoginMode, NatSide, NatTarget, Secret,
+    Slot, StpMode, SwMode, Switchport, Timestamps, Violation, VtpMode,
 };
 use crate::ifname::{IfId, IfKind};
 use crate::sim::acl::rule_text;
@@ -51,12 +51,22 @@ pub(crate) fn render(node: &Node) -> String {
         out.push_str(text);
         out.push('\n');
     };
-    let version: String = node.model.version.split('(').next().unwrap_or("15.0").to_string();
+    let version: String = node
+        .model
+        .version
+        .split('(')
+        .next()
+        .unwrap_or("15.0")
+        .to_string();
     line("!");
     line(&format!("version {version}"));
     line(&timestamps("debug", cfg.services.timestamps_debug));
     line(&timestamps("log", cfg.services.timestamps_log));
-    line(if cfg.services.password_encryption { "service password-encryption" } else { "no service password-encryption" });
+    line(if cfg.services.password_encryption {
+        "service password-encryption"
+    } else {
+        "no service password-encryption"
+    });
     line("!");
     line(&format!("hostname {}", cfg.hostname));
     line("!");
@@ -77,13 +87,26 @@ pub(crate) fn render(node: &Node) -> String {
     }
     line("!");
     for user in &cfg.users {
-        let privilege = if user.privilege == 1 { String::new() } else { format!(" privilege {}", user.privilege) };
+        let privilege = if user.privilege == 1 {
+            String::new()
+        } else {
+            format!(" privilege {}", user.privilege)
+        };
         match &user.secret {
-            Some(secret) => line(&format!("username {}{privilege} {}", user.name, credential(secret))),
+            Some(secret) => line(&format!(
+                "username {}{privilege} {}",
+                user.name,
+                credential(secret)
+            )),
             None => line(&format!("username {}{privilege}", user.name)),
         }
     }
-    let aaa: Vec<&String> = cfg.stored.iter().filter(|(slot, _)| *slot == Slot::Aaa).map(|(_, l)| l).collect();
+    let aaa: Vec<&String> = cfg
+        .stored
+        .iter()
+        .filter(|(slot, _)| *slot == Slot::Aaa)
+        .map(|(_, l)| l)
+        .collect();
     if aaa.is_empty() {
         line("no aaa new-model");
     }
@@ -91,7 +114,10 @@ pub(crate) fn render(node: &Node) -> String {
         line(stored);
     }
     if let Some(zone) = &cfg.clock_timezone {
-        line(&format!("clock timezone {} {} {}", zone.name, zone.hours, zone.minutes));
+        line(&format!(
+            "clock timezone {} {} {}",
+            zone.name, zone.hours, zone.minutes
+        ));
     }
     line("!");
     match (role, cfg.ip_routing) {
@@ -125,7 +151,13 @@ pub(crate) fn render(node: &Node) -> String {
         if let Some(network) = pool.network {
             line(&format!(" network {} {}", network.net, network.mask()));
         }
-        let list = |addrs: &[std::net::Ipv4Addr]| addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" ");
+        let list = |addrs: &[std::net::Ipv4Addr]| {
+            addrs
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         if !pool.default_routers.is_empty() {
             line(&format!(" default-router {}", list(&pool.default_routers)));
         }
@@ -160,7 +192,11 @@ pub(crate) fn render(node: &Node) -> String {
     if !cfg.cdp_run {
         line("no cdp run");
     }
-    for (_, stored) in cfg.stored.iter().filter(|(slot, _)| *slot == Slot::Errdisable) {
+    for (_, stored) in cfg
+        .stored
+        .iter()
+        .filter(|(slot, _)| *slot == Slot::Errdisable)
+    {
         line(stored);
     }
     for (_, stored) in cfg.stored.iter().filter(|(slot, _)| *slot == Slot::Archive) {
@@ -184,12 +220,25 @@ pub(crate) fn render(node: &Node) -> String {
         priorities.sort_unstable();
         priorities.dedup();
         for priority in priorities {
-            let vlans: Vec<u16> = cfg.stp.priority.iter().filter(|(_, p)| **p == priority).map(|(v, _)| *v).collect();
-            line(&format!("spanning-tree vlan {} priority {priority}", ranges(&vlans)));
+            let vlans: Vec<u16> = cfg
+                .stp
+                .priority
+                .iter()
+                .filter(|(_, p)| **p == priority)
+                .map(|(v, _)| *v)
+                .collect();
+            line(&format!(
+                "spanning-tree vlan {} priority {priority}",
+                ranges(&vlans)
+            ));
         }
         line("!");
         if cfg.vtp.mode == VtpMode::Transparent {
-            for (id, vlan) in cfg.vlans.iter().filter(|(id, _)| **id != 1 && !(1002..=1005).contains(*id)) {
+            for (id, vlan) in cfg
+                .vlans
+                .iter()
+                .filter(|(id, _)| **id != 1 && !(1002..=1005).contains(*id))
+            {
                 line(&format!("vlan {id}"));
                 if vlan.name != crate::device::config::Vlan::default_name(*id) {
                     line(&format!(" name {}", vlan.name));
@@ -214,7 +263,10 @@ pub(crate) fn render(node: &Node) -> String {
             line(&format!(" router-id {rid}"));
         }
         if ospf.reference_bandwidth != 100 {
-            line(&format!(" auto-cost reference-bandwidth {}", ospf.reference_bandwidth));
+            line(&format!(
+                " auto-cost reference-bandwidth {}",
+                ospf.reference_bandwidth
+            ));
         }
         if ospf.redistribute_connected {
             line(" redistribute connected subnets");
@@ -233,7 +285,10 @@ pub(crate) fn render(node: &Node) -> String {
             }
         }
         for network in &ospf.networks {
-            line(&format!(" network {} {} area {}", network.addr, network.wildcard, network.area));
+            line(&format!(
+                " network {} {} area {}",
+                network.addr, network.wildcard, network.area
+            ));
         }
         match ospf.default_originate {
             Some(true) => line(" default-information originate always"),
@@ -284,26 +339,43 @@ pub(crate) fn render(node: &Node) -> String {
         let tail = if pool.as_prefix {
             format!("prefix-length {}", pool.prefix_len)
         } else {
-            format!("netmask {}", crate::util::net::mask_from_len(pool.prefix_len))
+            format!(
+                "netmask {}",
+                crate::util::net::mask_from_len(pool.prefix_len)
+            )
         };
-        line(&format!("ip nat pool {} {} {} {tail}", pool.name, pool.start, pool.end));
+        line(&format!(
+            "ip nat pool {} {} {} {tail}",
+            pool.name, pool.start, pool.end
+        ));
     }
     for rule in &cfg.nat.rules {
         let target = match &rule.target {
             NatTarget::Interface(iface) => format!("interface {}", iface.name()),
             NatTarget::Pool(name) => format!("pool {name}"),
         };
-        line(&format!("ip nat inside source list {} {target}{}", rule.acl, if rule.overload { " overload" } else { "" }));
+        line(&format!(
+            "ip nat inside source list {} {target}{}",
+            rule.acl,
+            if rule.overload { " overload" } else { "" }
+        ));
     }
     for entry in &cfg.nat.statics {
         match entry.ports {
             Some((proto, local, global)) => line(&format!(
                 "ip nat inside source static {} {} {local} {} {global}",
-                if proto == crate::device::config::NatProto::Tcp { "tcp" } else { "udp" },
+                if proto == crate::device::config::NatProto::Tcp {
+                    "tcp"
+                } else {
+                    "udp"
+                },
                 entry.local,
                 entry.global
             )),
-            None => line(&format!("ip nat inside source static {} {}", entry.local, entry.global)),
+            None => line(&format!(
+                "ip nat inside source static {} {}",
+                entry.local, entry.global
+            )),
         }
     }
     for route in &cfg.static_routes {
@@ -321,7 +393,11 @@ pub(crate) fn render(node: &Node) -> String {
     }
     line("!");
     for acl in cfg.acls.iter().filter(|acl| acl.number().is_none()) {
-        line(&format!("ip access-list {} {}", if acl.extended { "extended" } else { "standard" }, acl.name));
+        line(&format!(
+            "ip access-list {} {}",
+            if acl.extended { "extended" } else { "standard" },
+            acl.name
+        ));
         for item in &acl.items {
             match item {
                 AclItem::Rule(rule) => line(&format!(" {}", rule_text(rule, acl.extended))),
@@ -332,7 +408,11 @@ pub(crate) fn render(node: &Node) -> String {
     for acl in cfg.acls.iter().filter(|acl| acl.number().is_some()) {
         for item in &acl.items {
             match item {
-                AclItem::Rule(rule) => line(&format!("access-list {} {}", acl.name, rule_text(rule, acl.extended))),
+                AclItem::Rule(rule) => line(&format!(
+                    "access-list {} {}",
+                    acl.name,
+                    rule_text(rule, acl.extended)
+                )),
                 AclItem::Remark(text) => line(&format!("access-list {} remark {text}", acl.name)),
             }
         }
@@ -345,8 +425,16 @@ pub(crate) fn render(node: &Node) -> String {
         line(&format!("logging host {host}"));
     }
     for community in &cfg.snmp.communities {
-        let acl = community.acl.as_ref().map(|a| format!(" {a}")).unwrap_or_default();
-        line(&format!("snmp-server community {} {}{acl}", community.name, if community.rw { "RW" } else { "RO" }));
+        let acl = community
+            .acl
+            .as_ref()
+            .map(|a| format!(" {a}"))
+            .unwrap_or_default();
+        line(&format!(
+            "snmp-server community {} {}{acl}",
+            community.name,
+            if community.rw { "RW" } else { "RO" }
+        ));
     }
     if let Some(location) = &cfg.snmp.location {
         line(&format!("snmp-server location {location}"));
@@ -371,7 +459,11 @@ pub(crate) fn render(node: &Node) -> String {
     // Real devices split vty lines at 0-4 / 5-15 and merge equal neighbours.
     let mut start = 0;
     while start < cfg.vty.len() {
-        let block_end = if start < 5 { 5.min(cfg.vty.len()) } else { cfg.vty.len() };
+        let block_end = if start < 5 {
+            5.min(cfg.vty.len())
+        } else {
+            cfg.vty.len()
+        };
         let mut end = start + 1;
         while end < block_end && cfg.vty[end] == cfg.vty[start] {
             end += 1;
@@ -440,7 +532,11 @@ fn switchport_lines(sw: &Switchport, default_mode: SwMode, out: &mut Vec<String>
         out.push(format!("switchport trunk native vlan {}", sw.native_vlan));
     }
     if !sw.allowed.is_all() {
-        let list = if sw.allowed.is_empty() { "none".to_string() } else { sw.allowed.to_ranges() };
+        let list = if sw.allowed.is_empty() {
+            "none".to_string()
+        } else {
+            sw.allowed.to_ranges()
+        };
         out.push(format!("switchport trunk allowed vlan {list}"));
     }
     if sw.mode != default_mode {
@@ -464,6 +560,9 @@ fn switchport_lines(sw: &Switchport, default_mode: SwMode, out: &mut Vec<String>
     if ps.maximum != 1 {
         out.push(format!("switchport port-security maximum {}", ps.maximum));
     }
+    if ps.enabled {
+        out.push("switchport port-security".to_string());
+    }
     match ps.violation {
         Violation::Shutdown => {}
         Violation::Restrict => out.push("switchport port-security violation restrict".to_string()),
@@ -473,10 +572,10 @@ fn switchport_lines(sw: &Switchport, default_mode: SwMode, out: &mut Vec<String>
         out.push("switchport port-security mac-address sticky".to_string());
     }
     for (mac, sticky) in &ps.macs {
-        out.push(format!("switchport port-security mac-address {}{mac}", if *sticky { "sticky " } else { "" }));
-    }
-    if ps.enabled {
-        out.push("switchport port-security".to_string());
+        out.push(format!(
+            "switchport port-security mac-address {}{mac}",
+            if *sticky { "sticky " } else { "" }
+        ));
     }
 }
 
@@ -495,14 +594,19 @@ pub(crate) fn interface_lines(node: &Node, id: IfId, cfg: &IfConfig) -> Vec<Stri
         None => {}
     }
     if let Some((vlan, native)) = cfg.dot1q {
-        out.push(format!("encapsulation dot1Q {vlan}{}", if native { " native" } else { "" }));
+        out.push(format!(
+            "encapsulation dot1Q {vlan}{}",
+            if native { " native" } else { "" }
+        ));
     }
     if cfg.l2.is_none() && cfg.channel_group.is_none() {
         for addr in &cfg.secondary {
             out.push(format!("ip address {} {} secondary", addr.ip, addr.mask()));
         }
         match cfg.addr {
-            Some(L3Addr::Static(addr)) => out.push(format!("ip address {} {}", addr.ip, addr.mask())),
+            Some(L3Addr::Static(addr)) => {
+                out.push(format!("ip address {} {}", addr.ip, addr.mask()))
+            }
             Some(L3Addr::Dhcp) => out.push("ip address dhcp".to_string()),
             None => out.push("no ip address".to_string()),
         }
@@ -544,7 +648,10 @@ pub(crate) fn interface_lines(node: &Node, id: IfId, cfg: &IfConfig) -> Vec<Stri
             out.push(format!("standby {} ip {ip}", group.group));
         }
         if group.priority != 100 {
-            out.push(format!("standby {} priority {}", group.group, group.priority));
+            out.push(format!(
+                "standby {} priority {}",
+                group.group, group.priority
+            ));
         }
         if group.preempt {
             out.push(format!("standby {} preempt", group.group));
@@ -610,7 +717,10 @@ pub(crate) fn interface_lines(node: &Node, id: IfId, cfg: &IfConfig) -> Vec<Stri
 /// `show running-config`: header plus body.
 pub(crate) fn show_running(node: &Node) -> String {
     let body = render(node);
-    format!("Building configuration...\n\nCurrent configuration : {} bytes\n{body}", body.len())
+    format!(
+        "Building configuration...\n\nCurrent configuration : {} bytes\n{body}",
+        body.len()
+    )
 }
 
 /// `show running-config interface X`.
@@ -621,7 +731,10 @@ pub(crate) fn show_running_interface(node: &Node, id: IfId) -> Option<String> {
         let _ = writeln!(body, " {text}");
     }
     body.push_str("end\n");
-    Some(format!("Building configuration...\n\nCurrent configuration : {} bytes\n{body}\n", body.len()))
+    Some(format!(
+        "Building configuration...\n\nCurrent configuration : {} bytes\n{body}\n",
+        body.len()
+    ))
 }
 
 /// `show startup-config`.

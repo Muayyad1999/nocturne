@@ -99,8 +99,16 @@ pub(crate) struct Packet {
 #[derive(Clone, Debug)]
 pub(crate) enum L4 {
     Icmp(Icmp),
-    Udp { sport: u16, dport: u16, app: UdpApp },
-    Tcp { sport: u16, dport: u16, flags: TcpFlags },
+    Udp {
+        sport: u16,
+        dport: u16,
+        app: UdpApp,
+    },
+    Tcp {
+        sport: u16,
+        dport: u16,
+        flags: TcpFlags,
+    },
     Ospf(Box<OspfHello>),
 }
 
@@ -222,6 +230,7 @@ pub(crate) struct OspfHello {
 #[derive(Clone, Debug)]
 pub(crate) struct RipMsg {
     pub(crate) request: bool,
+    pub(crate) version: u8,
     /// Prefix and metric (16 = unreachable).
     pub(crate) entries: Vec<(Prefix, u8)>,
 }
@@ -283,16 +292,28 @@ impl Packet {
 
     pub(crate) fn flow(&self) -> Flow {
         match &self.l4 {
-            L4::Icmp(Icmp::EchoRequest { id, seq } | Icmp::EchoReply { id, seq }) => Flow::Icmp { id: *id, seq: *seq },
-            L4::Udp { sport, dport, .. } => Flow::Udp { sport: *sport, dport: *dport },
-            L4::Tcp { sport, dport, .. } => Flow::Tcp { sport: *sport, dport: *dport },
+            L4::Icmp(Icmp::EchoRequest { id, seq } | Icmp::EchoReply { id, seq }) => {
+                Flow::Icmp { id: *id, seq: *seq }
+            }
+            L4::Udp { sport, dport, .. } => Flow::Udp {
+                sport: *sport,
+                dport: *dport,
+            },
+            L4::Tcp { sport, dport, .. } => Flow::Tcp {
+                sport: *sport,
+                dport: *dport,
+            },
             L4::Icmp(_) | L4::Ospf(_) => Flow::Other,
         }
     }
 
     /// What an ICMP error about this packet would quote.
     pub(crate) fn orig(&self) -> Orig {
-        Orig { src: self.src, dst: self.dst, flow: self.flow() }
+        Orig {
+            src: self.src,
+            dst: self.dst,
+            flow: self.flow(),
+        }
     }
 
     pub(crate) fn is_icmp_error(&self) -> bool {
@@ -305,19 +326,36 @@ impl Packet {
         match &self.l4 {
             L4::Icmp(Icmp::EchoRequest { .. }) => format!("ICMP echo request {ends}"),
             L4::Icmp(Icmp::EchoReply { .. }) => format!("ICMP echo reply {ends}"),
-            L4::Icmp(Icmp::Unreachable { code, .. }) => format!("ICMP {} {ends}", unreach_name(*code)),
+            L4::Icmp(Icmp::Unreachable { code, .. }) => {
+                format!("ICMP {} {ends}", unreach_name(*code))
+            }
             L4::Icmp(Icmp::TimeExceeded { .. }) => format!("ICMP TTL exceeded {ends}"),
             L4::Udp { sport, dport, app } => match app {
                 UdpApp::Dhcp(msg) => format!("{} {ends}", msg.op.name()),
-                UdpApp::Rip(msg) => format!("RIPv2 {} {ends}", if msg.request { "request" } else { "response" }),
+                UdpApp::Rip(msg) => format!(
+                    "RIPv2 {} {ends}",
+                    if msg.request { "request" } else { "response" }
+                ),
                 UdpApp::Hsrp(msg) => format!("HSRP hello group {} {ends}", msg.group),
                 UdpApp::Dns(msg) => {
-                    format!("DNS {} {} {ends}", if msg.answer.is_some() { "response" } else { "query" }, msg.name)
+                    format!(
+                        "DNS {} {} {ends}",
+                        if msg.answer.is_some() {
+                            "response"
+                        } else {
+                            "query"
+                        },
+                        msg.name
+                    )
                 }
                 UdpApp::Syslog => format!("Syslog message {ends}"),
                 UdpApp::Data => format!("UDP {sport} → {dport}, {ends}"),
             },
-            L4::Tcp { sport, dport, flags } => format!("TCP {} {sport} → {dport}, {ends}", tcp_flag_name(*flags)),
+            L4::Tcp {
+                sport,
+                dport,
+                flags,
+            } => format!("TCP {} {sport} → {dport}, {ends}", tcp_flag_name(*flags)),
             L4::Ospf(_) => format!("OSPF hello {ends}"),
         }
     }
@@ -388,7 +426,10 @@ impl Frame {
     pub(crate) fn summary(&self) -> String {
         match &self.body {
             Body::Arp(arp) if arp.request => {
-                format!("ARP request: who has {}? Tell {}", arp.target_ip, arp.sender_ip)
+                format!(
+                    "ARP request: who has {}? Tell {}",
+                    arp.target_ip, arp.sender_ip
+                )
             }
             Body::Arp(arp) => format!("ARP reply: {} is at {}", arp.sender_ip, arp.sender_mac),
             Body::Ip(packet) => packet.summary(),
@@ -440,12 +481,23 @@ impl Frame {
                 layer: 2,
                 title: "ARP".to_string(),
                 lines: vec![
-                    format!("Operation: {}", if arp.request { "request (1)" } else { "reply (2)" }),
+                    format!(
+                        "Operation: {}",
+                        if arp.request {
+                            "request (1)"
+                        } else {
+                            "reply (2)"
+                        }
+                    ),
                     format!("Sender: {} at {}", arp.sender_ip, arp.sender_mac),
                     format!(
                         "Target: {} at {}",
                         arp.target_ip,
-                        if arp.target_mac == Mac::ZERO { "unknown".to_string() } else { arp.target_mac.to_string() }
+                        if arp.target_mac == Mac::ZERO {
+                            "unknown".to_string()
+                        } else {
+                            arp.target_mac.to_string()
+                        }
                     ),
                 ],
             }),
@@ -458,7 +510,10 @@ impl Frame {
                     format!("Root path cost: {}", bpdu.cost),
                     format!("Sender bridge: {}", bpdu.bridge),
                     format!("Sender port: {:#06x}", bpdu.port),
-                    format!("Topology change: {}", if bpdu.topology_change { "yes" } else { "no" }),
+                    format!(
+                        "Topology change: {}",
+                        if bpdu.topology_change { "yes" } else { "no" }
+                    ),
                 ],
             }),
             Body::Advert(advert) => layers.push(LayerInfo {
@@ -501,10 +556,18 @@ impl Packet {
             L4::Icmp(icmp) => {
                 let lines = match icmp {
                     Icmp::EchoRequest { id, seq } => {
-                        vec!["Type: 8 (echo request)".to_string(), format!("Identifier: {id}"), format!("Sequence: {seq}")]
+                        vec![
+                            "Type: 8 (echo request)".to_string(),
+                            format!("Identifier: {id}"),
+                            format!("Sequence: {seq}"),
+                        ]
                     }
                     Icmp::EchoReply { id, seq } => {
-                        vec!["Type: 0 (echo reply)".to_string(), format!("Identifier: {id}"), format!("Sequence: {seq}")]
+                        vec![
+                            "Type: 0 (echo reply)".to_string(),
+                            format!("Identifier: {id}"),
+                            format!("Sequence: {seq}"),
+                        ]
                     }
                     Icmp::Unreachable { code, orig } => vec![
                         format!("Type: 3 (destination unreachable), {}", unreach_name(*code)),
@@ -515,13 +578,20 @@ impl Packet {
                         format!("About: {} → {}", orig.src, orig.dst),
                     ],
                 };
-                layers.push(LayerInfo { layer: 3, title: "ICMP".to_string(), lines });
+                layers.push(LayerInfo {
+                    layer: 3,
+                    title: "ICMP".to_string(),
+                    lines,
+                });
             }
             L4::Udp { sport, dport, app } => {
                 layers.push(LayerInfo {
                     layer: 4,
                     title: "UDP".to_string(),
-                    lines: vec![format!("Source port: {sport}"), format!("Destination port: {dport}")],
+                    lines: vec![
+                        format!("Source port: {sport}"),
+                        format!("Destination port: {dport}"),
+                    ],
                 });
                 let app_layer = match app {
                     UdpApp::Dhcp(msg) => Some(("DHCP", {
@@ -542,8 +612,16 @@ impl Packet {
                         lines
                     })),
                     UdpApp::Rip(msg) => Some(("RIPv2", {
-                        let mut lines = vec![format!("Command: {}", if msg.request { "request" } else { "response" })];
-                        lines.extend(msg.entries.iter().take(8).map(|(p, m)| format!("{p} metric {m}")));
+                        let mut lines = vec![format!(
+                            "Command: {}",
+                            if msg.request { "request" } else { "response" }
+                        )];
+                        lines.extend(
+                            msg.entries
+                                .iter()
+                                .take(8)
+                                .map(|(p, m)| format!("{p} metric {m}")),
+                        );
                         lines
                     })),
                     UdpApp::Hsrp(msg) => Some((
@@ -577,10 +655,18 @@ impl Packet {
                     UdpApp::Syslog | UdpApp::Data => None,
                 };
                 if let Some((title, lines)) = app_layer {
-                    layers.push(LayerInfo { layer: 7, title: title.to_string(), lines });
+                    layers.push(LayerInfo {
+                        layer: 7,
+                        title: title.to_string(),
+                        lines,
+                    });
                 }
             }
-            L4::Tcp { sport, dport, flags } => layers.push(LayerInfo {
+            L4::Tcp {
+                sport,
+                dport,
+                flags,
+            } => layers.push(LayerInfo {
                 layer: 4,
                 title: "TCP".to_string(),
                 lines: vec![

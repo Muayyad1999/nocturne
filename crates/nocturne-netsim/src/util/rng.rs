@@ -35,7 +35,9 @@ pub(crate) fn mix(mut x: u64) -> u64 {
 
 /// Order-independent pseudo-random value for a tuple of inputs.
 pub(crate) fn hash(parts: &[u64]) -> u64 {
-    parts.iter().fold(0x6E6F_6374_7572_6E65, |acc, p| mix(acc ^ *p))
+    parts
+        .iter()
+        .fold(0x6E6F_6374_7572_6E65, |acc, p| mix(acc ^ *p))
 }
 
 #[cfg(test)]

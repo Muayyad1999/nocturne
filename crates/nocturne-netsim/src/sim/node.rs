@@ -80,6 +80,10 @@ pub(crate) struct IfState {
     pub(crate) trunking: bool,
     /// Channel-group member is bundled into its port-channel.
     pub(crate) bundled: bool,
+    /// Channel-group member whose switch-port settings differ from the port-channel's.
+    pub(crate) mismatched: bool,
+    /// Channel-group member that negotiates but has found no willing partner.
+    pub(crate) standalone: bool,
     pub(crate) counters: Counters,
     pub(crate) last_change: SimTime,
     pub(crate) dhcp: DhcpClient,
@@ -105,6 +109,8 @@ impl IfState {
             up: false,
             was_shutdown: false,
             errdisabled: None,
+            mismatched: false,
+            standalone: false,
             speed,
             full_duplex: true,
             trunking: false,
@@ -228,7 +234,8 @@ impl Node {
         };
         for (index, port) in model.ports.iter().enumerate() {
             let mac = base_mac.offset(index as u32 + 1);
-            node.ifs.insert(*port, IfState::new(mac, port.kind.max_mbps()));
+            node.ifs
+                .insert(*port, IfState::new(mac, port.kind.max_mbps()));
         }
         node
     }
@@ -246,7 +253,11 @@ impl Node {
             NodeKind::AccessPoint => "access point",
             NodeKind::Server => "server",
             NodeKind::Cloud => "cloud",
-            NodeKind::Pc | NodeKind::Laptop | NodeKind::Printer | NodeKind::Phone | NodeKind::Nms => "host",
+            NodeKind::Pc
+            | NodeKind::Laptop
+            | NodeKind::Printer
+            | NodeKind::Phone
+            | NodeKind::Nms => "host",
         }
     }
 
@@ -265,7 +276,10 @@ impl Node {
                 .first()
                 .and_then(|member| self.ifs.get(member))
                 .map_or(self.base_mac.offset(0x60 + id.number()), |state| state.mac),
-            _ => self.ifs.get(&id.parent()).map_or(self.base_mac, |state| state.mac),
+            _ => self
+                .ifs
+                .get(&id.parent())
+                .map_or(self.base_mac, |state| state.mac),
         }
     }
 
@@ -276,14 +290,23 @@ impl Node {
     /// Does this interface take part in IP (routed port, SVI, loopback, sub-interface)?
     pub(crate) fn is_l3(&self, id: IfId) -> bool {
         self.role() != Role::Bridge
-            && self.cfg.iface(id).is_some_and(|cfg| cfg.l2.is_none() && cfg.channel_group.is_none())
+            && self
+                .cfg
+                .iface(id)
+                .is_some_and(|cfg| cfg.l2.is_none() && cfg.channel_group.is_none())
     }
 
     /// Primary address in effect on an interface (static, or learned by DHCP).
     pub(crate) fn addr(&self, id: IfId) -> Option<IfAddr> {
         match self.cfg.iface(id)?.addr? {
             L3Addr::Static(addr) => Some(addr),
-            L3Addr::Dhcp => self.ifs.get(&id)?.dhcp.lease.as_ref().map(|lease| lease.addr),
+            L3Addr::Dhcp => self
+                .ifs
+                .get(&id)?
+                .dhcp
+                .lease
+                .as_ref()
+                .map(|lease| lease.addr),
         }
     }
 
@@ -314,7 +337,10 @@ impl Node {
 
     /// The up interface whose subnet contains `ip`, with the matching address.
     pub(crate) fn iface_on_link(&self, ip: Ipv4Addr) -> Option<(IfId, IfAddr)> {
-        self.l3_addrs().into_iter().filter(|(_, addr)| addr.on_link(ip)).max_by_key(|(_, addr)| addr.len)
+        self.l3_addrs()
+            .into_iter()
+            .filter(|(_, addr)| addr.on_link(ip))
+            .max_by_key(|(_, addr)| addr.len)
     }
 
     /// Operational VLAN-carrying mode of a switch port.
@@ -351,7 +377,9 @@ impl Node {
 
     /// Does a layer-2 port carry `vlan` (access VLAN, or allowed on the trunk)?
     pub(crate) fn port_carries(&self, port: IfId, vlan: u16) -> bool {
-        let Some(sw) = self.cfg.iface(port).and_then(|cfg| cfg.l2.as_ref()) else { return false };
+        let Some(sw) = self.cfg.iface(port).and_then(|cfg| cfg.l2.as_ref()) else {
+            return false;
+        };
         if self.is_trunk(port) {
             sw.allowed.contains(vlan)
         } else {
@@ -374,6 +402,15 @@ impl Node {
             .collect()
     }
 
+    /// The DNS server this node asks: configured, or learned by DHCP.
+    pub(crate) fn dns_server(&self) -> Option<Ipv4Addr> {
+        self.cfg
+            .name_servers
+            .first()
+            .or(self.rib.dhcp_dns.first())
+            .copied()
+    }
+
     /// A fresh identifier for ICMP echo ids, ephemeral ports and transaction ids.
     pub(crate) fn fresh_ident(&mut self) -> u16 {
         self.next_ident = self.next_ident.wrapping_add(1);
@@ -385,7 +422,8 @@ impl Node {
 
     /// Device clock in milliseconds since the Unix epoch.
     pub(crate) fn clock_ms(&self, now: SimTime) -> i64 {
-        let base = crate::util::clock::EPOCH_1993 * 1000 + (now.saturating_sub(self.boot_time) / 1000) as i64;
+        let base = crate::util::clock::EPOCH_1993 * 1000
+            + (now.saturating_sub(self.boot_time) / 1000) as i64;
         base.saturating_add(self.clock_offset_ms.unwrap_or(0))
     }
 

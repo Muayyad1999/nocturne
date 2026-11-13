@@ -58,9 +58,17 @@ impl FlowRuntime {
     pub(crate) fn state(&self, world: &World) -> FlowState {
         FlowState {
             active: self.spec.enabled && self.ok,
-            current_bps: if self.spec.enabled { self.current_bps } else { 0 },
+            current_bps: if self.spec.enabled {
+                self.current_bps
+            } else {
+                0
+            },
             delivered_octets: self.delivered_octets,
-            path: self.path.iter().filter_map(|hop| world.nodes.get(&hop.node).map(|n| n.name.clone())).collect(),
+            path: self
+                .path
+                .iter()
+                .filter_map(|hop| world.nodes.get(&hop.node).map(|n| n.name.clone()))
+                .collect(),
             reason: if !self.spec.enabled {
                 "disabled".to_string()
             } else if self.ok {
@@ -76,7 +84,11 @@ impl FlowRuntime {
 /// arithmetic keeps results identical on every platform.
 fn sin_turns(turns: f64) -> f64 {
     let t = turns - turns.floor();
-    let (u, sign) = if t < 0.5 { (t * 2.0, 1.0) } else { ((t - 0.5) * 2.0, -1.0) };
+    let (u, sign) = if t < 0.5 {
+        (t * 2.0, 1.0)
+    } else {
+        ((t - 0.5) * 2.0, -1.0)
+    };
     let p = u * (1.0 - u);
     sign * 16.0 * p / (5.0 - 4.0 * p)
 }
@@ -87,10 +99,16 @@ fn rate_at(spec: &FlowSpec, elapsed: SimTime) -> f64 {
     let base = spec.bps as f64;
     match spec.pattern {
         FlowPattern::Constant => base,
-        FlowPattern::Sine { period_s } => base * (1.0 + sin_turns(seconds / f64::from(period_s.max(1)))),
+        FlowPattern::Sine { period_s } => {
+            base * (1.0 + sin_turns(seconds / f64::from(period_s.max(1))))
+        }
         FlowPattern::Burst { on_s, off_s } => {
             let (on, off) = (f64::from(on_s.max(1)), f64::from(off_s));
-            if seconds % (on + off) < on { base * (on + off) / on } else { 0.0 }
+            if seconds % (on + off) < on {
+                base * (on + off) / on
+            } else {
+                0.0
+            }
         }
     }
 }
@@ -143,7 +161,9 @@ pub(crate) fn tick(world: &mut World) {
     let mut link_rates: BTreeMap<LinkId, (f64, f64)> = BTreeMap::new();
     let ids: Vec<u32> = world.flows.keys().copied().collect();
     for id in ids {
-        let Some(flow) = world.flows.get_mut(&id) else { continue };
+        let Some(flow) = world.flows.get_mut(&id) else {
+            continue;
+        };
         let dt = now.saturating_sub(flow.last_tick) as f64 / 1e6;
         flow.last_tick = now;
         if !flow.spec.enabled {
@@ -160,7 +180,9 @@ pub(crate) fn tick(world: &mut World) {
         let back = if ok { bps * RETURN_SHARE } else { 0.0 };
         let last = path.len().saturating_sub(1);
         for (index, hop) in path.iter().enumerate() {
-            let Some(node) = world.nodes.get_mut(&hop.node) else { break };
+            let Some(node) = world.nodes.get_mut(&hop.node) else {
+                break;
+            };
             let transit = index > 0 && index < last;
             if transit {
                 node.forwarded += (forward * dt / 8.0 / AVERAGE_PACKET_BYTES) as u64;
@@ -182,7 +204,9 @@ pub(crate) fn tick(world: &mut World) {
                 }
             }
             let Some(port) = hop.out_if else { continue };
-            let Some(state) = node.ifs.get_mut(&port) else { continue };
+            let Some(state) = node.ifs.get_mut(&port) else {
+                continue;
+            };
             let octets = forward * dt / 8.0;
             state.counters.out_octets += credit(&mut carry[2], octets);
             state.counters.out_pkts += credit(&mut carry[3], octets / AVERAGE_PACKET_BYTES);
@@ -209,19 +233,32 @@ pub(crate) fn tick(world: &mut World) {
                 let loss = f64::from(link.loss_percent) / 100.0;
                 // Duplex mismatch: late collisions on the half-duplex end,
                 // CRC errors on the full-duplex end, roughly 1 % of the load.
-                let peer_full = peer.and_then(|(n, p)| world.nodes.get(&n).and_then(|n| n.ifs.get(&p))).map(|s| s.full_duplex);
+                let peer_full = peer
+                    .and_then(|(n, p)| world.nodes.get(&n).and_then(|n| n.ifs.get(&p)))
+                    .map(|s| s.full_duplex);
                 if let (Some((peer_node, peer_port)), Some(peer_full)) = (peer, peer_full)
                     && peer_full != full
                 {
                     let damaged = (forward * dt / 8.0 / AVERAGE_PACKET_BYTES / 100.0).ceil() as u64;
-                    let (half_end, full_end) =
-                        if full { ((peer_node, peer_port), (hop.node, port)) } else { ((hop.node, port), (peer_node, peer_port)) };
-                    if let Some(s) = world.nodes.get_mut(&half_end.0).and_then(|n| n.ifs.get_mut(&half_end.1)) {
+                    let (half_end, full_end) = if full {
+                        ((peer_node, peer_port), (hop.node, port))
+                    } else {
+                        ((hop.node, port), (peer_node, peer_port))
+                    };
+                    if let Some(s) = world
+                        .nodes
+                        .get_mut(&half_end.0)
+                        .and_then(|n| n.ifs.get_mut(&half_end.1))
+                    {
                         s.counters.late_collisions += damaged;
                         s.counters.collisions += damaged;
                         s.counters.out_errors += damaged;
                     }
-                    if let Some(s) = world.nodes.get_mut(&full_end.0).and_then(|n| n.ifs.get_mut(&full_end.1)) {
+                    if let Some(s) = world
+                        .nodes
+                        .get_mut(&full_end.0)
+                        .and_then(|n| n.ifs.get_mut(&full_end.1))
+                    {
                         s.counters.crc += damaged;
                         s.counters.in_errors += damaged;
                     }
@@ -246,7 +283,10 @@ pub(crate) fn tick(world: &mut World) {
     let alpha = (TICK_MICROS as f64 / 1e6) / RATE_TAU_SECONDS;
     for (node_id, node) in &mut world.nodes {
         for (port, state) in &mut node.ifs {
-            let (rate_in, rate_out) = if_rates.get(&(*node_id, *port)).copied().unwrap_or_default();
+            let (rate_in, rate_out) = if_rates
+                .get(&(*node_id, *port))
+                .copied()
+                .unwrap_or_default();
             state.rate_in += (rate_in - state.rate_in) * alpha;
             state.rate_out += (rate_out - state.rate_out) * alpha;
             state.load_in = rate_in;
@@ -262,7 +302,10 @@ mod tests {
 
     #[test]
     fn patterns_average_to_the_configured_rate() {
-        let mut spec = FlowSpec { bps: 1_000_000, ..FlowSpec::default() };
+        let mut spec = FlowSpec {
+            bps: 1_000_000,
+            ..FlowSpec::default()
+        };
         assert_eq!(rate_at(&spec, 5_000_000), 1e6);
         spec.pattern = FlowPattern::Sine { period_s: 60 };
         let mean: f64 = (0..60).map(|s| rate_at(&spec, s * 1_000_000)).sum::<f64>() / 60.0;

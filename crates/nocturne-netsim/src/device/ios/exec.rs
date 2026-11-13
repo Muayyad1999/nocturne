@@ -23,13 +23,41 @@ pub(crate) fn table(role: Role, privileged: bool) -> Table {
             "Send echo messages",
             ping,
         ),
-        c("traceroute [ip] <word:target;Trace route to destination address or hostname>", "Trace route to destination", traceroute),
-        c("telnet <word:target;IP address or hostname of a remote system> [<1-65535:port>]", "Open a telnet connection", telnet),
-        c("ssh [-l <word:user;Login name>] <word:target;IP address or hostname of a remote system>", "Open a secure shell client connection", ssh),
-        c("terminal length <0-512:lines;Number of lines on screen (0 for no pausing)>", "Set number of lines on a screen", terminal_length),
-        c("terminal width <0-512:columns;Number of characters on a screen line>", "Set width of the display terminal", terminal_width),
-        c("terminal monitor", "Copy debug output to the current terminal line", |cx, _| cx.sh.monitor = true),
-        c("terminal no monitor", "Stop copying debug output to this line", |cx, _| cx.sh.monitor = false),
+        c(
+            "traceroute [ip] <word:target;Trace route to destination address or hostname>",
+            "Trace route to destination",
+            traceroute,
+        ),
+        c(
+            "telnet <word:target;IP address or hostname of a remote system> [<1-65535:port>]",
+            "Open a telnet connection",
+            telnet,
+        ),
+        c(
+            "ssh [-l <word:user;Login name>] <word:target;IP address or hostname of a remote system>",
+            "Open a secure shell client connection",
+            ssh,
+        ),
+        c(
+            "terminal length <0-512:lines;Number of lines on screen (0 for no pausing)>",
+            "Set number of lines on a screen",
+            terminal_length,
+        ),
+        c(
+            "terminal width <0-512:columns;Number of characters on a screen line>",
+            "Set width of the display terminal",
+            terminal_width,
+        ),
+        c(
+            "terminal monitor",
+            "Copy debug output to the current terminal line",
+            |cx, _| cx.sh.monitor = true,
+        ),
+        c(
+            "terminal no monitor",
+            "Stop copying debug output to this line",
+            |cx, _| cx.sh.monitor = false,
+        ),
     ];
     t.extend(show::table(role, privileged));
     if !privileged {
@@ -105,7 +133,11 @@ fn enable(cx: &mut Cx, _: &Args) {
         return;
     }
     if cx.n.cfg.enable_secret.is_some() || cx.n.cfg.enable_password.is_some() {
-        cx.next = Next::Ask { prompt: "Password: ".to_string(), hidden: true, tag: Tag::Enable { tries: 0 } };
+        cx.next = Next::Ask {
+            prompt: "Password: ".to_string(),
+            hidden: true,
+            tag: Tag::Enable { tries: 0 },
+        };
     } else if cx.sh.line == LineId::Console {
         cx.sh.mode = Mode::Priv;
     } else {
@@ -141,18 +173,40 @@ fn ping(cx: &mut Cx, a: &Args) {
         (Some(ip), _) if cx.n.owns_ip(ip) => Some(ip),
         (None, Some(iface)) => match cx.n.addr(iface).filter(|_| cx.n.is_up(iface)) {
             Some(addr) => Some(addr.ip),
-            None => return cx.fail("% Invalid source interface - Interface is down or has no IP address"),
+            None => {
+                return cx
+                    .fail("% Invalid source interface - Interface is down or has no IP address");
+            }
         },
-        (Some(_), _) => return cx.fail("% Invalid source address- IP address not on any of our up interfaces"),
+        (Some(_), _) => {
+            return cx.fail("% Invalid source address- IP address not on any of our up interfaces");
+        }
         (None, None) => None,
     };
     let text = a.text("target").unwrap_or("").to_string();
-    let spec = |dst| PingSpec { dst, src: source, count, timeout_micros, size, style: Style::Ios, label: None };
+    let spec = |dst| PingSpec {
+        dst,
+        src: source,
+        count,
+        timeout_micros,
+        size,
+        style: Style::Ios,
+        label: None,
+    };
     match parse_ip(&text) {
         Some(dst) => cx.next = Next::Job(cx.n.start_ping(cx.fx, spec(dst), None)),
-        None => match cx.n.cfg.name_servers.first().copied().filter(|_| cx.n.cfg.domain_lookup) {
+        None => match cx
+            .n
+            .cfg
+            .name_servers
+            .first()
+            .copied()
+            .filter(|_| cx.n.cfg.domain_lookup)
+        {
             Some(server) => {
-                cx.out.push_str(&format!("Translating \"{text}\"...domain server ({server})\n"));
+                cx.out.push_str(&format!(
+                    "Translating \"{text}\"...domain server ({server})\n"
+                ));
                 let then = spec(Ipv4Addr::UNSPECIFIED);
                 cx.next = Next::Job(cx.n.start_lookup(cx.fx, &text, server, Some(then), true));
             }
@@ -171,15 +225,24 @@ fn telnet(cx: &mut Cx, a: &Args) {
     if let Some(dst) = target_ip(cx, a) {
         let port = a.num("port").unwrap_or(23) as u16;
         let proc = cx.n.start_connect(cx.fx, dst, port, Style::Ios, None);
-        cx.next = Next::Connect { proc, ssh_user: None };
+        cx.next = Next::Connect {
+            proc,
+            ssh_user: None,
+        };
     }
 }
 
 fn ssh(cx: &mut Cx, a: &Args) {
     if let Some(dst) = target_ip(cx, a) {
-        let user = a.text("user").map(str::to_string).unwrap_or_else(|| cx.sh.user().to_string());
+        let user = a
+            .text("user")
+            .map(str::to_string)
+            .unwrap_or_else(|| cx.sh.user().to_string());
         let proc = cx.n.start_connect(cx.fx, dst, 22, Style::Ios, None);
-        cx.next = Next::Connect { proc, ssh_user: Some(user) };
+        cx.next = Next::Connect {
+            proc,
+            ssh_user: Some(user),
+        };
     }
 }
 
@@ -214,7 +277,9 @@ fn copy_startup_running(cx: &mut Cx, _: &Args) {
 
 fn erase_prompt(cx: &mut Cx, _: &Args) {
     cx.next = Next::Key {
-        prompt: "Erasing the nvram filesystem will remove all configuration files! Continue? [confirm]".to_string(),
+        prompt:
+            "Erasing the nvram filesystem will remove all configuration files! Continue? [confirm]"
+                .to_string(),
         tag: Tag::EraseConfirm,
     };
 }
@@ -227,7 +292,10 @@ fn reload(cx: &mut Cx, _: &Args) {
             tag: Tag::ReloadSave,
         };
     } else {
-        cx.next = Next::Key { prompt: "Proceed with reload? [confirm]".to_string(), tag: Tag::ReloadConfirm };
+        cx.next = Next::Key {
+            prompt: "Proceed with reload? [confirm]".to_string(),
+            tag: Tag::ReloadConfirm,
+        };
     }
 }
 
@@ -248,10 +316,18 @@ fn clear_counters(cx: &mut Cx, a: &Args) {
         return cx.fail("% Invalid interface");
     }
     let prompt = match target {
-        Some(iface) => format!("Clear \"show interface\" counters on this interface [confirm]{}", iface_marker(iface)),
+        Some(iface) => format!(
+            "Clear \"show interface\" counters on this interface [confirm]{}",
+            iface_marker(iface)
+        ),
         None => "Clear \"show interface\" counters on all interfaces [confirm]".to_string(),
     };
-    cx.next = Next::Key { prompt, tag: Tag::ClearCounters { iface: target.map(|i| i.name()) } };
+    cx.next = Next::Key {
+        prompt,
+        tag: Tag::ClearCounters {
+            iface: target.map(|i| i.name()),
+        },
+    };
 }
 
 /// The interface name is not shown in the real prompt; kept for symmetry.
@@ -263,12 +339,23 @@ fn clear_port_security(cx: &mut Cx, a: &Args) {
     let only = a.iface("if");
     let sticky = a.has("sticky") || a.has("all");
     let dynamic = a.has("dynamic") || a.has("all");
-    let ports: Vec<IfId> = cx.n.ifs.keys().copied().filter(|id| only.is_none_or(|o| o == *id)).collect();
+    let ports: Vec<IfId> =
+        cx.n.ifs
+            .keys()
+            .copied()
+            .filter(|id| only.is_none_or(|o| o == *id))
+            .collect();
     for port in ports {
         if dynamic && let Some(state) = cx.n.ifs.get_mut(&port) {
             state.secure_macs.clear();
         }
-        if sticky && let Some(sw) = cx.n.cfg.interfaces.get_mut(&port).and_then(|c| c.l2.as_mut()) {
+        if sticky
+            && let Some(sw) =
+                cx.n.cfg
+                    .interfaces
+                    .get_mut(&port)
+                    .and_then(|c| c.l2.as_mut())
+        {
             sw.port_security.macs.retain(|(_, sticky)| !sticky);
             cx.touched = true;
         }
@@ -277,7 +364,12 @@ fn clear_port_security(cx: &mut Cx, a: &Args) {
 }
 
 fn clock_set(cx: &mut Cx, a: &Args) {
-    let time: Vec<u32> = a.text("time").unwrap_or("").split(':').filter_map(|p| p.parse().ok()).collect();
+    let time: Vec<u32> = a
+        .text("time")
+        .unwrap_or("")
+        .split(':')
+        .filter_map(|p| p.parse().ok())
+        .collect();
     let (first, second) = (a.text("a").unwrap_or(""), a.text("b").unwrap_or(""));
     // Both "1 March" and "March 1" are accepted.
     let (day, month) = match (first.parse::<u32>(), clock::month_number(second)) {
@@ -315,7 +407,12 @@ fn clock_set(cx: &mut Cx, a: &Args) {
 }
 
 fn delete(cx: &mut Cx, a: &Args) {
-    let file = a.text("file").unwrap_or("").trim_start_matches("flash:").trim_start_matches('/').to_string();
+    let file = a
+        .text("file")
+        .unwrap_or("")
+        .trim_start_matches("flash:")
+        .trim_start_matches('/')
+        .to_string();
     cx.next = Next::Ask {
         prompt: format!("Delete filename [{file}]? "),
         hidden: false,
@@ -324,15 +421,35 @@ fn delete(cx: &mut Cx, a: &Args) {
 }
 
 /// Answers to the questions EXEC commands ask.
-pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Tag, text: &str) -> Reply {
+pub(crate) fn answer(
+    shell: &mut IosShell,
+    node: &mut Node,
+    fx: &mut Fx,
+    tag: Tag,
+    text: &str,
+) -> Reply {
     let yes = |t: &str| t == "\n" || t.eq_ignore_ascii_case("y");
     match tag {
         Tag::CopyDestination => {
             let name = text.trim();
             if !name.is_empty() && name != "startup-config" {
-                return Reply { out: "%Error opening destination (only startup-config is supported)\n".to_string(), error: true, ..Reply::default() };
+                return Reply {
+                    out: "%Error opening destination (only startup-config is supported)\n"
+                        .to_string(),
+                    error: true,
+                    ..Reply::default()
+                };
             }
-            let mut cx = Cx { n: node, fx, sh: shell, out: String::new(), error: false, touched: false, next: Next::Prompt, invalid: false };
+            let mut cx = Cx {
+                n: node,
+                fx,
+                sh: shell,
+                out: String::new(),
+                error: false,
+                touched: false,
+                next: Next::Prompt,
+                invalid: false,
+            };
             save(&mut cx);
             Reply::text(cx.out)
         }
@@ -341,35 +458,67 @@ pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Ta
                 return Reply::default();
             }
             node.startup = None;
-            node.log(fx, 7, "SYS", "NV_BLOCK_INIT", "Initialized the geometry of nvram".to_string());
+            node.log(
+                fx,
+                7,
+                "SYS",
+                "NV_BLOCK_INIT",
+                "Initialized the geometry of nvram".to_string(),
+            );
             Reply::text("[OK]\nErase of nvram: complete\n")
         }
         Tag::ReloadSave => {
             let answer = text.trim().to_ascii_lowercase();
             let mut out = String::new();
             if !answer.is_empty() && "yes".starts_with(&answer) {
-                let mut cx = Cx { n: node, fx, sh: shell, out: String::new(), error: false, touched: false, next: Next::Prompt, invalid: false };
+                let mut cx = Cx {
+                    n: node,
+                    fx,
+                    sh: shell,
+                    out: String::new(),
+                    error: false,
+                    touched: false,
+                    next: Next::Prompt,
+                    invalid: false,
+                };
                 save(&mut cx);
                 out = cx.out;
             } else if answer.is_empty() || !"no".starts_with(&answer) {
                 return Reply {
                     out: "% Please answer 'yes' or 'no'.\n".to_string(),
                     next: Next::Ask {
-                        prompt: "System configuration has been modified. Save? [yes/no]: ".to_string(),
+                        prompt: "System configuration has been modified. Save? [yes/no]: "
+                            .to_string(),
                         hidden: false,
                         tag: Tag::ReloadSave,
                     },
                     ..Reply::default()
                 };
             }
-            Reply { out, next: Next::Key { prompt: "Proceed with reload? [confirm]".to_string(), tag: Tag::ReloadConfirm }, ..Reply::default() }
+            Reply {
+                out,
+                next: Next::Key {
+                    prompt: "Proceed with reload? [confirm]".to_string(),
+                    tag: Tag::ReloadConfirm,
+                },
+                ..Reply::default()
+            }
         }
         Tag::ReloadConfirm => {
             if !yes(text) {
                 return Reply::default();
             }
-            node.log(fx, 5, "SYS", "RELOAD", "Reload requested by console. Reload Reason: Reload Command.".to_string());
-            Reply { next: Next::Reload, ..Reply::default() }
+            node.log(
+                fx,
+                5,
+                "SYS",
+                "RELOAD",
+                "Reload requested by console. Reload Reason: Reload Command.".to_string(),
+            );
+            Reply {
+                next: Next::Reload,
+                ..Reply::default()
+            }
         }
         Tag::ClearCounters { iface } => {
             if yes(text) {
@@ -379,9 +528,21 @@ pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Ta
                         state.counters = Default::default();
                     }
                 }
-                let by = if shell.user().is_empty() { "console" } else { shell.user() };
-                let what = iface.map_or("all interfaces".to_string(), |name| format!("interface {name}"));
-                node.log(fx, 5, "CLEAR", "COUNTERS", format!("Clear counter on {what} by {by}"));
+                let by = if shell.user().is_empty() {
+                    "console"
+                } else {
+                    shell.user()
+                };
+                let what = iface.map_or("all interfaces".to_string(), |name| {
+                    format!("interface {name}")
+                });
+                node.log(
+                    fx,
+                    5,
+                    "CLEAR",
+                    "COUNTERS",
+                    format!("Clear counter on {what} by {by}"),
+                );
             }
             Reply::default()
         }
@@ -393,9 +554,16 @@ pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Ta
             Reply::default()
         }
         Tag::DeleteName { file } => {
-            let name = if text.trim().is_empty() { file } else { text.trim().to_string() };
+            let name = if text.trim().is_empty() {
+                file
+            } else {
+                text.trim().to_string()
+            };
             Reply {
-                next: Next::Key { prompt: format!("Delete flash:/{name}? [confirm]"), tag: Tag::DeleteConfirm { file: name } },
+                next: Next::Key {
+                    prompt: format!("Delete flash:/{name}? [confirm]"),
+                    tag: Tag::DeleteConfirm { file: name },
+                },
                 ..Reply::default()
             }
         }
@@ -419,6 +587,9 @@ pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Ta
                 },
             }
         }
-        Tag::LinePassword { .. } | Tag::Username { .. } | Tag::UserPassword { .. } | Tag::Enable { .. } => Reply::default(),
+        Tag::LinePassword { .. }
+        | Tag::Username { .. }
+        | Tag::UserPassword { .. }
+        | Tag::Enable { .. } => Reply::default(),
     }
 }

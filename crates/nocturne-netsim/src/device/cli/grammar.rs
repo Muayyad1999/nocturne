@@ -128,7 +128,11 @@ pub(crate) struct Cmd<H> {
 enum Pat {
     /// Keyword, description, and whether the description is the command's own.
     Kw(&'static str, &'static str, bool),
-    Arg { name: &'static str, kind: ArgKind, desc: &'static str },
+    Arg {
+        name: &'static str,
+        kind: ArgKind,
+        desc: &'static str,
+    },
     Seq(Vec<Pat>),
     Opt(Box<Pat>),
     Alt(Vec<Pat>),
@@ -138,8 +142,18 @@ enum Pat {
 
 #[derive(Debug)]
 enum State {
-    Kw { word: &'static str, help: &'static str, primary: bool, next: usize },
-    Arg { name: &'static str, kind: ArgKind, desc: &'static str, next: usize },
+    Kw {
+        word: &'static str,
+        help: &'static str,
+        primary: bool,
+        next: usize,
+    },
+    Arg {
+        name: &'static str,
+        kind: ArgKind,
+        desc: &'static str,
+        next: usize,
+    },
     Split(Vec<usize>),
     /// In the `no` form the command may end here.
     NoCut(usize),
@@ -185,7 +199,9 @@ fn lex(pattern: &'static str) -> Vec<&'static str> {
                 i = end;
             }
             _ => {
-                let end = pattern[i..].find([' ', '[', ']', '(', ')', '{', '}', '|', '<']).map_or(bytes.len(), |e| i + e);
+                let end = pattern[i..]
+                    .find([' ', '[', ']', '(', ')', '{', '}', '|', '<'])
+                    .map_or(bytes.len(), |e| i + e);
                 tokens.push(&pattern[i..end]);
                 i = end;
             }
@@ -200,7 +216,10 @@ impl PatternParser<'_> {
         (0..path.len())
             .find_map(|skip| {
                 let key = path[skip..].join(" ");
-                self.dictionary.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+                self.dictionary
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| *v)
             })
             .unwrap_or("")
     }
@@ -250,7 +269,11 @@ impl PatternParser<'_> {
                     self.pos += 1;
                     path.push(token);
                     let primary = leading_run && path.len() == self.leading;
-                    let help = if primary { self.command_help } else { self.lookup(&path) };
+                    let help = if primary {
+                        self.command_help
+                    } else {
+                        self.lookup(&path)
+                    };
                     items.push(Pat::Kw(token, help, primary));
                 }
             }
@@ -270,25 +293,47 @@ fn parse_arg(token: &'static str) -> Pat {
         "if" => (ArgKind::If, "Interface name"),
         "mac" => (ArgKind::Mac, "48 bit MAC address"),
         range => {
-            let (lo, hi) = range.split_once('-').unwrap_or_else(|| panic!("bad argument kind in pattern: {token}"));
-            let parse = |s: &str| s.parse::<u64>().unwrap_or_else(|_| panic!("bad range in pattern: {token}"));
+            let (lo, hi) = range
+                .split_once('-')
+                .unwrap_or_else(|| panic!("bad argument kind in pattern: {token}"));
+            let parse = |s: &str| {
+                s.parse::<u64>()
+                    .unwrap_or_else(|_| panic!("bad range in pattern: {token}"))
+            };
             (ArgKind::Num(parse(lo), parse(hi)), "")
         }
     };
-    Pat::Arg { name, kind, desc: if desc.is_empty() { default_desc } else { desc } }
+    Pat::Arg {
+        name,
+        kind,
+        desc: if desc.is_empty() { default_desc } else { desc },
+    }
 }
 
 fn compile(pat: &Pat, next: usize, states: &mut Vec<State>) -> usize {
     match pat {
         Pat::Kw(word, help, primary) => {
-            states.push(State::Kw { word, help, primary: *primary, next });
+            states.push(State::Kw {
+                word,
+                help,
+                primary: *primary,
+                next,
+            });
             states.len() - 1
         }
         Pat::Arg { name, kind, desc } => {
-            states.push(State::Arg { name, kind: *kind, desc, next });
+            states.push(State::Arg {
+                name,
+                kind: *kind,
+                desc,
+                next,
+            });
             states.len() - 1
         }
-        Pat::Seq(items) => items.iter().rev().fold(next, |next, item| compile(item, next, states)),
+        Pat::Seq(items) => items
+            .iter()
+            .rev()
+            .fold(next, |next, item| compile(item, next, states)),
         Pat::Opt(inner) => {
             let start = compile(inner, next, states);
             states.push(State::Split(vec![start, next]));
@@ -303,7 +348,8 @@ fn compile(pat: &Pat, next: usize, states: &mut Vec<State>) -> usize {
             // Reserve the loop head so the branches can jump back to it.
             states.push(State::Accept);
             let head = states.len() - 1;
-            let mut targets: Vec<usize> = branches.iter().map(|b| compile(b, head, states)).collect();
+            let mut targets: Vec<usize> =
+                branches.iter().map(|b| compile(b, head, states)).collect();
             targets.push(next);
             states[head] = State::Split(targets);
             head
@@ -329,7 +375,10 @@ fn tokenize(line: &str) -> Vec<Token<'_>> {
     for (i, c) in line.char_indices() {
         match (c.is_whitespace(), start) {
             (true, Some(s)) => {
-                tokens.push(Token { text: &line[s..i], at: s });
+                tokens.push(Token {
+                    text: &line[s..i],
+                    at: s,
+                });
                 start = None;
             }
             (false, None) => start = Some(i),
@@ -337,7 +386,10 @@ fn tokenize(line: &str) -> Vec<Token<'_>> {
         }
     }
     if let Some(s) = start {
-        tokens.push(Token { text: &line[s..], at: s });
+        tokens.push(Token {
+            text: &line[s..],
+            at: s,
+        });
     }
     tokens
 }
@@ -363,11 +415,16 @@ struct Hit {
 
 pub(crate) enum Parsed<H> {
     Empty,
-    Ok { run: H, args: Args },
+    Ok {
+        run: H,
+        args: Args,
+    },
     Ambiguous,
     Incomplete,
     /// Byte offset of the first character that could not be matched.
-    Invalid { at: usize },
+    Invalid {
+        at: usize,
+    },
 }
 
 /// A `?` listing entry: label and description.
@@ -376,18 +433,39 @@ pub(crate) type HelpEntry = (String, String);
 impl<H: Copy> Grammar<H> {
     /// Compile a command table. Panics on a malformed pattern (a programming
     /// error; every table is built by a unit test).
-    pub(crate) fn new(commands: Vec<Cmd<H>>, dictionary: &[(&'static str, &'static str)]) -> Grammar<H> {
+    pub(crate) fn new(
+        commands: Vec<Cmd<H>>,
+        dictionary: &[(&'static str, &'static str)],
+    ) -> Grammar<H> {
         let compiled = commands
             .into_iter()
             .map(|cmd| {
                 let tokens = lex(cmd.pattern);
-                let leading = tokens.iter().take_while(|t| !matches!(t.as_bytes()[0], b'[' | b'(' | b'{' | b'<' | b'~')).count();
-                let mut parser = PatternParser { tokens, pos: 0, dictionary, command_help: cmd.help, leading, };
+                let leading = tokens
+                    .iter()
+                    .take_while(|t| !matches!(t.as_bytes()[0], b'[' | b'(' | b'{' | b'<' | b'~'))
+                    .count();
+                let mut parser = PatternParser {
+                    tokens,
+                    pos: 0,
+                    dictionary,
+                    command_help: cmd.help,
+                    leading,
+                };
                 let pat = parser.sequence(&[], true);
-                assert!(parser.pos == parser.tokens.len(), "unbalanced pattern: {}", cmd.pattern);
+                assert!(
+                    parser.pos == parser.tokens.len(),
+                    "unbalanced pattern: {}",
+                    cmd.pattern
+                );
                 let mut states = vec![State::Accept];
                 let start = compile(&pat, 0, &mut states);
-                Compiled { states, start, negatable: cmd.negatable, run: cmd.run }
+                Compiled {
+                    states,
+                    start,
+                    negatable: cmd.negatable,
+                    run: cmd.run,
+                }
             })
             .collect();
         Grammar { commands: compiled }
@@ -423,19 +501,35 @@ impl<H: Copy> Grammar<H> {
             .iter()
             .enumerate()
             .filter(|(_, c)| !negate || c.negatable)
-            .map(|(i, c)| Thread { command: i, state: c.start, skip: 0, keywords: Vec::new(), values: Vec::new() })
+            .map(|(i, c)| Thread {
+                command: i,
+                state: c.start,
+                skip: 0,
+                keywords: Vec::new(),
+                values: Vec::new(),
+            })
             .collect()
     }
 
     /// Consume one token. `Err` carries (ambiguous, matched prefix length).
-    fn step(&self, threads: &[Thread], tokens: &[Token<'_>], index: usize, line: &str, negate: bool) -> Result<Vec<Thread>, (bool, usize)> {
+    fn step(
+        &self,
+        threads: &[Thread],
+        tokens: &[Token<'_>],
+        index: usize,
+        line: &str,
+        negate: bool,
+    ) -> Result<Vec<Thread>, (bool, usize)> {
         let token = tokens[index];
         let mut next_threads: Vec<Thread> = Vec::new();
         let mut hits: Vec<Hit> = Vec::new();
         let mut best_prefix = 0;
         for (t, thread) in threads.iter().enumerate() {
             if thread.skip > 0 {
-                next_threads.push(Thread { skip: thread.skip - 1, ..thread.clone() });
+                next_threads.push(Thread {
+                    skip: thread.skip - 1,
+                    ..thread.clone()
+                });
                 continue;
             }
             let (states, _) = self.closure(thread.command, thread.state, negate);
@@ -444,14 +538,28 @@ impl<H: Copy> Grammar<H> {
                     State::Kw { word, next, .. } => {
                         if is_abbrev(token.text, word) {
                             let exact = token.text.eq_ignore_ascii_case(word);
-                            hits.push(Hit { thread: t, next: *next, skip: 0, keyword: Some((word, exact)), value: None });
+                            hits.push(Hit {
+                                thread: t,
+                                next: *next,
+                                skip: 0,
+                                keyword: Some((word, exact)),
+                                value: None,
+                            });
                         } else {
                             best_prefix = best_prefix.max(common_prefix_len(token.text, word));
                         }
                     }
-                    State::Arg { name, kind, next, .. } => {
+                    State::Arg {
+                        name, kind, next, ..
+                    } => {
                         if let Some((value, skip)) = match_arg(*kind, tokens, index, line) {
-                            hits.push(Hit { thread: t, next: *next, skip, keyword: None, value: Some((name, value)) });
+                            hits.push(Hit {
+                                thread: t,
+                                next: *next,
+                                skip,
+                                keyword: None,
+                                value: Some((name, value)),
+                            });
                         }
                     }
                     State::Split(_) | State::NoCut(_) | State::Accept => {}
@@ -462,7 +570,10 @@ impl<H: Copy> Grammar<H> {
         if hits.iter().any(|h| matches!(h.keyword, Some((_, true)))) {
             hits.retain(|h| !matches!(h.keyword, Some((_, false))));
         }
-        let mut words: Vec<&str> = hits.iter().filter_map(|h| h.keyword.map(|(w, _)| w)).collect();
+        let mut words: Vec<&str> = hits
+            .iter()
+            .filter_map(|h| h.keyword.map(|(w, _)| w))
+            .collect();
         words.sort_unstable();
         words.dedup();
         let has_values = hits.iter().any(|h| h.value.is_some());
@@ -471,21 +582,29 @@ impl<H: Copy> Grammar<H> {
         }
         for hit in hits {
             let source = &threads[hit.thread];
-            let mut thread = Thread { state: hit.next, skip: hit.skip, ..source.clone() };
+            let mut thread = Thread {
+                state: hit.next,
+                skip: hit.skip,
+                ..source.clone()
+            };
             if let Some((word, _)) = hit.keyword {
                 thread.keywords.push(word);
             }
             if let Some(value) = hit.value {
                 thread.values.push(value);
             }
-            let duplicate = next_threads
-                .iter()
-                .any(|t| t.command == thread.command && t.state == thread.state && t.skip == thread.skip);
+            let duplicate = next_threads.iter().any(|t| {
+                t.command == thread.command && t.state == thread.state && t.skip == thread.skip
+            });
             if !duplicate {
                 next_threads.push(thread);
             }
         }
-        if next_threads.is_empty() { Err((false, best_prefix)) } else { Ok(next_threads) }
+        if next_threads.is_empty() {
+            Err((false, best_prefix))
+        } else {
+            Ok(next_threads)
+        }
     }
 
     /// Match a whole line.
@@ -499,14 +618,25 @@ impl<H: Copy> Grammar<H> {
             match self.step(&threads, &tokens, index, line, negate) {
                 Ok(next) => threads = next,
                 Err((true, _)) => return Parsed::Ambiguous,
-                Err((false, prefix)) => return Parsed::Invalid { at: tokens[index].at + prefix.min(tokens[index].text.len()) },
+                Err((false, prefix)) => {
+                    return Parsed::Invalid {
+                        at: tokens[index].at + prefix.min(tokens[index].text.len()),
+                    };
+                }
             }
         }
-        let done = threads.iter().filter(|t| t.skip == 0).find(|t| self.closure(t.command, t.state, negate).1);
+        let done = threads
+            .iter()
+            .filter(|t| t.skip == 0)
+            .find(|t| self.closure(t.command, t.state, negate).1);
         match done {
             Some(thread) => Parsed::Ok {
                 run: self.commands[thread.command].run,
-                args: Args { no: negate, keywords: thread.keywords.clone(), values: thread.values.clone() },
+                args: Args {
+                    no: negate,
+                    keywords: thread.keywords.clone(),
+                    values: thread.values.clone(),
+                },
             },
             None => Parsed::Incomplete,
         }
@@ -514,7 +644,11 @@ impl<H: Copy> Grammar<H> {
 
     /// What could come next after `line` (which ends at a word boundary when
     /// `partial` is `None`, or with an unfinished word otherwise).
-    fn expectations(&self, line: &str, negate: bool) -> Option<(Vec<HelpEntry>, Vec<HelpEntry>, bool, Option<String>)> {
+    fn expectations(
+        &self,
+        line: &str,
+        negate: bool,
+    ) -> Option<(Vec<HelpEntry>, Vec<HelpEntry>, bool, Option<String>)> {
         let mut tokens = tokenize(line);
         let partial = match tokens.last() {
             Some(last) if !line.ends_with(char::is_whitespace) => {
@@ -536,7 +670,12 @@ impl<H: Copy> Grammar<H> {
             accept |= ends;
             for s in states {
                 match &self.commands[thread.command].states[s] {
-                    State::Kw { word, help, primary, .. } => {
+                    State::Kw {
+                        word,
+                        help,
+                        primary,
+                        ..
+                    } => {
                         // A command declared without a description is accepted but not advertised.
                         let hidden = *primary && help.is_empty();
                         if hidden || partial.as_deref().is_some_and(|p| !is_abbrev(p, word)) {
@@ -549,7 +688,9 @@ impl<H: Copy> Grammar<H> {
                                 entry.2 |= *primary;
                             }
                             Some(_) => {}
-                            None => keywords.push(((*word).to_string(), (*help).to_string(), *primary)),
+                            None => {
+                                keywords.push(((*word).to_string(), (*help).to_string(), *primary))
+                            }
                         }
                     }
                     State::Arg { kind, desc, .. } => {
@@ -564,7 +705,10 @@ impl<H: Copy> Grammar<H> {
             }
         }
         keywords.sort();
-        let keywords = keywords.into_iter().map(|(word, help, _)| (word, help)).collect();
+        let keywords = keywords
+            .into_iter()
+            .map(|(word, help, _)| (word, help))
+            .collect();
         Some((arguments, keywords, accept, partial))
     }
 
@@ -596,17 +740,27 @@ impl<H: Copy> Grammar<H> {
 
 /// Try to read an argument at `tokens[index]`; returns the value and how many
 /// further tokens it swallowed.
-fn match_arg(kind: ArgKind, tokens: &[Token<'_>], index: usize, line: &str) -> Option<(Val, usize)> {
+fn match_arg(
+    kind: ArgKind,
+    tokens: &[Token<'_>],
+    index: usize,
+    line: &str,
+) -> Option<(Val, usize)> {
     let token = tokens[index];
     match kind {
         ArgKind::Ip => parse_ip(token.text).map(|ip| (Val::Ip(ip), 0)),
         ArgKind::Num(lo, hi) => {
-            let digits = !token.text.is_empty() && token.text.len() <= 19 && token.text.bytes().all(|b| b.is_ascii_digit());
+            let digits = !token.text.is_empty()
+                && token.text.len() <= 19
+                && token.text.bytes().all(|b| b.is_ascii_digit());
             let value: u64 = digits.then(|| token.text.parse().ok()).flatten()?;
             (lo..=hi).contains(&value).then_some((Val::Num(value), 0))
         }
         ArgKind::Word => Some((Val::Word(token.text.to_string()), 0)),
-        ArgKind::Line => Some((Val::Word(line[token.at..].trim_end().to_string()), tokens.len() - index - 1)),
+        ArgKind::Line => Some((
+            Val::Word(line[token.at..].trim_end().to_string()),
+            tokens.len() - index - 1,
+        )),
         ArgKind::Mac => Mac::parse(token.text).map(|mac| (Val::Mac(mac), 0)),
         ArgKind::If => {
             if let Some(id) = IfId::parse(token.text) {
@@ -614,8 +768,10 @@ fn match_arg(kind: ArgKind, tokens: &[Token<'_>], index: usize, line: &str) -> O
             }
             // `gig 0/1`: the type word and the numbers as separate tokens.
             let next = tokens.get(index + 1)?;
-            if IfId::is_type_word(token.text) && next.text.starts_with(|c: char| c.is_ascii_digit()) {
-                return IfId::parse(&format!("{}{}", token.text, next.text)).map(|id| (Val::If(id), 1));
+            if IfId::is_type_word(token.text) && next.text.starts_with(|c: char| c.is_ascii_digit())
+            {
+                return IfId::parse(&format!("{}{}", token.text, next.text))
+                    .map(|id| (Val::If(id), 1));
             }
             None
         }
@@ -653,33 +809,94 @@ mod tests {
         ran: Vec<String>,
     }
 
-    fn cmd(pattern: &'static str, help: &'static str, negatable: bool, run: fn(&mut Ctx, &Args)) -> Cmd<fn(&mut Ctx, &Args)> {
-        Cmd { pattern, help, negatable, run }
+    fn cmd(
+        pattern: &'static str,
+        help: &'static str,
+        negatable: bool,
+        run: fn(&mut Ctx, &Args),
+    ) -> Cmd<fn(&mut Ctx, &Args)> {
+        Cmd {
+            pattern,
+            help,
+            negatable,
+            run,
+        }
     }
 
     fn grammar() -> Grammar<fn(&mut Ctx, &Args)> {
         Grammar::new(
             vec![
-                cmd("show ip interface brief", "Brief summary", false, |c, _| c.ran.push("brief".into())),
-                cmd("show ip route [<ip:prefix> | static | connected]", "IP routing table", false, |c, a| {
-                    c.ran.push(format!("route {:?} static={}", a.ip("prefix"), a.has("static")))
+                cmd("show ip interface brief", "Brief summary", false, |c, _| {
+                    c.ran.push("brief".into())
                 }),
-                cmd("show interfaces [<if>]", "Interface status", false, |c, a| {
-                    c.ran.push(format!("interfaces {:?}", a.iface("if").map(|i| i.name())))
+                cmd(
+                    "show ip route [<ip:prefix> | static | connected]",
+                    "IP routing table",
+                    false,
+                    |c, a| {
+                        c.ran.push(format!(
+                            "route {:?} static={}",
+                            a.ip("prefix"),
+                            a.has("static")
+                        ))
+                    },
+                ),
+                cmd(
+                    "show interfaces [<if>]",
+                    "Interface status",
+                    false,
+                    |c, a| {
+                        c.ran
+                            .push(format!("interfaces {:?}", a.iface("if").map(|i| i.name())))
+                    },
+                ),
+                cmd("show interfaces status", "Port status", false, |c, _| {
+                    c.ran.push("status".into())
                 }),
-                cmd("show interfaces status", "Port status", false, |c, _| c.ran.push("status".into())),
-                cmd("show inventory", "Hardware inventory", false, |c, _| c.ran.push("inventory".into())),
-                cmd("switchport", "Make it a switch port", true, |c, a| c.ran.push(format!("switchport no={}", a.no))),
-                cmd("ip address ~ <ip:addr> <ip:mask> [secondary]", "Set the IP address", true, |c, a| {
-                    c.ran.push(format!("address {:?} {:?} sec={} no={}", a.ip("addr"), a.ip("mask"), a.has("secondary"), a.no))
+                cmd("show inventory", "Hardware inventory", false, |c, _| {
+                    c.ran.push("inventory".into())
                 }),
-                cmd("description ~ <line:text>", "Describe", true, |c, a| c.ran.push(format!("desc {:?}", a.text("text")))),
-                cmd("ping <ip:dst> {repeat <1-100:count> | size <36-18024:size>}", "Send echo", false, |c, a| {
-                    c.ran.push(format!("ping {:?} {:?} {:?}", a.ip("dst"), a.num("count"), a.num("size")))
+                cmd("switchport", "Make it a switch port", true, |c, a| {
+                    c.ran.push(format!("switchport no={}", a.no))
                 }),
-                cmd("vlan <1-4094:id>", "VLAN", true, |c, a| c.ran.push(format!("vlan {:?}", a.num("id")))),
+                cmd(
+                    "ip address ~ <ip:addr> <ip:mask> [secondary]",
+                    "Set the IP address",
+                    true,
+                    |c, a| {
+                        c.ran.push(format!(
+                            "address {:?} {:?} sec={} no={}",
+                            a.ip("addr"),
+                            a.ip("mask"),
+                            a.has("secondary"),
+                            a.no
+                        ))
+                    },
+                ),
+                cmd("description ~ <line:text>", "Describe", true, |c, a| {
+                    c.ran.push(format!("desc {:?}", a.text("text")))
+                }),
+                cmd(
+                    "ping <ip:dst> {repeat <1-100:count> | size <36-18024:size>}",
+                    "Send echo",
+                    false,
+                    |c, a| {
+                        c.ran.push(format!(
+                            "ping {:?} {:?} {:?}",
+                            a.ip("dst"),
+                            a.num("count"),
+                            a.num("size")
+                        ))
+                    },
+                ),
+                cmd("vlan <1-4094:id>", "VLAN", true, |c, a| {
+                    c.ran.push(format!("vlan {:?}", a.num("id")))
+                }),
             ],
-            &[("show", "Show running system information"), ("show ip", "IP information")],
+            &[
+                ("show", "Show running system information"),
+                ("show ip", "IP information"),
+            ],
         )
     }
 
@@ -704,16 +921,34 @@ mod tests {
         assert_eq!(run("sh ip int br", false), "brief");
         assert_eq!(run("SH IP INT BR", false), "brief");
         assert_eq!(run("sh ip ro", false), "route None static=false");
-        assert_eq!(run("sh ip ro 10.0.0.0", false), "route Some(10.0.0.0) static=false");
+        assert_eq!(
+            run("sh ip ro 10.0.0.0", false),
+            "route Some(10.0.0.0) static=false"
+        );
         assert_eq!(run("sh ip ro st", false), "route None static=true");
         assert_eq!(run("sh int", false), "interfaces None");
-        assert_eq!(run("sh int g0/1", false), "interfaces Some(\"GigabitEthernet0/1\")");
-        assert_eq!(run("sh int gig 0/1", false), "interfaces Some(\"GigabitEthernet0/1\")");
+        assert_eq!(
+            run("sh int g0/1", false),
+            "interfaces Some(\"GigabitEthernet0/1\")"
+        );
+        assert_eq!(
+            run("sh int gig 0/1", false),
+            "interfaces Some(\"GigabitEthernet0/1\")"
+        );
         assert_eq!(run("sh int status", false), "status");
         assert_eq!(run("sh int st", false), "status");
-        assert_eq!(run("ping 10.0.0.1 size 200 repeat 3", false), "ping Some(10.0.0.1) Some(3) Some(200)");
-        assert_eq!(run("ip address 10.0.0.1 255.255.255.0 secondary", false), "address Some(10.0.0.1) Some(255.255.255.0) sec=true no=false");
-        assert_eq!(run("description  uplink to  core ", false), "desc Some(\"uplink to  core\")");
+        assert_eq!(
+            run("ping 10.0.0.1 size 200 repeat 3", false),
+            "ping Some(10.0.0.1) Some(3) Some(200)"
+        );
+        assert_eq!(
+            run("ip address 10.0.0.1 255.255.255.0 secondary", false),
+            "address Some(10.0.0.1) Some(255.255.255.0) sec=true no=false"
+        );
+        assert_eq!(
+            run("description  uplink to  core ", false),
+            "desc Some(\"uplink to  core\")"
+        );
     }
 
     #[test]
@@ -734,8 +969,14 @@ mod tests {
     #[test]
     fn no_forms() {
         assert_eq!(run("switchport", true), "switchport no=true");
-        assert_eq!(run("ip address", true), "address None None sec=false no=true");
-        assert_eq!(run("ip address 10.0.0.1 255.255.255.0", true), "address Some(10.0.0.1) Some(255.255.255.0) sec=false no=true");
+        assert_eq!(
+            run("ip address", true),
+            "address None None sec=false no=true"
+        );
+        assert_eq!(
+            run("ip address 10.0.0.1 255.255.255.0", true),
+            "address Some(10.0.0.1) Some(255.255.255.0) sec=false no=true"
+        );
         assert_eq!(run("description", true), "desc None");
         // Not negatable: the command does not exist after `no`.
         assert_eq!(run("show inventory", true), "invalid@1");
@@ -757,12 +998,19 @@ mod tests {
         );
         let (entries, partial) = g.help("show i", false).unwrap();
         assert!(partial);
-        assert_eq!(entries.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(), ["interfaces", "inventory", "ip"]);
+        assert_eq!(
+            entries.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
+            ["interfaces", "inventory", "ip"]
+        );
         let (entries, _) = g.help("show ip route ", false).unwrap();
         assert_eq!(entries.first().unwrap().0, "A.B.C.D");
         assert_eq!(entries.last().unwrap().0, "<cr>");
         let (entries, _) = g.help("", false).unwrap();
-        assert!(entries.iter().any(|(w, h)| w == "show" && h == "Show running system information"));
+        assert!(
+            entries
+                .iter()
+                .any(|(w, h)| w == "show" && h == "Show running system information")
+        );
         assert!(g.help("bogus ", false).is_none());
         assert_eq!(g.complete("sh ip int b", false).as_deref(), Some("brief"));
         assert_eq!(g.complete("sh i", false), None);

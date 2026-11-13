@@ -17,7 +17,10 @@ pub(crate) fn is_abbrev(abbrev: &str, full: &str) -> bool {
 
 /// Length of the longest common case-insensitive prefix.
 pub(crate) fn common_prefix_len(a: &str, b: &str) -> usize {
-    a.bytes().zip(b.bytes()).take_while(|(x, y)| x.eq_ignore_ascii_case(y)).count()
+    a.bytes()
+        .zip(b.bytes())
+        .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
+        .count()
 }
 
 /// Compress a sorted list of numbers into `1,3-5,9` form.
@@ -79,7 +82,10 @@ mod tests {
         assert_eq!(common_prefix_len("interfaze", "interface"), 7);
         assert_eq!(ranges(&[1, 3, 4, 5, 9]), "1,3-5,9");
         assert_eq!(ranges(&[]), "");
-        assert_eq!(parse_ranges("10,20,30-32", 1, 4094), Some(vec![10, 20, 30, 31, 32]));
+        assert_eq!(
+            parse_ranges("10,20,30-32", 1, 4094),
+            Some(vec![10, 20, 30, 31, 32])
+        );
         assert_eq!(parse_ranges("5-3", 1, 4094), None);
         assert_eq!(parse_ranges("0", 1, 4094), None);
         assert_eq!(parse_ranges("a", 1, 4094), None);

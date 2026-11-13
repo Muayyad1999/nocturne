@@ -8,7 +8,10 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 
-use crate::api::{LabError, LabEvent, NodeId, PacketEvent, PacketEventKind, PduKind, ProbeHop, ProbeResult, TraceId};
+use crate::api::{
+    LabError, LabEvent, NodeId, PacketEvent, PacketEventKind, PduKind, ProbeHop, ProbeResult,
+    TraceId,
+};
 use crate::ifname::IfId;
 use crate::sim::World;
 use crate::sim::frame::{L4, Packet, UdpApp};
@@ -39,7 +42,12 @@ pub(crate) struct ProbeOutcome {
 
 impl ProbeOutcome {
     fn failed(reason: String) -> ProbeOutcome {
-        ProbeOutcome { ok: false, rtt_micros: 0, path: Vec::new(), reason }
+        ProbeOutcome {
+            ok: false,
+            rtt_micros: 0,
+            path: Vec::new(),
+            reason,
+        }
     }
 
     pub(crate) fn into_result(self, world: &World) -> ProbeResult {
@@ -51,7 +59,11 @@ impl ProbeOutcome {
                 .into_iter()
                 .map(|hop| ProbeHop {
                     node: hop.node,
-                    name: world.nodes.get(&hop.node).map(|n| n.name.clone()).unwrap_or_default(),
+                    name: world
+                        .nodes
+                        .get(&hop.node)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_default(),
                     in_if: hop.in_if.map(|i| i.name()).unwrap_or_default(),
                     out_if: hop.out_if.map(|i| i.name()).unwrap_or_default(),
                     note: hop.note,
@@ -64,15 +76,24 @@ impl ProbeOutcome {
 
 impl World {
     /// Inject one PDU from `from` towards `dst` and follow it as a trace.
-    pub(crate) fn start_trace(&mut self, from: NodeId, dst: Ipv4Addr, kind: PduKind) -> Result<TraceId, LabError> {
+    pub(crate) fn start_trace(
+        &mut self,
+        from: NodeId,
+        dst: Ipv4Addr,
+        kind: PduKind,
+    ) -> Result<TraceId, LabError> {
         let node = self.nodes.get(&from).ok_or(LabError::UnknownNode(from))?;
         if !node.powered {
             return Err(LabError::PoweredOff(node.name.clone()));
         }
         let what = match kind {
             PduKind::Icmp => format!("Ping from {} to {dst}", node.name),
-            PduKind::Tcp { port } => format!("TCP connection from {} to {dst} port {port}", node.name),
-            PduKind::Udp { port } => format!("UDP datagram from {} to {dst} port {port}", node.name),
+            PduKind::Tcp { port } => {
+                format!("TCP connection from {} to {dst} port {port}", node.name)
+            }
+            PduKind::Udp { port } => {
+                format!("UDP datagram from {} to {dst} port {port}", node.name)
+            }
         };
         let trace = self.open_trace(from, what);
         // The first PDU the origin creates from here on is the traced request.
@@ -103,7 +124,11 @@ impl World {
                     dst,
                     ttl: node.default_ttl(),
                     size: 60,
-                    l4: L4::Udp { sport, dport: port, app: UdpApp::Data },
+                    l4: L4::Udp {
+                        sport,
+                        dport: port,
+                        app: UdpApp::Data,
+                    },
                 };
                 node.ip_send(fx, packet, Some(trace), None);
             }
@@ -113,7 +138,13 @@ impl World {
     }
 
     /// Resolve reachability instantly on a scratch copy of the world.
-    pub(crate) fn probe(&self, from: NodeId, dst: Ipv4Addr, kind: PduKind, lossless: bool) -> ProbeOutcome {
+    pub(crate) fn probe(
+        &self,
+        from: NodeId,
+        dst: Ipv4Addr,
+        kind: PduKind,
+        lossless: bool,
+    ) -> ProbeOutcome {
         let mut scratch = self.clone();
         scratch.scratch = true;
         scratch.capture = false;
@@ -134,7 +165,9 @@ impl World {
                     _ => break,
                 }
             }
-            let Some(state) = scratch.traces.remove(&trace) else { break };
+            let Some(state) = scratch.traces.remove(&trace) else {
+                break;
+            };
             let events: BTreeMap<u32, &PacketEvent> = scratch
                 .events
                 .iter()
@@ -144,9 +177,20 @@ impl World {
                 })
                 .collect();
             if state.ok {
-                let rtt = state.finished_at.unwrap_or(state.started).saturating_sub(state.started);
-                let path = state.delivered.map(|seq| scratch.path_to(&events, seq)).unwrap_or_default();
-                return ProbeOutcome { ok: true, rtt_micros: rtt, path, reason: String::new() };
+                let rtt = state
+                    .finished_at
+                    .unwrap_or(state.started)
+                    .saturating_sub(state.started);
+                let path = state
+                    .delivered
+                    .map(|seq| scratch.path_to(&events, seq))
+                    .unwrap_or_default();
+                return ProbeOutcome {
+                    ok: true,
+                    rtt_micros: rtt,
+                    path,
+                    reason: String::new(),
+                };
             }
             let retry = matches!(state.worst, Some((Why::ArpPending, ..)));
             let path = match (&state.worst, state.delivered) {
@@ -154,7 +198,12 @@ impl World {
                 (_, Some(seq)) => scratch.path_to(&events, seq),
                 _ => Vec::new(),
             };
-            outcome = ProbeOutcome { ok: false, rtt_micros: 0, path, reason: super::trace_summary(&state, &scratch.nodes) };
+            outcome = ProbeOutcome {
+                ok: false,
+                rtt_micros: 0,
+                path,
+                reason: super::trace_summary(&state, &scratch.nodes),
+            };
             scratch.end_trace_procs(trace);
             if !retry {
                 break;
@@ -166,7 +215,9 @@ impl World {
     /// Remove the processes a finished trace left behind on its origin.
     pub(crate) fn end_trace_procs(&mut self, trace: TraceId) {
         for node in self.nodes.values_mut() {
-            node.procs.list.retain(|_, proc| proc.trace() != Some(trace));
+            node.procs
+                .list
+                .retain(|_, proc| proc.trace() != Some(trace));
         }
     }
 
@@ -185,7 +236,12 @@ impl World {
         let mut hops: Vec<PathHop> = Vec::new();
         for event in chain {
             if hops.last().is_none_or(|hop| hop.node != event.at) {
-                hops.push(PathHop { node: event.at, in_if: None, out_if: None, note: String::new() });
+                hops.push(PathHop {
+                    node: event.at,
+                    in_if: None,
+                    out_if: None,
+                    note: String::new(),
+                });
             }
             let index = hops.len() - 1;
             if event.kind == PacketEventKind::Received {

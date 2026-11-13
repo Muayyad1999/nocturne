@@ -44,21 +44,42 @@ impl Node {
             Timestamps::Uptime => format!("{}: ", age_compact(self.uptime(now))),
             Timestamps::Datetime { msec } => {
                 // The asterisk marks a clock that was never set.
-                let star = if self.clock_offset_ms.is_none() { "*" } else { "" };
-                format!("{star}{}: ", DateTime::from_unix_ms(self.clock_ms(now)).log_stamp(msec))
+                let star = if self.clock_offset_ms.is_none() {
+                    "*"
+                } else {
+                    ""
+                };
+                format!(
+                    "{star}{}: ",
+                    DateTime::from_unix_ms(self.clock_ms(now)).log_stamp(msec)
+                )
             }
         }
     }
 
     /// Emit `%FACILITY-SEVERITY-MNEMONIC: message` to the buffer and the event stream.
-    pub(crate) fn log(&mut self, fx: &mut Fx, severity: u8, facility: &str, mnemonic: &str, message: String) {
+    pub(crate) fn log(
+        &mut self,
+        fx: &mut Fx,
+        severity: u8,
+        facility: &str,
+        mnemonic: &str,
+        message: String,
+    ) {
         if !self.model.is_network_os() {
             return;
         }
-        let line = format!("{}%{facility}-{severity}-{mnemonic}: {message}", self.log_stamp(fx.now));
+        let line = format!(
+            "{}%{facility}-{severity}-{mnemonic}: {message}",
+            self.log_stamp(fx.now)
+        );
         let seq = self.log.next_seq;
         self.log.next_seq += 1;
-        self.log.entries.push_back(LogEntry { seq, severity, line: line.clone() });
+        self.log.entries.push_back(LogEntry {
+            seq,
+            severity,
+            line: line.clone(),
+        });
         if self.log.entries.len() > BUFFER_LINES {
             self.log.entries.pop_front();
         }

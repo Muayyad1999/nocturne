@@ -617,11 +617,30 @@ pub struct LayerInfo {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Fault {
-    LinkDown { link: LinkId },
-    InterfaceErrors { node: NodeId, interface: String, crc_per_s: u32 },
-    PacketLoss { link: LinkId, percent: u8 },
-    Flapping { link: LinkId, period_s: u32 },
-    HighCpu { node: NodeId, percent: u8 },
-    PowerOff { node: NodeId },
-    DuplexMismatch { link: LinkId },
+    LinkDown {
+        link: LinkId,
+    },
+    InterfaceErrors {
+        node: NodeId,
+        interface: String,
+        crc_per_s: u32,
+    },
+    PacketLoss {
+        link: LinkId,
+        percent: u8,
+    },
+    Flapping {
+        link: LinkId,
+        period_s: u32,
+    },
+    HighCpu {
+        node: NodeId,
+        percent: u8,
+    },
+    PowerOff {
+        node: NodeId,
+    },
+    DuplexMismatch {
+        link: LinkId,
+    },
 }

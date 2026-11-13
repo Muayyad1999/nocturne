@@ -39,8 +39,12 @@ pub(crate) fn rule_matches(rule: &AclRule, extended: bool, packet: &Packet) -> b
         return false;
     }
     if rule.sport.is_some() || rule.dport.is_some() {
-        let Some((sport, dport)) = ports(packet) else { return false };
-        if rule.sport.is_some_and(|spec| !spec.matches(sport)) || rule.dport.is_some_and(|spec| !spec.matches(dport)) {
+        let Some((sport, dport)) = ports(packet) else {
+            return false;
+        };
+        if rule.sport.is_some_and(|spec| !spec.matches(sport))
+            || rule.dport.is_some_and(|spec| !spec.matches(dport))
+        {
             return false;
         }
     }
@@ -57,7 +61,14 @@ pub(crate) fn rule_matches(rule: &AclRule, extended: bool, packet: &Packet) -> b
         }
     }
     // `established` = a segment with ACK or RST set, i.e. not an opening SYN.
-    !rule.established || matches!(packet.l4, L4::Tcp { flags: TcpFlags::SynAck | TcpFlags::Ack | TcpFlags::Rst, .. })
+    !rule.established
+        || matches!(
+            packet.l4,
+            L4::Tcp {
+                flags: TcpFlags::SynAck | TcpFlags::Ack | TcpFlags::Rst,
+                ..
+            }
+        )
 }
 
 /// Well-known port names as IOS prints (and accepts) them.
@@ -84,16 +95,28 @@ const UDP_PORTS: &[(u16, &str)] = &[
 ];
 
 fn port_table(proto: AclProto) -> &'static [(u16, &'static str)] {
-    if proto == AclProto::Udp { UDP_PORTS } else { TCP_PORTS }
+    if proto == AclProto::Udp {
+        UDP_PORTS
+    } else {
+        TCP_PORTS
+    }
 }
 
 pub(crate) fn port_name(proto: AclProto, port: u16) -> String {
-    port_table(proto).iter().find(|(n, _)| *n == port).map_or_else(|| port.to_string(), |(_, name)| (*name).to_string())
+    port_table(proto)
+        .iter()
+        .find(|(n, _)| *n == port)
+        .map_or_else(|| port.to_string(), |(_, name)| (*name).to_string())
 }
 
 /// Parse a port given as a number or a well-known name.
 pub(crate) fn parse_port(proto: AclProto, text: &str) -> Option<u16> {
-    text.parse().ok().or_else(|| port_table(proto).iter().find(|(_, name)| *name == text).map(|(n, _)| *n))
+    text.parse().ok().or_else(|| {
+        port_table(proto)
+            .iter()
+            .find(|(_, name)| *name == text)
+            .map(|(n, _)| *n)
+    })
 }
 
 fn addr_text(spec: AddrSpec) -> String {
@@ -165,32 +188,53 @@ impl Node {
     /// Run a packet through a named list. A list that does not exist permits
     /// everything, as on real devices.
     pub(crate) fn acl_eval(&mut self, fx: &mut Fx, name: &str, packet: &Packet) -> Verdict {
-        let Some(acl) = self.cfg.acl(name) else { return Verdict::Permit };
+        let Some(acl) = self.cfg.acl(name) else {
+            return Verdict::Permit;
+        };
         if acl.rules().next().is_none() {
             return Verdict::Permit;
         }
         let extended = acl.extended;
-        let Some(rule) = acl.rules().find(|rule| rule_matches(rule, extended, packet)).cloned() else {
-            return Verdict::Deny("matches no entry, so the implicit deny at the end of the list applies".to_string());
+        let Some(rule) = acl
+            .rules()
+            .find(|rule| rule_matches(rule, extended, packet))
+            .cloned()
+        else {
+            return Verdict::Deny(
+                "matches no entry, so the implicit deny at the end of the list applies".to_string(),
+            );
         };
-        *self.acl_hits.entry((name.to_string(), rule.seq)).or_insert(0) += 1;
+        *self
+            .acl_hits
+            .entry((name.to_string(), rule.seq))
+            .or_insert(0) += 1;
         if rule.log {
             self.acl_log(fx, name, extended, rule.permit, packet);
         }
         if rule.permit {
             Verdict::Permit
         } else {
-            Verdict::Deny(format!("matches line {} `{}`", rule.seq, rule_text(&rule, extended)))
+            Verdict::Deny(format!(
+                "matches line {} `{}`",
+                rule.seq,
+                rule_text(&rule, extended)
+            ))
         }
     }
 
     /// Does a list permit traffic from `src` (vty `access-class`, NAT source lists)?
     pub(crate) fn acl_permits_source(&mut self, name: &str, src: Ipv4Addr) -> bool {
-        let Some(acl) = self.cfg.acl(name) else { return true };
+        let Some(acl) = self.cfg.acl(name) else {
+            return true;
+        };
         if acl.rules().next().is_none() {
             return true;
         }
-        match acl.rules().find(|rule| rule.src.matches(src)).map(|rule| (rule.seq, rule.permit)) {
+        match acl
+            .rules()
+            .find(|rule| rule.src.matches(src))
+            .map(|rule| (rule.seq, rule.permit))
+        {
             Some((seq, permit)) => {
                 *self.acl_hits.entry((name.to_string(), seq)).or_insert(0) += 1;
                 permit
@@ -202,16 +246,28 @@ impl Node {
     fn acl_log(&mut self, fx: &mut Fx, name: &str, extended: bool, permit: bool, packet: &Packet) {
         let action = if permit { "permitted" } else { "denied" };
         let (mnemonic, message) = if !extended {
-            ("IPACCESSLOGNP", format!("list {name} {action} 0 {} -> {}, 1 packet", packet.src, packet.dst))
+            (
+                "IPACCESSLOGNP",
+                format!(
+                    "list {name} {action} 0 {} -> {}, 1 packet",
+                    packet.src, packet.dst
+                ),
+            )
         } else {
             match &packet.l4 {
                 L4::Tcp { sport, dport, .. } => (
                     "IPACCESSLOGP",
-                    format!("list {name} {action} tcp {}({sport}) -> {}({dport}), 1 packet", packet.src, packet.dst),
+                    format!(
+                        "list {name} {action} tcp {}({sport}) -> {}({dport}), 1 packet",
+                        packet.src, packet.dst
+                    ),
                 ),
                 L4::Udp { sport, dport, .. } => (
                     "IPACCESSLOGP",
-                    format!("list {name} {action} udp {}({sport}) -> {}({dport}), 1 packet", packet.src, packet.dst),
+                    format!(
+                        "list {name} {action} udp {}({sport}) -> {}({dport}), 1 packet",
+                        packet.src, packet.dst
+                    ),
                 ),
                 L4::Icmp(icmp) => {
                     let kind = match icmp {
@@ -222,12 +278,19 @@ impl Node {
                     };
                     (
                         "IPACCESSLOGDP",
-                        format!("list {name} {action} icmp {} -> {} ({kind}), 1 packet", packet.src, packet.dst),
+                        format!(
+                            "list {name} {action} icmp {} -> {} ({kind}), 1 packet",
+                            packet.src, packet.dst
+                        ),
                     )
                 }
-                L4::Ospf(_) => {
-                    ("IPACCESSLOGNP", format!("list {name} {action} 89 {} -> {}, 1 packet", packet.src, packet.dst))
-                }
+                L4::Ospf(_) => (
+                    "IPACCESSLOGNP",
+                    format!(
+                        "list {name} {action} 89 {} -> {}, 1 packet",
+                        packet.src, packet.dst
+                    ),
+                ),
             }
         };
         self.log(fx, 6, "SEC", mnemonic, message);
@@ -236,7 +299,10 @@ impl Node {
 
 /// Hit counter of one entry.
 pub(crate) fn hits(node: &Node, acl: &Acl, seq: u32) -> u64 {
-    node.acl_hits.get(&(acl.name.clone(), seq)).copied().unwrap_or(0)
+    node.acl_hits
+        .get(&(acl.name.clone(), seq))
+        .copied()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -264,7 +330,11 @@ mod tests {
             dst: Ipv4Addr::new(10, 0, 1, 5),
             ttl: 64,
             size: 44,
-            l4: L4::Tcp { sport: 50000, dport, flags },
+            l4: L4::Tcp {
+                sport: 50000,
+                dport,
+                flags,
+            },
         }
     }
 
@@ -299,6 +369,9 @@ mod tests {
         let mut s = rule(false, AclProto::Ip);
         s.src = AddrSpec::Net(Ipv4Addr::new(192, 168, 1, 0), Ipv4Addr::new(0, 0, 0, 255));
         assert_eq!(rule_text(&s, false), "deny 192.168.1.0 0.0.0.255");
-        assert_eq!(rule_show_text(&s, false), "deny   192.168.1.0, wildcard bits 0.0.0.255");
+        assert_eq!(
+            rule_show_text(&s, false),
+            "deny   192.168.1.0, wildcard bits 0.0.0.255"
+        );
     }
 }

@@ -20,6 +20,7 @@ pub(crate) mod nat;
 pub(crate) mod neighbors;
 pub(crate) mod node;
 pub(crate) mod ospf;
+pub(crate) mod ospf_spf;
 pub(crate) mod port;
 pub(crate) mod probe;
 pub(crate) mod procs;
@@ -33,7 +34,9 @@ pub(crate) mod syslog;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-use crate::api::{CableKind, Fault, FaultId, FlowId, LabEvent, LinkId, NodeId, PacketEventKind, SimTime, TraceId};
+use crate::api::{
+    CableKind, Fault, FaultId, FlowId, LabEvent, LinkId, NodeId, PacketEventKind, SimTime, TraceId,
+};
 use crate::ifname::IfId;
 use crate::util::rng::{self, Rng};
 use frame::Frame;
@@ -91,10 +94,21 @@ pub(crate) struct ConsoleLink {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
-    Arrive { link: LinkId, node: NodeId, port: IfId, frame: Frame },
-    Timer { node: NodeId, epoch: u32, timer: Timer },
+    Arrive {
+        link: LinkId,
+        node: NodeId,
+        port: IfId,
+        frame: Frame,
+    },
+    Timer {
+        node: NodeId,
+        epoch: u32,
+        timer: Timer,
+    },
     FlowTick,
-    Flap { fault: FaultId },
+    Flap {
+        fault: FaultId,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -231,11 +245,22 @@ impl World {
     // ------------------------------------------------------------ effects
 
     pub(crate) fn fx(&self) -> Fx {
-        Fx::new(self.now, self.realistic, self.seed, self.capture, self.next_seq, self.next_pdu)
+        Fx::new(
+            self.now,
+            self.realistic,
+            self.seed,
+            self.capture,
+            self.next_seq,
+            self.next_pdu,
+        )
     }
 
     /// Run `f` on a node with a fresh effect collector, then apply the effects.
-    pub(crate) fn with_node<R>(&mut self, id: NodeId, f: impl FnOnce(&mut Node, &mut Fx) -> R) -> Option<R> {
+    pub(crate) fn with_node<R>(
+        &mut self,
+        id: NodeId,
+        f: impl FnOnce(&mut Node, &mut Fx) -> R,
+    ) -> Option<R> {
         let mut fx = self.fx();
         let result = f(self.nodes.get_mut(&id)?, &mut fx);
         self.apply(id, fx);
@@ -266,7 +291,14 @@ impl World {
         }
         let epoch = self.nodes.get(&node_id).map_or(0, |n| n.epoch);
         for (delay, timer) in fx.timers {
-            self.schedule(self.now.saturating_add(delay), Event::Timer { node: node_id, epoch, timer });
+            self.schedule(
+                self.now.saturating_add(delay),
+                Event::Timer {
+                    node: node_id,
+                    epoch,
+                    timer,
+                },
+            );
         }
         for (port, frame) in fx.tx {
             self.transmit(node_id, port, frame);
@@ -298,9 +330,17 @@ impl World {
         {
             match (note.event.kind, note.why) {
                 (PacketEventKind::Dropped, Some(why)) => {
-                    let better = state.worst.as_ref().is_none_or(|(old, _, _, _)| why >= *old);
+                    let better = state
+                        .worst
+                        .as_ref()
+                        .is_none_or(|(old, _, _, _)| why >= *old);
                     if better {
-                        state.worst = Some((why, note.event.seq, note.event.at, note.event.decision.clone()));
+                        state.worst = Some((
+                            why,
+                            note.event.seq,
+                            note.event.at,
+                            note.event.decision.clone(),
+                        ));
                     }
                 }
                 (PacketEventKind::Delivered, _) if note.event.pdu == state.request_pdu => {
@@ -314,15 +354,23 @@ impl World {
 
     pub(crate) fn schedule(&mut self, at: SimTime, event: Event) {
         self.next_order += 1;
-        self.queue.push(Queued { at, order: self.next_order, event });
+        self.queue.push(Queued {
+            at,
+            order: self.next_order,
+            event,
+        });
     }
 
     // ------------------------------------------------------------- the wire
 
     fn transmit(&mut self, node_id: NodeId, port: IfId, frame: Frame) {
         let now = self.now;
-        let Some(node) = self.nodes.get_mut(&node_id) else { return };
-        let Some(state) = node.ifs.get_mut(&port) else { return };
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return;
+        };
+        let Some(state) = node.ifs.get_mut(&port) else {
+            return;
+        };
         let Some(link_id) = state.link.filter(|_| state.carrier) else {
             state.counters.out_discards += 1;
             return;
@@ -331,19 +379,29 @@ impl World {
         state.counters.out_octets += frame.wire_len();
         state.counters.last_out = Some(now);
         let sender_full = state.full_duplex;
-        let Some(link) = self.links.get(&link_id) else { return };
-        let Some((peer, peer_port)) = link.other_end(node_id, port) else { return };
+        let Some(link) = self.links.get(&link_id) else {
+            return;
+        };
+        let Some((peer, peer_port)) = link.other_end(node_id, port) else {
+            return;
+        };
         if !link.up {
             return;
         }
         let dice = rng::hash(&[self.seed, u64::from(link_id), frame.meta.pdu, now]);
-        let lost = !self.lossless && link.loss_percent > 0 && dice % 100 < u64::from(link.loss_percent);
+        let lost =
+            !self.lossless && link.loss_percent > 0 && dice % 100 < u64::from(link.loss_percent);
         let latency = link.latency_micros();
         let loaded = link.bps_ab + link.bps_ba > 0;
-        let receiver_full = self.nodes.get(&peer).and_then(|n| n.ifs.get(&peer_port)).is_some_and(|s| s.full_duplex);
+        let receiver_full = self
+            .nodes
+            .get(&peer)
+            .and_then(|n| n.ifs.get(&peer_port))
+            .is_some_and(|s| s.full_duplex);
         // A duplex mismatch only hurts under load: while flows keep the link
         // busy, a share of the frames dies in late collisions.
-        let collided = !self.lossless && loaded && sender_full != receiver_full && dice >> 8 & 7 == 0;
+        let collided =
+            !self.lossless && loaded && sender_full != receiver_full && dice >> 8 & 7 == 0;
         if lost || collided {
             if collided {
                 self.count_collision(node_id, port, peer, peer_port, sender_full);
@@ -367,19 +425,46 @@ impl World {
         {
             state.inflight += 1;
         }
-        self.schedule(now + latency + PROCESSING_MICROS, Event::Arrive { link: link_id, node: peer, port: peer_port, frame });
+        self.schedule(
+            now + latency + PROCESSING_MICROS,
+            Event::Arrive {
+                link: link_id,
+                node: peer,
+                port: peer_port,
+                frame,
+            },
+        );
     }
 
-    fn count_collision(&mut self, tx_node: NodeId, tx_port: IfId, rx_node: NodeId, rx_port: IfId, sender_full: bool) {
+    fn count_collision(
+        &mut self,
+        tx_node: NodeId,
+        tx_port: IfId,
+        rx_node: NodeId,
+        rx_port: IfId,
+        sender_full: bool,
+    ) {
         // The half-duplex end sees late collisions; the full-duplex end sees
         // damaged frames (CRC errors and runts).
-        let (half, full) = if sender_full { ((rx_node, rx_port), (tx_node, tx_port)) } else { ((tx_node, tx_port), (rx_node, rx_port)) };
-        if let Some(state) = self.nodes.get_mut(&half.0).and_then(|n| n.ifs.get_mut(&half.1)) {
+        let (half, full) = if sender_full {
+            ((rx_node, rx_port), (tx_node, tx_port))
+        } else {
+            ((tx_node, tx_port), (rx_node, rx_port))
+        };
+        if let Some(state) = self
+            .nodes
+            .get_mut(&half.0)
+            .and_then(|n| n.ifs.get_mut(&half.1))
+        {
             state.counters.collisions += 1;
             state.counters.late_collisions += 1;
             state.counters.out_errors += 1;
         }
-        if let Some(state) = self.nodes.get_mut(&full.0).and_then(|n| n.ifs.get_mut(&full.1)) {
+        if let Some(state) = self
+            .nodes
+            .get_mut(&full.0)
+            .and_then(|n| n.ifs.get_mut(&full.1))
+        {
             state.counters.in_errors += 1;
             state.counters.crc += 1;
         }
@@ -391,28 +476,45 @@ impl World {
         {
             state.inflight = state.inflight.saturating_sub(1);
         }
-        let Some(link) = self.links.get(&link_id) else { return };
+        let Some(link) = self.links.get(&link_id) else {
+            return;
+        };
         if !link.up {
             return;
         }
-        let Some((from, _)) = link.other_end(node_id, port) else { return };
+        let Some((from, _)) = link.other_end(node_id, port) else {
+            return;
+        };
         let mut fx = self.fx();
         if fx.watching(&frame) {
-            let from_name = self.nodes.get(&from).map(|n| n.name.clone()).unwrap_or_default();
-            frame.meta.via = fx.note(node_id, PacketEventKind::Received, &frame, Some(port), None, || {
-                format!("The frame arrives on {} from {from_name}.", port.short())
-            });
+            let from_name = self
+                .nodes
+                .get(&from)
+                .map(|n| n.name.clone())
+                .unwrap_or_default();
+            frame.meta.via = fx.note(
+                node_id,
+                PacketEventKind::Received,
+                &frame,
+                Some(port),
+                None,
+                || format!("The frame arrives on {} from {from_name}.", port.short()),
+            );
             if let Some(note) = fx.notes.last_mut() {
                 note.event.from = Some(from);
                 note.event.link = Some(link_id);
             }
         }
         let now = self.now;
-        let Some(node) = self.nodes.get_mut(&node_id) else { return };
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return;
+        };
         if !node.powered {
             return;
         }
-        let Some(state) = node.ifs.get_mut(&port) else { return };
+        let Some(state) = node.ifs.get_mut(&port) else {
+            return;
+        };
         if !state.carrier {
             return;
         }
@@ -433,7 +535,9 @@ impl World {
         let mut budget = EVENT_BUDGET;
         self.after_event();
         while self.queue.peek().is_some_and(|q| q.at <= deadline) && budget > 0 {
-            let Some(queued) = self.queue.pop() else { break };
+            let Some(queued) = self.queue.pop() else {
+                break;
+            };
             budget -= 1;
             self.now = self.now.max(queued.at);
             self.dispatch(queued.event);
@@ -450,9 +554,17 @@ impl World {
 
     fn dispatch(&mut self, event: Event) {
         match event {
-            Event::Arrive { link, node, port, frame } => self.arrive(link, node, port, frame),
+            Event::Arrive {
+                link,
+                node,
+                port,
+                frame,
+            } => self.arrive(link, node, port, frame),
             Event::Timer { node, epoch, timer } => {
-                let live = self.nodes.get(&node).is_some_and(|n| n.powered && n.epoch == epoch);
+                let live = self
+                    .nodes
+                    .get(&node)
+                    .is_some_and(|n| n.powered && n.epoch == epoch);
                 if live {
                     self.with_node(node, |n, fx| n.on_timer(fx, timer));
                 }
@@ -498,15 +610,25 @@ impl World {
     }
 
     fn close_finished_traces(&mut self) {
-        let finished: Vec<TraceId> =
-            self.traces.iter().filter(|(_, s)| !s.done && s.inflight == 0).map(|(id, _)| *id).collect();
+        let finished: Vec<TraceId> = self
+            .traces
+            .iter()
+            .filter(|(_, s)| !s.done && s.inflight == 0)
+            .map(|(id, _)| *id)
+            .collect();
         for id in finished {
-            let Some(state) = self.traces.get_mut(&id) else { continue };
+            let Some(state) = self.traces.get_mut(&id) else {
+                continue;
+            };
             state.done = true;
             self.open_traces = self.open_traces.saturating_sub(1);
             let summary = trace_summary(state, &self.nodes);
             let ok = state.ok;
-            self.events.push(LabEvent::TraceDone { trace: id, ok, summary });
+            self.events.push(LabEvent::TraceDone {
+                trace: id,
+                ok,
+                summary,
+            });
             // Finished traces are only kept around for the probe that asked.
             if !self.scratch {
                 self.traces.remove(&id);
@@ -518,8 +640,16 @@ impl World {
 /// One sentence describing how a trace ended.
 pub(crate) fn trace_summary(state: &TraceState, nodes: &BTreeMap<NodeId, Node>) -> String {
     if state.ok {
-        let micros = state.finished_at.unwrap_or(state.started).saturating_sub(state.started);
-        return format!("{} succeeded in {}.{:03} ms.", state.what, micros / 1000, micros % 1000);
+        let micros = state
+            .finished_at
+            .unwrap_or(state.started)
+            .saturating_sub(state.started);
+        return format!(
+            "{} succeeded in {}.{:03} ms.",
+            state.what,
+            micros / 1000,
+            micros % 1000
+        );
     }
     match (&state.worst, &state.verdict) {
         (Some((why, _, node, text)), _) if *why >= Why::ArpPending => {
@@ -532,8 +662,14 @@ pub(crate) fn trace_summary(state: &TraceState, nodes: &BTreeMap<NodeId, Node>) 
             format!("{} failed at {name}: {text}", state.what)
         }
         _ if state.delivered.is_some() => {
-            format!("{} failed: the PDU reached its destination but no answer came back.", state.what)
+            format!(
+                "{} failed: the PDU reached its destination but no answer came back.",
+                state.what
+            )
         }
-        _ => format!("{} failed: the PDU never reached its destination.", state.what),
+        _ => format!(
+            "{} failed: the PDU never reached its destination.",
+            state.what
+        ),
     }
 }

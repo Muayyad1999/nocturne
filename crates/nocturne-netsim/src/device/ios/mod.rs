@@ -75,12 +75,22 @@ pub(crate) type Table = Vec<Cmd<Handler>>;
 
 /// Shorthand for command tables: a command without a `no` form.
 pub(crate) fn c(pattern: &'static str, help: &'static str, run: Handler) -> Cmd<Handler> {
-    Cmd { pattern, help, negatable: false, run }
+    Cmd {
+        pattern,
+        help,
+        negatable: false,
+        run,
+    }
 }
 
 /// A command that can be negated with `no`.
 pub(crate) fn n(pattern: &'static str, help: &'static str, run: Handler) -> Cmd<Handler> {
-    Cmd { pattern, help, negatable: true, run }
+    Cmd {
+        pattern,
+        help,
+        negatable: true,
+        run,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,7 +167,10 @@ fn build(kind: GrammarKind, role: Role) -> Grammar<Handler> {
 fn grammar(kind: GrammarKind, role: Role) -> &'static Grammar<Handler> {
     static CACHE: OnceLock<Vec<Grammar<Handler>>> = OnceLock::new();
     let all = CACHE.get_or_init(|| {
-        ROLES.iter().flat_map(|role| KINDS.iter().map(|kind| build(*kind, *role))).collect()
+        ROLES
+            .iter()
+            .flat_map(|role| KINDS.iter().map(|kind| build(*kind, *role)))
+            .collect()
     });
     let role_index = ROLES.iter().position(|r| *r == role).unwrap_or(0);
     let kind_index = KINDS.iter().position(|k| *k == kind).unwrap_or(0);
@@ -206,7 +219,11 @@ impl IosShell {
 
     /// A pre-authenticated shell for the automation helpers.
     pub(crate) fn automation(mode: Mode) -> IosShell {
-        IosShell { mode, term_len: 0, ..IosShell::new(LineId::Console, None) }
+        IosShell {
+            mode,
+            term_len: 0,
+            ..IosShell::new(LineId::Console, None)
+        }
     }
 
     pub(crate) fn user(&self) -> &str {
@@ -242,7 +259,8 @@ impl IosShell {
     }
 
     pub(crate) fn logging_synchronous(&self, node: &Node) -> bool {
-        self.line_config(node).is_some_and(|l| l.logging_synchronous)
+        self.line_config(node)
+            .is_some_and(|l| l.logging_synchronous)
     }
 
     pub(crate) fn exec_timeout(&self, node: &Node) -> Option<u64> {
@@ -296,7 +314,13 @@ impl IosShell {
             out.push_str(banner);
             out.push('\n');
         }
-        let Some(line) = self.line_config(node).cloned() else { return Reply { out, next: Next::Close, ..Reply::default() } };
+        let Some(line) = self.line_config(node).cloned() else {
+            return Reply {
+                out,
+                next: Next::Close,
+                ..Reply::default()
+            };
+        };
         if let Some(level) = line.privilege
             && level >= 15
         {
@@ -304,7 +328,11 @@ impl IosShell {
         }
         let ask = |out: String, prompt: &str, hidden: bool, tag: Tag| Reply {
             out,
-            next: Next::Ask { prompt: prompt.to_string(), hidden, tag },
+            next: Next::Ask {
+                prompt: prompt.to_string(),
+                hidden,
+                tag,
+            },
             ..Reply::default()
         };
         match line.login {
@@ -315,7 +343,11 @@ impl IosShell {
                     Reply::text(out)
                 } else {
                     out.push_str("\nPassword required, but none set\n");
-                    Reply { out, next: Next::Close, ..Reply::default() }
+                    Reply {
+                        out,
+                        next: Next::Close,
+                        ..Reply::default()
+                    }
                 }
             }
             LoginMode::Password => {
@@ -343,9 +375,19 @@ impl IosShell {
     pub(crate) fn ssh_login(&mut self, node: &mut Node, fx: &mut Fx, user: &str) -> Reply {
         let greeting = self.greet(node, fx);
         match greeting.next {
-            Next::Ask { tag: Tag::Username { tries }, .. } => Reply {
+            Next::Ask {
+                tag: Tag::Username { tries },
+                ..
+            } => Reply {
                 out: String::new(),
-                next: Next::Ask { prompt: "Password: ".to_string(), hidden: true, tag: Tag::UserPassword { user: user.to_string(), tries } },
+                next: Next::Ask {
+                    prompt: "Password: ".to_string(),
+                    hidden: true,
+                    tag: Tag::UserPassword {
+                        user: user.to_string(),
+                        tries,
+                    },
+                },
                 ..Reply::default()
             },
             _ => greeting,
@@ -358,7 +400,11 @@ impl IosShell {
         let last = tries >= 2;
         if last && self.line != LineId::Console {
             self.logging_in = false;
-            return Reply { out: "% Bad passwords\n".to_string(), next: Next::Close, ..Reply::default() };
+            return Reply {
+                out: "% Bad passwords\n".to_string(),
+                next: Next::Close,
+                ..Reply::default()
+            };
         }
         let out = match (last, username) {
             (true, _) => "% Bad passwords\n\n",
@@ -367,18 +413,33 @@ impl IosShell {
         };
         let tries = if last { 0 } else { tries + 1 };
         let next = if username {
-            Next::Ask { prompt: "Username: ".to_string(), hidden: false, tag: Tag::Username { tries } }
+            Next::Ask {
+                prompt: "Username: ".to_string(),
+                hidden: false,
+                tag: Tag::Username { tries },
+            }
         } else {
-            Next::Ask { prompt: "Password: ".to_string(), hidden: true, tag: Tag::LinePassword { tries } }
+            Next::Ask {
+                prompt: "Password: ".to_string(),
+                hidden: true,
+                tag: Tag::LinePassword { tries },
+            }
         };
-        Reply { out: out.to_string(), next, ..Reply::default() }
+        Reply {
+            out: out.to_string(),
+            next,
+            ..Reply::default()
+        }
     }
 
     /// The user answered a question the shell asked.
     pub(crate) fn answer(&mut self, node: &mut Node, fx: &mut Fx, tag: Tag, text: &str) -> Reply {
         match tag {
             Tag::LinePassword { tries } => {
-                let ok = self.line_config(node).and_then(|l| l.password.as_ref()).is_some_and(|p| p.verify(text));
+                let ok = self
+                    .line_config(node)
+                    .and_then(|l| l.password.as_ref())
+                    .is_some_and(|p| p.verify(text));
                 if ok {
                     self.logging_in = false;
                     Reply::default()
@@ -390,7 +451,10 @@ impl IosShell {
                 next: Next::Ask {
                     prompt: "Password: ".to_string(),
                     hidden: true,
-                    tag: Tag::UserPassword { user: text.trim().to_string(), tries },
+                    tag: Tag::UserPassword {
+                        user: text.trim().to_string(),
+                        tries,
+                    },
                 },
                 ..Reply::default()
             },
@@ -409,15 +473,27 @@ impl IosShell {
                 }
             }
             Tag::Enable { tries } => {
-                let secret = node.cfg.enable_secret.as_ref().or(node.cfg.enable_password.as_ref());
+                let secret = node
+                    .cfg
+                    .enable_secret
+                    .as_ref()
+                    .or(node.cfg.enable_password.as_ref());
                 if secret.is_some_and(|s| s.verify(text)) {
                     self.mode = Mode::Priv;
                     Reply::default()
                 } else if tries >= 2 {
-                    Reply { out: "% Bad secrets\n\n".to_string(), error: true, ..Reply::default() }
+                    Reply {
+                        out: "% Bad secrets\n\n".to_string(),
+                        error: true,
+                        ..Reply::default()
+                    }
                 } else {
                     Reply {
-                        next: Next::Ask { prompt: "Password: ".to_string(), hidden: true, tag: Tag::Enable { tries: tries + 1 } },
+                        next: Next::Ask {
+                            prompt: "Password: ".to_string(),
+                            hidden: true,
+                            tag: Tag::Enable { tries: tries + 1 },
+                        },
                         ..Reply::default()
                     }
                 }
@@ -429,11 +505,19 @@ impl IosShell {
     /// Ctrl-C while a question was pending.
     pub(crate) fn abort_question(&mut self, _node: &mut Node, _fx: &mut Fx, tag: Tag) -> Reply {
         match tag {
-            Tag::LinePassword { .. } | Tag::Username { .. } | Tag::UserPassword { .. } if self.logging_in => {
+            Tag::LinePassword { .. } | Tag::Username { .. } | Tag::UserPassword { .. }
+                if self.logging_in =>
+            {
                 if self.line == LineId::Console {
-                    self.login_failed(0, matches!(tag, Tag::Username { .. } | Tag::UserPassword { .. }))
+                    self.login_failed(
+                        0,
+                        matches!(tag, Tag::Username { .. } | Tag::UserPassword { .. }),
+                    )
                 } else {
-                    Reply { next: Next::Close, ..Reply::default() }
+                    Reply {
+                        next: Next::Close,
+                        ..Reply::default()
+                    }
                 }
             }
             _ => Reply::default(),
@@ -445,21 +529,34 @@ impl IosShell {
         if self.banner.take().is_some() {
             return Reply::default();
         }
-        if self.in_config() { self.leave_config(node, fx) } else { Reply::default() }
+        if self.in_config() {
+            self.leave_config(node, fx)
+        } else {
+            Reply::default()
+        }
     }
 
     /// Ctrl-Z: `end`.
     pub(crate) fn end_key(&mut self, node: &mut Node, fx: &mut Fx) -> Reply {
         self.banner = None;
-        if self.in_config() { self.leave_config(node, fx) } else { Reply::default() }
+        if self.in_config() {
+            self.leave_config(node, fx)
+        } else {
+            Reply::default()
+        }
     }
 
     /// Return to privileged EXEC and log the configuration event.
     pub(crate) fn leave_config(&mut self, node: &mut Node, fx: &mut Fx) -> Reply {
         self.mode = Mode::Priv;
         let message = match (self.line, self.peer, self.user.is_empty()) {
-            (LineId::Vty(n), Some(peer), true) => format!("Configured from console by vty{n} ({peer})"),
-            (LineId::Vty(n), Some(peer), false) => format!("Configured from console by {} on vty{n} ({peer})", self.user),
+            (LineId::Vty(n), Some(peer), true) => {
+                format!("Configured from console by vty{n} ({peer})")
+            }
+            (LineId::Vty(n), Some(peer), false) => format!(
+                "Configured from console by {} on vty{n} ({peer})",
+                self.user
+            ),
             (_, _, true) => "Configured from console by console".to_string(),
             (_, _, false) => format!("Configured from console by {} on console", self.user),
         };
@@ -490,7 +587,15 @@ impl IosShell {
 
     /// Run a handler. `shown` is the command as typed and `column` where it
     /// started on screen, for the caret of a handler-level rejection.
-    fn run(&mut self, node: &mut Node, fx: &mut Fx, run: Handler, args: &Args, shown: &str, column: usize) -> Reply {
+    fn run(
+        &mut self,
+        node: &mut Node,
+        fx: &mut Fx,
+        run: Handler,
+        args: &Args,
+        shown: &str,
+        column: usize,
+    ) -> Reply {
         let mut cx = Cx {
             n: node,
             fx,
@@ -503,25 +608,50 @@ impl IosShell {
         };
         run(&mut cx, args);
         let (invalid, touched) = (cx.invalid, cx.touched);
-        let reply = Reply { out: cx.out, error: cx.error, touched, next: cx.next };
+        let reply = Reply {
+            out: cx.out,
+            error: cx.error,
+            touched,
+            next: cx.next,
+        };
         if touched {
             node.last_config_change = Some(fx.now);
             node.unsaved = true;
         }
         if invalid {
-            return Reply { touched, ..error_reply(Parsed::Invalid { at: 0 }, shown, column) };
+            return Reply {
+                touched,
+                ..error_reply(Parsed::Invalid { at: 0 }, shown, column)
+            };
         }
         reply
     }
 
-    fn run_exec(&mut self, node: &mut Node, fx: &mut Fx, line: &str, column: usize, privileged: bool) -> Reply {
+    fn run_exec(
+        &mut self,
+        node: &mut Node,
+        fx: &mut Fx,
+        line: &str,
+        column: usize,
+        privileged: bool,
+    ) -> Reply {
         let (command, modifier) = split_modifier(line);
-        let kind = if privileged { GrammarKind::Priv } else { GrammarKind::User };
+        let kind = if privileged {
+            GrammarKind::Priv
+        } else {
+            GrammarKind::User
+        };
         match grammar(kind, node.model.role).parse(command, false) {
             Parsed::Ok { run, args } => {
                 let filter = match modifier.map(OutputFilter::parse) {
                     Some(Ok(filter)) => Some(filter),
-                    Some(Err(message)) => return Reply { out: message, error: true, ..Reply::default() },
+                    Some(Err(message)) => {
+                        return Reply {
+                            out: message,
+                            error: true,
+                            ..Reply::default()
+                        };
+                    }
                     None => None,
                 };
                 let mut reply = self.run(node, fx, run, &args, command, column);
@@ -539,7 +669,11 @@ impl IosShell {
         if first.eq_ignore_ascii_case("do") {
             let rest = line[first.len()..].trim_start();
             if rest.is_empty() {
-                return Reply { out: "% Incomplete command.\n\n".to_string(), error: true, ..Reply::default() };
+                return Reply {
+                    out: "% Incomplete command.\n\n".to_string(),
+                    error: true,
+                    ..Reply::default()
+                };
             }
             let offset = line.len() - rest.len();
             let saved = self.mode.clone();
@@ -557,7 +691,11 @@ impl IosShell {
             (false, line, 0)
         };
         if body.is_empty() {
-            return Reply { out: "% Incomplete command.\n\n".to_string(), error: true, ..Reply::default() };
+            return Reply {
+                out: "% Incomplete command.\n\n".to_string(),
+                error: true,
+                ..Reply::default()
+            };
         }
         let role = node.model.role;
         let local = grammar(self.grammar_kind(), role).parse(body, negate);
@@ -566,7 +704,8 @@ impl IosShell {
         }
         if self.mode != Mode::Config {
             // Commands of the parent mode are accepted from a sub-mode and leave it.
-            if let Parsed::Ok { run, args } = grammar(GrammarKind::Config, role).parse(body, negate) {
+            if let Parsed::Ok { run, args } = grammar(GrammarKind::Config, role).parse(body, negate)
+            {
                 self.mode = Mode::Config;
                 return self.run(node, fx, run, &args, body, column + offset);
             }
@@ -585,22 +724,38 @@ impl IosShell {
     /// a delimiter character followed by text, possibly ending on the same line.
     pub(crate) fn begin_banner(&mut self, node: &mut Node, login: bool, rest: &str) -> Reply {
         // A running configuration writes the delimiter as the two characters "^C".
-        let delimiter = if rest.starts_with("^C") { "^C".to_string() } else { rest.chars().take(1).collect() };
+        let delimiter = if rest.starts_with("^C") {
+            "^C".to_string()
+        } else {
+            rest.chars().take(1).collect()
+        };
         let after = &rest[delimiter.len()..];
-        let mut input = BannerInput { login, delimiter, text: String::new() };
+        let mut input = BannerInput {
+            login,
+            delimiter,
+            text: String::new(),
+        };
         if let Some(end) = after.find(&input.delimiter) {
             input.text = after[..end].to_string();
             store_banner(node, &input);
-            return Reply { touched: true, ..Reply::default() };
+            return Reply {
+                touched: true,
+                ..Reply::default()
+            };
         }
         input.text = after.to_string();
-        let out = format!("Enter TEXT message.  End with the character '{}'.\n", input.delimiter);
+        let out = format!(
+            "Enter TEXT message.  End with the character '{}'.\n",
+            input.delimiter
+        );
         self.banner = Some(input);
         Reply::text(out)
     }
 
     fn banner_line(&mut self, node: &mut Node, line: &str) -> Reply {
-        let Some(mut input) = self.banner.take() else { return Reply::default() };
+        let Some(mut input) = self.banner.take() else {
+            return Reply::default();
+        };
         match line.find(&input.delimiter) {
             Some(end) => {
                 if !input.text.is_empty() || end > 0 {
@@ -608,7 +763,10 @@ impl IosShell {
                 }
                 input.text.push_str(&line[..end]);
                 store_banner(node, &input);
-                Reply { touched: true, ..Reply::default() }
+                Reply {
+                    touched: true,
+                    ..Reply::default()
+                }
             }
             None => {
                 input.text.push('\n');
@@ -629,28 +787,54 @@ impl IosShell {
         let trimmed = line.trim_start();
         let first = trimmed.split_whitespace().next().unwrap_or("");
         let after_first = trimmed.len() > first.len();
-        let (kind, body, negate) = if self.in_config() && first.eq_ignore_ascii_case("do") && after_first {
-            (GrammarKind::Priv, trimmed[first.len()..].trim_start(), false)
-        } else if self.in_config() && first.eq_ignore_ascii_case("no") && after_first {
-            (self.grammar_kind(), trimmed[first.len()..].trim_start(), true)
-        } else {
-            (self.grammar_kind(), trimmed, false)
-        };
+        let (kind, body, negate) =
+            if self.in_config() && first.eq_ignore_ascii_case("do") && after_first {
+                (
+                    GrammarKind::Priv,
+                    trimmed[first.len()..].trim_start(),
+                    false,
+                )
+            } else if self.in_config() && first.eq_ignore_ascii_case("no") && after_first {
+                (
+                    self.grammar_kind(),
+                    trimmed[first.len()..].trim_start(),
+                    true,
+                )
+            } else {
+                (self.grammar_kind(), trimmed, false)
+            };
         let Some((mut entries, names_only)) = grammar(kind, role).help(body, negate) else {
             return "% Unrecognized command\n".to_string();
         };
         if self.in_config() && body.is_empty() && !negate {
-            entries.push(("do".to_string(), "To run exec commands in config mode".to_string()));
-            entries.push(("no".to_string(), "Negate a command or set its defaults".to_string()));
+            entries.push((
+                "do".to_string(),
+                "To run exec commands in config mode".to_string(),
+            ));
+            entries.push((
+                "no".to_string(),
+                "Negate a command or set its defaults".to_string(),
+            ));
             entries.sort();
         }
         if entries.is_empty() {
             return "% Unrecognized command\n".to_string();
         }
         if names_only {
-            return format!("{}\n\n", entries.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join("  "));
+            return format!(
+                "{}\n\n",
+                entries
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            );
         }
-        let width = entries.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+        let width = entries
+            .iter()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(0);
         let mut out = String::new();
         for (name, description) in entries {
             out.push_str(format!("  {name:<width$}  {description}").trim_end());
@@ -667,24 +851,43 @@ impl IosShell {
         let trimmed = line.trim_start();
         let first = trimmed.split_whitespace().next().unwrap_or("");
         let after_first = trimmed.len() > first.len();
-        let (kind, body, negate) = if self.in_config() && first.eq_ignore_ascii_case("do") && after_first {
-            (GrammarKind::Priv, trimmed[first.len()..].trim_start(), false)
-        } else if self.in_config() && first.eq_ignore_ascii_case("no") && after_first {
-            (self.grammar_kind(), trimmed[first.len()..].trim_start(), true)
-        } else {
-            (self.grammar_kind(), trimmed, false)
-        };
-        ROLES.iter().find_map(|role| grammar(kind, *role).complete(body, negate))
+        let (kind, body, negate) =
+            if self.in_config() && first.eq_ignore_ascii_case("do") && after_first {
+                (
+                    GrammarKind::Priv,
+                    trimmed[first.len()..].trim_start(),
+                    false,
+                )
+            } else if self.in_config() && first.eq_ignore_ascii_case("no") && after_first {
+                (
+                    self.grammar_kind(),
+                    trimmed[first.len()..].trim_start(),
+                    true,
+                )
+            } else {
+                (self.grammar_kind(), trimmed, false)
+            };
+        ROLES
+            .iter()
+            .find_map(|role| grammar(kind, *role).complete(body, negate))
     }
 }
 
 /// Run one access-list entry (`permit ...`, `deny ...`, `remark ...`) against
 /// the list `name`, as typed after a numbered `access-list N`.
 pub(crate) fn run_acl_entry(cx: &mut Cx, extended: bool, name: &str, entry: &str, negate: bool) {
-    let kind = if extended { GrammarKind::AclExt } else { GrammarKind::AclStd };
+    let kind = if extended {
+        GrammarKind::AclExt
+    } else {
+        GrammarKind::AclStd
+    };
     let saved = std::mem::replace(
         &mut cx.sh.mode,
-        if extended { Mode::AclExt(name.to_string()) } else { Mode::AclStd(name.to_string()) },
+        if extended {
+            Mode::AclExt(name.to_string())
+        } else {
+            Mode::AclStd(name.to_string())
+        },
     );
     match grammar(kind, cx.n.model.role).parse(entry, negate) {
         Parsed::Ok { run, args } => run(cx, &args),
@@ -719,17 +922,26 @@ fn error_reply(parsed: Parsed<Handler>, line: &str, column: usize) -> Reply {
         Parsed::Ambiguous => format!("% Ambiguous command:  \"{line}\"\n"),
         Parsed::Incomplete => "% Incomplete command.\n\n".to_string(),
         Parsed::Invalid { at } => {
-            format!("{}^\n% Invalid input detected at '^' marker.\n\n", " ".repeat(column + at))
+            format!(
+                "{}^\n% Invalid input detected at '^' marker.\n\n",
+                " ".repeat(column + at)
+            )
         }
         Parsed::Empty | Parsed::Ok { .. } => String::new(),
     };
-    Reply { out, error: true, ..Reply::default() }
+    Reply {
+        out,
+        error: true,
+        ..Reply::default()
+    }
 }
 
 /// Split `show ... | include x` into the command and the modifier text.
 fn split_modifier(line: &str) -> (&str, Option<&str>) {
     match line.split_once('|') {
-        Some((command, modifier)) if !command.trim().is_empty() => (command.trim_end(), Some(modifier.trim())),
+        Some((command, modifier)) if !command.trim().is_empty() => {
+            (command.trim_end(), Some(modifier.trim()))
+        }
         _ => (line, None),
     }
 }
@@ -750,7 +962,8 @@ impl OutputFilter {
         if word.is_empty() || pattern.is_empty() {
             return Err("% Incomplete command.\n\n".to_string());
         }
-        let regex = Regex::new(pattern).ok_or_else(|| "% Invalid regular expression\n".to_string())?;
+        let regex =
+            Regex::new(pattern).ok_or_else(|| "% Invalid regular expression\n".to_string())?;
         let is = |full: &str| crate::util::text::is_abbrev(word, full);
         Ok(if is("include") {
             OutputFilter::Include(regex)
@@ -790,7 +1003,10 @@ impl OutputFilter {
                 out
             }
             OutputFilter::Count(re) => {
-                return format!("Number of lines which match regexp = {}\n", lines.filter(|l| re.is_match(l)).count());
+                return format!(
+                    "Number of lines which match regexp = {}\n",
+                    lines.filter(|l| re.is_match(l)).count()
+                );
             }
         };
         let mut out = kept.join("\n");
@@ -818,17 +1034,33 @@ mod tests {
     #[test]
     fn output_filters() {
         let text = "interface Vlan1\n ip address 10.0.0.1 255.0.0.0\n!\nrouter ospf 1\n network 10.0.0.0 0.0.0.255 area 0\n!\n";
-        let apply = |m: &str| OutputFilter::parse(m).map(|f| f.apply(text)).unwrap_or_else(|e| e);
+        let apply = |m: &str| {
+            OutputFilter::parse(m)
+                .map(|f| f.apply(text))
+                .unwrap_or_else(|e| e)
+        };
         assert_eq!(apply("include ospf"), "router ospf 1\n");
         assert_eq!(apply("i ^router"), "router ospf 1\n");
         assert_eq!(apply("exclude 10|!"), "interface Vlan1\nrouter ospf 1\n");
-        assert_eq!(apply("begin router"), "router ospf 1\n network 10.0.0.0 0.0.0.255 area 0\n!\n");
-        assert_eq!(apply("section ospf"), "router ospf 1\n network 10.0.0.0 0.0.0.255 area 0\n");
-        assert_eq!(apply("count 10\\.0"), "Number of lines which match regexp = 2\n");
+        assert_eq!(
+            apply("begin router"),
+            "router ospf 1\n network 10.0.0.0 0.0.0.255 area 0\n!\n"
+        );
+        assert_eq!(
+            apply("section ospf"),
+            "router ospf 1\n network 10.0.0.0 0.0.0.255 area 0\n"
+        );
+        assert_eq!(
+            apply("count 10\\.0"),
+            "Number of lines which match regexp = 2\n"
+        );
         assert!(apply("include").starts_with("% Incomplete"));
         assert!(apply("frobnicate x").starts_with("% Invalid input"));
         assert!(apply("include (x").starts_with("% Invalid regular"));
-        assert_eq!(split_modifier("show run | include foo"), ("show run", Some("include foo")));
+        assert_eq!(
+            split_modifier("show run | include foo"),
+            ("show run", Some("include foo"))
+        );
         assert_eq!(split_modifier("show run"), ("show run", None));
     }
 }

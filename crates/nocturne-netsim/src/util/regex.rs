@@ -9,13 +9,20 @@ use std::cell::Cell;
 enum Node {
     Char(char),
     Any,
-    Class { set: Vec<(char, char)>, negated: bool },
+    Class {
+        set: Vec<(char, char)>,
+        negated: bool,
+    },
     Start,
     End,
     Delim,
     Cat(Vec<Node>),
     Alt(Vec<Node>),
-    Repeat { inner: Box<Node>, min: u32, many: bool },
+    Repeat {
+        inner: Box<Node>,
+        min: u32,
+        many: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +43,11 @@ impl Regex {
         if chars.len() > MAX_PATTERN {
             return None;
         }
-        let mut parser = Parser { chars: &chars, pos: 0, depth: 0 };
+        let mut parser = Parser {
+            chars: &chars,
+            pos: 0,
+            depth: 0,
+        };
         let root = parser.alternation()?;
         (parser.pos == chars.len()).then_some(Regex { root })
     }
@@ -66,7 +77,11 @@ impl Parser<'_> {
             self.pos += 1;
             branches.push(self.sequence()?);
         }
-        Some(if branches.len() == 1 { branches.remove(0) } else { Node::Alt(branches) })
+        Some(if branches.len() == 1 {
+            branches.remove(0)
+        } else {
+            Node::Alt(branches)
+        })
     }
 
     fn sequence(&mut self) -> Option<Node> {
@@ -93,7 +108,11 @@ impl Parser<'_> {
         while matches!(self.peek(), Some('*' | '+' | '?')) {
             self.pos += 1;
         }
-        Node::Repeat { inner: Box::new(atom), min, many }
+        Node::Repeat {
+            inner: Box::new(atom),
+            min,
+            many,
+        }
     }
 
     fn atom(&mut self) -> Option<Node> {
@@ -159,7 +178,13 @@ fn is_delim(c: char) -> bool {
 }
 
 /// Match `node` at `pos`, calling `k` with every end position until it accepts.
-fn run(node: &Node, text: &[char], pos: usize, budget: &Cell<u32>, k: &mut dyn FnMut(usize) -> bool) -> bool {
+fn run(
+    node: &Node,
+    text: &[char],
+    pos: usize,
+    budget: &Cell<u32>,
+    k: &mut dyn FnMut(usize) -> bool,
+) -> bool {
     let left = budget.get();
     if left == 0 {
         return false;
@@ -175,7 +200,8 @@ fn run(node: &Node, text: &[char], pos: usize, budget: &Cell<u32>, k: &mut dyn F
         Node::Start => pos == 0 && k(pos),
         Node::End => pos == text.len() && k(pos),
         Node::Delim => {
-            (pos == 0 || pos == text.len()) && k(pos) || text.get(pos).is_some_and(|c| is_delim(*c)) && k(pos + 1)
+            (pos == 0 || pos == text.len()) && k(pos)
+                || text.get(pos).is_some_and(|c| is_delim(*c)) && k(pos + 1)
         }
         Node::Cat(items) => run_seq(items, text, pos, budget, k),
         Node::Alt(branches) => branches.iter().any(|b| run(b, text, pos, budget, k)),
@@ -183,10 +209,18 @@ fn run(node: &Node, text: &[char], pos: usize, budget: &Cell<u32>, k: &mut dyn F
     }
 }
 
-fn run_seq(items: &[Node], text: &[char], pos: usize, budget: &Cell<u32>, k: &mut dyn FnMut(usize) -> bool) -> bool {
+fn run_seq(
+    items: &[Node],
+    text: &[char],
+    pos: usize,
+    budget: &Cell<u32>,
+    k: &mut dyn FnMut(usize) -> bool,
+) -> bool {
     match items.split_first() {
         None => k(pos),
-        Some((first, rest)) => run(first, text, pos, budget, &mut |next| run_seq(rest, text, next, budget, k)),
+        Some((first, rest)) => run(first, text, pos, budget, &mut |next| {
+            run_seq(rest, text, next, budget, k)
+        }),
     }
 }
 
@@ -205,7 +239,11 @@ fn run_repeat(
         if next == pos {
             return false;
         }
-        if many { run_repeat(inner, min.saturating_sub(1), true, text, next, budget, k) } else { k(next) }
+        if many {
+            run_repeat(inner, min.saturating_sub(1), true, text, next, budget, k)
+        } else {
+            k(next)
+        }
     });
     more || (min == 0 && k(pos))
 }

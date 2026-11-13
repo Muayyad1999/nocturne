@@ -20,7 +20,10 @@ pub(crate) fn vlan_ports(node: &Node, vlan: u16) -> Vec<IfId> {
             id.is_physical()
                 && cfg.channel_group.is_none()
                 && !node.is_trunk(**id)
-                && cfg.l2.as_ref().is_some_and(|sw| sw.access_vlan == vlan || sw.voice_vlan == Some(vlan))
+                && cfg
+                    .l2
+                    .as_ref()
+                    .is_some_and(|sw| sw.access_vlan == vlan || sw.voice_vlan == Some(vlan))
         })
         .map(|(id, _)| *id)
         .collect()
@@ -33,7 +36,9 @@ pub(crate) fn vlan(node: &Node, brief: bool, only: Option<u16>) -> String {
         return format!("VLAN id {id} not found in current VLAN database\n");
     }
     let mut out = String::from("\nVLAN Name                             Status    Ports\n");
-    out.push_str("---- -------------------------------- --------- -------------------------------\n");
+    out.push_str(
+        "---- -------------------------------- --------- -------------------------------\n",
+    );
     let wanted = |id: &u16| only.is_none_or(|o| o == *id);
     for (id, vlan) in node.cfg.vlans.iter().filter(|(id, _)| wanted(id)) {
         let status = if vlan.active { "active" } else { "suspended" };
@@ -57,23 +62,44 @@ pub(crate) fn vlan(node: &Node, brief: bool, only: Option<u16>) -> String {
         }
     }
     if only.is_none() {
-        for (id, name) in [(1002, "fddi-default"), (1003, "token-ring-default"), (1004, "fddinet-default"), (1005, "trnet-default")] {
+        for (id, name) in [
+            (1002, "fddi-default"),
+            (1003, "token-ring-default"),
+            (1004, "fddinet-default"),
+            (1005, "trnet-default"),
+        ] {
             let _ = writeln!(out, "{id:<4} {name:<32} act/unsup ");
         }
     }
     if brief {
         return out;
     }
-    out.push_str("\nVLAN Type  SAID       MTU   Parent RingNo BridgeNo Stp  BrdgMode Trans1 Trans2\n");
-    out.push_str("---- ----- ---------- ----- ------ ------ -------- ---- -------- ------ ------\n");
+    out.push_str(
+        "\nVLAN Type  SAID       MTU   Parent RingNo BridgeNo Stp  BrdgMode Trans1 Trans2\n",
+    );
+    out.push_str(
+        "---- ----- ---------- ----- ------ ------ -------- ---- -------- ------ ------\n",
+    );
     for id in node.cfg.vlans.keys().filter(|id| wanted(id)) {
-        let _ = writeln!(out, "{id:<4} enet  {:<10} 1500  -      -      -        -    -        0      0   ", 100_000 + u32::from(*id));
+        let _ = writeln!(
+            out,
+            "{id:<4} enet  {:<10} 1500  -      -      -        -    -        0      0   ",
+            100_000 + u32::from(*id)
+        );
     }
     if only.is_none() {
-        out.push_str("1002 fddi  101002     1500  -      -      -        -    -        0      0   \n");
-        out.push_str("1003 tr    101003     1500  -      -      -        -    -        0      0   \n");
-        out.push_str("1004 fdnet 101004     1500  -      -      -        ieee -        0      0   \n");
-        out.push_str("1005 trnet 101005     1500  -      -      -        ibm  -        0      0   \n");
+        out.push_str(
+            "1002 fddi  101002     1500  -      -      -        -    -        0      0   \n",
+        );
+        out.push_str(
+            "1003 tr    101003     1500  -      -      -        -    -        0      0   \n",
+        );
+        out.push_str(
+            "1004 fdnet 101004     1500  -      -      -        ieee -        0      0   \n",
+        );
+        out.push_str(
+            "1005 trnet 101005     1500  -      -      -        ibm  -        0      0   \n",
+        );
     }
     out.push_str("\nRemote SPAN VLANs\n------------------------------------------------------------------------------\n\n\n");
     out.push_str("Primary Secondary Type              Ports\n------- --------- ----------------- ------------------------------------------\n\n");
@@ -81,8 +107,11 @@ pub(crate) fn vlan(node: &Node, brief: bool, only: Option<u16>) -> String {
 }
 
 pub(crate) fn mac_table(node: &Node, now: SimTime, a: &Args) -> String {
-    let (only_vlan, only_port, only_mac) = (a.num("vlan").map(|v| v as u16), a.iface("if"), a.mac("mac"));
-    let mut out = String::from("          Mac Address Table\n-------------------------------------------\n\n");
+    let (only_vlan, only_port, only_mac) =
+        (a.num("vlan").map(|v| v as u16), a.iface("if"), a.mac("mac"));
+    let mut out = String::from(
+        "          Mac Address Table\n-------------------------------------------\n\n",
+    );
     out.push_str("Vlan    Mac Address       Type        Ports\n----    -----------       --------    -----\n");
     let mut count = 0;
     for (vlan, mac, entry) in node.macs.rows(now) {
@@ -94,7 +123,11 @@ pub(crate) fn mac_table(node: &Node, now: SimTime, a: &Args) -> String {
         if keep {
             count += 1;
             let kind = if entry.is_static { "STATIC" } else { "DYNAMIC" };
-            let _ = writeln!(out, "{vlan:>4}    {mac}    {kind:<12}{}", entry.port.short());
+            let _ = writeln!(
+                out,
+                "{vlan:>4}    {mac}    {kind:<12}{}",
+                entry.port.short()
+            );
         }
     }
     let _ = writeln!(out, "Total Mac Addresses for this criterion: {count}");
@@ -106,19 +139,45 @@ fn vlan_label(vlan: u16) -> String {
 }
 
 fn port_type(node: &Node, vlan: u16, port: IfId) -> String {
-    let half = node.members_of(port).first().and_then(|m| node.ifs.get(m)).is_some_and(|s| !s.full_duplex);
-    let edge = node.stp.vlans.get(&vlan).and_then(|v| v.ports.get(&port)).is_some_and(|p| p.edge);
-    format!("{}{}", if half { "Shr" } else { "P2p" }, if edge { " Edge" } else { "" })
+    let half = node
+        .members_of(port)
+        .first()
+        .and_then(|m| node.ifs.get(m))
+        .is_some_and(|s| !s.full_duplex);
+    let edge = node
+        .stp
+        .vlans
+        .get(&vlan)
+        .and_then(|v| v.ports.get(&port))
+        .is_some_and(|p| p.edge);
+    format!(
+        "{}{}",
+        if half { "Shr" } else { "P2p" },
+        if edge { " Edge" } else { "" }
+    )
 }
 
-pub(crate) fn spanning_tree(node: &Node, fx: &Fx, only_vlan: Option<u16>, only_port: Option<IfId>) -> String {
+pub(crate) fn spanning_tree(
+    node: &Node,
+    fx: &Fx,
+    only_vlan: Option<u16>,
+    only_port: Option<IfId>,
+) -> String {
     let timers = node.stp_timers(fx);
-    let protocol = if node.cfg.stp.mode == StpMode::RapidPvst { "rstp" } else { "ieee" };
+    let protocol = if node.cfg.stp.mode == StpMode::RapidPvst {
+        "rstp"
+    } else {
+        "ieee"
+    };
     // Rapid mode still advertises the classic forward delay.
     let (hello, max_age, forward) = (
         timers.hello / 1_000_000,
         timers.max_age / 1_000_000,
-        if node.cfg.stp.mode == StpMode::RapidPvst { 15 } else { (timers.forward_delay / 1_000_000).max(1) },
+        if node.cfg.stp.mode == StpMode::RapidPvst {
+            15
+        } else {
+            (timers.forward_delay / 1_000_000).max(1)
+        },
     );
     let mut out = String::new();
     if let Some(vlan) = only_vlan
@@ -129,7 +188,9 @@ pub(crate) fn spanning_tree(node: &Node, fx: &Fx, only_vlan: Option<u16>, only_p
     if let Some(port) = only_port {
         // One line per VLAN the port takes part in.
         out.push_str("\nVlan                Role Sts Cost      Prio.Nbr Type\n");
-        out.push_str("------------------- ---- --- --------- -------- --------------------------------\n");
+        out.push_str(
+            "------------------- ---- --- --------- -------- --------------------------------\n",
+        );
         let mut any = false;
         for (vlan, instance) in &node.stp.vlans {
             if let Some(p) = instance.ports.get(&port) {
@@ -147,9 +208,18 @@ pub(crate) fn spanning_tree(node: &Node, fx: &Fx, only_vlan: Option<u16>, only_p
                 );
             }
         }
-        return if any { out } else { "no spanning tree info available for this interface\n".to_string() };
+        return if any {
+            out
+        } else {
+            "no spanning tree info available for this interface\n".to_string()
+        };
     }
-    for (vlan, instance) in node.stp.vlans.iter().filter(|(v, _)| only_vlan.is_none_or(|o| o == **v)) {
+    for (vlan, instance) in node
+        .stp
+        .vlans
+        .iter()
+        .filter(|(v, _)| only_vlan.is_none_or(|o| o == **v))
+    {
         let own = node.bridge_id(*vlan);
         let _ = writeln!(out, "\n{}", vlan_label(*vlan));
         let _ = writeln!(out, "  Spanning tree enabled protocol {protocol}");
@@ -159,10 +229,18 @@ pub(crate) fn spanning_tree(node: &Node, fx: &Fx, only_vlan: Option<u16>, only_p
             None => out.push_str("             This bridge is the root\n"),
             Some(port) => {
                 let _ = writeln!(out, "             Cost        {}", instance.root_cost);
-                let _ = writeln!(out, "             Port        {} ({})", node.stp_port_id(port) & 0xff, port.name());
+                let _ = writeln!(
+                    out,
+                    "             Port        {} ({})",
+                    node.stp_port_id(port) & 0xff,
+                    port.name()
+                );
             }
         }
-        let _ = writeln!(out, "             Hello Time  {hello:>2} sec  Max Age {max_age} sec  Forward Delay {forward} sec\n");
+        let _ = writeln!(
+            out,
+            "             Hello Time  {hello:>2} sec  Max Age {max_age} sec  Forward Delay {forward} sec\n"
+        );
         let _ = writeln!(
             out,
             "  Bridge ID  Priority    {}  (priority {} sys-id-ext {vlan})",
@@ -170,10 +248,15 @@ pub(crate) fn spanning_tree(node: &Node, fx: &Fx, only_vlan: Option<u16>, only_p
             node.cfg.stp.priority_of(*vlan)
         );
         let _ = writeln!(out, "             Address     {}", own.mac);
-        let _ = writeln!(out, "             Hello Time  {hello:>2} sec  Max Age {max_age} sec  Forward Delay {forward} sec");
+        let _ = writeln!(
+            out,
+            "             Hello Time  {hello:>2} sec  Max Age {max_age} sec  Forward Delay {forward} sec"
+        );
         out.push_str("             Aging Time  300 sec\n\n");
         out.push_str("Interface           Role Sts Cost      Prio.Nbr Type\n");
-        out.push_str("------------------- ---- --- --------- -------- --------------------------------\n");
+        out.push_str(
+            "------------------- ---- --- --------- -------- --------------------------------\n",
+        );
         for (port, p) in &instance.ports {
             let id = node.stp_port_id(*port);
             let _ = writeln!(
@@ -196,18 +279,49 @@ pub(crate) fn spanning_tree(node: &Node, fx: &Fx, only_vlan: Option<u16>, only_p
 }
 
 pub(crate) fn spanning_tree_summary(node: &Node) -> String {
-    let mode = if node.cfg.stp.mode == StpMode::RapidPvst { "rapid-pvst" } else { "pvst" };
-    let roots: Vec<String> =
-        node.stp.vlans.iter().filter(|(_, v)| v.root_port.is_none()).map(|(id, _)| vlan_label(*id)).collect();
+    let mode = if node.cfg.stp.mode == StpMode::RapidPvst {
+        "rapid-pvst"
+    } else {
+        "pvst"
+    };
+    let roots: Vec<String> = node
+        .stp
+        .vlans
+        .iter()
+        .filter(|(_, v)| v.root_port.is_none())
+        .map(|(id, _)| vlan_label(*id))
+        .collect();
     let word = |on: bool| if on { "enabled" } else { "disabled" };
     let mut out = format!("Switch is in {mode} mode\n");
-    let _ = writeln!(out, "Root bridge for: {}", if roots.is_empty() { "none".to_string() } else { roots.join(", ") });
+    let _ = writeln!(
+        out,
+        "Root bridge for: {}",
+        if roots.is_empty() {
+            "none".to_string()
+        } else {
+            roots.join(", ")
+        }
+    );
     out.push_str("Extended system ID           is enabled\n");
-    let _ = writeln!(out, "Portfast Default             is {}", word(node.cfg.stp.portfast_default));
-    let _ = writeln!(out, "PortFast BPDU Guard Default  is {}", word(node.cfg.stp.bpduguard_default));
-    out.push_str("Portfast BPDU Filter Default is disabled\nLoopguard Default            is disabled\n");
-    out.push_str("EtherChannel misconfig guard is enabled\nUplinkFast                   is disabled\n");
-    out.push_str("BackboneFast                 is disabled\nConfigured Pathcost method used is short\n\n");
+    let _ = writeln!(
+        out,
+        "Portfast Default             is {}",
+        word(node.cfg.stp.portfast_default)
+    );
+    let _ = writeln!(
+        out,
+        "PortFast BPDU Guard Default  is {}",
+        word(node.cfg.stp.bpduguard_default)
+    );
+    out.push_str(
+        "Portfast BPDU Filter Default is disabled\nLoopguard Default            is disabled\n",
+    );
+    out.push_str(
+        "EtherChannel misconfig guard is enabled\nUplinkFast                   is disabled\n",
+    );
+    out.push_str(
+        "BackboneFast                 is disabled\nConfigured Pathcost method used is short\n\n",
+    );
     out.push_str("Name                   Blocking Listening Learning Forwarding STP Active\n");
     out.push_str("---------------------- -------- --------- -------- ---------- ----------\n");
     let mut totals = [0usize; 4];
@@ -274,12 +388,19 @@ pub(crate) fn etherchannel_summary(node: &Node) -> String {
     let mut out = String::from(
         "Flags:  D - down        P - bundled in port-channel\n        I - stand-alone s - suspended\n        H - Hot-standby (LACP only)\n        R - Layer3      S - Layer2\n        U - in use      f - failed to allocate aggregator\n\n        M - not in use, minimum links not met\n        u - unsuitable for bundling\n        w - waiting to be aggregated\n        d - default port\n\n\n",
     );
-    let groups: Vec<u32> =
-        node.cfg.interfaces.keys().filter(|id| id.kind == IfKind::PortChannel).map(|id| id.number()).collect();
+    let groups: Vec<u32> = node
+        .cfg
+        .interfaces
+        .keys()
+        .filter(|id| id.kind == IfKind::PortChannel)
+        .map(|id| id.number())
+        .collect();
     let _ = writeln!(out, "Number of channel-groups in use: {}", groups.len());
     let _ = writeln!(out, "Number of aggregators:           {}\n", groups.len());
     out.push_str("Group  Port-channel  Protocol    Ports\n");
-    out.push_str("------+-------------+-----------+-----------------------------------------------\n");
+    out.push_str(
+        "------+-------------+-----------+-----------------------------------------------\n",
+    );
     for group in groups {
         let po = IfId::port_channel(group);
         let members = node.cfg.channel_members(group);
@@ -288,12 +409,18 @@ pub(crate) fn etherchannel_summary(node: &Node) -> String {
             .and_then(|m| node.cfg.iface(*m))
             .and_then(|c| c.channel_group)
             .map_or("-", |(_, mode)| mode.protocol());
+        let protocol = if protocol == "-" { " -" } else { protocol };
         let flags = if node.is_up(po) { "SU" } else { "SD" };
-        let mut row = format!("{group:<7}{:<16}{protocol:^9} ", format!("{}({flags})", po.short()));
+        let mut row = format!(
+            "{group:<7}{:<16}{protocol:<10}",
+            format!("{}({flags})", po.short())
+        );
         for member in members {
             let state = node.ifs.get(&member);
             let flag = match state {
                 Some(s) if s.bundled => "P",
+                // No partner answered the negotiation: the port waits outside the bundle.
+                Some(s) if s.standalone => "I",
                 Some(s) if s.carrier => "s",
                 _ => "D",
             };
@@ -324,12 +451,19 @@ fn violation_word(violation: Violation) -> &'static str {
 }
 
 pub(crate) fn port_security(node: &Node) -> String {
-    let mut out = String::from("Secure Port  MaxSecureAddr  CurrentAddr  SecurityViolation  Security Action\n");
+    let mut out = String::from(
+        "Secure Port  MaxSecureAddr  CurrentAddr  SecurityViolation  Security Action\n",
+    );
     out.push_str("                (Count)       (Count)          (Count)\n");
     out.push_str("---------------------------------------------------------------------------\n");
     let mut total = 0usize;
     for port in secure_ports(node) {
-        let (Some(sw), Some(state)) = (node.cfg.iface(port).and_then(|c| c.l2.as_ref()), node.ifs.get(&port)) else { continue };
+        let (Some(sw), Some(state)) = (
+            node.cfg.iface(port).and_then(|c| c.l2.as_ref()),
+            node.ifs.get(&port),
+        ) else {
+            continue;
+        };
         let ps = &sw.port_security;
         let current = ps.macs.len() + state.secure_macs.len();
         total += current.saturating_sub(1);
@@ -344,7 +478,10 @@ pub(crate) fn port_security(node: &Node) -> String {
         );
     }
     out.push_str("---------------------------------------------------------------------------\n");
-    let _ = writeln!(out, "Total Addresses in System (excluding one mac per port)     : {total}");
+    let _ = writeln!(
+        out,
+        "Total Addresses in System (excluding one mac per port)     : {total}"
+    );
     out.push_str("Max Addresses limit in System (excluding one mac per port) : 4096\n");
     out
 }
@@ -360,19 +497,43 @@ pub(crate) fn port_security_interface(node: &Node, port: IfId) -> Option<String>
         (true, false, false) => "Secure-down",
     };
     let sticky = ps.macs.iter().filter(|(_, sticky)| *sticky).count();
-    let last = state.last_secure_src.map_or("0000.0000.0000:0".to_string(), |(mac, vlan)| format!("{mac}:{vlan}"));
+    let last = state
+        .last_secure_src
+        .map_or("0000.0000.0000:0".to_string(), |(mac, vlan)| {
+            format!("{mac}:{vlan}")
+        });
     let mut out = String::new();
-    let _ = writeln!(out, "Port Security              : {}", if ps.enabled { "Enabled" } else { "Disabled" });
+    let _ = writeln!(
+        out,
+        "Port Security              : {}",
+        if ps.enabled { "Enabled" } else { "Disabled" }
+    );
     let _ = writeln!(out, "Port Status                : {status}");
-    let _ = writeln!(out, "Violation Mode             : {}", violation_word(ps.violation));
+    let _ = writeln!(
+        out,
+        "Violation Mode             : {}",
+        violation_word(ps.violation)
+    );
     out.push_str("Aging Time                 : 0 mins\nAging Type                 : Absolute\n");
     out.push_str("SecureStatic Address Aging : Disabled\n");
     let _ = writeln!(out, "Maximum MAC Addresses      : {}", ps.maximum);
-    let _ = writeln!(out, "Total MAC Addresses        : {}", ps.macs.len() + state.secure_macs.len());
-    let _ = writeln!(out, "Configured MAC Addresses   : {}", ps.macs.len() - sticky);
+    let _ = writeln!(
+        out,
+        "Total MAC Addresses        : {}",
+        ps.macs.len() + state.secure_macs.len()
+    );
+    let _ = writeln!(
+        out,
+        "Configured MAC Addresses   : {}",
+        ps.macs.len() - sticky
+    );
     let _ = writeln!(out, "Sticky MAC Addresses       : {sticky}");
     let _ = writeln!(out, "Last Source Address:Vlan   : {last}");
-    let _ = writeln!(out, "Security Violation Count   : {}", state.security_violations);
+    let _ = writeln!(
+        out,
+        "Security Violation Count   : {}",
+        state.security_violations
+    );
     Some(out)
 }
 
@@ -384,36 +545,79 @@ pub(crate) fn port_security_address(node: &Node) -> String {
     out.push_str("----    -----------       ----                          -----   -------------\n");
     let mut total = 0usize;
     for port in secure_ports(node) {
-        let (Some(sw), Some(state)) = (node.cfg.iface(port).and_then(|c| c.l2.as_ref()), node.ifs.get(&port)) else { continue };
+        let (Some(sw), Some(state)) = (
+            node.cfg.iface(port).and_then(|c| c.l2.as_ref()),
+            node.ifs.get(&port),
+        ) else {
+            continue;
+        };
         let mut rows: Vec<(u16, String, &str)> = Vec::new();
         for (mac, sticky) in &sw.port_security.macs {
-            rows.push((sw.access_vlan, mac.to_string(), if *sticky { "SecureSticky" } else { "SecureConfigured" }));
+            rows.push((
+                sw.access_vlan,
+                mac.to_string(),
+                if *sticky {
+                    "SecureSticky"
+                } else {
+                    "SecureConfigured"
+                },
+            ));
         }
         for (mac, vlan) in &state.secure_macs {
             rows.push((*vlan, mac.to_string(), "SecureDynamic"));
         }
         total += rows.len().saturating_sub(1);
         for (vlan, mac, kind) in rows {
-            let _ = writeln!(out, "{vlan:>4}    {mac}    {kind:<30}{:<8}     -", port.short());
+            let _ = writeln!(
+                out,
+                "{vlan:>4}    {mac}    {kind:<30}{:<8}     -",
+                port.short()
+            );
         }
     }
     out.push_str("-----------------------------------------------------------------------------\n");
-    let _ = writeln!(out, "Total Addresses in System (excluding one mac per port)     : {total}");
+    let _ = writeln!(
+        out,
+        "Total Addresses in System (excluding one mac per port)     : {total}"
+    );
     out.push_str("Max Addresses limit in System (excluding one mac per port) : 4096\n");
     out
 }
 
 pub(crate) fn errdisable_recovery(node: &Node) -> String {
-    let mut out = String::from("ErrDisable Reason            Timer Status\n-----------------            --------------\n");
-    for reason in ["arp-inspection", "bpduguard", "channel-misconfig (STP)", "dhcp-rate-limit", "link-flap", "psecure-violation", "security-violation", "udld"] {
+    let mut out = String::from(
+        "ErrDisable Reason            Timer Status\n-----------------            --------------\n",
+    );
+    for reason in [
+        "arp-inspection",
+        "bpduguard",
+        "channel-misconfig (STP)",
+        "dhcp-rate-limit",
+        "link-flap",
+        "psecure-violation",
+        "security-violation",
+        "udld",
+    ] {
         // Recovery timers are stored but not run: ports recover by shutdown / no shutdown.
         let _ = writeln!(out, "{reason:<29}Disabled");
     }
-    out.push_str("\nTimer interval: 300 seconds\n\nInterfaces that will be enabled at the next timeout:\n\n");
-    let disabled: Vec<String> =
-        node.ifs.iter().filter_map(|(id, s)| s.errdisabled.map(|cause| format!("{} ({cause})", id.short()))).collect();
+    out.push_str(
+        "\nTimer interval: 300 seconds\n\nInterfaces that will be enabled at the next timeout:\n\n",
+    );
+    let disabled: Vec<String> = node
+        .ifs
+        .iter()
+        .filter_map(|(id, s)| {
+            s.errdisabled
+                .map(|cause| format!("{} ({cause})", id.short()))
+        })
+        .collect();
     if !disabled.is_empty() {
-        let _ = writeln!(out, "Err-disabled now (manual recovery needed): {}", disabled.join(", "));
+        let _ = writeln!(
+            out,
+            "Err-disabled now (manual recovery needed): {}",
+            disabled.join(", ")
+        );
     }
     out
 }
@@ -426,14 +630,26 @@ pub(crate) fn vtp_status(node: &Node) -> String {
     };
     let mut out = String::new();
     out.push_str("VTP Version capable             : 1 to 3\nVTP version running             : 1\n");
-    let _ = writeln!(out, "VTP Domain Name                 : {}", node.cfg.vtp.domain);
-    out.push_str("VTP Pruning Mode                : Disabled\nVTP Traps Generation            : Disabled\n");
+    let _ = writeln!(
+        out,
+        "VTP Domain Name                 : {}",
+        node.cfg.vtp.domain
+    );
+    out.push_str(
+        "VTP Pruning Mode                : Disabled\nVTP Traps Generation            : Disabled\n",
+    );
     let _ = writeln!(out, "Device ID                       : {}", node.base_mac);
     out.push_str("Configuration last modified by 0.0.0.0 at 0-0-00 00:00:00\n");
-    out.push_str("Local updater ID is 0.0.0.0 (no valid interface found)\n\nFeature VLAN:\n--------------\n");
+    out.push_str(
+        "Local updater ID is 0.0.0.0 (no valid interface found)\n\nFeature VLAN:\n--------------\n",
+    );
     let _ = writeln!(out, "VTP Operating Mode                : {mode}");
     out.push_str("Maximum VLANs supported locally   : 1005\n");
-    let _ = writeln!(out, "Number of existing VLANs          : {}", node.cfg.vlans.len() + 4);
+    let _ = writeln!(
+        out,
+        "Number of existing VLANs          : {}",
+        node.cfg.vlans.len() + 4
+    );
     out.push_str("Configuration Revision            : 0\n");
     out.push_str("MD5 digest                        : 0x57 0xCD 0x40 0x65 0x63 0x59 0x47 0xBD \n");
     out.push_str("                                    0x56 0x9D 0x4A 0x3E 0xA5 0x69 0x35 0xBC \n");

@@ -37,7 +37,10 @@ impl Source {
     }
 
     pub(crate) fn is_ospf(self) -> bool {
-        matches!(self, Source::OspfIntra | Source::OspfInter | Source::OspfExternal)
+        matches!(
+            self,
+            Source::OspfIntra | Source::OspfInter | Source::OspfExternal
+        )
     }
 }
 
@@ -55,6 +58,20 @@ pub(crate) struct Route {
     pub(crate) metric: u32,
     pub(crate) hops: Vec<NextHop>,
     pub(crate) since: SimTime,
+}
+
+impl Route {
+    /// Route code with the candidate-default star where it belongs: `S*`, `O*E2`.
+    pub(crate) fn code(&self) -> String {
+        let base = self.source.code();
+        if self.prefix.len != 0 {
+            return base.to_string();
+        }
+        match base.split_once(' ') {
+            Some((head, tail)) => format!("{head}*{tail}"),
+            None => format!("{base}*"),
+        }
+    }
 }
 
 /// Where a packet goes next: out of `iface`, to layer-2 neighbour `next_hop`.
@@ -112,10 +129,29 @@ impl Node {
     /// Recompute the routing table from every source of routes.
     pub(crate) fn rebuild_rib(&mut self, fx: &mut Fx) {
         let addrs = self.l3_addrs();
+        // What DHCP clients on our interfaces were told.
+        let leases: Vec<_> = self
+            .ifs
+            .values()
+            .filter(|s| s.up)
+            .filter_map(|s| s.dhcp.lease.as_ref())
+            .collect();
+        self.rib.dhcp_gateway = leases.iter().find_map(|l| l.gateway);
+        self.rib.dhcp_dns = leases.iter().flat_map(|l| l.dns.iter().copied()).collect();
         let mut candidates: Vec<Route> = Vec::new();
-        let route = |prefix, source, distance, metric, hops| Route { prefix, source, distance, metric, hops, since: fx.now };
+        let route = |prefix, source, distance, metric, hops| Route {
+            prefix,
+            source,
+            distance,
+            metric,
+            hops,
+            since: fx.now,
+        };
         for (iface, addr) in &addrs {
-            let hop = vec![NextHop { via: None, iface: Some(*iface) }];
+            let hop = vec![NextHop {
+                via: None,
+                iface: Some(*iface),
+            }];
             if addr.len < 32 {
                 candidates.push(route(addr.subnet(), Source::Connected, 0, 0, hop.clone()));
             }
@@ -127,15 +163,32 @@ impl Node {
             candidates.extend(self.rib.rip.iter().cloned());
         }
         // Without routing a device only knows its default gateway.
-        let gateway = if routing { None } else { self.cfg.default_gateway };
+        let gateway = if routing {
+            None
+        } else {
+            self.cfg.default_gateway
+        };
         for gw in gateway.into_iter().chain(self.rib.dhcp_gateway) {
             let distance = if Some(gw) == gateway { 1 } else { 254 };
-            candidates.push(route(Prefix::DEFAULT, Source::Static, distance, 0, vec![NextHop { via: Some(gw), iface: None }]));
+            candidates.push(route(
+                Prefix::DEFAULT,
+                Source::Static,
+                distance,
+                0,
+                vec![NextHop {
+                    via: Some(gw),
+                    iface: None,
+                }],
+            ));
         }
 
         // Static routes are only installed while their next hop resolves, and
         // may resolve through each other, so iterate to a fixed point.
-        let statics = if routing { self.cfg.static_routes.clone() } else { Vec::new() };
+        let statics = if routing {
+            self.cfg.static_routes.clone()
+        } else {
+            Vec::new()
+        };
         let mut installed = vec![false; statics.len()];
         loop {
             let table = select_best(&candidates);
@@ -144,11 +197,16 @@ impl Node {
                 if installed[i] {
                     continue;
                 }
-                let iface_ok = st.iface.is_none_or(|iface| self.is_up(iface) && self.is_l3(iface));
+                let iface_ok = st
+                    .iface
+                    .is_none_or(|iface| self.is_up(iface) && self.is_l3(iface));
                 let via_ok = match (st.via, st.iface) {
-                    (Some(via), None) => table
-                        .iter()
-                        .any(|r| r.prefix.len > 0 && r.prefix.contains(via) && r.prefix != st.prefix && r.source != Source::Local),
+                    (Some(via), None) => table.iter().any(|r| {
+                        r.prefix.len > 0
+                            && r.prefix.contains(via)
+                            && r.prefix != st.prefix
+                            && r.source != Source::Local
+                    }),
                     _ => true,
                 };
                 if iface_ok && via_ok {
@@ -159,7 +217,10 @@ impl Node {
                         Source::Static,
                         st.distance,
                         0,
-                        vec![NextHop { via: st.via, iface: st.iface }],
+                        vec![NextHop {
+                            via: st.via,
+                            iface: st.iface,
+                        }],
                     ));
                 }
             }
@@ -169,25 +230,29 @@ impl Node {
         }
 
         let mut best = select_best(&candidates);
-        // Keep the age of routes that did not change.
-        for r in &mut best {
-            if let Some(old) = self.rib.get(r.prefix)
-                && old.source == r.source
-                && old.hops == r.hops
-                && old.metric == r.metric
-            {
-                r.since = old.since;
-            }
+        // Keep the age of routes that did not change. RIP routes carry the
+        // time of the update that last confirmed them.
+        for r in best.iter_mut().filter(|r| r.source != Source::Rip) {
+            r.since = match self.rib.get(r.prefix) {
+                Some(old)
+                    if old.source == r.source && old.hops == r.hops && old.metric == r.metric =>
+                {
+                    old.since
+                }
+                _ => fx.now,
+            };
         }
         let changed = best.len() != self.rib.routes.len()
-            || best.iter().zip(&self.rib.routes).any(|(a, b)| (a.prefix, a.source, &a.hops, a.metric) != (b.prefix, b.source, &b.hops, b.metric));
+            || best.iter().zip(&self.rib.routes).any(|(a, b)| {
+                (a.prefix, a.source, &a.hops, a.metric) != (b.prefix, b.source, &b.hops, b.metric)
+            });
         self.rib.routes = best;
         self.rib.addrs = addrs;
         if changed {
             fx.changed = true;
             fx.cp_change = true;
             // Other protocols redistribute or advertise what is in the table.
-            fx.spf = true;
+            fx.spf |= self.cfg.ospf.is_some();
             self.rip_table_changed(fx);
         }
     }
@@ -201,7 +266,11 @@ impl Node {
         // Follow next hops that are themselves reached through another route.
         for _ in 0..8 {
             if let Some(iface) = iface {
-                return self.is_up(iface).then(|| Resolved { iface, next_hop: target, route: route.clone() });
+                return self.is_up(iface).then(|| Resolved {
+                    iface,
+                    next_hop: target,
+                    route: route.clone(),
+                });
             }
             let inner = self.rib.lookup(target)?;
             let inner_hop = pick_hop(inner, target)?;
@@ -257,7 +326,12 @@ fn select_best(candidates: &[Route]) -> Vec<Route> {
         }
     }
     // Most specific first, then by address: the order `lookup` relies on.
-    best.sort_by(|a, b| b.prefix.len.cmp(&a.prefix.len).then(a.prefix.net.cmp(&b.prefix.net)));
+    best.sort_by(|a, b| {
+        b.prefix
+            .len
+            .cmp(&a.prefix.len)
+            .then(a.prefix.net.cmp(&b.prefix.net))
+    });
     best
 }
 
@@ -272,7 +346,10 @@ mod tests {
             source,
             distance,
             metric,
-            hops: vec![NextHop { via: Some(Ipv4Addr::from(via)), iface: None }],
+            hops: vec![NextHop {
+                via: Some(Ipv4Addr::from(via)),
+                iface: None,
+            }],
             since: 0,
         }
     }
@@ -287,10 +364,16 @@ mod tests {
             r("0.0.0.0/0", Source::Static, 200, 0, [5, 5, 5, 5]),
             r("0.0.0.0/0", Source::OspfExternal, 110, 1, [6, 6, 6, 6]),
         ]);
-        let rib = Rib { routes: table, ..Rib::default() };
+        let rib = Rib {
+            routes: table,
+            ..Rib::default()
+        };
         let hit = rib.lookup(Ipv4Addr::new(10, 1, 2, 3)).unwrap();
         assert_eq!((hit.prefix.len, hit.hops.len()), (16, 2));
-        assert_eq!(rib.lookup(Ipv4Addr::new(10, 2, 0, 1)).unwrap().source, Source::OspfIntra);
+        assert_eq!(
+            rib.lookup(Ipv4Addr::new(10, 2, 0, 1)).unwrap().source,
+            Source::OspfIntra
+        );
         // The floating static loses to OSPF until OSPF withdraws its route.
         assert_eq!(rib.default_route().unwrap().source, Source::OspfExternal);
     }

@@ -18,7 +18,9 @@ pub(crate) const SERIAL_PORT: &str = "RS232";
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn name_prefix(kind: NodeKind) -> &'static str {
@@ -49,15 +51,27 @@ impl World {
         if model.kind == NodeKind::Cloud && self.node_by_name(prefix).is_none() {
             return prefix.to_string();
         }
-        (1..).map(|n| format!("{prefix}{n}")).find(|name| self.node_by_name(name).is_none()).unwrap_or_default()
+        (1..)
+            .map(|n| format!("{prefix}{n}"))
+            .find(|name| self.node_by_name(name).is_none())
+            .unwrap_or_default()
     }
 
     /// Create a node without booting it (callers fill in saved state first).
-    pub(crate) fn insert_node(&mut self, model_id: &str, name: Option<&str>, x: f32, y: f32) -> Result<NodeId, LabError> {
-        let model = catalog::model(model_id).ok_or_else(|| LabError::UnknownModel(model_id.to_string()))?;
+    pub(crate) fn insert_node(
+        &mut self,
+        model_id: &str,
+        name: Option<&str>,
+        x: f32,
+        y: f32,
+    ) -> Result<NodeId, LabError> {
+        let model =
+            catalog::model(model_id).ok_or_else(|| LabError::UnknownModel(model_id.to_string()))?;
         let name = match name {
             Some(name) if !valid_name(name) => return Err(LabError::InvalidName(name.to_string())),
-            Some(name) if self.node_by_name(name).is_some() => return Err(LabError::DuplicateName(name.to_string())),
+            Some(name) if self.node_by_name(name).is_some() => {
+                return Err(LabError::DuplicateName(name.to_string()));
+            }
             Some(name) => name.to_string(),
             None => self.unique_name(model),
         };
@@ -73,7 +87,13 @@ impl World {
         Ok(id)
     }
 
-    pub(crate) fn add_node(&mut self, model_id: &str, name: Option<&str>, x: f32, y: f32) -> Result<NodeId, LabError> {
+    pub(crate) fn add_node(
+        &mut self,
+        model_id: &str,
+        name: Option<&str>,
+        x: f32,
+        y: f32,
+    ) -> Result<NodeId, LabError> {
         let id = self.insert_node(model_id, name, x, y)?;
         self.boot(id);
         self.touch();
@@ -83,15 +103,26 @@ impl World {
 
     /// Is any control-plane process still working towards a stable state?
     pub(crate) fn converging(&self) -> bool {
-        self.nodes.values().any(|n| n.powered && (n.stp.converging() || n.ospf_converging() || n.dhcp_converging()))
+        self.nodes.values().any(|n| {
+            n.powered
+                && (n.stp.converging()
+                    || n.ospf_converging(self.now)
+                    || n.rip_converging(self.now)
+                    || n.hsrp_converging(self.now)
+                    || n.dhcp_converging())
+        })
     }
 
     pub(crate) fn remove_node(&mut self, id: NodeId) -> Result<(), LabError> {
         if !self.nodes.contains_key(&id) {
             return Err(LabError::UnknownNode(id));
         }
-        let links: Vec<LinkId> =
-            self.links.iter().filter(|(_, l)| l.a.0 == id || l.b.0 == id).map(|(lid, _)| *lid).collect();
+        let links: Vec<LinkId> = self
+            .links
+            .iter()
+            .filter(|(_, l)| l.a.0 == id || l.b.0 == id)
+            .map(|(lid, _)| *lid)
+            .collect();
         for link in links {
             self.remove_link(link)?;
         }
@@ -130,16 +161,33 @@ impl World {
 
     fn physical_port(&self, node: NodeId, name: &str) -> Result<IfId, LabError> {
         let n = self.nodes.get(&node).ok_or(LabError::UnknownNode(node))?;
-        let unknown = || LabError::UnknownInterface { node: n.name.clone(), interface: name.to_string() };
+        let unknown = || LabError::UnknownInterface {
+            node: n.name.clone(),
+            interface: name.to_string(),
+        };
         let id = IfId::parse(name).ok_or_else(unknown)?;
-        let state = n.ifs.get(&id).filter(|_| id.is_physical() && n.model.ports.contains(&id)).ok_or_else(unknown)?;
+        let state = n
+            .ifs
+            .get(&id)
+            .filter(|_| id.is_physical() && n.model.ports.contains(&id))
+            .ok_or_else(unknown)?;
         if state.link.is_some() {
-            return Err(LabError::InterfaceInUse { node: n.name.clone(), interface: id.name() });
+            return Err(LabError::InterfaceInUse {
+                node: n.name.clone(),
+                interface: id.name(),
+            });
         }
         Ok(id)
     }
 
-    pub(crate) fn add_link(&mut self, a: NodeId, a_if: &str, b: NodeId, b_if: &str, cable: CableKind) -> Result<LinkId, LabError> {
+    pub(crate) fn add_link(
+        &mut self,
+        a: NodeId,
+        a_if: &str,
+        b: NodeId,
+        b_if: &str,
+        cable: CableKind,
+    ) -> Result<LinkId, LabError> {
         if a == b {
             return Err(LabError::SelfLink);
         }
@@ -176,7 +224,13 @@ impl World {
         Ok(id)
     }
 
-    fn add_console_link(&mut self, a: NodeId, a_if: &str, b: NodeId, b_if: &str) -> Result<LinkId, LabError> {
+    fn add_console_link(
+        &mut self,
+        a: NodeId,
+        a_if: &str,
+        b: NodeId,
+        b_if: &str,
+    ) -> Result<LinkId, LabError> {
         for (node, port) in [(a, a_if), (b, b_if)] {
             let n = self.nodes.get(&node).ok_or(LabError::UnknownNode(node))?;
             let expected = match n.model.cli {
@@ -185,19 +239,39 @@ impl World {
                 CliKind::None => "",
             };
             if expected.is_empty() || !port.eq_ignore_ascii_case(expected) {
-                return Err(LabError::UnknownInterface { node: n.name.clone(), interface: port.to_string() });
+                return Err(LabError::UnknownInterface {
+                    node: n.name.clone(),
+                    interface: port.to_string(),
+                });
             }
-            let used = self.console_links.values().any(|l| l.a.0 == node || l.b.0 == node);
+            let used = self
+                .console_links
+                .values()
+                .any(|l| l.a.0 == node || l.b.0 == node);
             if used {
-                return Err(LabError::InterfaceInUse { node: n.name.clone(), interface: expected.to_string() });
+                return Err(LabError::InterfaceInUse {
+                    node: n.name.clone(),
+                    interface: expected.to_string(),
+                });
             }
         }
         let canonical = |port: &str| {
-            if port.eq_ignore_ascii_case(CONSOLE_PORT) { CONSOLE_PORT } else { SERIAL_PORT }.to_string()
+            if port.eq_ignore_ascii_case(CONSOLE_PORT) {
+                CONSOLE_PORT
+            } else {
+                SERIAL_PORT
+            }
+            .to_string()
         };
         let id = self.next_link;
         self.next_link += 1;
-        self.console_links.insert(id, ConsoleLink { a: (a, canonical(a_if)), b: (b, canonical(b_if)) });
+        self.console_links.insert(
+            id,
+            ConsoleLink {
+                a: (a, canonical(a_if)),
+                b: (b, canonical(b_if)),
+            },
+        );
         self.touch();
         Ok(id)
     }
@@ -231,7 +305,9 @@ impl World {
     /// Power a node off (running configuration and all learned state are lost)
     /// or on (it boots from its startup configuration).
     pub(crate) fn set_power(&mut self, id: NodeId, on: bool) {
-        let Some(node) = self.nodes.get_mut(&id) else { return };
+        let Some(node) = self.nodes.get_mut(&id) else {
+            return;
+        };
         if node.powered == on {
             return;
         }
@@ -255,7 +331,9 @@ impl World {
     /// (Re)start a node from its saved configuration.
     pub(crate) fn boot(&mut self, id: NodeId) {
         let now = self.now;
-        let Some(node) = self.nodes.get_mut(&id) else { return };
+        let Some(node) = self.nodes.get_mut(&id) else {
+            return;
+        };
         node.epoch = node.epoch.wrapping_add(1);
         node.boot_time = now;
         node.clock_offset_ms = None;
@@ -268,15 +346,25 @@ impl World {
             // "shutdown" is only the default of a device without a saved
             // configuration; a saved one says `shutdown` where it means it.
             if node.startup.is_some() {
-                node.cfg.interfaces.values_mut().for_each(|iface| iface.shutdown = false);
+                node.cfg
+                    .interfaces
+                    .values_mut()
+                    .for_each(|iface| iface.shutdown = false);
             }
             crate::device::ios::boot::apply_startup(self, id);
         } else {
             crate::device::hostcfg::apply(node);
         }
-        let Some(node) = self.nodes.get_mut(&id) else { return };
+        let Some(node) = self.nodes.get_mut(&id) else {
+            return;
+        };
         // Interfaces that start out shut down should not log a transition.
-        let shut: Vec<(IfId, bool)> = node.cfg.interfaces.iter().map(|(i, c)| (*i, c.shutdown)).collect();
+        let shut: Vec<(IfId, bool)> = node
+            .cfg
+            .interfaces
+            .iter()
+            .map(|(i, c)| (*i, c.shutdown))
+            .collect();
         for (iface, shutdown) in shut {
             if let Some(state) = node.ifs.get_mut(&iface) {
                 state.was_shutdown = shutdown;
@@ -296,7 +384,10 @@ impl World {
             .find(|n| n.powered && n.rib.addrs.iter().any(|(_, a)| a.ip == ip))
             .or_else(|| {
                 self.nodes.values().find(|n| {
-                    n.cfg.interfaces.values().any(|c| c.static_addr().is_some_and(|a| a.ip == ip) || c.secondary.iter().any(|a| a.ip == ip))
+                    n.cfg.interfaces.values().any(|c| {
+                        c.static_addr().is_some_and(|a| a.ip == ip)
+                            || c.secondary.iter().any(|a| a.ip == ip)
+                    })
                 })
             })
             .map(|n| n.id)

@@ -43,12 +43,18 @@ pub(crate) struct Prefix {
 }
 
 impl Prefix {
-    pub(crate) const DEFAULT: Prefix = Prefix { net: Ipv4Addr::UNSPECIFIED, len: 0 };
+    pub(crate) const DEFAULT: Prefix = Prefix {
+        net: Ipv4Addr::UNSPECIFIED,
+        len: 0,
+    };
 
     /// Host bits of `addr` are cleared.
     pub(crate) fn new(addr: Ipv4Addr, len: u8) -> Prefix {
         let len = len.min(32);
-        Prefix { net: Ipv4Addr::from(u32::from(addr) & u32::from(mask_from_len(len))), len }
+        Prefix {
+            net: Ipv4Addr::from(u32::from(addr) & u32::from(mask_from_len(len))),
+            len,
+        }
     }
 
     pub(crate) fn from_mask(addr: Ipv4Addr, mask: Ipv4Addr) -> Option<Prefix> {
@@ -101,7 +107,10 @@ pub(crate) struct IfAddr {
 
 impl IfAddr {
     pub(crate) fn new(ip: Ipv4Addr, len: u8) -> IfAddr {
-        IfAddr { ip, len: len.min(32) }
+        IfAddr {
+            ip,
+            len: len.min(32),
+        }
     }
 
     pub(crate) fn subnet(self) -> Prefix {
@@ -160,10 +169,22 @@ mod tests {
     #[test]
     fn parsing() {
         assert_eq!(parse_ip("10.0.0.1"), Some(Ipv4Addr::new(10, 0, 0, 1)));
-        for bad in ["", "10.0.0", "10.0.0.1.2", "10.0.0.256", "a.b.c.d", "10..0.1", "+1.2.3.4", "1.2.3.4 "] {
+        for bad in [
+            "",
+            "10.0.0",
+            "10.0.0.1.2",
+            "10.0.0.256",
+            "a.b.c.d",
+            "10..0.1",
+            "+1.2.3.4",
+            "1.2.3.4 ",
+        ] {
             assert_eq!(parse_ip(bad), None, "{bad}");
         }
-        assert_eq!(parse_cidr("8.8.8.8/32"), Some((Ipv4Addr::new(8, 8, 8, 8), 32)));
+        assert_eq!(
+            parse_cidr("8.8.8.8/32"),
+            Some((Ipv4Addr::new(8, 8, 8, 8), 32))
+        );
         assert_eq!(parse_cidr("8.8.8.8/33"), None);
     }
 
@@ -175,8 +196,19 @@ mod tests {
         assert!(!p.contains(Ipv4Addr::new(10, 1, 3, 1)));
         assert_eq!(p.broadcast(), Ipv4Addr::new(10, 1, 2, 255));
         assert!(Prefix::DEFAULT.covers(p) && !p.covers(Prefix::DEFAULT));
-        assert_eq!(Prefix::classful(Ipv4Addr::new(172, 16, 5, 1)).to_string(), "172.16.0.0/16");
-        assert!(wildcard_match(Ipv4Addr::new(10, 1, 2, 3), Ipv4Addr::new(10, 1, 0, 0), Ipv4Addr::new(0, 0, 255, 255)));
-        assert!(!wildcard_match(Ipv4Addr::new(10, 2, 2, 3), Ipv4Addr::new(10, 1, 0, 0), Ipv4Addr::new(0, 0, 255, 255)));
+        assert_eq!(
+            Prefix::classful(Ipv4Addr::new(172, 16, 5, 1)).to_string(),
+            "172.16.0.0/16"
+        );
+        assert!(wildcard_match(
+            Ipv4Addr::new(10, 1, 2, 3),
+            Ipv4Addr::new(10, 1, 0, 0),
+            Ipv4Addr::new(0, 0, 255, 255)
+        ));
+        assert!(!wildcard_match(
+            Ipv4Addr::new(10, 2, 2, 3),
+            Ipv4Addr::new(10, 1, 0, 0),
+            Ipv4Addr::new(0, 0, 255, 255)
+        ));
     }
 }

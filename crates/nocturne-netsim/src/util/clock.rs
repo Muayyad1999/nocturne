@@ -8,7 +8,9 @@ use crate::api::SimTime;
 /// Unix seconds of 1993-03-01 00:00:00 UTC (a Monday).
 pub(crate) const EPOCH_1993: i64 = 730_944_000;
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,8 +55,19 @@ impl DateTime {
 
     /// `Mar  1 00:02:11.003` / `Mar  1 00:02:11`, the syslog timestamp body.
     pub(crate) fn log_stamp(&self, msec: bool) -> String {
-        let base = format!("{} {:>2} {:02}:{:02}:{:02}", self.month_name(), self.day, self.hour, self.min, self.sec);
-        if msec { format!("{base}.{:03}", self.ms) } else { base }
+        let base = format!(
+            "{} {:>2} {:02}:{:02}:{:02}",
+            self.month_name(),
+            self.day,
+            self.hour,
+            self.min,
+            self.sec
+        );
+        if msec {
+            format!("{base}.{:03}", self.ms)
+        } else {
+            base
+        }
     }
 
     /// `00:02:11.003 UTC Mon Mar 1 1993`, the `show clock` body.
@@ -78,7 +91,11 @@ impl DateTime {
 pub(crate) fn month_number(name: &str) -> Option<u32> {
     let lower = name.to_ascii_lowercase();
     (lower.len() >= 3)
-        .then(|| MONTHS.iter().position(|m| lower.starts_with(&m.to_ascii_lowercase())))
+        .then(|| {
+            MONTHS
+                .iter()
+                .position(|m| lower.starts_with(&m.to_ascii_lowercase()))
+        })
         .flatten()
         .map(|i| i as u32 + 1)
 }
@@ -126,7 +143,10 @@ pub(crate) fn uptime_long(micros: SimTime) -> String {
     push(days, "day");
     push(hours, "hour");
     if minutes > 0 || parts.is_empty() {
-        parts.push(format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{minutes} minute{}",
+            if minutes == 1 { "" } else { "s" }
+        ));
     }
     parts.join(", ")
 }
@@ -146,7 +166,12 @@ pub(crate) fn age_compact(micros: SimTime) -> String {
 
 /// `hh:mm:ss`.
 pub(crate) fn hms(secs: u64) -> String {
-    format!("{:02}:{:02}:{:02}", secs / 3600, secs % 3600 / 60, secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60
+    )
 }
 
 #[cfg(test)]
@@ -156,7 +181,10 @@ mod tests {
     #[test]
     fn epoch_is_monday_first_of_march() {
         let d = DateTime::from_unix_ms(EPOCH_1993 * 1000 + 131_003);
-        assert_eq!((d.year, d.month, d.day, d.weekday_name()), (1993, 3, 1, "Mon"));
+        assert_eq!(
+            (d.year, d.month, d.day, d.weekday_name()),
+            (1993, 3, 1, "Mon")
+        );
         assert_eq!(d.log_stamp(true), "Mar  1 00:02:11.003");
         assert_eq!(d.log_stamp(false), "Mar  1 00:02:11");
         assert_eq!(d.show_clock("UTC"), "00:02:11.003 UTC Mon Mar 1 1993");
@@ -179,7 +207,10 @@ mod tests {
         assert_eq!(uptime_long(0), "0 minutes");
         assert_eq!(uptime_long(134 * 60_000_000), "2 hours, 14 minutes");
         assert_eq!(uptime_long(60 * 60_000_000), "1 hour");
-        assert_eq!(uptime_long((10_080 + 1441) * 60_000_000), "1 week, 1 day, 1 minute");
+        assert_eq!(
+            uptime_long((10_080 + 1441) * 60_000_000),
+            "1 week, 1 day, 1 minute"
+        );
         assert_eq!(age_compact(83_000_000), "00:01:23");
         assert_eq!(age_compact(93_600_000_000), "1d02h");
         assert_eq!(age_compact(1_468_800_000_000), "2w3d");

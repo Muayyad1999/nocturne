@@ -113,7 +113,11 @@ fn build() -> Vec<Model> {
             label: "Switch (24 × FE + 2 × GE)",
             description: "Layer-2 access switch: VLANs, 802.1Q trunks, spanning tree, EtherChannel, port security. \
                           Managed through interface Vlan1 and ip default-gateway.",
-            ports: [ports(FastEthernet, &[0], 1..=24), ports(GigabitEthernet, &[0], 1..=2)].concat(),
+            ports: [
+                ports(FastEthernet, &[0], 1..=24),
+                ports(GigabitEthernet, &[0], 1..=2),
+            ]
+            .concat(),
             cli: CliKind::Ios,
             platform: "NV-SWITCH-24TT",
             image: "NVOS-L2-LANBASEK9",
@@ -127,7 +131,11 @@ fn build() -> Vec<Model> {
             label: "Layer-3 switch (24 × GE + 4 × 10GE)",
             description: "Multilayer distribution switch: everything the access switch does plus ip routing, SVIs, \
                           routed ports, OSPF and HSRP.",
-            ports: [ports(GigabitEthernet, &[1, 0], 1..=24), ports(TenGigabitEthernet, &[1, 1], 1..=4)].concat(),
+            ports: [
+                ports(GigabitEthernet, &[1, 0], 1..=24),
+                ports(TenGigabitEthernet, &[1, 1], 1..=4),
+            ]
+            .concat(),
             cli: CliKind::Ios,
             platform: "NV-SWITCH-L3-24T4X",
             image: "NVOS-L3-IPSERVICESK9",
@@ -148,15 +156,32 @@ fn build() -> Vec<Model> {
             role: Role::Bridge,
             label: "Access point",
             description: "Transparent bridge between its wired uplink and its radio. No command line.",
-            ports: vec![IfId::new(GigabitEthernet, &[0]), IfId::new(Dot11Radio, &[0])],
+            ports: vec![
+                IfId::new(GigabitEthernet, &[0]),
+                IfId::new(Dot11Radio, &[0]),
+            ],
             cli: CliKind::None,
             platform: "NV-AP",
             image: "",
             version: "",
             capabilities: "T",
         },
-        host("pc", NodeKind::Pc, "PC", "Desktop computer with a command prompt.", CliKind::Host, "NV-PC"),
-        host("laptop", NodeKind::Laptop, "Laptop", "Laptop computer with a command prompt.", CliKind::Host, "NV-LAPTOP"),
+        host(
+            "pc",
+            NodeKind::Pc,
+            "PC",
+            "Desktop computer with a command prompt.",
+            CliKind::Host,
+            "NV-PC",
+        ),
+        host(
+            "laptop",
+            NodeKind::Laptop,
+            "Laptop",
+            "Laptop computer with a command prompt.",
+            CliKind::Host,
+            "NV-LAPTOP",
+        ),
         host(
             "server",
             NodeKind::Server,
@@ -165,8 +190,22 @@ fn build() -> Vec<Model> {
             CliKind::Host,
             "NV-SERVER",
         ),
-        host("printer", NodeKind::Printer, "Printer", "Network printer. No command line.", CliKind::None, "NV-PRINTER"),
-        host("phone", NodeKind::Phone, "IP phone", "IP telephone. No command line.", CliKind::None, "NV-PHONE"),
+        host(
+            "printer",
+            NodeKind::Printer,
+            "Printer",
+            "Network printer. No command line.",
+            CliKind::None,
+            "NV-PRINTER",
+        ),
+        host(
+            "phone",
+            NodeKind::Phone,
+            "IP phone",
+            "IP telephone. No command line.",
+            CliKind::None,
+            "NV-PHONE",
+        ),
         Model {
             id: "cloud",
             kind: NodeKind::Cloud,
@@ -222,17 +261,38 @@ mod tests {
     #[test]
     fn catalog_matches_the_spec_table() {
         let cat = catalog();
-        let get = |id: &str| cat.iter().find(|m| m.id == id).unwrap_or_else(|| panic!("model {id}"));
-        assert_eq!(get("router").interfaces, ["GigabitEthernet0/0", "GigabitEthernet0/1", "GigabitEthernet0/2", "GigabitEthernet0/3"]);
+        let get = |id: &str| {
+            cat.iter()
+                .find(|m| m.id == id)
+                .unwrap_or_else(|| panic!("model {id}"))
+        };
+        assert_eq!(
+            get("router").interfaces,
+            [
+                "GigabitEthernet0/0",
+                "GigabitEthernet0/1",
+                "GigabitEthernet0/2",
+                "GigabitEthernet0/3"
+            ]
+        );
         assert_eq!(get("router-8").interfaces.len(), 8);
         let sw = get("switch");
         assert_eq!(sw.interfaces.len(), 26);
-        assert_eq!((sw.interfaces[0].as_str(), sw.interfaces[25].as_str()), ("FastEthernet0/1", "GigabitEthernet0/2"));
+        assert_eq!(
+            (sw.interfaces[0].as_str(), sw.interfaces[25].as_str()),
+            ("FastEthernet0/1", "GigabitEthernet0/2")
+        );
         let l3 = get("switch-l3");
         assert_eq!(l3.interfaces.len(), 28);
-        assert_eq!((l3.interfaces[0].as_str(), l3.interfaces[27].as_str()), ("GigabitEthernet1/0/1", "TenGigabitEthernet1/1/4"));
+        assert_eq!(
+            (l3.interfaces[0].as_str(), l3.interfaces[27].as_str()),
+            ("GigabitEthernet1/0/1", "TenGigabitEthernet1/1/4")
+        );
         assert_eq!(get("ap").interfaces, ["GigabitEthernet0", "Dot11Radio0"]);
-        assert_eq!(get("cloud").interfaces, ["Ethernet0", "Ethernet1", "Ethernet2", "Ethernet3"]);
+        assert_eq!(
+            get("cloud").interfaces,
+            ["Ethernet0", "Ethernet1", "Ethernet2", "Ethernet3"]
+        );
         for id in ["pc", "laptop", "server", "printer", "phone", "nms"] {
             assert_eq!(get(id).interfaces, ["Ethernet0"], "{id}");
         }

@@ -3,7 +3,8 @@
 use crate::catalog::Role;
 use crate::device::cli::grammar::Args;
 use crate::device::config::{
-    Area, ChannelMode, Duplex, HsrpGroup, IfConfig, L3Addr, NatSide, SwMode, Switchport, Violation, Vlan, VlanSet,
+    Area, ChannelMode, Duplex, HsrpGroup, IfConfig, L3Addr, NatSide, SwMode, Switchport, Violation,
+    Vlan, VlanSet,
 };
 use crate::device::ios::config::sync_vlan_dat;
 use crate::device::ios::{Cx, Mode, Table, c, n};
@@ -13,44 +14,142 @@ use crate::util::text::parse_ranges;
 
 pub(crate) fn table(role: Role) -> Table {
     let mut t: Table = vec![
-        n("description ~ <line:text;Up to 240 characters describing this interface>", "Interface specific description", |cx, a| {
-            let text = if a.no { String::new() } else { a.text("text").unwrap_or("").to_string() };
-            each(cx, |cfg, _| cfg.description = text.clone());
-        }),
+        n(
+            "description ~ <line:text;Up to 240 characters describing this interface>",
+            "Interface specific description",
+            |cx, a| {
+                let text = if a.no {
+                    String::new()
+                } else {
+                    a.text("text").unwrap_or("").to_string()
+                };
+                each(cx, |cfg, _| cfg.description = text.clone());
+            },
+        ),
         n("shutdown", "Shutdown the selected interface", shutdown),
-        n("ip address ~ <ip:addr;IP address> <ip:mask;IP subnet mask> [secondary]", "Set the IP address of an interface", ip_address),
-        n("ip address dhcp", "IP Address negotiated via DHCP", ip_address_dhcp),
-        n("ipv6 address <line:rest>", "Configure IPv6 address on interface", |cx, a| {
-            keep(cx, a, format!("ipv6 address {}", a.text("rest").unwrap_or("")));
+        n(
+            "ip address ~ <ip:addr;IP address> <ip:mask;IP subnet mask> [secondary]",
+            "Set the IP address of an interface",
+            ip_address,
+        ),
+        n(
+            "ip address dhcp",
+            "IP Address negotiated via DHCP",
+            ip_address_dhcp,
+        ),
+        n(
+            "ipv6 address <line:rest>",
+            "Configure IPv6 address on interface",
+            |cx, a| {
+                keep(
+                    cx,
+                    a,
+                    format!("ipv6 address {}", a.text("rest").unwrap_or("")),
+                );
+            },
+        ),
+        n("ipv6 enable", "Enable IPv6 on interface", |cx, a| {
+            keep(cx, a, "ipv6 enable".to_string())
         }),
-        n("ipv6 enable", "Enable IPv6 on interface", |cx, a| keep(cx, a, "ipv6 enable".to_string())),
-        n("speed ~ (10 | 100 | 1000 | 10000 | auto)", "Configure speed operation", speed),
-        n("duplex ~ (auto | full | half)", "Configure duplex operation", duplex),
-        n("mtu ~ <64-9216:mtu;MTU size in bytes>", "Set the interface Maximum Transmission Unit (MTU)", |cx, a| {
-            let value = if a.no { None } else { a.num("mtu").map(|v| v as u32) };
-            each(cx, |cfg, _| cfg.mtu = value);
+        n(
+            "speed ~ (10 | 100 | 1000 | 10000 | auto)",
+            "Configure speed operation",
+            speed,
+        ),
+        n(
+            "duplex ~ (auto | full | half)",
+            "Configure duplex operation",
+            duplex,
+        ),
+        n(
+            "mtu ~ <64-9216:mtu;MTU size in bytes>",
+            "Set the interface Maximum Transmission Unit (MTU)",
+            |cx, a| {
+                let value = if a.no {
+                    None
+                } else {
+                    a.num("mtu").map(|v| v as u32)
+                };
+                each(cx, |cfg, _| cfg.mtu = value);
+            },
+        ),
+        n(
+            "bandwidth ~ <1-10000000:kbps;Bandwidth in kilobits>",
+            "Set bandwidth informational parameter",
+            |cx, a| {
+                let value = if a.no {
+                    None
+                } else {
+                    a.num("kbps").map(|v| v as u32)
+                };
+                each(cx, |cfg, _| cfg.bandwidth = value);
+            },
+        ),
+        n(
+            "delay ~ <1-16777215:tens;Throughput delay (tens of microseconds)>",
+            "Specify interface throughput delay",
+            |cx, a| {
+                let value = if a.no {
+                    None
+                } else {
+                    a.num("tens").map(|v| v as u32)
+                };
+                each(cx, |cfg, _| cfg.delay = value);
+            },
+        ),
+        n(
+            "ip helper-address ~ <ip:server;IP destination address>",
+            "Specify a destination address for UDP broadcasts",
+            helper_address,
+        ),
+        n(
+            "ip access-group ~ <word:acl;Access-list name or number> (in | out)",
+            "Specify access control for packets",
+            access_group,
+        ),
+        n("cdp enable", "Enable CDP on interface", |cx, a| {
+            each(cx, |cfg, _| cfg.cdp_enable = !a.no)
         }),
-        n("bandwidth ~ <1-10000000:kbps;Bandwidth in kilobits>", "Set bandwidth informational parameter", |cx, a| {
-            let value = if a.no { None } else { a.num("kbps").map(|v| v as u32) };
-            each(cx, |cfg, _| cfg.bandwidth = value);
+        n(
+            "lldp transmit",
+            "Enable LLDP transmission on interface",
+            |cx, a| each(cx, |cfg, _| cfg.lldp_transmit = !a.no),
+        ),
+        n(
+            "lldp receive",
+            "Enable LLDP reception on interface",
+            |cx, a| each(cx, |cfg, _| cfg.lldp_receive = !a.no),
+        ),
+        n(
+            "negotiation auto",
+            "Enable link autonegotiation",
+            |cx, a| keep(cx, a, "negotiation auto".to_string()),
+        ),
+        n(
+            "power inline <line:rest>",
+            "Inline power configuration",
+            |cx, a| {
+                keep(
+                    cx,
+                    a,
+                    format!("power inline {}", a.text("rest").unwrap_or("")),
+                );
+            },
+        ),
+        n(
+            "storm-control <line:rest>",
+            "storm configuration",
+            |cx, a| {
+                keep(
+                    cx,
+                    a,
+                    format!("storm-control {}", a.text("rest").unwrap_or("")),
+                );
+            },
+        ),
+        c("exit", "Exit from interface configuration mode", |cx, _| {
+            cx.sh.mode = Mode::Config
         }),
-        n("delay ~ <1-16777215:tens;Throughput delay (tens of microseconds)>", "Specify interface throughput delay", |cx, a| {
-            let value = if a.no { None } else { a.num("tens").map(|v| v as u32) };
-            each(cx, |cfg, _| cfg.delay = value);
-        }),
-        n("ip helper-address ~ <ip:server;IP destination address>", "Specify a destination address for UDP broadcasts", helper_address),
-        n("ip access-group ~ <word:acl;Access-list name or number> (in | out)", "Specify access control for packets", access_group),
-        n("cdp enable", "Enable CDP on interface", |cx, a| each(cx, |cfg, _| cfg.cdp_enable = !a.no)),
-        n("lldp transmit", "Enable LLDP transmission on interface", |cx, a| each(cx, |cfg, _| cfg.lldp_transmit = !a.no)),
-        n("lldp receive", "Enable LLDP reception on interface", |cx, a| each(cx, |cfg, _| cfg.lldp_receive = !a.no)),
-        n("negotiation auto", "Enable link autonegotiation", |cx, a| keep(cx, a, "negotiation auto".to_string())),
-        n("power inline <line:rest>", "Inline power configuration", |cx, a| {
-            keep(cx, a, format!("power inline {}", a.text("rest").unwrap_or("")));
-        }),
-        n("storm-control <line:rest>", "storm configuration", |cx, a| {
-            keep(cx, a, format!("storm-control {}", a.text("rest").unwrap_or("")));
-        }),
-        c("exit", "Exit from interface configuration mode", |cx, _| cx.sh.mode = Mode::Config),
         c("end", "Exit from configure mode", |cx, _| {
             let reply = cx.sh.leave_config(cx.n, cx.fx);
             cx.out.push_str(&reply.out);
@@ -117,10 +216,20 @@ pub(crate) fn table(role: Role) -> Table {
             }),
             n("switchport voice vlan ~ <1-4094:vlan;Vlan for voice traffic>", "Voice appliance attributes", voice_vlan),
             n("switchport port-security", "Security related command", |cx, a| {
-                if !a.no && selection(cx).iter().any(|id| l2_of(cx, *id).is_some_and(|sw| matches!(sw.mode, SwMode::DynamicAuto | SwMode::DynamicDesirable))) {
-                    return cx.fail("Command rejected: port is a dynamic port.");
+                let dynamic = |cx: &Cx, id: IfId| l2_of(cx, id).is_some_and(|sw| matches!(sw.mode, SwMode::DynamicAuto | SwMode::DynamicDesirable));
+                if let (false, Some(id)) = (a.no, selection(cx).into_iter().find(|id| dynamic(cx, *id))) {
+                    return cx.fail(format!("Command rejected: {} is a dynamic port.", id.name()));
                 }
                 each_l2(cx, |sw, _| sw.port_security.enabled = !a.no);
+                if a.no {
+                    // What the feature learned goes with it.
+                    for id in selection(cx) {
+                        if let Some(state) = cx.n.ifs.get_mut(&id) {
+                            state.secure_macs.clear();
+                        }
+                        cx.n.macs.flush_port(id);
+                    }
+                }
             }),
             n("switchport port-security maximum ~ <1-8192:max;Maximum addresses>", "Max secure addresses", |cx, a| {
                 let max = if a.no { 1 } else { a.num("max").unwrap_or(1) as u32 };
@@ -167,9 +276,13 @@ pub(crate) fn table(role: Role) -> Table {
             }),
         ]);
         if role == Role::L3Switch {
-            t.push(n("switchport trunk encapsulation ~ dot1q", "Set trunking encapsulation when interface is in trunking mode", |cx, a| {
-                each_l2(cx, |sw, _| sw.encap_dot1q = !a.no);
-            }));
+            t.push(n(
+                "switchport trunk encapsulation ~ dot1q",
+                "Set trunking encapsulation when interface is in trunking mode",
+                |cx, a| {
+                    each_l2(cx, |sw, _| sw.encap_dot1q = !a.no);
+                },
+            ));
         }
     }
     t
@@ -195,12 +308,40 @@ fn each(cx: &mut Cx, mut f: impl FnMut(&mut IfConfig, IfId)) {
         if let Some(cfg) = cx.cfg().interfaces.get_mut(&id) {
             f(cfg, id);
         }
+        if id.kind == IfKind::PortChannel {
+            sync_members(cx, id);
+        }
+    }
+}
+
+/// What is configured on a port-channel also lands on its member ports.
+fn sync_members(cx: &mut Cx, po: IfId) {
+    let Some(template) = cx.n.cfg.iface(po).and_then(|cfg| cfg.l2.clone()) else {
+        return;
+    };
+    for member in cx.n.cfg.channel_members(po.number()) {
+        if let Some(sw) = cx
+            .cfg()
+            .interfaces
+            .get_mut(&member)
+            .and_then(|cfg| cfg.l2.as_mut())
+        {
+            let port_security = std::mem::take(&mut sw.port_security);
+            *sw = Switchport {
+                port_security,
+                ..template.clone()
+            };
+        }
     }
 }
 
 /// Apply a change to the selected interfaces if all of them are layer 3.
 fn each_l3(cx: &mut Cx, f: impl FnMut(&mut IfConfig, IfId)) {
-    if selection(cx).iter().any(|id| cx.n.cfg.iface(*id).is_none_or(|c| c.l2.is_some() || c.channel_group.is_some())) {
+    if selection(cx).iter().any(|id| {
+        cx.n.cfg
+            .iface(*id)
+            .is_none_or(|c| c.l2.is_some() || c.channel_group.is_some())
+    }) {
         return cx.invalid();
     }
     each(cx, f);
@@ -231,8 +372,19 @@ fn keep(cx: &mut Cx, a: &Args, line: String) {
 // ----------------------------------------------------------------- commands
 
 fn shutdown(cx: &mut Cx, a: &Args) {
-    let ids = selection(cx);
-    each(cx, |cfg, _| cfg.shutdown = !a.no);
+    let mut ids = selection(cx);
+    // Shutting a port-channel shuts its member ports with it.
+    let members: Vec<IfId> = ids
+        .iter()
+        .filter(|id| id.kind == IfKind::PortChannel)
+        .flat_map(|po| cx.n.cfg.channel_members(po.number()))
+        .collect();
+    ids.extend(members);
+    for id in &ids {
+        if let Some(cfg) = cx.cfg().interfaces.get_mut(id) {
+            cfg.shutdown = !a.no;
+        }
+    }
     // `shutdown` / `no shutdown` is how an err-disabled port is recovered.
     for id in ids {
         if let Some(state) = cx.n.ifs.get_mut(&id) {
@@ -243,7 +395,11 @@ fn shutdown(cx: &mut Cx, a: &Args) {
 
 fn ip_address(cx: &mut Cx, a: &Args) {
     let ids = selection(cx);
-    if ids.iter().any(|id| cx.n.cfg.iface(*id).is_none_or(|c| c.l2.is_some() || c.channel_group.is_some())) {
+    if ids.iter().any(|id| {
+        cx.n.cfg
+            .iface(*id)
+            .is_none_or(|c| c.l2.is_some() || c.channel_group.is_some())
+    }) {
         return cx.invalid();
     }
     let addr = match (a.ip("addr"), a.ip("mask")) {
@@ -252,7 +408,8 @@ fn ip_address(cx: &mut Cx, a: &Args) {
                 return cx.fail(format!("Bad mask 0x{:X} for address {ip}", u32::from(mask)));
             };
             let addr = IfAddr::new(ip, len);
-            let host_bits_ok = len >= 31 || (ip != addr.subnet().net && ip != addr.subnet().broadcast());
+            let host_bits_ok =
+                len >= 31 || (ip != addr.subnet().net && ip != addr.subnet().broadcast());
             if !host_bits_ok || ip.is_loopback() || ip.is_multicast() || ip.is_unspecified() {
                 return cx.fail(format!("Bad mask /{len} for address {ip}"));
             }
@@ -280,12 +437,20 @@ fn ip_address(cx: &mut Cx, a: &Args) {
     // The subnet must not overlap another interface of this device.
     let clash = cx.n.cfg.interfaces.iter().find(|(id, cfg)| {
         !ids.contains(id)
-            && cfg.static_addr().into_iter().chain(cfg.secondary.iter().copied()).any(|other| {
-                other.subnet().covers(addr.subnet()) || addr.subnet().covers(other.subnet())
-            })
+            && cfg
+                .static_addr()
+                .into_iter()
+                .chain(cfg.secondary.iter().copied())
+                .any(|other| {
+                    other.subnet().covers(addr.subnet()) || addr.subnet().covers(other.subnet())
+                })
     });
     if let Some((other, _)) = clash {
-        return cx.fail(format!("% {} overlaps with {}", addr.subnet().net, other.name()));
+        return cx.fail(format!(
+            "% {} overlaps with {}",
+            addr.subnet().net,
+            other.name()
+        ));
     }
     if ids.len() > 1 {
         return cx.fail("% IP addresses may not be configured on an interface range");
@@ -318,7 +483,9 @@ fn speed(cx: &mut Cx, a: &Args) {
     let value = if a.no || a.has("auto") {
         None
     } else {
-        [10, 100, 1000, 10_000].into_iter().find(|s| a.has(&s.to_string()))
+        [10, 100, 1000, 10_000]
+            .into_iter()
+            .find(|s| a.has(&s.to_string()))
     };
     let ids = selection(cx);
     if ids.iter().any(|id| !id.is_physical()) {
@@ -361,7 +528,11 @@ fn helper_address(cx: &mut Cx, a: &Args) {
 }
 
 fn access_group(cx: &mut Cx, a: &Args) {
-    let acl = if a.no { None } else { a.text("acl").map(str::to_string) };
+    let acl = if a.no {
+        None
+    } else {
+        a.text("acl").map(str::to_string)
+    };
     let inbound = a.has("in");
     let outbound = a.has("out");
     each_l3(cx, |cfg, _| {
@@ -388,6 +559,25 @@ fn ospf_area(cx: &mut Cx, a: &Args) {
 fn standby(cx: &mut Cx, a: &Args) {
     let group = a.num("group").unwrap_or(0) as u16;
     let vip = a.ip("vip");
+    if let (false, Some(vip)) = (a.no, vip) {
+        let addrs: Vec<IfAddr> = selection(cx)
+            .iter()
+            .filter_map(|id| cx.n.addr(*id))
+            .collect();
+        if addrs.iter().any(|addr| addr.ip == vip) {
+            return cx.fail("% Address cannot equal interface IP address");
+        }
+        if addrs.iter().any(|addr| !addr.on_link(vip)) {
+            cx.say("% Warning: address is not within a subnet on this interface");
+        }
+    }
+    let version = selection(cx)
+        .first()
+        .and_then(|id| cx.n.cfg.iface(*id))
+        .map_or(1, |cfg| cfg.hsrp_version);
+    if version == 1 && group > 255 {
+        return cx.fail("% Group number out of range for HSRP version 1 (0-255)");
+    }
     let priority = a.num("priority").map(|p| p as u8);
     let (is_ip, is_priority, is_preempt) = (a.has("ip"), a.has("priority"), a.has("preempt"));
     let no = a.no;
@@ -400,7 +590,12 @@ fn standby(cx: &mut Cx, a: &Args) {
             Some(index) => index,
             None if no => return,
             None => {
-                cfg.hsrp.push(HsrpGroup { group, ip: None, priority: 100, preempt: false });
+                cfg.hsrp.push(HsrpGroup {
+                    group,
+                    ip: None,
+                    priority: 100,
+                    preempt: false,
+                });
                 cfg.hsrp.sort_by_key(|g| g.group);
                 cfg.hsrp.iter().position(|g| g.group == group).unwrap_or(0)
             }
@@ -423,11 +618,17 @@ fn encapsulation(cx: &mut Cx, a: &Args) {
     if ids.iter().any(|id| !id.is_sub()) {
         return cx.invalid();
     }
-    let value = if a.no { None } else { a.num("vlan").map(|v| (v as u16, a.has("native"))) };
+    let value = if a.no {
+        None
+    } else {
+        a.num("vlan").map(|v| (v as u16, a.has("native")))
+    };
     if let Some((vlan, _)) = value {
         // One VLAN per sub-interface of a physical port.
         let taken = cx.n.cfg.interfaces.iter().any(|(id, cfg)| {
-            !ids.contains(id) && ids.iter().any(|mine| mine.parent() == id.parent()) && cfg.dot1q.is_some_and(|(v, _)| v == vlan)
+            !ids.contains(id)
+                && ids.iter().any(|mine| mine.parent() == id.parent())
+                && cfg.dot1q.is_some_and(|(v, _)| v == vlan)
         });
         if taken {
             return cx.fail(format!("%Configuration of multiple subinterfaces of the same main\ninterface with the same VID ({vlan}) is not permitted."));
@@ -446,8 +647,14 @@ fn switchport(cx: &mut Cx, a: &Args) {
         if cx.role() != Role::L3Switch || ids.iter().any(|id| id.kind == IfKind::PortChannel) {
             return cx.invalid();
         }
-        if ids.iter().any(|id| cx.n.cfg.iface(*id).is_some_and(|c| c.channel_group.is_some())) {
-            return cx.fail("% Interface is a member of a port-channel; remove it from the channel first");
+        if ids.iter().any(|id| {
+            cx.n.cfg
+                .iface(*id)
+                .is_some_and(|c| c.channel_group.is_some())
+        }) {
+            return cx.fail(
+                "% Interface is a member of a port-channel; remove it from the channel first",
+            );
         }
         each(cx, |cfg, _| cfg.l2 = None);
     } else {
@@ -487,14 +694,20 @@ fn switchport_mode(cx: &mut Cx, a: &Args) {
 /// A VLAN referenced by an access port is created on the fly, as on real switches.
 fn ensure_vlan(cx: &mut Cx, vlan: u16, what: &str) {
     if !cx.n.cfg.vlans.contains_key(&vlan) {
-        cx.say(format!("% {what} VLAN does not exist. Creating vlan {vlan}"));
+        cx.say(format!(
+            "% {what} VLAN does not exist. Creating vlan {vlan}"
+        ));
         cx.cfg().vlans.insert(vlan, Vlan::new(vlan));
         sync_vlan_dat(cx);
     }
 }
 
 fn access_vlan(cx: &mut Cx, a: &Args) {
-    let vlan = if a.no { 1 } else { a.num("vlan").unwrap_or(1) as u16 };
+    let vlan = if a.no {
+        1
+    } else {
+        a.num("vlan").unwrap_or(1) as u16
+    };
     if selection(cx).iter().any(|id| l2_of(cx, *id).is_none()) {
         return cx.invalid();
     }
@@ -503,7 +716,11 @@ fn access_vlan(cx: &mut Cx, a: &Args) {
 }
 
 fn voice_vlan(cx: &mut Cx, a: &Args) {
-    let vlan = if a.no { None } else { a.num("vlan").map(|v| v as u16) };
+    let vlan = if a.no {
+        None
+    } else {
+        a.num("vlan").map(|v| v as u16)
+    };
     if selection(cx).iter().any(|id| l2_of(cx, *id).is_none()) {
         return cx.invalid();
     }
@@ -521,20 +738,24 @@ fn trunk_allowed(cx: &mut Cx, a: &Args) {
         },
         None => None,
     };
-    let (all, none, add, remove, except) = (a.no || a.has("all"), a.has("none"), a.has("add"), a.has("remove"), a.has("except"));
-    each_l2(cx, |sw, _| {
-        match (&list, all, none) {
-            (_, true, _) => sw.allowed = VlanSet::all(),
-            (_, _, true) => sw.allowed = VlanSet::none(),
-            (Some(ids), _, _) if add => ids.iter().for_each(|id| sw.allowed.insert(*id)),
-            (Some(ids), _, _) if remove => ids.iter().for_each(|id| sw.allowed.remove(*id)),
-            (Some(ids), _, _) if except => {
-                sw.allowed = VlanSet::all();
-                ids.iter().for_each(|id| sw.allowed.remove(*id));
-            }
-            (Some(ids), _, _) => sw.allowed = VlanSet::from_ids(ids),
-            (None, _, _) => {}
+    let (all, none, add, remove, except) = (
+        a.no || a.has("all"),
+        a.has("none"),
+        a.has("add"),
+        a.has("remove"),
+        a.has("except"),
+    );
+    each_l2(cx, |sw, _| match (&list, all, none) {
+        (_, true, _) => sw.allowed = VlanSet::all(),
+        (_, _, true) => sw.allowed = VlanSet::none(),
+        (Some(ids), _, _) if add => ids.iter().for_each(|id| sw.allowed.insert(*id)),
+        (Some(ids), _, _) if remove => ids.iter().for_each(|id| sw.allowed.remove(*id)),
+        (Some(ids), _, _) if except => {
+            sw.allowed = VlanSet::all();
+            ids.iter().for_each(|id| sw.allowed.remove(*id));
         }
+        (Some(ids), _, _) => sw.allowed = VlanSet::from_ids(ids),
+        (None, _, _) => {}
     });
 }
 
@@ -543,16 +764,51 @@ fn secure_mac(cx: &mut Cx, a: &Args) {
     let mac = a.mac("mac");
     let no = a.no;
     let mut too_many = false;
+    if mac.is_none() {
+        // `mac-address sticky` alone toggles sticky learning; addresses already
+        // learned change kind with it.
+        for id in selection(cx) {
+            let Some(vlan) = l2_of(cx, id).map(|sw| sw.access_vlan) else {
+                return cx.invalid();
+            };
+            let learned: Vec<_> =
+                cx.n.ifs
+                    .get_mut(&id)
+                    .map(|state| std::mem::take(&mut state.secure_macs))
+                    .unwrap_or_default();
+            let Some(ps) = cx
+                .cfg()
+                .interfaces
+                .get_mut(&id)
+                .and_then(|c| c.l2.as_mut())
+                .map(|sw| &mut sw.port_security)
+            else {
+                continue;
+            };
+            ps.sticky = !no;
+            let mut dynamic = learned;
+            if no {
+                dynamic.extend(
+                    ps.macs
+                        .iter()
+                        .filter(|(_, sticky)| *sticky)
+                        .map(|(mac, _)| (*mac, vlan)),
+                );
+                ps.macs.retain(|(_, sticky)| !sticky);
+            } else {
+                ps.macs
+                    .extend(dynamic.drain(..).map(|(mac, _)| (mac, true)));
+            }
+            if let Some(state) = cx.n.ifs.get_mut(&id) {
+                state.secure_macs = dynamic;
+            }
+        }
+        return;
+    }
     each_l2(cx, |sw, _| {
         let ps = &mut sw.port_security;
         match mac {
-            None => {
-                // `mac-address sticky` alone toggles sticky learning.
-                ps.sticky = !no;
-                if no {
-                    ps.macs.retain(|(_, sticky)| !sticky);
-                }
-            }
+            None => {}
             Some(mac) => {
                 ps.macs.retain(|(m, _)| *m != mac);
                 if !no {
@@ -592,11 +848,15 @@ fn channel_group(cx: &mut Cx, a: &Args) {
         ChannelMode::Auto
     };
     if ids.iter().any(|id| l2_of(cx, *id).is_none()) {
-        return cx.fail("% Layer-3 EtherChannels are not supported; the port must be a switch port");
+        return cx
+            .fail("% Layer-3 EtherChannels are not supported; the port must be a switch port");
     }
     // All members of a channel must use the same protocol.
     let mismatch = cx.n.cfg.interfaces.iter().any(|(id, cfg)| {
-        !ids.contains(id) && cfg.channel_group.is_some_and(|(g, m)| g == group && m.protocol() != mode.protocol())
+        !ids.contains(id)
+            && cfg
+                .channel_group
+                .is_some_and(|(g, m)| g == group && m.protocol() != mode.protocol())
     });
     if mismatch {
         return cx.fail("Command rejected: the interface can not be added to the channel group (protocol mismatch)");
@@ -611,7 +871,9 @@ fn channel_group(cx: &mut Cx, a: &Args) {
             sw.port_security = Default::default();
         }
         cx.cfg().interfaces.insert(po, cfg);
-        cx.say(format!("Creating a port-channel interface Port-channel {group}"));
+        cx.say(format!(
+            "Creating a port-channel interface Port-channel {group}"
+        ));
         cx.say("");
     }
     each(cx, |cfg, _| cfg.channel_group = Some((group, mode)));
