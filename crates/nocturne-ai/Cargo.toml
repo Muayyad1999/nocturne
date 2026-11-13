@@ -9,16 +9,17 @@ publish.workspace = true
 
 [dependencies]
 tokio.workspace = true
+tokio-util.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-futures.workspace = true
+indexmap.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 regex.workspace = true
-bytes.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
