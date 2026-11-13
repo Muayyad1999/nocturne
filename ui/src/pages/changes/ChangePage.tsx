@@ -55,13 +55,13 @@ import {
   pruneReview,
   type ReviewState,
 } from './approval';
+import { plural } from '@/lib/format';
 import {
   canApprove,
   canCancel,
   canPlan,
   isFinished,
   ORIGIN_LABEL,
-  plural,
   RISK_LABEL,
   riskTone,
   rollbackCandidates,

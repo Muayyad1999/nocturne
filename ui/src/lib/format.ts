@@ -60,6 +60,15 @@ export function formatNumber(value: Numeric, { digits = 0 }: NumberOptions = {})
 }
 
 /** A whole count with digit grouping: `1 204`. Fractions are rounded. */
+/**
+ * Counted things, written the way a person would: `1 device`, `3 devices`,
+ * `1,200 interfaces`. An interface that writes "1 device(s)" has stopped
+ * paying attention.
+ */
+export function plural(count: number, one: string, many = `${one}s`): string {
+  return `${formatCount(count)} ${count === 1 ? one : many}`;
+}
+
 export function formatCount(value: Numeric): string {
   return formatNumber(value);
 }

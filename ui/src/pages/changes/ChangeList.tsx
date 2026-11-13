@@ -28,7 +28,8 @@ import { TimeAgo } from '@/design/TimeAgo';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { Tooltip } from '@/design/Tooltip';
 import { EMPTY } from '@/lib/format';
-import { ORIGIN_LABEL, plural, RISK_LABEL, riskTone, STATE_LABEL, stateTone } from './change';
+import { plural } from '@/lib/format';
+import { ORIGIN_LABEL, RISK_LABEL, riskTone, STATE_LABEL, stateTone } from './change';
 import { NewChange } from './NewChange';
 import styles from './ChangeList.module.css';
 

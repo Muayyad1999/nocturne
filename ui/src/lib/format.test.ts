@@ -1,17 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  EMPTY,
-  bytesQuantity,
-  formatBytes,
-  formatCompact,
-  formatCount,
-  formatDelta,
-  formatDuration,
-  formatNumber,
-  formatPercent,
-  formatRate,
-  rateQuantity,
-} from './format';
+import { bytesQuantity, EMPTY, formatBytes, formatCompact, formatCount, formatDelta, formatDuration, formatNumber, formatPercent, formatRate, plural, rateQuantity } from './format';
 
 const NBSP = '\u00a0';
 const GROUP = '\u2009';
@@ -166,5 +154,20 @@ describe('formatDelta', () => {
   it('does not sign a change that rounds to zero', () => {
     expect(formatDelta(0.01, formatPercent)).toBe('0%');
     expect(formatDelta(0.2)).toBe('0');
+  });
+});
+
+describe('plural', () => {
+  it('writes a count the way a person would', () => {
+    expect(plural(1, 'device')).toBe('1 device');
+    expect(plural(3, 'device')).toBe('3 devices');
+    expect(plural(0, 'device')).toBe('0 devices');
+    expect(plural(2, 'protected resource')).toBe('2 protected resources');
+  });
+
+  it('takes an irregular plural, and groups a large count', () => {
+    expect(plural(1, 'is', 'are')).toBe('1 is');
+    expect(plural(2, 'is', 'are')).toBe('2 are');
+    expect(plural(1200, 'interface')).toBe(`1${GROUP}200 interfaces`);
   });
 });

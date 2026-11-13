@@ -15,7 +15,7 @@
  */
 
 import type { Change, Plan, Target } from '@/api/types/changes';
-import { plural } from './change';
+import { plural } from '@/lib/format';
 
 /** A target with its plan and the device's display name. */
 export interface NamedTarget {

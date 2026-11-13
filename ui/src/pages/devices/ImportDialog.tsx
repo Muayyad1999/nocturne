@@ -23,7 +23,7 @@ import { Table, type TableColumn } from '@/design/Table';
 import { Textarea } from '@/design/Textarea';
 import { toast } from '@/design/Toast';
 import { formatCount } from '@/lib/format';
-import { plural } from './plural';
+import { plural } from '@/lib/format';
 import styles from './ImportDialog.module.css';
 
 const FORMATS = [

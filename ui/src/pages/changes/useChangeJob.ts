@@ -15,7 +15,7 @@ import { useRpc, useRpcMutation } from '@/api/hooks';
 import type { Change, ChangeIdParams, JobStarted } from '@/api/types/changes';
 import type { Job, JobCancelled } from '@/api/types/core';
 import { toast } from '@/design/Toast';
-import { plural } from './change';
+import { plural } from '@/lib/format';
 
 export interface ChangeJob {
   /** The job that is running, or the one that finished last. */

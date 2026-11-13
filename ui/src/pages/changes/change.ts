@@ -108,11 +108,6 @@ export function hitKindLabel(kind: string): string {
   return HIT_KIND_LABEL[kind] ?? kind.replace(/_/g, ' ');
 }
 
-/** `1 device` / `3 devices`. */
-export function plural(count: number, one: string, many = `${one}s`): string {
-  return `${count} ${count === 1 ? one : many}`;
-}
-
 // --------------------------------------------------------------------- tones
 
 export function stateTone(state: ChangeState): StatusTone {

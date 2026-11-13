@@ -22,7 +22,8 @@ import { Button } from '@/design/Button';
 import { Checkbox } from '@/design/Checkbox';
 import { Field } from '@/design/Field';
 import { Input } from '@/design/Input';
-import { plural, RISK_LABEL } from './change';
+import { plural } from '@/lib/format';
+import { RISK_LABEL } from './change';
 import {
   needsConfirmation,
   readiness,

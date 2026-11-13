@@ -40,7 +40,7 @@ import { toast } from '@/design/Toast';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { formatCount } from '@/lib/format';
 import { Group } from './parts';
-import { plural } from './plural';
+import { plural } from '@/lib/format';
 import styles from './Settings.module.css';
 
 /** What each maturity level actually promises. */

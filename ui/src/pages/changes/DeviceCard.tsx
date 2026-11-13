@@ -21,7 +21,8 @@ import { cx } from '@/lib/cx';
 import { formatDateTime } from '@/lib/time';
 import { ApplyStepper, Checks } from './ApplyStepper';
 import { CommandList } from './CommandList';
-import { hitKindLabel, plural, RISK_LABEL, riskTone, TARGET_STATE_LABEL, targetStateTone } from './change';
+import { plural } from '@/lib/format';
+import { hitKindLabel, RISK_LABEL, riskTone, TARGET_STATE_LABEL, targetStateTone } from './change';
 import { PlanDiff } from './PlanDiff';
 import styles from './DeviceCard.module.css';
 

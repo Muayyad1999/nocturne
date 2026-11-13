@@ -6,7 +6,6 @@ import {
   diffTagLabel,
   hitKindLabel,
   isFinished,
-  plural,
   predictedLines,
   rollbackCandidates,
   stateTone,
@@ -137,12 +136,6 @@ describe('predictedLines', () => {
 });
 
 describe('words', () => {
-  it('counts', () => {
-    expect(plural(1, 'device')).toBe('1 device');
-    expect(plural(3, 'device')).toBe('3 devices');
-    expect(plural(2, 'protected resource')).toBe('2 protected resources');
-  });
-
   it('turns a protected-resource rule into something an approver can act on', () => {
     expect(hitKindLabel('access_vty')).toBe('Login lines');
     expect(hitKindLabel('trunk_allowed_replace')).toContain('replaced');
