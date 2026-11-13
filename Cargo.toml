@@ -31,6 +31,15 @@ nocturne-changes = { path = "crates/nocturne-changes" }
 nocturne-automation = { path = "crates/nocturne-automation" }
 nocturne-logs = { path = "crates/nocturne-logs" }
 nocturne-ops = { path = "crates/nocturne-ops" }
+nocturne-monitor = { path = "crates/nocturne-monitor" }
+nocturne-discovery = { path = "crates/nocturne-discovery" }
+nocturne-topology = { path = "crates/nocturne-topology" }
+nocturne-insights = { path = "crates/nocturne-insights" }
+nocturne-ipam = { path = "crates/nocturne-ipam" }
+nocturne-toolbox = { path = "crates/nocturne-toolbox" }
+nocturne-lab = { path = "crates/nocturne-lab" }
+nocturne-assistant = { path = "crates/nocturne-assistant" }
+nocturne-design = { path = "crates/nocturne-design" }
 nocturne-suite = { path = "crates/nocturne-suite" }
 nocturne-server = { path = "crates/nocturne-server" }
 
