@@ -1,0 +1,157 @@
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+}
+
+.result[data-tone='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+  background: var(--ok-soft);
+}
+
+.result[data-tone='crit'] {
+  border-color: color-mix(in srgb, var(--crit) 40%, var(--line));
+  background: var(--crit-soft);
+}
+
+.verdictIcon {
+  flex: none;
+  color: var(--text-2);
+}
+
+.result[data-tone='ok'] .verdictIcon {
+  color: var(--ok);
+}
+
+.result[data-tone='crit'] .verdictIcon {
+  color: var(--crit);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.headline {
+  margin: 0;
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+.elapsed {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.message {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* The stages a connection goes through, so a failure says where it stopped. */
+.stages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 2px var(--sp-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+}
+
+.stage[data-state='done'] {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.stage[data-state='failed'] {
+  border-color: color-mix(in srgb, var(--crit) 45%, transparent);
+  background: var(--crit-soft);
+  color: var(--crit);
+}
+
+.arrow {
+  color: var(--text-3);
+}
+
+.warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.warning {
+  display: flex;
+  gap: var(--sp-6);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+  border-radius: var(--radius-control);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.warningIcon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--warn);
+}
+
+.facts {
+  margin: 0;
+}
+
+.evidence {
+  margin: 0;
+}
+
+.detail {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-8);
+}
+
+.summary {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.summary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.detailBody {
+  padding-top: var(--sp-8);
+}

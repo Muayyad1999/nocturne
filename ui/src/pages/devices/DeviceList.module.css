@@ -1,0 +1,131 @@
+.search {
+  width: 260px;
+  flex: none;
+}
+
+/* The lab switch: three segments that read as one control. */
+.segmented {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+}
+
+.segment {
+  padding: 0 var(--sp-8);
+  border: 0;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: none;
+  color: var(--text-2);
+  font: var(--fw-medium) var(--fs-12) / 22px var(--font-ui);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.segment:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.segment[aria-pressed='true'] {
+  background: var(--bg-4);
+  color: var(--text-1);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The bar that appears when rows are selected. */
+.bulk {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8) var(--sp-6) var(--sp-12);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+}
+
+.bulkCount {
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.nameText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The name gives way first: a pill that says LAB or Protected must not be
+   cut in half. */
+.name > :not(.link) {
+  flex: none;
+}
+
+.link {
+  /* The name, not the pills beside it, is what gives way when the cell is
+     narrow. */
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+}
+
+.link:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  white-space: nowrap;
+}
+
+.tags {
+  display: flex;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.tags > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.table {
+  flex: 1;
+  min-height: 240px;
+}

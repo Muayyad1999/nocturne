@@ -1,0 +1,114 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.sectionTitle {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 120px;
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+@media (max-width: 560px) {
+  .row,
+  .pair {
+    grid-template-columns: 1fr;
+  }
+}
+
+.switches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.switchRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.switchHint {
+  margin: 0;
+  padding-left: 42px;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/* The credential that is being created inline, inside the drawer. */
+.inline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  padding: var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.inlineHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.inlineTitle {
+  margin: 0;
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.inlineActions {
+  display: flex;
+  gap: var(--sp-8);
+}
+
+.testBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.testHint {
+  flex: 1 1 200px;
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.error {
+  margin: 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
+}
+
+.grow {
+  flex: 1 1 220px;
+  min-width: 0;
+}

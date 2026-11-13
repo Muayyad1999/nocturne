@@ -1,0 +1,201 @@
+.header {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+/* Name and actions on one line; what the device is, on the next. */
+.headRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8) var(--sp-12);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.dot::before {
+  content: '·';
+  padding-right: var(--sp-6);
+  color: var(--text-3);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-left: auto;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .panels {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.tabBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+}
+
+.fill {
+  flex: 1;
+  min-height: 260px;
+}
+
+/* The "last collected" line above a data table. */
+.freshness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.source {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* One card per collected kind on the Data tab. */
+.kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-12);
+}
+
+.kind {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+  text-align: left;
+}
+
+.kind[data-state='missing'],
+.kind[data-state='unsupported'] {
+  background: none;
+  border-style: dashed;
+}
+
+.kindHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.kindName {
+  margin: 0;
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.kindCount {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.kindText {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.kindFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-top: var(--sp-4);
+}
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  max-width: 760px;
+}
+
+.notesFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.saved {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.warnText {
+  color: var(--warn);
+}
+
+.error {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid color-mix(in srgb, var(--crit) 40%, var(--line));
+  border-radius: var(--radius-control);
+  background: var(--crit-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--sp-12);
+}
+
+.testSlot {
+  max-width: 760px;
+}

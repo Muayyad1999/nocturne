@@ -1,0 +1,53 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+/* A checkbox that arms the field next to it: untouched fields are left alone. */
+.row {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: var(--sp-12);
+  align-items: center;
+}
+
+@media (max-width: 560px) {
+  .row {
+    grid-template-columns: 1fr;
+    gap: var(--sp-6);
+  }
+}
+
+.control[data-off='true'] {
+  opacity: 0.55;
+}
+
+.tags {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+@media (max-width: 560px) {
+  .tags {
+    grid-template-columns: 1fr;
+  }
+}
+
+.summary {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.nothing {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}

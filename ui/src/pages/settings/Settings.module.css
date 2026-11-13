@@ -1,0 +1,356 @@
+.layout {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  gap: var(--sp-20);
+  flex: 1;
+  min-height: 0;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+    gap: var(--sp-12);
+  }
+}
+
+/* The list of sections on the left. */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  position: sticky;
+  top: 0;
+}
+
+@media (max-width: 900px) {
+  .nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8);
+  border-radius: var(--radius-control);
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.navItem:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.navItem[aria-current='page'] {
+  background: var(--bg-4);
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+
+.navIcon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.navItem[aria-current='page'] .navIcon {
+  color: var(--accent);
+}
+
+/* The section on the right. */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-20);
+  min-width: 0;
+  max-width: 1040px;
+  padding-bottom: var(--sp-24);
+}
+
+.lead {
+  margin: 0 0 var(--sp-4);
+  color: var(--text-2);
+  font-size: var(--fs-13);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  padding: var(--sp-16);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.groupHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-12);
+}
+
+.groupTitle {
+  margin: 0;
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+.groupText {
+  margin: var(--sp-4) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.groupActions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+.groupBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* One setting: text on the left, control on the right. */
+.setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 300px);
+  gap: var(--sp-12);
+  align-items: start;
+  padding: var(--sp-10, 10px) 0;
+  border-top: 1px solid var(--line);
+}
+
+.setting:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.setting[data-narrow] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 160px);
+}
+
+@media (max-width: 640px) {
+  .setting,
+  .setting[data-narrow] {
+    grid-template-columns: 1fr;
+    gap: var(--sp-6);
+  }
+}
+
+.settingText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.settingLabel {
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.settingHelp {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.settingHelp[data-invalid] {
+  color: var(--crit);
+}
+
+.settingControl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.saved {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 14px;
+  color: var(--ok);
+  font-size: var(--fs-11);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.saved[data-show] {
+  opacity: 1;
+}
+
+/* Shared pieces inside sections. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.muted {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.note {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.note[data-tone='warn'] {
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
+  background: var(--warn-soft);
+  color: var(--text-1);
+}
+
+.note[data-tone='crit'] {
+  border-color: color-mix(in srgb, var(--crit) 40%, var(--line));
+  background: var(--crit-soft);
+  color: var(--text-1);
+}
+
+.note[data-tone='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+  background: var(--ok-soft);
+  color: var(--text-1);
+}
+
+.table {
+  min-height: 160px;
+}
+
+.secretState {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  white-space: nowrap;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+@media (max-width: 640px) {
+  .fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The device-type editor: list, YAML, resolved view. */
+.editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-12);
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+.editorTitle {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+.editorPane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+  min-height: 0;
+}
+
+.yaml {
+  flex: 1;
+  /* Tall enough to read a real profile without scrolling every few lines. */
+  min-height: min(62vh, 620px);
+  font-family: var(--font-mono);
+}
+
+.problems {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid color-mix(in srgb, var(--crit) 40%, var(--line));
+  border-radius: var(--radius-control);
+  background: var(--crit-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  list-style: none;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.problem {
+  font-family: var(--font-mono);
+}
+
+.kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+/* Badges inside a fixed-height table row: one line, cut rather than wrapped. */
+.rowBadges {
+  display: flex;
+  gap: var(--sp-4);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.wide {
+  max-width: none;
+}
+
+.full {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+}
+
+/* The device-type editor wants every pixel the window has. */
+.body[data-wide] {
+  max-width: none;
+}
