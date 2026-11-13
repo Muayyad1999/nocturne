@@ -1,0 +1,118 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# `cargo build` / `cargo test` at the root skip the desktop shell so the engine
+# can be built and tested on machines without the WebView toolchain.
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+authors = ["Muayyad1999"]
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/Muayyad1999/nocturne"
+publish = false
+
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+nocturne-textfsm = { path = "crates/nocturne-textfsm" }
+nocturne-snmp = { path = "crates/nocturne-snmp" }
+nocturne-transport = { path = "crates/nocturne-transport" }
+nocturne-netsim = { path = "crates/nocturne-netsim" }
+nocturne-tools = { path = "crates/nocturne-tools" }
+nocturne-drivers = { path = "crates/nocturne-drivers" }
+nocturne-ai = { path = "crates/nocturne-ai" }
+nocturne-app = { path = "crates/nocturne-app" }
+nocturne-server = { path = "crates/nocturne-server" }
+
+# --- async / runtime -------------------------------------------------------
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-trait = "0.1"
+bytes = "1"
+
+# --- data ------------------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+indexmap = { version = "2", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+csv = "1"
+base64 = "0.23"
+hex = "0.4"
+rusqlite = { version = "0.42", default-features = false, features = ["bundled", "cache"] }
+
+# --- text ------------------------------------------------------------------
+regex = "1"
+fancy-regex = "0.20"
+minijinja = { version = "3", features = ["json", "loop_controls", "preserve_order", "serde"] }
+similar = "3"
+
+# --- errors / logging ------------------------------------------------------
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- network ---------------------------------------------------------------
+# TLS everywhere uses rustls + ring (no C toolchain / cmake needed, cross-compiles cleanly).
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "charset", "system-proxy", "json", "stream", "gzip", "query", "form"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "dsa", "des", "flate2"] }
+socket2 = { version = "0.6", features = ["all"] }
+ipnet = { version = "2", features = ["serde"] }
+hickory-resolver = "0.26"
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+
+# --- crypto ----------------------------------------------------------------
+rand = "0.9"
+getrandom = "0.3"
+sha2 = "0.11"
+sha1 = "0.11"
+md-5 = "0.11"
+hmac = "0.13"
+aes = "0.9"
+cfb-mode = "0.9"
+des = "0.9"
+cbc = "0.2"
+chacha20poly1305 = "0.11"
+argon2 = "0.6"
+zeroize = { version = "1", features = ["derive"] }
+
+# --- misc ------------------------------------------------------------------
+parking_lot = "0.12"
+dirs = "7"
+clap = { version = "4", features = ["derive", "env"] }
+tempfile = "3"
+pretty_assertions = "1"
+
+[profile.dev]
+debug = "line-tables-only"
+# Crypto-heavy dependencies (SSH key exchange, Argon2, SNMPv3 key localisation)
+# are unusably slow unoptimised, so dependencies get optimised once.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 8
+strip = true
+panic = "unwind"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"

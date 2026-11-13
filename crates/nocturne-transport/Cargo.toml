@@ -1,0 +1,24 @@
+[package]
+name = "nocturne-transport"
+description = "Interactive device transports: SSH, Telnet and serial console."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio.workspace = true
+russh.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

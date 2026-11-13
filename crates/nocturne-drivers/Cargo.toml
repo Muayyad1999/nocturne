@@ -1,0 +1,29 @@
+[package]
+name = "nocturne-drivers"
+description = "Device profiles, CLI driver, structured collectors and hierarchical config diff."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nocturne-textfsm.workspace = true
+nocturne-transport.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+indexmap.workspace = true
+regex.workspace = true
+minijinja.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[lints]
+workspace = true

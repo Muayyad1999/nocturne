@@ -1,0 +1,55 @@
+[package]
+name = "nocturne-app"
+description = "Application core: store, vault, inventory, sessions, monitoring, config, changes, automation, labs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nocturne-textfsm.workspace = true
+nocturne-snmp.workspace = true
+nocturne-transport.workspace = true
+nocturne-netsim.workspace = true
+nocturne-tools.workspace = true
+nocturne-drivers.workspace = true
+nocturne-ai.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+indexmap.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+csv.workspace = true
+base64.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
+regex.workspace = true
+minijinja.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+ipnet.workspace = true
+rand.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+chacha20poly1305.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
