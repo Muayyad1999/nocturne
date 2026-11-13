@@ -11,21 +11,22 @@ publish.workspace = true
 nocturne-app.workspace = true
 nocturne-drivers.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 futures.workspace = true
-async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 nocturne-ai.workspace = true
 regex.workspace = true
 sha2.workspace = true
 hex.workspace = true
-indexmap.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
+async-trait.workspace = true
+# Tests need one device that is *not* a lab device: a fake switch served over
+# a real SSH socket on localhost.
+nocturne-transport.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

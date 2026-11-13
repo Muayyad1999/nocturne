@@ -16,6 +16,7 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_app::init(builder);
     nocturne_terminal::init(builder);
     nocturne_config::init(builder);
+    nocturne_changes::init(builder);
 }
 
 /// Assemble and start the application.
@@ -58,6 +59,15 @@ mod tests {
             "config.search",
             "config.diff",
             "compliance.run",
+            "config.drift",
+            // changes
+            "changes.create",
+            "changes.plan",
+            "changes.approve",
+            "changes.apply",
+            "changes.rollback",
+            "changes.assistant_apply",
+            "changes.preview",
             "config.drift",
         ] {
             assert!(

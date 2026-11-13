@@ -20,13 +20,25 @@ pub struct SettingsState {
 }
 
 /// Register a section and its default values (a JSON object).
+///
+/// Two modules may share a section — the change pipeline and the assistant
+/// both have something to say about autonomy — so declaring is a merge, not a
+/// replacement: keys a previous module declared are kept, and new ones are
+/// added. Otherwise whichever module happened to start last would silently
+/// decide the whole section, and settings nobody declared would read as
+/// missing.
 pub fn declare<T: Serialize>(builder: &mut AppBuilder, section: &str, defaults: &T) {
     let value = serde_json::to_value(defaults).unwrap_or(Value::Null);
-    builder
-        .get::<SettingsState>()
-        .defaults
-        .write()
-        .insert(section.to_string(), value);
+    let state = builder.get::<SettingsState>();
+    let mut defaults = state.defaults.write();
+    match defaults.get_mut(section) {
+        // `merge` lets the patch win; here the module already registered does,
+        // so the arguments are the other way round.
+        Some(existing) => *existing = merge(value, existing.clone()),
+        None => {
+            defaults.insert(section.to_string(), value);
+        }
+    }
 }
 
 /// Read a section as a typed value (stored values over defaults).
@@ -156,6 +168,31 @@ mod tests {
     struct Nested {
         a: u32,
         b: u32,
+    }
+
+    #[tokio::test]
+    async fn two_modules_can_declare_one_section() {
+        let mut builder = AppBuilder::new(AppConfig::in_memory()).unwrap();
+        init(&mut builder);
+        // What one module knows about the section...
+        declare(&mut builder, "shared", &json!({"autonomy": "draft"}));
+        // ...and what another knows, including its own view of a shared key.
+        declare(
+            &mut builder,
+            "shared",
+            &json!({"autonomy": "lab", "max_steps": 40}),
+        );
+        let app = builder.build();
+
+        let value = get_value(&app, "shared").unwrap();
+        assert_eq!(
+            value["max_steps"], 40,
+            "the later module's own keys are there"
+        );
+        assert_eq!(
+            value["autonomy"], "draft",
+            "a key already declared is not overwritten"
+        );
     }
 
     #[tokio::test]
