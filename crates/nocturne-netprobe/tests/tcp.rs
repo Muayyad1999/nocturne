@@ -74,9 +74,19 @@ async fn http_server() -> Option<(u16, tokio::sync::mpsc::UnboundedReceiver<Vec<
     None
 }
 
+/// How long a connection to a *closed* port may take to be refused.
+///
+/// Instant on Linux, which answers with a reset; a little over two seconds on
+/// Windows, which retransmits the SYN before giving up. A port whose refusal
+/// has not arrived yet is reported as filtered — correctly, since nothing has
+/// been heard — so a budget shorter than this makes a closed port look
+/// filtered there and nowhere else. It is an upper bound, so it costs a
+/// platform that answers at once nothing at all.
+const REFUSAL_BUDGET: Duration = Duration::from_secs(5);
+
 fn fast_options() -> ScanOptions {
     ScanOptions {
-        timeout_ms: 500,
+        timeout_ms: REFUSAL_BUDGET.as_millis() as u64,
         concurrency: 50,
         grab_banners: true,
     }
@@ -191,14 +201,10 @@ async fn duplicates_are_scanned_once_and_service_names_are_filled_in() {
 async fn check_reports_one_port() {
     let open = greeting_server(b"SSH-2.0-NocturneTest_1.0\r\n").await;
     let closed = closed_port().await;
-    let result = tcp::check(LOCALHOST, open, Duration::from_secs(1))
-        .await
-        .unwrap();
+    let result = tcp::check(LOCALHOST, open, REFUSAL_BUDGET).await.unwrap();
     assert_eq!(result.state, PortState::Open);
     assert_eq!(result.banner, None, "check does not wait for a banner");
-    let result = tcp::check(LOCALHOST, closed, Duration::from_secs(1))
-        .await
-        .unwrap();
+    let result = tcp::check(LOCALHOST, closed, REFUSAL_BUDGET).await.unwrap();
     assert_eq!(result.state, PortState::Closed);
 
     assert!(matches!(

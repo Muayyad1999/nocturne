@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, date_time_ymd};
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose, date_time_ymd,
+};
 use rustls::ServerConfig;
 use rustls::client::danger::ServerCertVerifier;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -125,6 +128,16 @@ fn params(names: &[&str], common_name: &str, from: Date, until: Date) -> Certifi
         .push(DnType::CommonName, common_name);
     params.not_before = date_time_ymd(from.0, from.1, from.2);
     params.not_after = date_time_ymd(until.0, until.1, until.2);
+    // A real server certificate says what it is for, and macOS insists on it:
+    // without `serverAuth` in the extended key usage, the Security framework
+    // refuses the chain with `EkuError` / "is not trusted: -67843" before it
+    // considers who signed it. Eight of these tests failed there and nowhere
+    // else, because webpki on Linux does not require the extension.
+    params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params
 }
 
@@ -168,6 +181,14 @@ impl TestCa {
         let key = KeyPair::generate().unwrap();
         let mut params = params(&[], "Nocturne Test Root CA", (2020, 1, 1), (2040, 1, 1));
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        // An authority signs certificates and revocation lists; it does not
+        // serve traffic, and saying it does makes some verifiers unhappy.
+        params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::CrlSign,
+            KeyUsagePurpose::DigitalSignature,
+        ];
+        params.extended_key_usages = Vec::new();
         let certificate = params.self_signed(&key).unwrap();
         TestCa {
             certificate: certificate.der().clone(),
