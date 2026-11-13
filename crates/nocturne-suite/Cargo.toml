@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 # Feature crates are added here as they land; each exposes `init(&mut AppBuilder)`.
 nocturne-app.workspace = true
+nocturne-config.workspace = true
+nocturne-terminal.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
