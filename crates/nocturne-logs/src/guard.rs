@@ -45,28 +45,17 @@ const TRIGGERS: &[&str] = &[
     "enc ",       // FortiOS `set password ENC …`
 ];
 
-/// Patterns this crate adds in front of the built-in ones.
-///
-/// `nocturne_ai`'s rules for configuration commands are anchored to the
-/// start of a line, because they were written for configuration files. A log
-/// line *quotes* a command in the middle of itself — IOS's
-/// `%PARSER-5-CFGLOG_LOGGEDCMD`, RouterOS echoing what was typed — so the
-/// anchored form misses it. These are the same commands, unanchored. (The
-/// anchoring belongs upstream; until it moves, a secret would be stored in
-/// the clear without this.)
-const EXTRA_RULES: &[&str] = &[
-    r"(?i)\bset (?:password|passwd|psksecret|secret|key|passphrase|auth-pwd|priv-pwd|ppk-secret|group-password|keystring) (?:ENC )?(?P<secret>\S+)",
-    r"(?i)\bip (?:ftp|scp|tftp) password(?: \d)? (?P<secret>\S+)",
-];
-
 /// The redactor this feature stores lines with.
+///
+/// It is the shared one, with nothing added. This crate used to carry
+/// unanchored copies of two configuration-command rules, because the shared
+/// ones were anchored to the start of a line and a log entry *quotes* a
+/// command in the middle of itself — IOS's `%PARSER-5-CFGLOG_LOGGEDCMD`, a
+/// FortiGate `msg="… set psksecret ENC …"`. That belonged upstream and is
+/// now there, with those log shapes as its test cases, so every caller
+/// benefits rather than only this one.
 pub fn redactor() -> Redactor {
-    Redactor::with_rules(EXTRA_RULES).unwrap_or_else(|err| {
-        // A pattern of ours that does not compile must not stop logging; the
-        // built-in rules still run.
-        tracing::error!(%err, "a log redaction rule does not compile");
-        Redactor::new()
-    })
+    Redactor::new()
 }
 
 /// Whether `haystack` contains `needle` (already lower case), ignoring case.

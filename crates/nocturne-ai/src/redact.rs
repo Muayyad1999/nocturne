@@ -56,8 +56,15 @@ const BUILTIN_RULES: &[&str] = &[
     // --- generic, multi-line -------------------------------------------------
     r"(?P<secret>-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----)",
     // --- IOS / IOS-XE / NX-OS / EOS style -------------------------------------
-    r"(?im)^\s*enable (?:secret|password)(?: level \d+)?(?: (?:\d|sha512|sha256|md5))? (?P<secret>\S+)",
-    r"(?im)^\s*username \S+ .*?(?:secret|password)(?: (?:\d|sha512|sha256|md5))? (?P<secret>\S+)",
+    // These are not anchored to the start of a line on purpose: a device
+    // quotes a configuration command in the middle of a log entry
+    // (`%PARSER-5-CFGLOG_LOGGEDCMD: … logged command:enable secret 5 …`,
+    // or a FortiGate `msg="… set psksecret ENC …"`), and an anchored rule
+    // walks straight past the secret. The keywords are distinctive enough
+    // to be safe anywhere; the ones that are only a word and a value stay
+    // anchored below, because those would fire on prose.
+    r"(?im)\benable (?:secret|password)(?: level \d+)?(?: (?:\d|sha512|sha256|md5))? (?P<secret>\S+)",
+    r"(?im)\busername \S+ .*?(?:secret|password)(?: (?:\d|sha512|sha256|md5))? (?P<secret>\S+)",
     r"(?im)\b(?:password|secret) (?:[0-9]|sha512|sha256|md5|encrypted) (?P<secret>\S+)",
     r#"(?im)^\s*(?:password|secret) (?P<secret>[^\s";]+)\s*$"#,
     r#"(?im)\bsnmp-server community (?P<secret>"[^"]+"|\S+)"#,
@@ -82,7 +89,7 @@ const BUILTIN_RULES: &[&str] = &[
     // it because there is no encoding digit after a keyword it knows.
     r"(?im)\bset-key (?:ascii|hex)\d*(?: \d)? (?P<secret>\S+)",
     // `ip ftp password <password>` (Cisco) — likewise no encoding digit.
-    r"(?im)^\s*ip (?:ftp|scp|tftp) password(?: \d)? (?P<secret>\S+)",
+    r"(?im)\bip (?:ftp|scp|tftp) password(?: \d)? (?P<secret>\S+)",
     r"(?im)\bcommunity(?: name| string)?\s*[:=]\s*(?P<secret>\S+)",
     // --- Junos -----------------------------------------------------------------
     r#"(?im)\b(?:encrypted-password|secret|authentication-key|simple-password|md5-key|key|passphrase)\s+"(?P<secret>[^"]+)""#,
@@ -94,10 +101,10 @@ const BUILTIN_RULES: &[&str] = &[
     r"(?im)^\s*community (?P<secret>[^\s{;]+)\s*\{",
     // --- RouterOS, and key=value styles in general -----------------------------
     r#"(?im)\b(?:password|secret|passphrase|pre-shared-key|preshared-key|psk|private-key|wpa2?-pre-shared-key|authentication-password|encryption-password|auth-key|api-key|token)=(?P<secret>"[^"]*"|[^\s"]+)"#,
-    r#"(?im)^/snmp community\b.*?\bname=(?P<secret>"[^"]*"|\S+)"#,
-    r#"(?im)^(?:add|set)\b.*?\bcommunity=(?P<secret>"[^"]*"|\S+)"#,
+    r#"(?im)/snmp community\b.*?\bname=(?P<secret>"[^"]*"|\S+)"#,
+    r#"(?im)\b(?:add|set)\b[^\n]*?\bcommunity=(?P<secret>"[^"]*"|\S+)"#,
     // --- FortiOS ---------------------------------------------------------------
-    r"(?im)^\s*set (?:password|passwd|psksecret|secret|key|passphrase|auth-pwd|priv-pwd|ppk-secret|group-password|keystring) (?:ENC )?(?P<secret>\S+)",
+    r"(?im)\bset (?:password|passwd|psksecret|secret|key|passphrase|auth-pwd|priv-pwd|ppk-secret|group-password|keystring) (?:ENC )?(?P<secret>\S+)",
     // --- Huawei VRP / H3C Comware ----------------------------------------------
     r"(?im)\b(?:password|key|authentication-mode \S+) (?:cipher|simple|irreversible-cipher|hash) (?P<secret>\S+)",
     r"(?im)\bsnmp-agent community (?:read|write) (?:cipher |simple )?(?P<secret>\S+)",
@@ -527,6 +534,60 @@ set snmp community JunComm authorization read-only
 #[cfg(test)]
 mod idempotence {
     use super::*;
+
+    #[test]
+    fn a_secret_quoted_inside_a_log_line_does_not_escape() {
+        // Every one of these is a real shape: a device telling you what
+        // somebody typed. The rules used to require the command to start the
+        // line, so all of them went past in the clear — and a log line is
+        // exactly the kind of text that reaches a model.
+        let lines = [
+            (
+                "%PARSER-5-CFGLOG_LOGGEDCMD: User:admin logged command:enable secret 5 $1$Qs4w$Kp9",
+                "$1$Qs4w$Kp9",
+            ),
+            (
+                "Nov 13 22:04:01 SW1 %SYS-5-CONFIG_I: logged command:username ops privilege 15 password 0 Hunter2xy",
+                "Hunter2xy",
+            ),
+            (
+                "date=2026-11-13 devname=\"FG100\" msg=\"cfg attr set: set psksecret ENC 7Ab9Qz\"",
+                "7Ab9Qz",
+            ),
+            (
+                "admin typed: ip ftp password FtpSecret9 on CORE1",
+                "FtpSecret9",
+            ),
+            (
+                "/snmp community set name=PrivateString address=0.0.0.0/0",
+                "PrivateString",
+            ),
+            (
+                "12:00:01 cli: set community=WriteMe for the manager",
+                "WriteMe",
+            ),
+        ];
+        for (line, secret) in lines {
+            let redactor = Redactor::new();
+            let out = redactor.redact(line);
+            assert!(!out.contains(secret), "`{secret}` survived in: {out}");
+            assert!(out.contains("<secret:"), "nothing was masked in: {out}");
+        }
+    }
+
+    #[test]
+    fn ordinary_prose_about_passwords_is_left_alone() {
+        // The price of not anchoring is false positives, so the rules that
+        // are only a keyword and a value stay anchored. These must survive.
+        let redactor = Redactor::new();
+        for line in [
+            "the password is wrong, check the credential",
+            "ask the operator for the key before you start",
+            "a community of practice meets on Tuesdays",
+        ] {
+            assert_eq!(redactor.redact(line), line, "prose was masked");
+        }
+    }
 
     #[test]
     fn placeholders_from_somewhere_else_pass_through_whole() {
