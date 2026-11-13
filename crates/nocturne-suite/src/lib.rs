@@ -18,6 +18,13 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_config::init(builder);
     nocturne_changes::init(builder);
     nocturne_lab::init(builder);
+    nocturne_monitor::init(builder);
+    // After the change engine, deliberately: both declare the `assistant`
+    // settings section — they share `autonomy` — and a later `declare` wins
+    // for the keys it names. The assistant declares all nine, the change
+    // engine only `autonomy`, so this order is the one where every key is
+    // visible to a settings screen.
+    nocturne_assistant::init(builder);
 }
 
 /// Assemble and start the application.
@@ -78,6 +85,26 @@ mod tests {
             "labs.expose",
             "labs.twin",
             "config.drift",
+            // monitoring
+            "monitor.status",
+            "monitor.poll_now",
+            "metrics.query",
+            "metrics.top",
+            "alerts.list",
+            "alerts.ack",
+            "alerts.rules.save",
+            "maintenance.save",
+            "notify.channels.save",
+            // the assistant
+            "ai.status",
+            "ai.send",
+            "ai.cancel",
+            "ai.approve",
+            "ai.chats.list",
+            "ai.providers.list",
+            "ai.providers.test",
+            "ai.tools",
+            "ai.usage",
         ] {
             assert!(
                 methods.contains(&expected),
