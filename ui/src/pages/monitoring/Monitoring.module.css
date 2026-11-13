@@ -1,0 +1,528 @@
+/* The page shell: the status strip, the tabs and what fills them. */
+
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+}
+
+.tabCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-full);
+  background: var(--crit-soft);
+  color: var(--crit);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-medium);
+}
+
+/* ------------------------------------------------------------ status strip */
+
+.strip {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.tiles {
+  display: grid;
+  /* Narrow enough that all four still share one row beside the dock at 1280. */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-8);
+}
+
+.tile {
+  padding: var(--sp-12) var(--sp-16);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+a.tile:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-2);
+}
+
+.severities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  justify-content: flex-end;
+  /* Narrow enough that the badges wrap inside the tile rather than running
+     off its edge when four tiles share 900px beside the assistant dock. */
+  max-width: 104px;
+}
+
+.off,
+.problem {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: var(--fs-12);
+}
+
+.off {
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
+  background: var(--warn-soft);
+  color: var(--text-1);
+}
+
+.problemIcon {
+  flex: none;
+  color: var(--warn);
+}
+
+.problemText {
+  min-width: 0;
+  flex: 1;
+}
+
+.problemLink {
+  flex: none;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- filters */
+
+.filters {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.search {
+  width: 240px;
+  flex: none;
+}
+
+/* A select takes the width it needs, not the width of the toolbar. */
+.control {
+  width: 170px;
+  flex: none;
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- tables */
+
+.table {
+  flex: 1;
+  min-height: 200px;
+}
+
+.cell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.cellText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.missing {
+  color: var(--text-3);
+}
+
+.more {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-8);
+}
+
+/* ---------------------------------------------------------- device page */
+
+.deviceHead {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.deviceName {
+  margin: 0;
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+}
+
+.cause {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+  border-color: color-mix(in srgb, var(--crit) 40%, var(--line));
+  background: var(--crit-soft);
+}
+
+.causeIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--crit);
+}
+
+.causeTitle {
+  font-weight: var(--fw-medium);
+}
+
+.causeText {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: var(--sp-12);
+}
+
+.chartCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+/* What is missing from a chart, said in words as well as drawn as a hole. */
+.gaps {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.gapsIcon {
+  color: var(--warn);
+}
+
+/* --------------------------------------------------------------- editors */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-12);
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.testResult {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+}
+
+.matches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  list-style: none;
+}
+
+.match {
+  display: flex;
+  gap: var(--sp-8);
+  justify-content: space-between;
+}
+
+.matchDevice {
+  font-weight: var(--fw-medium);
+}
+
+.matchDetail {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- alert view */
+
+.facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.drawerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+.source {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+}
+
+.sourceName {
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  font-size: var(--fs-11);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+/* A small group of exclusive choices that reads as one control. */
+.segmented {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+}
+
+.segment {
+  padding: 0 var(--sp-8);
+  border: 0;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: none;
+  color: var(--text-2);
+  font: var(--fw-medium) var(--fs-12) / 22px var(--font-ui);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.segment:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.segment[aria-pressed='true'] {
+  background: var(--bg-4);
+  color: var(--text-1);
+}
+
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.linkButton:hover {
+  color: var(--accent-strong);
+}
+
+.deviceLink {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--accent);
+  font-size: var(--fs-12);
+  text-decoration: none;
+}
+
+.deviceLink:hover {
+  text-decoration: underline;
+}
+
+/* --------------------------------------------------------- metric explorer */
+
+.explorer {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: var(--sp-12);
+  flex: 1;
+  min-height: 0;
+  align-items: start;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  max-height: 620px;
+  overflow: hidden;
+}
+
+.seriesList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.chipRemove {
+  display: inline-flex;
+  align-items: center;
+  margin-left: var(--sp-4);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.chipRemove:hover {
+  opacity: 1;
+}
+
+@media (max-width: 1000px) {
+  .explorer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------- secrets */
+
+.secret {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  min-height: 28px;
+}
+
+.secretEdit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-6);
+}
+
+.secretEdit > :first-child {
+  width: 100%;
+}
+
+.clearing {
+  color: var(--crit);
+  font-size: var(--fs-12);
+}
+
+.reveal {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.reveal:hover {
+  color: var(--text-1);
+}
+
+.reveal:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-badge);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.stackTight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.error {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid color-mix(in srgb, var(--crit) 40%, var(--line));
+  border-radius: var(--radius-control);
+  background: var(--crit-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+/* A port that is nearly full: the number carries a warning, with a tooltip. */
+.high {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
