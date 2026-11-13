@@ -22,6 +22,8 @@ parking_lot.workspace = true
 nocturne-netprobe.workspace = true
 nocturne-snmp.workspace = true
 nocturne-tools.workspace = true
+ipnet.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true

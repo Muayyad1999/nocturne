@@ -14,6 +14,7 @@ pub use nocturne_app::{App, AppBuilder, AppConfig, AppError, AppResult, Event};
 /// events, settings and background tasks of its own.
 pub fn init(builder: &mut AppBuilder) {
     nocturne_app::init(builder);
+    nocturne_discovery::init(builder);
     nocturne_terminal::init(builder);
     nocturne_config::init(builder);
     nocturne_changes::init(builder);
@@ -99,6 +100,14 @@ mod tests {
             "alerts.rules.save",
             "maintenance.save",
             "notify.channels.save",
+            // discovery
+            "discovery.suggest",
+            "discovery.scan",
+            "discovery.scans",
+            "discovery.preview",
+            "discovery.add",
+            "discovery.crawl",
+            "discovery.ignore",
             // the topology
             "topology.get",
             "topology.path",
