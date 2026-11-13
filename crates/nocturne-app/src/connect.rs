@@ -1103,7 +1103,13 @@ mod tests {
 
         #[async_trait]
         impl SimConnector for HoldsTheApp {
-            async fn open(&self, _app: &App, _lab: &LabRef, _cols: u16, _rows: u16) -> AppResult<Connection> {
+            async fn open(
+                &self,
+                _app: &App,
+                _lab: &LabRef,
+                _cols: u16,
+                _rows: u16,
+            ) -> AppResult<Connection> {
                 Err(AppError::unavailable("nothing to open in this test"))
             }
         }
@@ -1113,7 +1119,8 @@ mod tests {
             let mut builder = AppBuilder::new(crate::app::AppConfig::at(dir.path())).unwrap();
             crate::init(&mut builder);
             let app = builder.build();
-            app.state::<ConnectState>().set_sim_connector(Arc::new(HoldsTheApp));
+            app.state::<ConnectState>()
+                .set_sim_connector(Arc::new(HoldsTheApp));
             app.shutdown();
         }
         // The application is out of scope: its lock must have gone with it.
