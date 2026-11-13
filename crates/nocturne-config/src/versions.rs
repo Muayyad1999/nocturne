@@ -108,7 +108,12 @@ pub fn read(app: &App, id: i64) -> AppResult<(ConfigVersion, String)> {
 }
 
 /// The newest `count` versions of a device, newest first.
-pub fn newest(app: &App, device_id: &str, kind: Kind, count: usize) -> AppResult<Vec<ConfigVersion>> {
+pub fn newest(
+    app: &App,
+    device_id: &str,
+    kind: Kind,
+    count: usize,
+) -> AppResult<Vec<ConfigVersion>> {
     db::newest(app.store(), device_id, kind.as_str(), count)?
         .into_iter()
         .map(|row| from_row(app, row))
@@ -120,7 +125,12 @@ pub fn latest(app: &App, device_id: &str, kind: Kind) -> AppResult<Option<Config
 }
 
 /// The latest version of a device, or the `not_found` error that says there is no backup yet.
-pub fn require_latest(app: &App, device_name: &str, device_id: &str, kind: Kind) -> AppResult<ConfigVersion> {
+pub fn require_latest(
+    app: &App,
+    device_name: &str,
+    device_id: &str,
+    kind: Kind,
+) -> AppResult<ConfigVersion> {
     latest(app, device_id, kind)?.ok_or_else(|| no_backup(device_name, kind))
 }
 
@@ -189,6 +199,15 @@ pub fn pin(app: &App, version_id: i64, reason: &str) -> AppResult<ConfigVersion>
     }
     let version = get(app, version_id)?;
     db::pin(app.store(), version_id, &reason, now_ms())?;
+    app.audit(
+        "config.pin",
+        Some(&version.device_id),
+        format!(
+            "Pinned configuration version {version_id} of `{}`: {reason}",
+            device_name(app, &version.device_id)
+        ),
+        json!({"version_id": version_id, "reason": reason}),
+    );
     announce_pin(app, &version, true);
     get(app, version_id)
 }
@@ -199,6 +218,21 @@ pub fn unpin(app: &App, version_id: i64, reason: Option<&str>) -> AppResult<Conf
     let reason = reason.map(|reason| reason.split_whitespace().collect::<Vec<_>>().join(" "));
     db::unpin(app.store(), version_id, reason.as_deref())?;
     let version_now = get(app, version_id)?;
+    if version.pin_reasons != version_now.pin_reasons {
+        app.audit(
+            "config.unpin",
+            Some(&version.device_id),
+            format!(
+                "Unpinned configuration version {version_id} of `{}`{}",
+                device_name(app, &version.device_id),
+                match &reason {
+                    Some(reason) => format!(": {reason}"),
+                    None => String::new(),
+                }
+            ),
+            json!({"version_id": version_id, "reason": reason}),
+        );
+    }
     if version.pinned != version_now.pinned {
         announce_pin(app, &version_now, false);
     }
@@ -292,7 +326,12 @@ pub fn prune(app: &App, device_id: &str, kind: &str, keep: u32) -> AppResult<usi
         return Ok(0);
     }
     let removed = db::delete(app.store(), &expired)?;
-    tracing::debug!(device_id, kind, removed, "pruned old configuration versions");
+    tracing::debug!(
+        device_id,
+        kind,
+        removed,
+        "pruned old configuration versions"
+    );
     Ok(removed)
 }
 
@@ -356,7 +395,12 @@ struct UnpinParams {
 }
 
 /// Record that someone asked to see a configuration with its secrets.
-pub(crate) fn audit_unredacted(app: &App, device_id: &str, device_name: &str, detail: serde_json::Value) {
+pub(crate) fn audit_unredacted(
+    app: &App,
+    device_id: &str,
+    device_name: &str,
+    detail: serde_json::Value,
+) {
     app.audit(
         "config.view_unredacted",
         Some(device_id),
@@ -376,7 +420,9 @@ fn present(app: &App, version: ConfigVersion, text: String, redact: bool) -> Con
     } else {
         let name = target
             .as_ref()
-            .map_or(version.device_id.as_str(), |target| target.device.name.as_str());
+            .map_or(version.device_id.as_str(), |target| {
+                target.device.name.as_str()
+            });
         audit_unredacted(
             app,
             &version.device_id,
@@ -393,32 +439,43 @@ fn present(app: &App, version: ConfigVersion, text: String, redact: bool) -> Con
 }
 
 pub(crate) fn register(router: &mut Router) {
-    router.add("config.versions", |app: App, params: VersionsParams| async move {
-        let device = inventory::find(&app, &params.device_id)?;
-        let limit = params.limit.unwrap_or(50).clamp(1, 500);
-        db::page(
-            app.store(),
-            &device.id,
-            params.kind.unwrap_or_default().as_str(),
-            params.before_id,
-            limit,
-        )?
-        .into_iter()
-        .map(|row| from_row(&app, row))
-        .collect::<AppResult<Vec<ConfigVersion>>>()
-    });
+    router.add(
+        "config.versions",
+        |app: App, params: VersionsParams| async move {
+            let device = inventory::find(&app, &params.device_id)?;
+            let limit = params.limit.unwrap_or(50).clamp(1, 500);
+            db::page(
+                app.store(),
+                &device.id,
+                params.kind.unwrap_or_default().as_str(),
+                params.before_id,
+                limit,
+            )?
+            .into_iter()
+            .map(|row| from_row(&app, row))
+            .collect::<AppResult<Vec<ConfigVersion>>>()
+        },
+    );
 
     router.add("config.get", |app: App, params: GetParams| async move {
         let (version, text) = read(&app, params.version_id)?;
         Ok(present(&app, version, text, params.redact.unwrap_or(true)))
     });
 
-    router.add("config.latest", |app: App, params: LatestParams| async move {
-        let device = inventory::find(&app, &params.device_id)?;
-        let version = require_latest(&app, &device.name, &device.id, params.kind.unwrap_or_default())?;
-        let (version, text) = read(&app, version.id)?;
-        Ok(present(&app, version, text, params.redact.unwrap_or(true)))
-    });
+    router.add(
+        "config.latest",
+        |app: App, params: LatestParams| async move {
+            let device = inventory::find(&app, &params.device_id)?;
+            let version = require_latest(
+                &app,
+                &device.name,
+                &device.id,
+                params.kind.unwrap_or_default(),
+            )?;
+            let (version, text) = read(&app, version.id)?;
+            Ok(present(&app, version, text, params.redact.unwrap_or(true)))
+        },
+    );
 
     router.add("config.delete", |app: App, params: DeleteParams| async move {
         match (params.device_id, params.version_ids) {

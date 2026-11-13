@@ -69,7 +69,11 @@ fn file_stem(name: &str) -> String {
     while stem.len() > 180 {
         stem.pop();
     }
-    let device = stem.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let device = stem
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
     let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (device.len() == 4
             && (device.starts_with("COM") || device.starts_with("LPT"))
@@ -99,7 +103,8 @@ fn prepare(dir: &Path) -> AppResult<Marker> {
     }
     let marker = dir.join(MARKER);
     if marker.is_file() {
-        let text = std::fs::read_to_string(&marker).map_err(|err| io_error("read", &marker, err))?;
+        let text =
+            std::fs::read_to_string(&marker).map_err(|err| io_error("read", &marker, err))?;
         // A damaged marker still marks the folder as ours; it just lists nothing to tidy up.
         return Ok(serde_json::from_str(&text).unwrap_or_default());
     }
@@ -130,8 +135,9 @@ fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
 
 fn export(app: &App, dir: &Path, targets: &[Target], redact: bool) -> AppResult<ExportResult> {
     let previous = prepare(dir)?;
-    let redaction = redact
-        .then(|| Redaction::for_profiles(app, targets.iter().map(|target| target.profile.as_str())));
+    let redaction = redact.then(|| {
+        Redaction::for_profiles(app, targets.iter().map(|target| target.profile.as_str()))
+    });
 
     let mut written: Vec<String> = Vec::new();
     // Lower-cased, because most desktop file systems do not tell `SW1` from `sw1`.
@@ -211,36 +217,42 @@ struct ExportParams {
 }
 
 pub(crate) fn register(router: &mut Router) {
-    router.add("config.export", |app: App, params: ExportParams| async move {
-        app.require_local_access("Exporting configurations to a folder")?;
-        let dir = PathBuf::from(params.dir.trim());
-        if !dir.is_absolute() {
-            return Err(AppError::invalid(
-                "`dir` must be the full path of the folder to export into",
-            ));
-        }
-        let targets = scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
-        let redact = params.redact.unwrap_or(false);
-        let result = {
-            let app = app.clone();
-            tokio::task::spawn_blocking(move || export(&app, &dir, &targets, redact))
-                .await
-                .map_err(|err| AppError::internal(format!("the export stopped unexpectedly: {err}")))??
-        };
-        app.audit(
-            "config.export",
-            None,
-            format!(
-                "Exported the {}configurations of {} device{} to `{}`",
-                if redact { "redacted " } else { "unredacted " },
-                result.devices,
-                if result.devices == 1 { "" } else { "s" },
-                result.dir
-            ),
-            json!({"dir": result.dir, "files": result.files, "redacted": redact}),
-        );
-        Ok(result)
-    });
+    router.add(
+        "config.export",
+        |app: App, params: ExportParams| async move {
+            app.require_local_access("Exporting configurations to a folder")?;
+            let dir = PathBuf::from(params.dir.trim());
+            if !dir.is_absolute() {
+                return Err(AppError::invalid(
+                    "`dir` must be the full path of the folder to export into",
+                ));
+            }
+            let targets =
+                scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
+            let redact = params.redact.unwrap_or(false);
+            let result = {
+                let app = app.clone();
+                tokio::task::spawn_blocking(move || export(&app, &dir, &targets, redact))
+                    .await
+                    .map_err(|err| {
+                        AppError::internal(format!("the export stopped unexpectedly: {err}"))
+                    })??
+            };
+            app.audit(
+                "config.export",
+                None,
+                format!(
+                    "Exported the {}configurations of {} device{} to `{}`",
+                    if redact { "redacted " } else { "unredacted " },
+                    result.devices,
+                    if result.devices == 1 { "" } else { "s" },
+                    result.dir
+                ),
+                json!({"dir": result.dir, "files": result.files, "redacted": redact}),
+            );
+            Ok(result)
+        },
+    );
 }
 
 #[cfg(test)]

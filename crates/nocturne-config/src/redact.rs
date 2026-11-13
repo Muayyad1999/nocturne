@@ -13,15 +13,31 @@ use nocturne_ai::Redactor;
 use nocturne_app::{App, profiles};
 use nocturne_drivers::hier;
 
+/// Patterns this crate adds in front of the redactor's own.
+///
+/// They cover secret forms a built-in rule reads wrongly. Extra rules run
+/// before the built-in ones, so hiding the value here keeps the later rule
+/// from matching the wrong word. Each of these belongs upstream in
+/// `nocturne_ai::redact`; until it is there, a configuration must not leave
+/// this crate with the value in it.
+const GAP_RULES: &[&str] = &[
+    // `ntp authentication-key 1 md5 <key> 7`: the generic `authentication-key`
+    // rule matches `md5` as the secret and leaves the key itself in the clear.
+    r"(?im)\bntp authentication-key \d+ md5 (?P<secret>\S+)",
+];
+
 pub struct Redaction {
     redactor: Redactor,
 }
 
 impl Redaction {
     /// The built-in rules plus the `config.secrets` patterns of the given device types.
-    pub fn for_profiles<'a>(app: &App, profile_ids: impl IntoIterator<Item = &'a str>) -> Redaction {
+    pub fn for_profiles<'a>(
+        app: &App,
+        profile_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Redaction {
         let registry = profiles::registry(app);
-        let mut patterns: Vec<String> = Vec::new();
+        let mut patterns: Vec<String> = GAP_RULES.iter().map(|rule| rule.to_string()).collect();
         for platform in profile_ids.into_iter().filter_map(|id| registry.get(id)) {
             for pattern in &platform.profile.config.secrets {
                 if !patterns.contains(pattern) {
@@ -51,7 +67,8 @@ impl Redaction {
 /// Whether the built-in rules would hide part of `text` — used to tell a
 /// person that what they typed can never match redacted text.
 pub fn has_secret(text: &str) -> bool {
-    Redactor::new().redact(text) != text
+    let redactor = Redactor::with_rules(GAP_RULES).unwrap_or_default();
+    redactor.redact(text) != text
 }
 
 /// Whether `text` carries placeholders left by an earlier redaction.
@@ -113,14 +130,15 @@ mod tests {
 
     fn redact(text: &str) -> String {
         Redaction {
-            redactor: Redactor::new(),
+            redactor: Redactor::with_rules(GAP_RULES).expect("the crate's own rules compile"),
         }
         .text(text)
     }
 
     #[test]
     fn single_line_secrets_stay_on_their_line() {
-        let config = "hostname R1\nenable secret 5 $1$abcd$efghijklmnopqrstuvwxyz\nntp server 192.0.2.1\n";
+        let config =
+            "hostname R1\nenable secret 5 $1$abcd$efghijklmnopqrstuvwxyz\nntp server 192.0.2.1\n";
         assert_eq!(
             redact(config),
             "hostname R1\nenable secret 5 <secret:1>\nntp server 192.0.2.1\n"
@@ -142,7 +160,10 @@ end
 ";
         let redacted = redact(config);
         assert!(!redacted.contains("MIIFDjBABgkqhkiG9w0BBQ0w"), "{redacted}");
-        assert!(!redacted.contains("c2VjcmV0IGtleSBtYXRlcmlhbCBnb2VzIGhlcmU"), "{redacted}");
+        assert!(
+            !redacted.contains("c2VjcmV0IGtleSBtYXRlcmlhbCBnb2VzIGhlcmU"),
+            "{redacted}"
+        );
         let before: Vec<&str> = config.lines().collect();
         let after: Vec<&str> = redacted.lines().collect();
         assert_eq!(after.len(), before.len());

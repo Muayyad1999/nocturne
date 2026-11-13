@@ -88,7 +88,11 @@ pub(crate) fn targets(
     let everything = DeviceFilter::default();
     Ok(inventory::list(app, filter.unwrap_or(&everything))?
         .into_iter()
-        .filter(|row| wanted.as_ref().is_none_or(|ids| ids.contains(&row.device.id)))
+        .filter(|row| {
+            wanted
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&row.device.id))
+        })
         .map(|row| Target {
             profile: effective_profile(&row.device, row.state.detected_profile),
             device: row.device,

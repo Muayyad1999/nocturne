@@ -70,8 +70,11 @@ fn statuses(app: &App) -> AppResult<HashMap<String, BackupStatus>> {
         .collect())
 }
 
-pub fn devices(app: &App, targets: Vec<Target>) -> AppResult<Vec<Coverage>> {
-    let ids: Vec<&str> = targets.iter().map(|target| target.device.id.as_str()).collect();
+pub(crate) fn devices(app: &App, targets: Vec<Target>) -> AppResult<Vec<Coverage>> {
+    let ids: Vec<&str> = targets
+        .iter()
+        .map(|target| target.device.id.as_str())
+        .collect();
     let mut running = versions::latest_of_each(app, &ids, Kind::Running)?;
     let mut startup = versions::latest_of_each(app, &ids, Kind::Startup)?;
     let mut statuses = statuses(app)?;
@@ -156,11 +159,13 @@ enum Saved {
 
 fn saved(app: &App, target: &Target, status: &BackupStatus) -> AppResult<Saved> {
     let Some(fetched_at) = status.last_success_at else {
-        return Ok(Saved::Unknown(match (&status.skipped, &status.last_error) {
-            (Some(reason), _) => format!("not backed up: {reason}"),
-            (None, Some(error)) => format!("no backup yet; the last attempt failed: {error}"),
-            (None, None) => "no backup yet".to_string(),
-        }));
+        return Ok(Saved::Unknown(
+            match (&status.skipped, &status.last_error) {
+                (Some(reason), _) => format!("not backed up: {reason}"),
+                (None, Some(error)) => format!("no backup yet; the last attempt failed: {error}"),
+                (None, None) => "no backup yet".to_string(),
+            },
+        ));
     };
     let captured = &status.captured;
     let absent = |kind: Kind, note: &Option<String>| {
@@ -169,12 +174,23 @@ fn saved(app: &App, target: &Target, status: &BackupStatus) -> AppResult<Saved> 
     };
     let (running_id, startup_id) = match (captured.running, captured.startup) {
         (Some(running), Some(startup)) => (running, startup),
-        (None, _) => return Ok(Saved::Unknown(absent(Kind::Running, &captured.running_note))),
-        (_, None) => return Ok(Saved::Unknown(absent(Kind::Startup, &captured.startup_note))),
+        (None, _) => {
+            return Ok(Saved::Unknown(absent(
+                Kind::Running,
+                &captured.running_note,
+            )));
+        }
+        (_, None) => {
+            return Ok(Saved::Unknown(absent(
+                Kind::Startup,
+                &captured.startup_note,
+            )));
+        }
     };
-    let (Ok((running, running_text)), Ok((startup, startup_text))) =
-        (versions::read(app, running_id), versions::read(app, startup_id))
-    else {
+    let (Ok((running, running_text)), Ok((startup, startup_text))) = (
+        versions::read(app, running_id),
+        versions::read(app, startup_id),
+    ) else {
         return Ok(Saved::Unknown(
             "the versions of the last backup are no longer stored; back the device up again".into(),
         ));
@@ -190,7 +206,11 @@ fn saved(app: &App, target: &Target, status: &BackupStatus) -> AppResult<Saved> 
         Some(platform) => outline::canonical(&platform.clean_config(text), syntax),
         None => outline::canonical(text, syntax),
     };
-    let diff = hier::text_diff(&comparable(&startup_text), &comparable(&running_text), Some(0));
+    let diff = hier::text_diff(
+        &comparable(&startup_text),
+        &comparable(&running_text),
+        Some(0),
+    );
     if diff.added == 0 && diff.removed == 0 {
         return Ok(Saved::Yes);
     }
@@ -206,7 +226,7 @@ fn saved(app: &App, target: &Target, status: &BackupStatus) -> AppResult<Saved> 
     }))
 }
 
-pub fn unsaved(app: &App, targets: Vec<Target>) -> AppResult<UnsavedReport> {
+pub(crate) fn unsaved(app: &App, targets: Vec<Target>) -> AppResult<UnsavedReport> {
     let mut statuses = statuses(app)?;
     let mut report = UnsavedReport::default();
     for target in targets {
@@ -233,12 +253,20 @@ struct ScopeParams {
 }
 
 pub(crate) fn register(router: &mut Router) {
-    router.add("config.devices", |app: App, params: ScopeParams| async move {
-        let targets = scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
-        devices(&app, targets)
-    });
-    router.add("config.unsaved", |app: App, params: ScopeParams| async move {
-        let targets = scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
-        unsaved(&app, targets)
-    });
+    router.add(
+        "config.devices",
+        |app: App, params: ScopeParams| async move {
+            let targets =
+                scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
+            devices(&app, targets)
+        },
+    );
+    router.add(
+        "config.unsaved",
+        |app: App, params: ScopeParams| async move {
+            let targets =
+                scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
+            unsaved(&app, targets)
+        },
+    );
 }

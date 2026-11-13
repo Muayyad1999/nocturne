@@ -1,0 +1,147 @@
+# Hardening for MikroTik RouterOS, judged from `/export`.
+#
+# RouterOS prints only what differs from the defaults, and several of those
+# defaults are the insecure choice (telnet, FTP and the web interface are all
+# enabled on a fresh router). Every rule here therefore asks whether the
+# export *says* something: a setting left at its default shows up as a
+# finding, which is what is wanted.
+#
+# What an export cannot tell is not claimed. In particular: whether the
+# default `admin` user still has an empty password is not in an export, so
+# there is no rule about it. Check that with `/user print` or by logging in.
+id: builtin.routeros.hardening
+name: MikroTik RouterOS hardening baseline
+description: >-
+  Services, management access and discovery on RouterOS, judged from
+  `/export`. Because an export omits defaults, a rule that asks for a setting
+  reports a finding when the device was never configured at all — which on
+  RouterOS is usually the point.
+scope:
+  os: [routeros]
+
+rules:
+  - id: ros.telnet-disabled
+    title: The telnet service is disabled
+    severity: critical
+    rationale: >-
+      RouterOS enables telnet on a fresh router, so every login crosses the
+      network in clear text. Checked: the export disables the telnet service
+      (`/ip service set telnet disabled=yes`, however the export spells the
+      selector). An export that says nothing about it means the service is
+      still at its default, which is enabled.
+    check: {type: matches, pattern: '^/ip service set (?:.*[ =])?telnet[ =].*\bdisabled=yes\b'}
+    remediation: ['/ip service set telnet disabled=yes']
+
+  - id: ros.ftp-disabled
+    title: The FTP service is disabled
+    severity: medium
+    rationale: >-
+      The built-in FTP server is enabled by default, authenticates in clear
+      text and reaches the router's whole file system. Checked: the export
+      disables it.
+    check: {type: matches, pattern: '^/ip service set (?:.*[ =])?ftp[ =].*\bdisabled=yes\b'}
+    remediation: ['/ip service set ftp disabled=yes']
+
+  - id: ros.www-disabled
+    title: The plain HTTP web interface is disabled
+    severity: medium
+    rationale: >-
+      WebFig over plain HTTP (`www`, port 80) is enabled by default and
+      carries the login in clear text. Use `www-ssl` or WinBox instead.
+      Checked: the export disables the `www` service.
+    check: {type: matches, pattern: '^/ip service set (?:.*[ =])?www[ =].*\bdisabled=yes\b'}
+    remediation: ['/ip service set www disabled=yes']
+
+  - id: ros.api-disabled
+    title: The unencrypted API service is disabled
+    severity: low
+    rationale: >-
+      The API on port 8728 is enabled by default and is not encrypted. Unless
+      something automates the router through it — RouterOS also offers
+      `api-ssl` — it should be off. Checked: the export disables the `api`
+      service.
+    check: {type: matches, pattern: '^/ip service set (?:.*[ =])?api[ =].*\bdisabled=yes\b'}
+    remediation: ['/ip service set api disabled=yes']
+
+  - id: ros.ssh-strong-crypto
+    title: SSH is restricted to strong cryptography
+    severity: medium
+    rationale: >-
+      RouterOS leaves `strong-crypto` off by default, which keeps CBC
+      ciphers, 96-bit HMACs and small Diffie-Hellman groups available to
+      clients that ask for them. Checked: the export sets
+      `/ip ssh … strong-crypto=yes`.
+    check: {type: matches, pattern: '^/ip ssh set .*\bstrong-crypto=yes\b'}
+    remediation: ['/ip ssh set strong-crypto=yes']
+
+  - id: ros.dns-not-open-resolver
+    title: The router is not left as an open DNS resolver
+    severity: medium
+    rationale: >-
+      `allow-remote-requests=yes` makes the router answer DNS queries on every
+      interface it is reachable on, which is both a path into the network and
+      an amplifier for reflection attacks unless the input chain blocks it.
+      It is a legitimate setting for a LAN gateway whose firewall allows port
+      53 from inside only; where that is so, duplicate this policy without the
+      rule. Checked: the export does not set `allow-remote-requests=yes`.
+    check: {type: not_matches, pattern: '^/ip dns set .*\ballow-remote-requests=yes\b'}
+    remediation: ['/ip dns set allow-remote-requests=no']
+
+  - id: ros.neighbor-discovery
+    title: Neighbour discovery is not enabled on every interface
+    severity: low
+    rationale: >-
+      `discover-interface-list=all` broadcasts the router's identity, version
+      and addresses from every interface, including the ones facing the
+      internet. Checked: the export does not set `discover-interface-list=all`.
+      A router left at the factory default is not caught by this rule — the
+      export says nothing about defaults — so set the list explicitly to a
+      list of internal interfaces. No remediation is offered because the right
+      list is site-specific, and `none` would stop the topology discovery that
+      depends on it.
+    check:
+      type: not_matches
+      pattern: '^/ip neighbor discovery-settings set .*\bdiscover-interface-list=all\b'
+
+  - id: ros.mac-server-off
+    title: MAC-Telnet is switched off
+    severity: low
+    rationale: >-
+      MAC-Telnet reaches the router over layer 2 with no IP address and is
+      enabled on all interfaces by default, so an attacker on the same segment
+      does not need routing to get to the login prompt. Checked: the export
+      sets `/tool mac-server … allowed-interface-list=none`. A site that keeps
+      MAC-Telnet on a management VLAN instead will report a finding here it
+      can accept or duplicate the policy without.
+    check: {type: matches, pattern: '^/tool mac-server set .*\ballowed-interface-list=none\b'}
+    remediation: ['/tool mac-server set allowed-interface-list=none']
+
+  - id: ros.mac-winbox-off
+    title: MAC-WinBox is switched off
+    severity: low
+    rationale: >-
+      As for MAC-Telnet: WinBox over layer 2 is enabled on all interfaces by
+      default. Checked: the export sets
+      `/tool mac-server mac-winbox … allowed-interface-list=none`.
+    check: {type: matches, pattern: '^/tool mac-server mac-winbox set .*\ballowed-interface-list=none\b'}
+    remediation: ['/tool mac-server mac-winbox set allowed-interface-list=none']
+
+  - id: ros.bandwidth-server-off
+    title: The bandwidth test server is switched off
+    severity: low
+    rationale: >-
+      The bandwidth test server is enabled by default and will saturate the
+      router's CPU for anyone who can authenticate — and it answers before
+      that. Checked: the export sets `/tool bandwidth-server … enabled=no`.
+    check: {type: matches, pattern: '^/tool bandwidth-server set .*\benabled=no\b'}
+    remediation: ['/tool bandwidth-server set enabled=no']
+
+  - id: ros.snmp-default-community
+    title: No SNMP community is named `public`
+    severity: high
+    rationale: >-
+      RouterOS ships with a community called `public`; it is the first one any
+      scanner tries. Checked: no `/snmp community` line in the export sets
+      `name=public`. No remediation is offered: renaming or removing a
+      community stops whatever polls through it.
+    check: {type: not_matches, pattern: '(?i)^/snmp community (?:add|set)\b.*\bname=public\b'}

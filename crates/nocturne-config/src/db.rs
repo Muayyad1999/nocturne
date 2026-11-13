@@ -93,7 +93,8 @@ fn version_row(row: &Row<'_>) -> rusqlite::Result<VersionRow> {
         source: row.get(6)?,
         note: row.get(7)?,
         last_seen: row.get(8)?,
-        bytes: row.get(9)?,
+        // SQLite has no unsigned integers: a size is stored as the i64 it fits in.
+        bytes: row.get::<_, Option<i64>>(9)?.map(|bytes| bytes as u64),
         pins,
     })
 }
@@ -175,7 +176,9 @@ pub(crate) fn counts(store: &Store) -> AppResult<Vec<(String, String, u64)>> {
         let mut statement = conn.prepare_cached(
             "SELECT device_id, kind, COUNT(*) FROM configs GROUP BY device_id, kind",
         )?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? as u64))
+        })?;
         rows.collect()
     })
 }
@@ -214,7 +217,12 @@ pub(crate) fn unpin(store: &Store, version_id: i64, reason: Option<&str>) -> App
 
 /// Ids of the versions of one device and kind that retention may remove:
 /// everything older than the newest `keep` that is not pinned.
-pub(crate) fn expired(store: &Store, device_id: &str, kind: &str, keep: u32) -> AppResult<Vec<i64>> {
+pub(crate) fn expired(
+    store: &Store,
+    device_id: &str,
+    kind: &str,
+    keep: u32,
+) -> AppResult<Vec<i64>> {
     store.with(|conn| {
         let mut statement = conn.prepare_cached(
             "SELECT c.id FROM configs c

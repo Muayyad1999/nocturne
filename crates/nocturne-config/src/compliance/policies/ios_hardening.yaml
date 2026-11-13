@@ -1,0 +1,227 @@
+# Management-plane hardening for Cisco IOS and IOS-XE.
+#
+# Every rule here is answered from the configuration text alone and applies to
+# routers and switches alike. Rules that would need to know something the text
+# does not say are deliberately absent: whether a port is in use (so "unused
+# ports are shut" cannot be judged), whether a VLAN is the management one, or
+# what the device's syslog and NTP servers ought to be.
+#
+# Where IOS does not print a setting that is at its default, the rule says so
+# in its rationale and states exactly what it looks for, so that a finding is
+# never more than the configuration actually shows.
+id: builtin.ios.hardening
+name: Cisco IOS hardening baseline
+description: >-
+  Management-plane hardening for Cisco IOS and IOS-XE: how passwords are
+  stored, which protocols may open a session, and what the device logs. Each
+  rule states exactly which configuration line it looks for.
+scope:
+  os: [ios, ios-xe]
+
+rules:
+  - id: ios.service-password-encryption
+    title: Stored passwords are obfuscated (`service password-encryption`)
+    severity: low
+    rationale: >-
+      Without it, every password the configuration keeps in a reversible form
+      (line passwords, `username … password`, keys) is written out in clear
+      text — in the running configuration, in backups and on screen. Type 7 is
+      trivially reversible and is no substitute for `enable secret` or
+      `username … secret`; it only keeps passwords from being read over
+      someone's shoulder. Checked: the global line `service password-encryption`.
+    check: {type: present, line: service password-encryption}
+    remediation: [service password-encryption]
+
+  - id: ios.enable-secret
+    title: Privileged mode is protected by `enable secret`
+    severity: high
+    rationale: >-
+      `enable secret` stores the privileged-mode password hashed (type 5 MD5,
+      8 PBKDF2 or 9 scrypt). A device with no enable secret lets anyone who
+      reaches the console into privileged EXEC without a credential. Checked:
+      a global `enable secret …` line. A device that authenticates enable
+      through AAA alone will report a finding here; Cisco's own guidance is to
+      keep a local `enable secret` as the fallback. No remediation is offered:
+      the password has to be chosen by a person.
+    check: {type: matches, pattern: '^enable secret '}
+
+  - id: ios.no-enable-password
+    title: '`enable password` is not used'
+    severity: high
+    rationale: >-
+      `enable password` keeps the password in clear text, or as type 7 when
+      `service password-encryption` is on, which is reversible in one line of
+      script. `enable secret` supersedes it and wins when both are present.
+      Checked: no global line begins with `enable password`. Replace it by
+      setting an `enable secret` and then removing the password — in that
+      order, so the device is never left without one.
+    check: {type: not_matches, pattern: '^enable password '}
+
+  - id: ios.username-secret
+    title: Local users are stored with `secret`, not `password`
+    severity: high
+    rationale: >-
+      `username … password` keeps the password reversible (clear text, or type
+      7 with `service password-encryption`); `username … secret` hashes it.
+      Checked: no global `username` line uses the `password` keyword. No
+      remediation is offered: the passwords are not known to Nocturne, and
+      rewriting the line without them would lock the accounts out.
+    check: {type: not_matches, pattern: '^username \S+ (?:.* )?password \S'}
+
+  - id: ios.ssh-version-2
+    title: Only SSH version 2 is accepted
+    severity: high
+    rationale: >-
+      SSH version 1 has protocol flaws that cannot be configured away. Unless
+      `ip ssh version 2` is set, IOS runs in compatibility mode (it reports
+      version 1.99) and accepts version 1 clients. Checked: the global line
+      `ip ssh version 2`.
+    check: {type: present, line: ip ssh version 2}
+    remediation: [ip ssh version 2]
+
+  - id: ios.no-http-server
+    title: The HTTP management server is switched off
+    severity: medium
+    rationale: >-
+      `ip http server` serves the device's web interface over plain HTTP, so
+      credentials and session cookies cross the network in clear text. IOS
+      prints `ip http server` when it is on and `no ip http server` when it is
+      off. Checked: the configuration has no global line `ip http server`. The
+      HTTPS server (`ip http secure-server`) is a different command and is not
+      judged here.
+    check: {type: absent, line: ip http server}
+    remediation: [no ip http server]
+
+  - id: ios.vty-transport-ssh
+    title: VTY lines accept SSH only
+    severity: critical
+    rationale: >-
+      `transport input` decides which protocols may open a VTY session.
+      Anything besides `ssh` — `telnet`, or `all` — carries passwords across
+      the network in clear text. A `line vty` block that says nothing inherits
+      the platform default, which on many releases is `all`, so every block
+      has to say it. Checked: every `line vty` section contains
+      `transport input ssh`.
+    check:
+      type: section
+      parent: '^line vty'
+      each: true
+      must: ['^transport input ssh$']
+    remediation: ['{{ section }}', ' transport input ssh']
+
+  - id: ios.vty-exec-timeout
+    title: VTY sessions do not stay open for ever
+    severity: medium
+    rationale: >-
+      `exec-timeout 0 0` switches the idle timeout off: a forgotten SSH
+      session stays authenticated until the device is reloaded. The default of
+      10 minutes is not printed in the configuration, so a `line vty` block
+      without an `exec-timeout` line is fine and is not reported. Checked: no
+      `line vty` section contains `exec-timeout 0 0`.
+    check:
+      type: section
+      parent: '^line vty'
+      each: true
+      must_not: ['^exec-timeout 0 0$']
+    remediation: ['{{ section }}', ' exec-timeout 10 0']
+
+  - id: ios.console-exec-timeout
+    title: The console session does not stay open for ever
+    severity: low
+    rationale: >-
+      As for the VTY lines: `exec-timeout 0 0` on the console leaves a
+      logged-in session on the device until it is reloaded, which matters
+      wherever the console is reachable through a terminal server. The default
+      of 10 minutes is not printed, so only an explicit `exec-timeout 0 0` is
+      reported. Checked: no `line con` section contains `exec-timeout 0 0`.
+    check:
+      type: section
+      parent: '^line con'
+      each: true
+      must_not: ['^exec-timeout 0 0$']
+    remediation: ['{{ section }}', ' exec-timeout 10 0']
+
+  - id: ios.aux-transport-none
+    title: The auxiliary port accepts no incoming sessions
+    severity: low
+    rationale: >-
+      A modem or console server on the AUX port is a management path that none
+      of the VTY controls apply to. `transport input none` closes it. A device
+      whose configuration has no `line aux` section — most switches — is not
+      judged. Checked: every `line aux` section contains
+      `transport input none`.
+    check:
+      type: section
+      parent: '^line aux'
+      each: true
+      must: ['^transport input none$']
+    remediation: ['{{ section }}', ' transport input none']
+
+  - id: ios.snmp-default-community
+    title: No SNMP community is named `public` or `private`
+    severity: critical
+    rationale: >-
+      `public` and `private` are the first two communities every scanner
+      tries, and `private` is conventionally the read-write one. Checked: no
+      `snmp-server community` line whose community string is `public` or
+      `private`. No remediation is offered: removing a community stops
+      whatever polls through it, so the replacement has to be rolled out
+      first.
+    check: {type: not_matches, pattern: '(?i)^snmp-server community (?:public|private)\b'}
+
+  - id: ios.logging-host
+    title: Logs are sent to a syslog server
+    severity: medium
+    rationale: >-
+      Without a remote collector the record of a change or an intrusion lives
+      only in the device's own buffer and is gone after a reload. Checked: a
+      global `logging host …` line, or the older `logging <address>` form with
+      an IPv4 or IPv6 address. The address of the collector is site-specific,
+      so no remediation is offered.
+    check:
+      type: matches
+      pattern: '^logging (?:host )?(?:\d{1,3}\.){3}\d{1,3}\b|^logging host \S|^logging (?:host )?(?:ipv6 )?[0-9A-Fa-f]*:[0-9A-Fa-f:]'
+
+  - id: ios.ntp-server
+    title: The clock is synchronised from an NTP source
+    severity: low
+    rationale: >-
+      Timestamps that cannot be lined up between devices make a log archive
+      nearly useless, and certificate and Kerberos checks need the time to be
+      right. Checked: a global `ntp server …` or `ntp peer …` line. The source
+      is site-specific, so no remediation is offered.
+    check: {type: matches, pattern: '^ntp (?:server|peer) \S'}
+
+  - id: ios.aaa-new-model
+    title: AAA is switched on (`aaa new-model`)
+    severity: medium
+    rationale: >-
+      `aaa new-model` is the gate for every method list: without it the device
+      falls back to line passwords and cannot do per-user authentication or
+      accounting through TACACS+ or RADIUS. Switching it on changes how every
+      login is authenticated, so it has to be applied together with the method
+      lists and a local fallback — which is why no remediation is offered
+      here. Checked: the global line `aaa new-model`.
+    check: {type: present, line: aaa new-model}
+
+  - id: ios.login-banner
+    title: A banner warns that the system is private
+    severity: low
+    rationale: >-
+      In many jurisdictions unauthorised access can only be pursued when the
+      system said it was private before the login. Checked: a `banner motd`,
+      `banner login` or `banner exec` line. The wording is a matter for the
+      organisation, so no remediation is offered.
+    check: {type: matches, pattern: '^banner (?:motd|login|exec) '}
+
+  - id: ios.no-source-route
+    title: Source routing is explicitly disabled
+    severity: low
+    rationale: >-
+      IP source routing lets the sender dictate the path a packet takes, which
+      is used to reach addresses that the routing table alone would not. IOS
+      prints `no ip source-route` when it is off. Releases that have it off by
+      default print nothing, and this rule then reports a finding whose fix is
+      harmless. Checked: the global line `no ip source-route`.
+    check: {type: present, line: no ip source-route}
+    remediation: [no ip source-route]

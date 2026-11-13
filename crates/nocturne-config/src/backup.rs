@@ -187,7 +187,13 @@ async fn fetch(cli: &mut Cli, kind: Kind, command: &str) -> AppResult<String> {
 
 /// Tell the UI and the audit trail what storing a fetched configuration did,
 /// and apply retention when a version was added.
-fn announce(app: &App, device: &Device, kind: Kind, text: &str, stored: &Stored) -> AppResult<Outcome> {
+fn announce(
+    app: &App,
+    device: &Device,
+    kind: Kind,
+    text: &str,
+    stored: &Stored,
+) -> AppResult<Outcome> {
     if !stored.new {
         return Ok(Outcome::Unchanged);
     }
@@ -251,7 +257,10 @@ async fn read_and_store(
             Kind::Startup => &mut captured.startup_note,
         };
         if !kinds.contains(&kind) {
-            *note = Some(format!("the {} was not asked for in the last backup", kind.label()));
+            *note = Some(format!(
+                "the {} was not asked for in the last backup",
+                kind.label()
+            ));
             continue;
         }
         let Some(command) = command_for(&platform, kind) else {
@@ -283,7 +292,12 @@ async fn read_and_store(
     Ok((outcome, captured))
 }
 
-async fn back_up(ctx: &JobCtx, target: &Target, kinds: &[Kind], origin: Origin) -> AppResult<Report> {
+async fn back_up(
+    ctx: &JobCtx,
+    target: &Target,
+    kinds: &[Kind],
+    origin: Origin,
+) -> AppResult<Report> {
     let app = ctx.app();
     let device = &target.device;
     if device.transport == Transport::None {
@@ -315,7 +329,12 @@ async fn back_up(ctx: &JobCtx, target: &Target, kinds: &[Kind], origin: Origin) 
 }
 
 /// Back one device up, and record how it went.
-async fn back_up_recorded(ctx: JobCtx, target: Target, kinds: Vec<Kind>, origin: Origin) -> AppResult<Report> {
+async fn back_up_recorded(
+    ctx: JobCtx,
+    target: Target,
+    kinds: Vec<Kind>,
+    origin: Origin,
+) -> AppResult<Report> {
     let app = ctx.app();
     let id = &target.device.id;
     let report = back_up(&ctx, &target, &kinds, origin).await;
@@ -357,7 +376,7 @@ struct BackupResult {
 }
 
 /// What to back up, and for whom.
-pub struct Request {
+pub(crate) struct Request {
     pub(crate) targets: Vec<Target>,
     pub kinds: Vec<Kind>,
     pub origin: Origin,
@@ -373,21 +392,30 @@ pub(crate) fn default_kinds(app: &App) -> Vec<Kind> {
 }
 
 /// Start the backup job.
-pub fn start(app: &App, request: Request) -> Job {
+pub(crate) fn start(app: &App, request: Request) -> Job {
     let Request {
         targets,
         kinds,
         origin,
     } = request;
-    let ids: Vec<String> = targets.iter().map(|target| target.device.id.clone()).collect();
-    let names: Vec<String> = targets.iter().map(|target| target.device.name.clone()).collect();
+    let ids: Vec<String> = targets
+        .iter()
+        .map(|target| target.device.id.clone())
+        .collect();
+    let names: Vec<String> = targets
+        .iter()
+        .map(|target| target.device.name.clone())
+        .collect();
     let title = match names.as_slice() {
         [name] if origin == Origin::System => {
             format!("Back up `{name}` after a configuration change")
         }
         [name] => format!("Back up `{name}`"),
         names if origin == Origin::System => {
-            format!("Back up {} devices after configuration changes", names.len())
+            format!(
+                "Back up {} devices after configuration changes",
+                names.len()
+            )
         }
         names => format!("Back up {} devices", names.len()),
     };
@@ -481,7 +509,10 @@ fn on_event(app: &App, waiting: &mut HashMap<String, Waiting>, event: &Event) {
         "settings.changed" if event.payload["section"] == settings::SECTION => {
             match versions::prune_all(app) {
                 Ok(0) => {}
-                Ok(removed) => tracing::info!(removed, "pruned configuration versions beyond the new limit"),
+                Ok(removed) => tracing::info!(
+                    removed,
+                    "pruned configuration versions beyond the new limit"
+                ),
                 Err(err) => tracing::error!(%err, "configuration versions could not be pruned"),
             }
         }
@@ -563,41 +594,45 @@ struct BackupParams {
 }
 
 pub(crate) fn register(router: &mut Router) {
-    router.add("config.backup", |app: App, params: BackupParams| async move {
-        let targets = scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
-        if targets.is_empty() {
-            return Err(AppError::invalid(
-                "no device matches, so there is nothing to back up",
-            ));
-        }
-        let kinds = match params.kinds {
-            None => default_kinds(&app),
-            Some(kinds) if kinds.is_empty() => {
+    router.add(
+        "config.backup",
+        |app: App, params: BackupParams| async move {
+            let targets =
+                scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
+            if targets.is_empty() {
                 return Err(AppError::invalid(
-                    "`kinds` is empty: ask for `running`, `startup` or both, or leave it out",
+                    "no device matches, so there is nothing to back up",
                 ));
             }
-            Some(kinds) => kinds,
-        };
-        let origin = params.origin.unwrap_or_default();
-        let devices = targets.len();
-        let job = start(
-            &app,
-            Request {
-                targets,
-                kinds: kinds.clone(),
-                origin,
-            },
-        );
-        app.audit(
-            "config.backup",
-            None,
-            format!(
-                "Started a configuration backup of {devices} device{}",
-                if devices == 1 { "" } else { "s" }
-            ),
-            json!({"job_id": job.id, "devices": devices, "kinds": kinds, "origin": origin}),
-        );
-        Ok(jobs::started(&job))
-    });
+            let kinds = match params.kinds {
+                None => default_kinds(&app),
+                Some(kinds) if kinds.is_empty() => {
+                    return Err(AppError::invalid(
+                        "`kinds` is empty: ask for `running`, `startup` or both, or leave it out",
+                    ));
+                }
+                Some(kinds) => kinds,
+            };
+            let origin = params.origin.unwrap_or_default();
+            let devices = targets.len();
+            let job = start(
+                &app,
+                Request {
+                    targets,
+                    kinds: kinds.clone(),
+                    origin,
+                },
+            );
+            app.audit(
+                "config.backup",
+                None,
+                format!(
+                    "Started a configuration backup of {devices} device{}",
+                    if devices == 1 { "" } else { "s" }
+                ),
+                json!({"job_id": job.id, "devices": devices, "kinds": kinds, "origin": origin}),
+            );
+            Ok(jobs::started(&job))
+        },
+    );
 }

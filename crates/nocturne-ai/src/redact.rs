@@ -71,9 +71,11 @@ const BUILTIN_RULES: &[&str] = &[
     r"(?im)\bcrypto isakmp key(?: \d)? (?P<secret>\S+)",
     r"(?im)\bneighbor \S+ password(?: \d)? (?P<secret>\S+)",
     r"(?im)\bmessage-digest-key \d+ md5(?: \d)? (?P<secret>\S+)",
-    r"(?im)\bauthentication-key(?: \d)? (?P<secret>\S+)",
+    // The algorithm may stand between the key id and the key itself
+    // (`ntp authentication-key 1 md5 <key> 7`). Without it in the pattern the
+    // algorithm is masked and the key is left in the clear.
+    r"(?im)\bauthentication-key(?: \d+)?(?: (?:md5|sha1?|sha256|sha512|hmac-sha1|hmac-sha256|aes|cmac))? (?P<secret>\S+)",
     r"(?im)\b(?:standby|vrrp|glbp) \d+ authentication(?: text| md5 key-string)?(?: \d)? (?P<secret>\S+)",
-    r"(?im)\bntp authentication-key \d+ md5 (?P<secret>\S+)",
     r"(?im)\bppp (?:chap|pap) (?:password|sent-username \S+ password)(?: \d)? (?P<secret>\S+)",
     r"(?im)\bwpa-psk (?:ascii|hex)(?: \d)? (?P<secret>\S+)",
     r"(?im)\bcommunity(?: name| string)?\s*[:=]\s*(?P<secret>\S+)",
@@ -305,6 +307,37 @@ fn already_masked(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Keys that sit behind their algorithm. A pattern that stops at the
+    /// algorithm masks the word `md5` and leaves the key in the configuration.
+    #[test]
+    fn the_key_is_masked_and_not_the_algorithm_that_precedes_it() {
+        let mut redactor = Redactor::new();
+        let config = "\
+ntp authentication-key 1 md5 N0cturne!Ntp 7
+ntp authentication-key 2 sha1 S3condKey
+interface Tunnel0
+ ip ospf authentication-key 7 110A1016141D
+ ip ospf message-digest-key 1 md5 D1gestKey
+";
+        let hidden = redactor.redact(config);
+        for secret in ["N0cturne!Ntp", "S3condKey", "110A1016141D", "D1gestKey"] {
+            assert!(
+                !hidden.contains(secret),
+                "`{secret}` survived redaction:\n{hidden}"
+            );
+        }
+        // The algorithm is not a secret and must still be readable.
+        assert!(
+            hidden.contains("md5") && hidden.contains("sha1"),
+            "{hidden}"
+        );
+        assert_eq!(
+            redactor.restore(&hidden).text,
+            config,
+            "restoring must give the original back"
+        );
+    }
+
     use super::*;
 
     fn redact(text: &str) -> String {

@@ -61,7 +61,9 @@ impl Side {
     }
 
     fn profile(&self) -> &str {
-        self.target.as_ref().map_or("", |target| target.profile.as_str())
+        self.target
+            .as_ref()
+            .map_or("", |target| target.profile.as_str())
     }
 
     fn outline(&self, app: &App, text: &str) -> Outline {
@@ -76,7 +78,9 @@ impl Side {
         let name = self
             .target
             .as_ref()
-            .map_or(self.version.device_id.as_str(), |target| target.device.name.as_str());
+            .map_or(self.version.device_id.as_str(), |target| {
+                target.device.name.as_str()
+            });
         versions::audit_unredacted(
             app,
             &self.version.device_id,
@@ -220,15 +224,18 @@ pub(crate) fn register(router: &mut Router) {
         ))
     });
 
-    router.add("config.compare", |app: App, params: CompareParams| async move {
-        let a = params.a.resolve(&app, "a", params.kind)?;
-        let b = params.b.resolve(&app, "b", params.kind)?;
-        Ok(compare(
-            &app,
-            a,
-            b,
-            params.context.unwrap_or(DEFAULT_CONTEXT),
-            params.redact.unwrap_or(true),
-        ))
-    });
+    router.add(
+        "config.compare",
+        |app: App, params: CompareParams| async move {
+            let a = params.a.resolve(&app, "a", params.kind)?;
+            let b = params.b.resolve(&app, "b", params.kind)?;
+            Ok(compare(
+                &app,
+                a,
+                b,
+                params.context.unwrap_or(DEFAULT_CONTEXT),
+                params.redact.unwrap_or(true),
+            ))
+        },
+    );
 }

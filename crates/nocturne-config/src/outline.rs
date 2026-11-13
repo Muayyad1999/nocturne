@@ -596,7 +596,10 @@ end
             ]
         );
         assert_eq!(outline.lines[2].span, 4);
-        assert_eq!(outline.path(9), vec!["router bgp 65001", "address-family ipv4"]);
+        assert_eq!(
+            outline.path(9),
+            vec!["router bgp 65001", "address-family ipv4"]
+        );
         assert_eq!(outline.descendants(6), 7..11);
         assert!(outline.has_children(8) && !outline.has_children(10));
     }
@@ -702,7 +705,10 @@ add name=hello source=\"/log info \\\"one\\\"\\r\\
                 .iter()
                 .map(|index| outline.lines[*index].text.as_str())
                 .collect();
-            assert_eq!(members, vec!["set telnet disabled=yes", "set ftp disabled=yes"]);
+            assert_eq!(
+                members,
+                vec!["set telnet disabled=yes", "set ftp disabled=yes"]
+            );
             assert_eq!(sections.len(), 4);
         }
 
@@ -710,7 +716,10 @@ add name=hello source=\"/log info \\\"one\\\"\\r\\
         assert_eq!(export.enclosing(6), vec!["/ip service"]);
         assert_eq!(export.enclosing(10), vec!["/ip firewall filter"]);
         let wrapped = export.index_at(10).unwrap();
-        assert_eq!((export.lines[wrapped].no, export.lines[wrapped].span), (9, 2));
+        assert_eq!(
+            (export.lines[wrapped].no, export.lines[wrapped].span),
+            (9, 2)
+        );
         assert_eq!(terse.enclosing(3), vec!["/ip service"]);
         assert_eq!(terse.section_of(3), vec!["/ip service"]);
         assert_eq!(export.section_of(5), vec!["/ip service"]);
@@ -731,13 +740,19 @@ add name=hello source=\"/log info \\\"one\\\"\\r\\
         );
         assert_eq!(
             split_menu("/interface ethernet set [ find default-name=ether1 ] name=wan"),
-            ("/interface ethernet", "set [ find default-name=ether1 ] name=wan")
+            (
+                "/interface ethernet",
+                "set [ find default-name=ether1 ] name=wan"
+            )
         );
         assert_eq!(
             split_menu("/ip dhcp-server option sets add name=x"),
             ("/ip dhcp-server option sets", "add name=x")
         );
-        assert_eq!(split_menu("/ip/service set x=y"), ("", "/ip/service set x=y"));
+        assert_eq!(
+            split_menu("/ip/service set x=y"),
+            ("", "/ip/service set x=y")
+        );
     }
 
     #[test]
@@ -799,14 +814,24 @@ add name=hello source=\"/log info \\\"one\\\"\\r\\
             .collect();
         assert_eq!(
             children,
-            vec!["description uplink", "switchport mode trunk", "spanning-tree portfast"]
+            vec![
+                "description uplink",
+                "switchport mode trunk",
+                "spanning-tree portfast"
+            ]
         );
         assert_eq!(all.len(), have.len() + 2);
     }
 
     #[test]
     fn collapse_ignores_spacing_but_keeps_lines() {
-        assert_eq!(collapse("  ntp   server\t192.0.2.1 "), "ntp server 192.0.2.1");
-        assert_eq!(collapse("banner motd ^C\n  two   words\n^C"), "banner motd ^C\ntwo words\n^C");
+        assert_eq!(
+            collapse("  ntp   server\t192.0.2.1 "),
+            "ntp server 192.0.2.1"
+        );
+        assert_eq!(
+            collapse("banner motd ^C\n  two   words\n^C"),
+            "banner motd ^C\ntwo words\n^C"
+        );
     }
 }

@@ -60,7 +60,9 @@ enum Query {
 
 fn pattern(query: &str, regex: bool, case: bool) -> AppResult<Regex> {
     if query.trim().is_empty() {
-        return Err(AppError::invalid("`query` is empty: there is nothing to search for"));
+        return Err(AppError::invalid(
+            "`query` is empty: there is nothing to search for",
+        ));
     }
     let source = if regex {
         query.to_string()
@@ -70,7 +72,11 @@ fn pattern(query: &str, regex: bool, case: bool) -> AppResult<Regex> {
     RegexBuilder::new(&source)
         .case_insensitive(!case)
         .build()
-        .map_err(|err| AppError::invalid(format!("`{query}` is not a valid regular expression: {err}")))
+        .map_err(|err| {
+            AppError::invalid(format!(
+                "`{query}` is not a valid regular expression: {err}"
+            ))
+        })
 }
 
 impl Query {
@@ -111,9 +117,13 @@ fn scan(
     context: usize,
     limit: usize,
 ) -> AppResult<SearchResult> {
-    let ids: Vec<&str> = targets.iter().map(|target| target.device.id.as_str()).collect();
+    let ids: Vec<&str> = targets
+        .iter()
+        .map(|target| target.device.id.as_str())
+        .collect();
     let latest = versions::latest_of_each(app, &ids, kind)?;
-    let redaction = Redaction::for_profiles(app, targets.iter().map(|target| target.profile.as_str()));
+    let redaction =
+        Redaction::for_profiles(app, targets.iter().map(|target| target.profile.as_str()));
     let mut result = SearchResult::default();
 
     'devices: for target in targets {
@@ -187,9 +197,13 @@ pub struct MissingResult {
 }
 
 fn lacking(app: &App, targets: &[Target], query: &Query, kind: Kind) -> AppResult<MissingResult> {
-    let ids: Vec<&str> = targets.iter().map(|target| target.device.id.as_str()).collect();
+    let ids: Vec<&str> = targets
+        .iter()
+        .map(|target| target.device.id.as_str())
+        .collect();
     let latest = versions::latest_of_each(app, &ids, kind)?;
-    let redaction = Redaction::for_profiles(app, targets.iter().map(|target| target.profile.as_str()));
+    let redaction =
+        Redaction::for_profiles(app, targets.iter().map(|target| target.profile.as_str()));
     let mut result = MissingResult::default();
     for target in targets {
         let version = latest.get(&target.device.id);
@@ -208,7 +222,8 @@ fn lacking(app: &App, targets: &[Target], query: &Query, kind: Kind) -> AppResul
         result.devices_searched += 1;
         let syntax = target.syntax(app);
         // As in search, only what is still there once secrets are hidden counts.
-        let found = query.found_in(&stored, syntax) && query.found_in(&redaction.text(&stored), syntax);
+        let found =
+            query.found_in(&stored, syntax) && query.found_in(&redaction.text(&stored), syntax);
         if !found {
             result.devices.push(device);
         }
@@ -239,50 +254,61 @@ struct MissingParams {
 }
 
 /// Run a scan off the async runtime: it reads and inflates every device's configuration.
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|err| AppError::internal(format!("the search stopped unexpectedly: {err}")))?
 }
 
 pub(crate) fn register(router: &mut Router) {
-    router.add("config.search", |app: App, params: SearchParams| async move {
-        let regex = params.regex.unwrap_or(false);
-        let pattern = pattern(&params.query, regex, params.case.unwrap_or(false))?;
-        let targets = scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
-        let kind = params.kind.unwrap_or_default();
-        let context = params.context.unwrap_or(1).min(20);
-        let limit = params.limit.unwrap_or(500).clamp(1, 5000);
-        let mut result = blocking(move || scan(&app, &targets, &pattern, kind, context, limit)).await?;
-        if result.matches.is_empty() && !regex && redact::has_secret(&params.query) {
-            result.note = Some(SECRET_NOTE.to_string());
-        }
-        Ok(result)
-    });
+    router.add(
+        "config.search",
+        |app: App, params: SearchParams| async move {
+            let regex = params.regex.unwrap_or(false);
+            let pattern = pattern(&params.query, regex, params.case.unwrap_or(false))?;
+            let targets =
+                scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
+            let kind = params.kind.unwrap_or_default();
+            let context = params.context.unwrap_or(1).min(20);
+            let limit = params.limit.unwrap_or(500).clamp(1, 5000);
+            let mut result =
+                blocking(move || scan(&app, &targets, &pattern, kind, context, limit)).await?;
+            if result.matches.is_empty() && !regex && redact::has_secret(&params.query) {
+                result.note = Some(SECRET_NOTE.to_string());
+            }
+            Ok(result)
+        },
+    );
 
-    router.add("config.missing", |app: App, params: MissingParams| async move {
-        let regex = params.regex.unwrap_or(false);
-        let case = params.case.unwrap_or(false);
-        let query = if regex {
-            Query::Pattern(pattern(&params.query, true, case)?)
-        } else {
-            let text = outline::collapse(params.query.trim());
-            if text.is_empty() || text.contains('\n') {
-                return Err(AppError::invalid(
-                    "`query` must be one configuration line (or a pattern with `regex: true`)",
-                ));
+    router.add(
+        "config.missing",
+        |app: App, params: MissingParams| async move {
+            let regex = params.regex.unwrap_or(false);
+            let case = params.case.unwrap_or(false);
+            let query = if regex {
+                Query::Pattern(pattern(&params.query, true, case)?)
+            } else {
+                let text = outline::collapse(params.query.trim());
+                if text.is_empty() || text.contains('\n') {
+                    return Err(AppError::invalid(
+                        "`query` must be one configuration line (or a pattern with `regex: true`)",
+                    ));
+                }
+                Query::Line {
+                    text: if case { text } else { text.to_lowercase() },
+                    case,
+                }
+            };
+            let targets =
+                scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
+            let kind = params.kind.unwrap_or_default();
+            let mut result = blocking(move || lacking(&app, &targets, &query, kind)).await?;
+            if !regex && redact::has_secret(&params.query) {
+                result.note = Some(SECRET_NOTE.to_string());
             }
-            Query::Line {
-                text: if case { text } else { text.to_lowercase() },
-                case,
-            }
-        };
-        let targets = scope::targets(&app, params.device_ids.as_deref(), params.filter.as_ref())?;
-        let kind = params.kind.unwrap_or_default();
-        let mut result = blocking(move || lacking(&app, &targets, &query, kind)).await?;
-        if !regex && redact::has_secret(&params.query) {
-            result.note = Some(SECRET_NOTE.to_string());
-        }
-        Ok(result)
-    });
+            Ok(result)
+        },
+    );
 }

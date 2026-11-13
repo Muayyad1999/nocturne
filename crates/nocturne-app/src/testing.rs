@@ -365,6 +365,18 @@ impl FakeState {
             .any(|start| line.starts_with(start) || line == start.trim_end())
     }
 
+    /// Apply configuration lines as if they had been typed in configuration
+    /// mode, leaving the startup configuration alone — which is how a test
+    /// produces a device with unsaved changes. Stops at the first line the
+    /// device would reject and returns what it printed.
+    pub fn apply(&mut self, lines: &[&str]) -> Result<(), String> {
+        let mut section = None;
+        for line in lines {
+            self.configure(line, &mut section)?;
+        }
+        Ok(())
+    }
+
     /// Apply one configuration-mode line. `Err` is what the device prints.
     fn configure(&mut self, raw: &str, section: &mut Option<usize>) -> Result<(), String> {
         let indented = raw.starts_with(' ');
@@ -883,6 +895,43 @@ pub async fn lab(builder: AppBuilder, names: &[&str]) -> Lab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_changes_the_running_configuration_without_saving_it() {
+        let device = FakeDevice::new("SW1");
+        assert!(
+            device.with(|state| state.saved()),
+            "a new device starts saved"
+        );
+        device
+            .with(|state| {
+                state.apply(&[
+                    "interface GigabitEthernet0/2",
+                    "description desk 7",
+                    "ntp server 192.0.2.1",
+                ])
+            })
+            .unwrap();
+        let running = device.running_config();
+        assert!(
+            running.contains(" description desk 7") && running.contains("ntp server 192.0.2.1")
+        );
+        assert!(
+            !device.with(|state| state.saved()),
+            "the change is not saved yet"
+        );
+        assert!(
+            !device
+                .with(|state| state.startup_config())
+                .contains("ntp server")
+        );
+        // A line the device rejects comes back as the device's own words.
+        device.with(|state| state.reject.push("bogus".into()));
+        let refused = device
+            .with(|state| state.apply(&["bogus command"]))
+            .unwrap_err();
+        assert!(refused.contains("Invalid input"), "{refused}");
+    }
 
     #[test]
     fn the_fake_keeps_a_hierarchical_configuration() {

@@ -144,7 +144,8 @@ fn engine_form(text: &str, syntax: Syntax) -> String {
 }
 
 fn compute(app: &App, target: &Target, intended: &Intended) -> AppResult<Computed> {
-    let version = versions::require_latest(app, &target.device.name, &target.device.id, Kind::Running)?;
+    let version =
+        versions::require_latest(app, &target.device.name, &target.device.id, Kind::Running)?;
     let (version, running) = versions::read(app, version.id)?;
     let syntax = target.syntax(app);
     let running = engine_form(&running, syntax);
@@ -381,13 +382,16 @@ struct Handover {
 }
 
 pub(crate) fn register(router: &mut Router) {
-    router.add("config.intended.get", |app: App, params: GetParams| async move {
-        let target = scope::target(&app, &params.device_id)?;
-        Ok(app
-            .store()
-            .get::<Intended>(COLLECTION, &target.device.id)?
-            .map(|intended| view(&app, &target, intended, params.redact.unwrap_or(true))))
-    });
+    router.add(
+        "config.intended.get",
+        |app: App, params: GetParams| async move {
+            let target = scope::target(&app, &params.device_id)?;
+            Ok(app
+                .store()
+                .get::<Intended>(COLLECTION, &target.device.id)?
+                .map(|intended| view(&app, &target, intended, params.redact.unwrap_or(true))))
+        },
+    );
 
     router.add("config.intended.set", |app: App, params: SetParams| async move {
         let target = scope::target(&app, &params.device_id)?;
@@ -442,26 +446,29 @@ pub(crate) fn register(router: &mut Router) {
         Ok(view(&app, &target, intended, true))
     });
 
-    router.add("config.intended.clear", |app: App, params: DeviceParams| async move {
-        let target = scope::target(&app, &params.device_id)?;
-        let cleared = app.store().delete(COLLECTION, &target.device.id)?;
-        if cleared {
-            app.audit(
-                "config.intended.clear",
-                Some(&target.device.id),
-                format!(
-                    "Removed the intended configuration of `{}`",
-                    target.device.name
-                ),
-                serde_json::Value::Null,
-            );
-            app.publish(
-                "config.intended_changed",
-                &json!({"device_id": target.device.id, "set": false}),
-            );
-        }
-        Ok(json!({"cleared": cleared}))
-    });
+    router.add(
+        "config.intended.clear",
+        |app: App, params: DeviceParams| async move {
+            let target = scope::target(&app, &params.device_id)?;
+            let cleared = app.store().delete(COLLECTION, &target.device.id)?;
+            if cleared {
+                app.audit(
+                    "config.intended.clear",
+                    Some(&target.device.id),
+                    format!(
+                        "Removed the intended configuration of `{}`",
+                        target.device.name
+                    ),
+                    serde_json::Value::Null,
+                );
+                app.publish(
+                    "config.intended_changed",
+                    &json!({"device_id": target.device.id, "set": false}),
+                );
+            }
+            Ok(json!({"cleared": cleared}))
+        },
+    );
 
     router.add("config.drift", |app: App, params: DriftParams| async move {
         let target = scope::target(&app, &params.device_id)?;
@@ -473,16 +480,22 @@ pub(crate) fn register(router: &mut Router) {
         )
     });
 
-    router.add("config.drift.fix", |app: App, params: DeviceParams| async move {
-        let target = scope::target(&app, &params.device_id)?;
-        Ok(Handover {
-            change_id: fix(&app, &target).await?,
-        })
-    });
+    router.add(
+        "config.drift.fix",
+        |app: App, params: DeviceParams| async move {
+            let target = scope::target(&app, &params.device_id)?;
+            Ok(Handover {
+                change_id: fix(&app, &target).await?,
+            })
+        },
+    );
 
-    router.add("config.restore", |app: App, params: RestoreParams| async move {
-        Ok(Handover {
-            change_id: restore(&app, params.version_id).await?,
-        })
-    });
+    router.add(
+        "config.restore",
+        |app: App, params: RestoreParams| async move {
+            Ok(Handover {
+                change_id: restore(&app, params.version_id).await?,
+            })
+        },
+    );
 }
