@@ -30,11 +30,19 @@ pub struct TransferEstimate {
 /// link rate (`100 Mbps`, `1.5G`, a number of bit/s). `overhead_pct` is the
 /// share of the link taken by protocol headers and retransmissions, from 0
 /// up to (not including) 100: with 5, a 100 Mbps link carries 95 Mbps of payload.
-pub fn transfer_time(size: &str, rate: &str, overhead_pct: f64) -> Result<TransferEstimate, ToolError> {
+pub fn transfer_time(
+    size: &str,
+    rate: &str,
+    overhead_pct: f64,
+) -> Result<TransferEstimate, ToolError> {
     let bytes = parse_size_bytes(size)?;
     let bps = parse_rate_bps(rate)?;
     if bps == 0 {
-        return Err(ToolError::invalid("rate", rate.trim(), "nothing ever finishes over a link of 0 bit/s"));
+        return Err(ToolError::invalid(
+            "rate",
+            rate.trim(),
+            "nothing ever finishes over a link of 0 bit/s",
+        ));
     }
     if !(0.0..100.0).contains(&overhead_pct) {
         return Err(ToolError::invalid(
@@ -45,7 +53,11 @@ pub fn transfer_time(size: &str, rate: &str, overhead_pct: f64) -> Result<Transf
     }
     let effective_bps = bps as f64 * (1.0 - overhead_pct / 100.0);
     let seconds = bytes as f64 * 8.0 / effective_bps;
-    Ok(TransferEstimate { seconds, human: human_seconds(seconds), effective_bps })
+    Ok(TransferEstimate {
+        seconds,
+        human: human_seconds(seconds),
+        effective_bps,
+    })
 }
 
 /// Milliseconds below a second, tenths below a minute, then the three
@@ -90,8 +102,12 @@ pub fn parse_size_bytes(input: &str) -> Result<u64, ToolError> {
         // A lower-case b is a bit only when the prefix was deliberately capitalised (`Mb`).
         Base::LowerB => unit.bytes().any(|byte| byte.is_ascii_uppercase()),
     };
-    scale(&amount, multiplier, if in_bits { 8 } else { 1 })
-        .ok_or_else(|| ToolError::TooLarge(format!("`{}` is more than a 64-bit byte count can hold (16 EiB)", snip(text, 60))))
+    scale(&amount, multiplier, if in_bits { 8 } else { 1 }).ok_or_else(|| {
+        ToolError::TooLarge(format!(
+            "`{}` is more than a 64-bit byte count can hold (16 EiB)",
+            snip(text, 60)
+        ))
+    })
 }
 
 /// Parse a link rate into bits per second.
@@ -111,8 +127,10 @@ pub fn parse_rate_bps(input: &str) -> Result<u64, ToolError> {
     };
     // "per second" in any of its spellings; ASCII lower-casing keeps the byte offsets.
     let lower = unit.to_ascii_lowercase();
-    let per_second =
-        ["/second", "/sec", "/s", "ps"].iter().find(|suffix| lower.ends_with(**suffix)).map_or(0, |suffix| suffix.len());
+    let per_second = ["/second", "/sec", "/s", "ps"]
+        .iter()
+        .find(|suffix| lower.ends_with(**suffix))
+        .map_or(0, |suffix| suffix.len());
     let quantity = unit[..unit.len() - per_second].trim_end();
     if quantity.is_empty() && per_second > 0 {
         return Err(unknown_unit());
@@ -125,8 +143,12 @@ pub fn parse_rate_bps(input: &str) -> Result<u64, ToolError> {
         Base::UpperB => unit.bytes().any(|byte| byte.is_ascii_lowercase()),
     };
     // No prefix comes near overflowing u128 when multiplied by 8.
-    scale(&amount, multiplier * if in_bytes { 8 } else { 1 }, 1)
-        .ok_or_else(|| ToolError::TooLarge(format!("`{}` is more than a 64-bit rate can hold", snip(text, 60))))
+    scale(&amount, multiplier * if in_bytes { 8 } else { 1 }, 1).ok_or_else(|| {
+        ToolError::TooLarge(format!(
+            "`{}` is more than a 64-bit rate can hold",
+            snip(text, 60)
+        ))
+    })
 }
 
 /// A non-negative decimal number: `digits / 10^scale`.
@@ -144,21 +166,33 @@ fn split_quantity(text: &str) -> Result<(Decimal, &str), String> {
     if text.is_empty() {
         return Err("nothing was entered".to_owned());
     }
+    if text.len() > 256 {
+        return Err("it is far too long to be a number with a unit".to_owned());
+    }
     if text.starts_with('-') {
         return Err("it cannot be negative".to_owned());
     }
-    let number_len = text.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '_')).unwrap_or(text.len());
+    let number_len = text
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '_'))
+        .unwrap_or(text.len());
     let (number, unit) = text.split_at(number_len);
     let unit = unit.trim_start();
     if unit.starts_with(',') {
-        return Err("write the number with `.` as the decimal mark and without thousands separators".to_owned());
+        return Err(
+            "write the number with `.` as the decimal mark and without thousands separators"
+                .to_owned(),
+        );
     }
     let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
     if fraction.contains('.') {
         return Err("the number has more than one decimal point".to_owned());
     }
-    let digits_of =
-        |part: &str| part.bytes().filter(u8::is_ascii_digit).map(|byte| u128::from(byte - b'0')).collect::<Vec<_>>();
+    let digits_of = |part: &str| {
+        part.bytes()
+            .filter(u8::is_ascii_digit)
+            .map(|byte| u128::from(byte - b'0'))
+            .collect::<Vec<_>>()
+    };
     let (whole, fraction) = (digits_of(whole), digits_of(fraction));
     if whole.is_empty() && fraction.is_empty() {
         return Err("it does not start with a number".to_owned());
@@ -171,7 +205,13 @@ fn split_quantity(text: &str) -> Result<(Decimal, &str), String> {
             .and_then(|digits| digits.checked_add(*digit))
             .ok_or_else(|| "the number has too many digits".to_owned())?;
     }
-    Ok((Decimal { digits, scale: fraction.len() as u32 }, unit))
+    Ok((
+        Decimal {
+            digits,
+            scale: fraction.len() as u32,
+        },
+        unit,
+    ))
 }
 
 /// What a unit counts, after its prefix.
@@ -219,7 +259,9 @@ fn split_unit(unit: &str) -> Option<(u128, Base)> {
         "b" => Base::LowerB,
         "B" => Base::UpperB,
         word if word.eq_ignore_ascii_case("bit") || word.eq_ignore_ascii_case("bits") => Base::Bits,
-        word if word.eq_ignore_ascii_case("byte") || word.eq_ignore_ascii_case("bytes") => Base::Bytes,
+        word if word.eq_ignore_ascii_case("byte") || word.eq_ignore_ascii_case("bytes") => {
+            Base::Bytes
+        }
         _ => return None,
     };
     Some((multiplier, base))
@@ -240,12 +282,20 @@ fn scale(amount: &Decimal, multiplier: u128, divisor: u128) -> Option<u64> {
 
 /// Format a rate in bit/s with a decimal prefix: `1.25 Gbps`, `9.6 kbps`, `100 Mbps`.
 pub fn format_rate(bps: f64) -> String {
-    format_scaled(bps, 1000.0, &["bps", "kbps", "Mbps", "Gbps", "Tbps", "Pbps", "Ebps"])
+    format_scaled(
+        bps,
+        1000.0,
+        &["bps", "kbps", "Mbps", "Gbps", "Tbps", "Pbps", "Ebps"],
+    )
 }
 
 /// Format a byte count with a binary prefix: `4.38 GiB`, `512 B`, `1.5 KiB`.
 pub fn format_bytes(bytes: f64) -> String {
-    format_scaled(bytes, 1024.0, &["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"])
+    format_scaled(
+        bytes,
+        1024.0,
+        &["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"],
+    )
 }
 
 /// `value` in the largest unit that keeps it at or above 1, rounded to two
@@ -262,7 +312,11 @@ fn format_scaled(value: f64, step: f64, units: &[&str]) -> String {
         scaled /= step;
         unit += 1;
     }
-    let sign = if value < 0.0 && hundredths(scaled) > 0.0 { "-" } else { "" };
+    let sign = if value < 0.0 && hundredths(scaled) > 0.0 {
+        "-"
+    } else {
+        ""
+    };
     format!("{sign}{} {}", hundredths(scaled), units[unit])
 }
 
@@ -375,20 +429,42 @@ mod tests {
         let size = |input: &str| parse_size_bytes(input).unwrap_err().to_string();
         assert_eq!(size(""), "invalid size: nothing was entered");
         assert_eq!(size("-5 MB"), "invalid size `-5 MB`: it cannot be negative");
-        assert_eq!(size("MB"), "invalid size `MB`: it does not start with a number");
-        assert_eq!(size("."), "invalid size `.`: it does not start with a number");
-        assert_eq!(size("1.2.3 MB"), "invalid size `1.2.3 MB`: the number has more than one decimal point");
+        assert_eq!(
+            size("MB"),
+            "invalid size `MB`: it does not start with a number"
+        );
+        assert_eq!(
+            size("."),
+            "invalid size `.`: it does not start with a number"
+        );
+        assert_eq!(
+            size("1.2.3 MB"),
+            "invalid size `1.2.3 MB`: the number has more than one decimal point"
+        );
         assert_eq!(
             size("4,7 GiB"),
             "invalid size `4,7 GiB`: write the number with `.` as the decimal mark and without thousands separators"
         );
-        assert!(size("5 parsecs").starts_with("invalid size `5 parsecs`: `parsecs` is not a size unit; use B, kB, MB"));
+        assert!(
+            size("5 parsecs").starts_with(
+                "invalid size `5 parsecs`: `parsecs` is not a size unit; use B, kB, MB"
+            )
+        );
         assert!(size("5 MBs").contains("`MBs` is not a size unit"));
         assert!(size("5 Mbps").contains("`Mbps` is not a size unit"));
         assert!(size("1e6").contains("`e6` is not a size unit"));
-        assert_eq!(size("16 EiB"), "`16 EiB` is more than a 64-bit byte count can hold (16 EiB)");
-        assert_eq!(size("18446744073709551616"), "`18446744073709551616` is more than a 64-bit byte count can hold (16 EiB)");
-        assert!(matches!(parse_size_bytes(&format!("{} EB", "9".repeat(30))), Err(ToolError::TooLarge(_))));
+        assert_eq!(
+            size("16 EiB"),
+            "`16 EiB` is more than a 64-bit byte count can hold (16 EiB)"
+        );
+        assert_eq!(
+            size("18446744073709551616"),
+            "`18446744073709551616` is more than a 64-bit byte count can hold (16 EiB)"
+        );
+        assert!(matches!(
+            parse_size_bytes(&format!("{} EB", "9".repeat(30))),
+            Err(ToolError::TooLarge(_))
+        ));
         assert!(size(&"9".repeat(60)).contains("the number has too many digits"));
 
         let rate = |input: &str| parse_rate_bps(input).unwrap_err().to_string();
@@ -398,8 +474,14 @@ mod tests {
         assert!(rate("10 Mbpm").contains("`Mbpm` is not a rate unit"));
         assert!(rate("10 ps").contains("`ps` is not a rate unit"));
         assert!(rate("10 /s").contains("`/s` is not a rate unit"));
-        assert_eq!(rate("99999999 Tbps"), "`99999999 Tbps` is more than a 64-bit rate can hold");
-        assert!(matches!(parse_rate_bps("3 EB/s"), Err(ToolError::TooLarge(_))));
+        assert_eq!(
+            rate("99999999 Tbps"),
+            "`99999999 Tbps` is more than a 64-bit rate can hold"
+        );
+        assert!(matches!(
+            parse_rate_bps("3 EB/s"),
+            Err(ToolError::TooLarge(_))
+        ));
     }
 
     #[test]
@@ -453,11 +535,36 @@ mod tests {
 
     #[test]
     fn parsing_and_formatting_round_trip() {
-        for bps in [0u64, 1, 999, 1_000, 64_000, 1_500_000, 100_000_000, 2_500_000_000, 400_000_000_000] {
+        for bps in [
+            0u64,
+            1,
+            999,
+            1_000,
+            64_000,
+            1_500_000,
+            100_000_000,
+            2_500_000_000,
+            400_000_000_000,
+        ] {
             assert_eq!(parse_rate_bps(&format_rate(bps as f64)), Ok(bps), "{bps}");
         }
-        for bytes in [0u64, 1, 1023, 1024, 1536, 1 << 20, 3 << 30, 1 << 40, 1 << 50, 1 << 60] {
-            assert_eq!(parse_size_bytes(&format_bytes(bytes as f64)), Ok(bytes), "{bytes}");
+        for bytes in [
+            0u64,
+            1,
+            1023,
+            1024,
+            1536,
+            1 << 20,
+            3 << 30,
+            1 << 40,
+            1 << 50,
+            1 << 60,
+        ] {
+            assert_eq!(
+                parse_size_bytes(&format_bytes(bytes as f64)),
+                Ok(bytes),
+                "{bytes}"
+            );
         }
     }
 
@@ -465,11 +572,21 @@ mod tests {
     fn transfer_times() {
         // 700 MB over 100 Mbps: 5.6e9 bits / 1e8 bit/s = 56 s.
         let estimate = transfer_time("700 MB", "100 Mbps", 0.0).unwrap();
-        assert_eq!((estimate.seconds, estimate.human.as_str(), estimate.effective_bps), (56.0, "56 s", 100_000_000.0));
+        assert_eq!(
+            (
+                estimate.seconds,
+                estimate.human.as_str(),
+                estimate.effective_bps
+            ),
+            (56.0, "56 s", 100_000_000.0)
+        );
 
         // With 20% overhead the payload rate is 80 Mbps: 70 s.
         let slower = transfer_time("700 MB", "100 Mbps", 20.0).unwrap();
-        assert_eq!((slower.seconds, slower.human.as_str(), slower.effective_bps), (70.0, "1m 10s", 80_000_000.0));
+        assert_eq!(
+            (slower.seconds, slower.human.as_str(), slower.effective_bps),
+            (70.0, "1m 10s", 80_000_000.0)
+        );
 
         // A DVD image over a T1: 4.7e9 * 8 / 1.544e6 = 24352.3 s.
         let dvd = transfer_time("4.7 GB", "1.544 Mbps", 0.0).unwrap();
@@ -477,12 +594,21 @@ mod tests {
         assert_eq!(dvd.human, "6h 45m 52s");
 
         // 4.7 GiB over 1.5 Gbps: 5046586573 * 8 / 1.5e9 = 26.9 s.
-        assert_eq!(transfer_time("4.7GiB", "1.5G", 0.0).unwrap().human, "26.9 s");
-        assert_eq!(transfer_time("1 kB", "1G", 0.0).unwrap().human, "less than 1 ms");
+        assert_eq!(
+            transfer_time("4.7GiB", "1.5G", 0.0).unwrap().human,
+            "26.9 s"
+        );
+        assert_eq!(
+            transfer_time("1 kB", "1G", 0.0).unwrap().human,
+            "less than 1 ms"
+        );
         assert_eq!(transfer_time("1 MB", "1G", 0.0).unwrap().human, "8 ms");
         assert_eq!(transfer_time("0", "1G", 0.0).unwrap().human, "0 s");
         // 8e12 bits / 1e7 bit/s = 800,000 s = 1w 2d 6h 13m 20s, shown to three units.
-        assert_eq!(transfer_time("1 TB", "10 Mbps", 0.0).unwrap().human, "1w 2d 6h");
+        assert_eq!(
+            transfer_time("1 TB", "10 Mbps", 0.0).unwrap().human,
+            "1w 2d 6h"
+        );
         assert_eq!(transfer_time("125 MB", "1 Gbps", 0.0).unwrap().human, "1 s");
         // 59.992 s rounds up to a minute rather than showing "60 s".
         assert_eq!(transfer_time("7499 kB", "1 Mbps", 0.0).unwrap().human, "1m");
@@ -494,8 +620,13 @@ mod tests {
 
     #[test]
     fn transfer_time_rejections() {
-        let message = |size: &str, rate: &str, overhead: f64| transfer_time(size, rate, overhead).unwrap_err().to_string();
-        assert_eq!(message("1 GB", "0", 0.0), "invalid rate `0`: nothing ever finishes over a link of 0 bit/s");
+        let message = |size: &str, rate: &str, overhead: f64| {
+            transfer_time(size, rate, overhead).unwrap_err().to_string()
+        };
+        assert_eq!(
+            message("1 GB", "0", 0.0),
+            "invalid rate `0`: nothing ever finishes over a link of 0 bit/s"
+        );
         assert_eq!(
             message("1 GB", "1G", 100.0),
             "invalid overhead `100`: the protocol overhead is a percentage from 0 up to (not including) 100"

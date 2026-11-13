@@ -4,7 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ToolError;
-use crate::ip::{Family, Interface, Net, format_ipv4, group_thousands, low32, netmask_v4, range_to_nets};
+use crate::ip::{
+    Family, Interface, Net, format_ipv4, group_thousands, low32, netmask_v4, range_to_nets,
+};
 
 /// One subnet to plan for.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -97,7 +99,10 @@ pub fn plan(base: &str, requests: &[Request], p2p31: bool) -> Result<Plan, ToolE
     // Largest subnet (shortest prefix) first; the sort is stable, so equal
     // sizes keep the order in which they were asked for.
     sized.sort_by_key(|(prefix, _)| *prefix);
-    let needed: u64 = sized.iter().map(|(prefix, _)| block_size(*prefix)).fold(0, u64::saturating_add);
+    let needed: u64 = sized
+        .iter()
+        .map(|(prefix, _)| block_size(*prefix))
+        .fold(0, u64::saturating_add);
 
     let mut allocations = Vec::with_capacity(sized.len());
     let mut cursor = base_first;
@@ -111,7 +116,10 @@ pub fn plan(base: &str, requests: &[Request], p2p31: bool) -> Result<Plan, ToolE
         let free = base_last + 1 - cursor;
         if size > free {
             let room = if size > total_addresses {
-                format!("the base network {base_net} only has {}", group_thousands(&total_addresses.to_string()))
+                format!(
+                    "the base network {base_net} only has {}",
+                    group_thousands(&total_addresses.to_string())
+                )
             } else {
                 format!("{base_net} is full once the larger subnets are placed")
             };
@@ -131,7 +139,12 @@ pub fn plan(base: &str, requests: &[Request], p2p31: bool) -> Result<Plan, ToolE
 
     let mut unallocated = Vec::new();
     if cursor <= base_last {
-        range_to_nets(Family::V4, u128::from(cursor), u128::from(base_last), &mut unallocated);
+        range_to_nets(
+            Family::V4,
+            u128::from(cursor),
+            u128::from(base_last),
+            &mut unallocated,
+        );
     }
     Ok(Plan {
         allocations,
@@ -144,7 +157,11 @@ pub fn plan(base: &str, requests: &[Request], p2p31: bool) -> Result<Plan, ToolE
 /// The request's name, or its position in the list if it has none.
 fn name_or_number(index: usize, request: &Request) -> String {
     let name = request.name.trim();
-    if name.is_empty() { format!("#{}", index + 1) } else { crate::error::snip(name, 60) }
+    if name.is_empty() {
+        format!("#{}", index + 1)
+    } else {
+        crate::error::snip(name, 60)
+    }
 }
 
 fn label(index: usize, request: &Request) -> String {
@@ -179,7 +196,9 @@ fn prefix_for_hosts(hosts: u64, p2p31: bool) -> Option<u8> {
             // Smallest n with 2^n >= hosts + network + broadcast.
             let addresses = hosts.checked_add(2)?;
             let host_bits = 64 - (addresses - 1).leading_zeros();
-            u8::try_from(host_bits).ok().and_then(|bits| 32u8.checked_sub(bits))
+            u8::try_from(host_bits)
+                .ok()
+                .and_then(|bits| 32u8.checked_sub(bits))
         }
     }
 }
@@ -213,7 +232,13 @@ mod tests {
     use super::*;
 
     fn requests(items: &[(&str, u64)]) -> Vec<Request> {
-        items.iter().map(|(name, hosts)| Request { name: (*name).to_owned(), hosts: *hosts }).collect()
+        items
+            .iter()
+            .map(|(name, hosts)| Request {
+                name: (*name).to_owned(),
+                hosts: *hosts,
+            })
+            .collect()
     }
 
     #[test]
@@ -240,8 +265,16 @@ mod tests {
             (2_147_483_647, 0, 0),
             (4_294_967_294, 0, 0),
         ] {
-            assert_eq!(prefix_for_hosts(hosts, false), Some(classic), "{hosts} hosts");
-            assert_eq!(prefix_for_hosts(hosts, true), Some(with_p2p31), "{hosts} hosts with /31");
+            assert_eq!(
+                prefix_for_hosts(hosts, false),
+                Some(classic),
+                "{hosts} hosts"
+            );
+            assert_eq!(
+                prefix_for_hosts(hosts, true),
+                Some(with_p2p31),
+                "{hosts} hosts with /31"
+            );
         }
         assert_eq!(prefix_for_hosts(4_294_967_295, false), None);
         assert_eq!(prefix_for_hosts(u64::MAX, true), None);
@@ -254,7 +287,14 @@ mod tests {
         // hosts plus two WAN links.
         let plan = plan(
             "192.168.1.0/24",
-            &requests(&[("WAN-1", 2), ("LAN-C", 25), ("LAN-A", 100), ("LAN-D", 10), ("WAN-2", 2), ("LAN-B", 50)]),
+            &requests(&[
+                ("WAN-1", 2),
+                ("LAN-C", 25),
+                ("LAN-A", 100),
+                ("LAN-D", 10),
+                ("WAN-2", 2),
+                ("LAN-B", 50),
+            ]),
             false,
         )
         .unwrap();
@@ -273,14 +313,65 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(rows, [
-            ("LAN-A", "192.168.1.0/25", "192.168.1.1", "192.168.1.126", "192.168.1.127", 126, 26),
-            ("LAN-B", "192.168.1.128/26", "192.168.1.129", "192.168.1.190", "192.168.1.191", 62, 12),
-            ("LAN-C", "192.168.1.192/27", "192.168.1.193", "192.168.1.222", "192.168.1.223", 30, 5),
-            ("LAN-D", "192.168.1.224/28", "192.168.1.225", "192.168.1.238", "192.168.1.239", 14, 4),
-            ("WAN-1", "192.168.1.240/30", "192.168.1.241", "192.168.1.242", "192.168.1.243", 2, 0),
-            ("WAN-2", "192.168.1.244/30", "192.168.1.245", "192.168.1.246", "192.168.1.247", 2, 0),
-        ]);
+        assert_eq!(
+            rows,
+            [
+                (
+                    "LAN-A",
+                    "192.168.1.0/25",
+                    "192.168.1.1",
+                    "192.168.1.126",
+                    "192.168.1.127",
+                    126,
+                    26
+                ),
+                (
+                    "LAN-B",
+                    "192.168.1.128/26",
+                    "192.168.1.129",
+                    "192.168.1.190",
+                    "192.168.1.191",
+                    62,
+                    12
+                ),
+                (
+                    "LAN-C",
+                    "192.168.1.192/27",
+                    "192.168.1.193",
+                    "192.168.1.222",
+                    "192.168.1.223",
+                    30,
+                    5
+                ),
+                (
+                    "LAN-D",
+                    "192.168.1.224/28",
+                    "192.168.1.225",
+                    "192.168.1.238",
+                    "192.168.1.239",
+                    14,
+                    4
+                ),
+                (
+                    "WAN-1",
+                    "192.168.1.240/30",
+                    "192.168.1.241",
+                    "192.168.1.242",
+                    "192.168.1.243",
+                    2,
+                    0
+                ),
+                (
+                    "WAN-2",
+                    "192.168.1.244/30",
+                    "192.168.1.245",
+                    "192.168.1.246",
+                    "192.168.1.247",
+                    2,
+                    0
+                ),
+            ]
+        );
         assert_eq!(plan.allocations[0].netmask, "255.255.255.128");
         assert_eq!(plan.allocations[4].netmask, "255.255.255.252");
         assert_eq!(plan.allocations[2].hosts_requested, 25);
@@ -290,36 +381,87 @@ mod tests {
 
     #[test]
     fn point_to_point_links_can_use_slash_31() {
-        let plan = plan("10.0.0.0/29", &requests(&[("p2p-a", 2), ("p2p-b", 2), ("loopback", 1)]), true).unwrap();
+        let plan = plan(
+            "10.0.0.0/29",
+            &requests(&[("p2p-a", 2), ("p2p-b", 2), ("loopback", 1)]),
+            true,
+        )
+        .unwrap();
         let cidrs: Vec<&str> = plan.allocations.iter().map(|a| a.cidr.as_str()).collect();
         assert_eq!(cidrs, ["10.0.0.0/31", "10.0.0.2/31", "10.0.0.4/32"]);
         let link = &plan.allocations[1];
-        assert_eq!((link.first_host.as_str(), link.last_host.as_str(), link.broadcast.as_str()), ("10.0.0.2", "10.0.0.3", ""));
-        assert_eq!((link.usable_hosts, link.spare, link.netmask.as_str()), (2, 0, "255.255.255.254"));
+        assert_eq!(
+            (
+                link.first_host.as_str(),
+                link.last_host.as_str(),
+                link.broadcast.as_str()
+            ),
+            ("10.0.0.2", "10.0.0.3", "")
+        );
+        assert_eq!(
+            (link.usable_hosts, link.spare, link.netmask.as_str()),
+            (2, 0, "255.255.255.254")
+        );
         let loopback = &plan.allocations[2];
         assert_eq!(
-            (loopback.first_host.as_str(), loopback.last_host.as_str(), loopback.broadcast.as_str()),
+            (
+                loopback.first_host.as_str(),
+                loopback.last_host.as_str(),
+                loopback.broadcast.as_str()
+            ),
             ("10.0.0.4", "10.0.0.4", "")
         );
-        assert_eq!((loopback.usable_hosts, loopback.spare, loopback.netmask.as_str()), (1, 0, "255.255.255.255"));
+        assert_eq!(
+            (
+                loopback.usable_hosts,
+                loopback.spare,
+                loopback.netmask.as_str()
+            ),
+            (1, 0, "255.255.255.255")
+        );
         assert_eq!(plan.unallocated, ["10.0.0.5/32", "10.0.0.6/31"]);
         assert_eq!((plan.used_addresses, plan.total_addresses), (5, 8));
     }
 
     #[test]
     fn a_plan_that_exactly_fills_the_base() {
-        let plan = plan("172.16.0.0/22", &requests(&[("a", 500), ("b", 250), ("c", 120), ("d", 60), ("e", 60)]), false).unwrap();
+        let plan = plan(
+            "172.16.0.0/22",
+            &requests(&[("a", 500), ("b", 250), ("c", 120), ("d", 60), ("e", 60)]),
+            false,
+        )
+        .unwrap();
         let cidrs: Vec<&str> = plan.allocations.iter().map(|a| a.cidr.as_str()).collect();
-        assert_eq!(cidrs, ["172.16.0.0/23", "172.16.2.0/24", "172.16.3.0/25", "172.16.3.128/26", "172.16.3.192/26"]);
+        assert_eq!(
+            cidrs,
+            [
+                "172.16.0.0/23",
+                "172.16.2.0/24",
+                "172.16.3.0/25",
+                "172.16.3.128/26",
+                "172.16.3.192/26"
+            ]
+        );
         assert!(plan.unallocated.is_empty());
         assert_eq!((plan.used_addresses, plan.total_addresses), (1024, 1024));
         // Equal-sized requests keep the order they were given in.
-        assert_eq!((plan.allocations[3].name.as_str(), plan.allocations[4].name.as_str()), ("d", "e"));
+        assert_eq!(
+            (
+                plan.allocations[3].name.as_str(),
+                plan.allocations[4].name.as_str()
+            ),
+            ("d", "e")
+        );
     }
 
     #[test]
     fn a_plan_that_overflows_names_the_request() {
-        let error = plan("192.168.1.0/24", &requests(&[("Servers", 100), ("Users", 120), ("Guests", 60)]), false).unwrap_err();
+        let error = plan(
+            "192.168.1.0/24",
+            &requests(&[("Servers", 100), ("Users", 120), ("Guests", 60)]),
+            false,
+        )
+        .unwrap_err();
         assert_eq!(
             error,
             ToolError::DoesNotFit(
@@ -331,7 +473,12 @@ mod tests {
 
         // The request that fails is the first one, largest first, that finds no room -
         // not necessarily the last one in the list.
-        let odd = plan("10.0.0.0/24", &requests(&[("big", 100), ("mid", 50), ("small", 20), ("mid2", 50)]), false).unwrap_err();
+        let odd = plan(
+            "10.0.0.0/24",
+            &requests(&[("big", 100), ("mid", 50), ("small", 20), ("mid2", 50)]),
+            false,
+        )
+        .unwrap_err();
         assert_eq!(
             odd.to_string(),
             "request `small` does not fit: 20 hosts need a /27 (32 addresses), but 10.0.0.0/24 is full once the larger \
@@ -349,7 +496,10 @@ mod tests {
         );
 
         let unnamed = plan("10.0.0.0/30", &requests(&[("", 2), ("  ", 2)]), false).unwrap_err();
-        assert!(unnamed.to_string().starts_with("request #2 does not fit"), "{unnamed}");
+        assert!(
+            unnamed.to_string().starts_with("request #2 does not fit"),
+            "{unnamed}"
+        );
 
         let absurd = plan("10.0.0.0/8", &requests(&[("everything", u64::MAX)]), false).unwrap_err();
         assert_eq!(
@@ -368,10 +518,18 @@ mod tests {
         assert_eq!((empty.used_addresses, empty.total_addresses), (0, 256));
 
         // The whole IPv4 space in one request.
-        let all = plan("0.0.0.0/0", &requests(&[("internet", 4_294_967_294)]), false).unwrap();
+        let all = plan(
+            "0.0.0.0/0",
+            &requests(&[("internet", 4_294_967_294)]),
+            false,
+        )
+        .unwrap();
         assert_eq!(all.allocations[0].cidr, "0.0.0.0/0");
         assert_eq!(all.allocations[0].broadcast, "255.255.255.255");
-        assert_eq!((all.used_addresses, all.total_addresses), (4_294_967_296, 4_294_967_296));
+        assert_eq!(
+            (all.used_addresses, all.total_addresses),
+            (4_294_967_296, 4_294_967_296)
+        );
 
         // A /32 base holds exactly one loopback.
         let single = plan("10.0.0.1", &requests(&[("lo0", 1)]), false).unwrap();
@@ -379,15 +537,34 @@ mod tests {
         assert!(single.unallocated.is_empty());
 
         // Without /31 support two hosts need a /30, which a /31 base cannot hold.
-        assert!(matches!(plan("10.0.0.0/31", &requests(&[("p2p", 2)]), false), Err(ToolError::DoesNotFit(_))));
+        assert!(matches!(
+            plan("10.0.0.0/31", &requests(&[("p2p", 2)]), false),
+            Err(ToolError::DoesNotFit(_))
+        ));
         assert!(plan("10.0.0.0/31", &requests(&[("p2p", 2)]), true).is_ok());
 
-        let zero = plan("10.0.0.0/24", &requests(&[("ok", 5), ("nothing", 0)]), false).unwrap_err();
-        assert_eq!(zero.to_string(), "invalid VLSM request `nothing`: it asks for 0 hosts; a subnet needs at least 1");
+        let zero = plan(
+            "10.0.0.0/24",
+            &requests(&[("ok", 5), ("nothing", 0)]),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            zero.to_string(),
+            "invalid VLSM request `nothing`: it asks for 0 hosts; a subnet needs at least 1"
+        );
         let unnamed_zero = plan("10.0.0.0/24", &requests(&[("", 0)]), false).unwrap_err();
-        assert_eq!(unnamed_zero.to_string(), "invalid VLSM request `#1`: it asks for 0 hosts; a subnet needs at least 1");
+        assert_eq!(
+            unnamed_zero.to_string(),
+            "invalid VLSM request `#1`: it asks for 0 hosts; a subnet needs at least 1"
+        );
 
-        assert!(plan("2001:db8::/48", &requests(&[("lan", 100)]), false).unwrap_err().to_string().contains("only makes sense for IPv4"));
+        assert!(
+            plan("2001:db8::/48", &requests(&[("lan", 100)]), false)
+                .unwrap_err()
+                .to_string()
+                .contains("only makes sense for IPv4")
+        );
         assert!(plan("not a network", &[], false).is_err());
     }
 }

@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::cisco7;
+use super::{MAX_INPUT_LEN, cisco7};
 
 /// The `kind` reported when nothing matches.
 pub(crate) const UNKNOWN: &str = "unknown";
@@ -258,15 +258,30 @@ static VALUE_FORMATS: LazyLock<Vec<(Regex, &'static Kind)>> = LazyLock::new(|| {
         (r"\$1[ac]\$\S+\$".to_owned(), &HUAWEI_IRREVERSIBLE),
         (r"\$c\$3\$\S+".to_owned(), &H3C_CIPHER),
         (r"\$h\$6\$\S+".to_owned(), &H3C_HASH),
-        (r"\$sha512\$[0-9]+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+".to_owned(), &CISCO_ASA_PBKDF2),
+        (
+            r"\$sha512\$[0-9]+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+".to_owned(),
+            &CISCO_ASA_PBKDF2,
+        ),
         (r"\$8\$aes256-gcm\$".to_owned(), &JUNOS_8),
-        (format!(r"\$8\${CRYPT}{{1,16}}\${CRYPT}{{1,43}}"), &CISCO_TYPE8),
+        (
+            format!(r"\$8\${CRYPT}{{1,16}}\${CRYPT}{{1,43}}"),
+            &CISCO_TYPE8,
+        ),
         // Cisco type 9 has a salt and a hash; a Junos `$9$` secret has no further `$`.
-        (format!(r"\$9\${CRYPT}{{1,16}}\${CRYPT}{{1,43}}"), &CISCO_TYPE9),
+        (
+            format!(r"\$9\${CRYPT}{{1,16}}\${CRYPT}{{1,43}}"),
+            &CISCO_TYPE9,
+        ),
         (r"\$9\$[./0-9A-Za-z-]{4,}".to_owned(), &JUNOS_9),
         (format!(r"\$1\${CRYPT}{{1,8}}\${CRYPT}{{1,22}}"), &MD5CRYPT),
-        (format!(r"\$5\$(?:rounds=[0-9]+\$)?{CRYPT}{{1,16}}\${CRYPT}{{1,43}}"), &SHA256CRYPT),
-        (format!(r"\$6\$(?:rounds=[0-9]+\$)?{CRYPT}{{1,16}}\${CRYPT}{{1,86}}"), &SHA512CRYPT),
+        (
+            format!(r"\$5\$(?:rounds=[0-9]+\$)?{CRYPT}{{1,16}}\${CRYPT}{{1,43}}"),
+            &SHA256CRYPT,
+        ),
+        (
+            format!(r"\$6\$(?:rounds=[0-9]+\$)?{CRYPT}{{1,16}}\${CRYPT}{{1,86}}"),
+            &SHA512CRYPT,
+        ),
         (format!(r"\$2[abxy]\$[0-9]{{2}}\${CRYPT}{{1,53}}"), &BCRYPT),
     ];
     patterns
@@ -295,8 +310,16 @@ const SECRET_KEYWORDS: [&str; 12] = [
 
 /// RouterOS parameters whose value is a secret (matched as the end of the
 /// parameter name, so `wpa2-pre-shared-key` and `authentication-password` count).
-const ROUTEROS_SUFFIXES: [&str; 8] =
-    ["password", "secret", "passphrase", "pre-shared-key", "preshared-key", "private-key", "auth-key", "authentication-key"];
+const ROUTEROS_SUFFIXES: [&str; 8] = [
+    "password",
+    "secret",
+    "passphrase",
+    "pre-shared-key",
+    "preshared-key",
+    "private-key",
+    "auth-key",
+    "authentication-key",
+];
 
 /// Identify how a secret is stored, from a configuration line or the bare value.
 ///
@@ -316,10 +339,20 @@ pub fn identify(input: &str) -> SecretKind {
 }
 
 fn classify(input: &str) -> &'static Kind {
-    let text = input.trim();
+    // A secret sits near the start of its line; megabytes of junk are not searched.
+    let mut text = input.trim();
+    if text.len() > MAX_INPUT_LEN {
+        let end = (0..=MAX_INPUT_LEN)
+            .rev()
+            .find(|index| text.is_char_boundary(*index))
+            .unwrap_or(0);
+        text = &text[..end];
+    }
     // Quotes and the trailing `;` of Junos and RouterOS lines are not part of a value.
-    let words: Vec<&str> =
-        text.split_whitespace().map(|word| word.trim_end_matches(';').trim_matches(['"', '\''])).collect();
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .map(|word| word.trim_end_matches(';').trim_matches(['"', '\'']))
+        .collect();
     let lower: Vec<String> = words.iter().map(|word| word.to_ascii_lowercase()).collect();
     let following = |index: usize| words.get(index + 1).copied();
 
@@ -327,7 +360,11 @@ fn classify(input: &str) -> &'static Kind {
     if words.iter().any(|word| is_huawei_blob(word)) {
         return &HUAWEI_CIPHER;
     }
-    if let Some(value) = words.iter().position(|word| *word == "ENC").and_then(following) {
+    if let Some(value) = words
+        .iter()
+        .position(|word| *word == "ENC")
+        .and_then(following)
+    {
         return match value.get(..3) {
             Some("SH2") => &FORTIOS_SHA256,
             Some("AK1") => &FORTIOS_SHA1,
@@ -339,14 +376,26 @@ fn classify(input: &str) -> &'static Kind {
         if let Some(found) = pattern.find(text) {
             // `secret 5 $1$...` is MD5-crypt under its Cisco name.
             let after_type_5 = text[..found.start()].split_whitespace().next_back() == Some("5");
-            return if kind.kind == MD5CRYPT.kind && after_type_5 { &CISCO_TYPE5 } else { kind };
+            return if kind.kind == MD5CRYPT.kind && after_type_5 {
+                &CISCO_TYPE5
+            } else {
+                kind
+            };
         }
     }
 
-    // 2. IOS-style `<keyword> <type> <value>`.
+    // 2. IOS-style `<keyword> <type> <value>`. In `ntp authentication-key 6
+    // md5 <value> 7` the first number is the key's and the type comes last.
+    let is_ntp_key = lower.first().is_some_and(|word| word == "ntp");
+    if let [.., value, "7"] = words[..]
+        && cisco7::has_type7_shape(value)
+    {
+        return &CISCO_TYPE7;
+    }
     for (index, word) in words.iter().enumerate() {
         let Some(value) = following(index) else { break };
-        let after_keyword = index > 0 && SECRET_KEYWORDS.contains(&lower[index - 1].as_str());
+        let after_keyword =
+            index > 0 && !is_ntp_key && SECRET_KEYWORDS.contains(&lower[index - 1].as_str());
         match *word {
             "7" if cisco7::has_type7_shape(value) => return &CISCO_TYPE7,
             "4" if is_type4(value) => return &CISCO_TYPE4,
@@ -363,18 +412,35 @@ fn classify(input: &str) -> &'static Kind {
     {
         return &CISCO_PIX_MD5;
     }
-    // Huawei / H3C `password simple <value>`
-    if lower.iter().position(|word| word == "simple").and_then(following).is_some() {
+    // Huawei / H3C `password simple <value>`, `key authentication simple <value>`
+    let about_a_secret = |word: &String| {
+        ["password", "key", "authentication", "community"]
+            .iter()
+            .any(|keyword| word.contains(keyword))
+    };
+    if lower
+        .iter()
+        .position(|word| word == "simple")
+        .and_then(following)
+        .is_some()
+        && lower.iter().any(about_a_secret)
+    {
         return &PLAINTEXT;
     }
 
     // 3. Lines that are about a clear-text secret.
-    if lower.iter().any(|word| word.contains("snmp")) && lower.iter().any(|word| word.contains("community")) {
+    if lower.iter().any(|word| word.contains("snmp"))
+        && lower.iter().any(|word| word == "community")
+    {
         return &SNMP_COMMUNITY;
     }
     let is_routeros_secret = |word: &String| {
-        word.split_once('=')
-            .is_some_and(|(name, value)| !value.is_empty() && ROUTEROS_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)))
+        word.split_once('=').is_some_and(|(name, value)| {
+            !value.is_empty()
+                && ROUTEROS_SUFFIXES
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+        })
     };
     if lower.iter().any(is_routeros_secret) {
         return &ROUTEROS_PLAIN;
@@ -427,22 +493,62 @@ mod tests {
         for (line, expected) in [
             ("enable password 0 cisco123", "cisco_type0"),
             ("username admin password 0 cisco123", "cisco_type0"),
-            ("enable secret 4 Rv4kArhts7yA2xd8BD2YTVbts7yA2xd8BD2YTVbts7y", "cisco_type4"),
-            ("enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0", "cisco_type5"),
-            ("username admin privilege 15 secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0", "cisco_type5"),
-            ("crypto isakmp key 6 FLgBaJHXdYY_AcHZZMgQ_RhTDJXHUBAAB address 192.0.2.1", "cisco_type6"),
-            (" pre-shared-key local 6 FLgBaJHXdYY_AcHZZMgQ_RhTDJXHUBAAB", "cisco_type6"),
+            (
+                "enable secret 4 Rv4kArhts7yA2xd8BD2YTVbts7yA2xd8BD2YTVbts7y",
+                "cisco_type4",
+            ),
+            (
+                "enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0",
+                "cisco_type5",
+            ),
+            (
+                "username admin privilege 15 secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0",
+                "cisco_type5",
+            ),
+            (
+                "crypto isakmp key 6 FLgBaJHXdYY_AcHZZMgQ_RhTDJXHUBAAB address 192.0.2.1",
+                "cisco_type6",
+            ),
+            (
+                " pre-shared-key local 6 FLgBaJHXdYY_AcHZZMgQ_RhTDJXHUBAAB",
+                "cisco_type6",
+            ),
             ("interface Vlan 6 description uplink", "unknown"),
+            // NTP keys carry their number first and the type last.
+            ("ntp authentication-key 6 md5 0822455D0A16 7", "cisco_type7"),
+            ("ntp authentication-key 6 md5 s3cr3t", "unknown"),
+            (
+                " ip ospf authentication-key 6 FLgBaJHXdYY_AcHZZMgQ_RhTDJXHUBAAB",
+                "cisco_type6",
+            ),
             ("enable password 7 0822455D0A16", "cisco_type7"),
             (" password 7 0822455D0A16", "cisco_type7"),
             ("neighbor 192.0.2.1 password 7 0822455D0A16", "cisco_type7"),
-            (" ip ospf message-digest-key 1 md5 7 0822455D0A16", "cisco_type7"),
+            (
+                " ip ospf message-digest-key 1 md5 7 0822455D0A16",
+                "cisco_type7",
+            ),
             ("tacacs-server key 7 \"0822455D0A16\"", "cisco_type7"),
-            ("enable secret 8 $8$dsYGNam3K1SIJO$7nv/35M/qr6t.dVc7UY9zrJDWRVqncHub1PE9UlMQFs", "cisco_type8"),
-            ("enable secret 9 $9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM", "cisco_type9"),
-            ("username admin secret 9 $9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM", "cisco_type9"),
-            ("enable password 8Ry2YjIyt7RRXU24 encrypted", "cisco_pix_md5"),
-            ("username admin password $sha512$5000$Otc8AHuqnOJdIOjWJC9R4A==$Wnlq6V3lTqRq1CNqnXpS1w== pbkdf2", "cisco_asa_pbkdf2"),
+            (
+                "enable secret 8 $8$dsYGNam3K1SIJO$7nv/35M/qr6t.dVc7UY9zrJDWRVqncHub1PE9UlMQFs",
+                "cisco_type8",
+            ),
+            (
+                "enable secret 9 $9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM",
+                "cisco_type9",
+            ),
+            (
+                "username admin secret 9 $9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM",
+                "cisco_type9",
+            ),
+            (
+                "enable password 8Ry2YjIyt7RRXU24 encrypted",
+                "cisco_pix_md5",
+            ),
+            (
+                "username admin password $sha512$5000$Otc8AHuqnOJdIOjWJC9R4A==$Wnlq6V3lTqRq1CNqnXpS1w== pbkdf2",
+                "cisco_asa_pbkdf2",
+            ),
         ] {
             assert_eq!(kind(line), expected, "{line}");
         }
@@ -452,9 +558,18 @@ mod tests {
     fn cisco_types_from_bare_values() {
         assert_eq!(kind("0822455D0A16"), "cisco_type7");
         assert_eq!(kind("7 0822455D0A16"), "cisco_type7");
-        assert_eq!(kind("Rv4kArhts7yA2xd8BD2YTVbts7yA2xd8BD2YTVbts7y"), "cisco_type4");
-        assert_eq!(kind("$8$dsYGNam3K1SIJO$7nv/35M/qr6t.dVc7UY9zrJDWRVqncHub1PE9UlMQFs"), "cisco_type8");
-        assert_eq!(kind("$9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM"), "cisco_type9");
+        assert_eq!(
+            kind("Rv4kArhts7yA2xd8BD2YTVbts7yA2xd8BD2YTVbts7y"),
+            "cisco_type4"
+        );
+        assert_eq!(
+            kind("$8$dsYGNam3K1SIJO$7nv/35M/qr6t.dVc7UY9zrJDWRVqncHub1PE9UlMQFs"),
+            "cisco_type8"
+        );
+        assert_eq!(
+            kind("$9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM"),
+            "cisco_type9"
+        );
         // Hex that does not decode to text is not type 7.
         assert_eq!(kind("08FFFFFF"), "unknown");
         assert_eq!(kind("0841"), "unknown");
@@ -470,19 +585,40 @@ mod tests {
     fn crypt_hashes_wherever_they_appear() {
         for (input, expected) in [
             ("$1$mERr$hx5rVt7rPNoS4wqbXKX7m0", "md5crypt"),
-            ("$5$rounds=5000$usesomesillystri$KqJWpanXZHKq2BOB43TSaYhEWsQ1Lr5QNyPCDH/Tp.6", "sha256crypt"),
-            ("$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5", "sha256crypt"),
+            (
+                "$5$rounds=5000$usesomesillystri$KqJWpanXZHKq2BOB43TSaYhEWsQ1Lr5QNyPCDH/Tp.6",
+                "sha256crypt",
+            ),
+            (
+                "$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5",
+                "sha256crypt",
+            ),
             (
                 "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1",
                 "sha512crypt",
             ),
-            ("$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW", "bcrypt"),
-            ("$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", "bcrypt"),
+            (
+                "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW",
+                "bcrypt",
+            ),
+            (
+                "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
+                "bcrypt",
+            ),
             // A Linux shadow entry.
-            ("root:$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1:19700:0:99999:7:::", "sha512crypt"),
+            (
+                "root:$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1:19700:0:99999:7:::",
+                "sha512crypt",
+            ),
             // Arista and NX-OS spell the algorithm differently but store the same thing.
-            ("username admin privilege 15 role network-admin secret sha512 $6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl", "sha512crypt"),
-            ("username admin password 5 $5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5 role network-admin", "sha256crypt"),
+            (
+                "username admin privilege 15 role network-admin secret sha512 $6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl",
+                "sha512crypt",
+            ),
+            (
+                "username admin password 5 $5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5 role network-admin",
+                "sha256crypt",
+            ),
             // Cut off while pasting.
             ("$1$mERr$hx5rVt7rPN", "md5crypt"),
         ] {
@@ -495,9 +631,18 @@ mod tests {
         for (line, expected) in [
             ("$9$LbHX-wg4Z", "junos_9"),
             ("secret \"$9$LbHX-wg4Z\"; ## SECRET-DATA", "junos_9"),
-            ("set system tacplus-server 192.0.2.1 secret \"$9$LbHX-wg4Z\"", "junos_9"),
-            ("encrypted-password \"$1$mERr$hx5rVt7rPNoS4wqbXKX7m0\"; ## SECRET-DATA", "md5crypt"),
-            ("encrypted-password \"$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5\";", "sha256crypt"),
+            (
+                "set system tacplus-server 192.0.2.1 secret \"$9$LbHX-wg4Z\"",
+                "junos_9",
+            ),
+            (
+                "encrypted-password \"$1$mERr$hx5rVt7rPNoS4wqbXKX7m0\"; ## SECRET-DATA",
+                "md5crypt",
+            ),
+            (
+                "encrypted-password \"$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5\";",
+                "sha256crypt",
+            ),
             (
                 "set system root-authentication encrypted-password \"$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1\"",
                 "sha512crypt",
@@ -516,14 +661,37 @@ mod tests {
     #[test]
     fn huawei_and_h3c() {
         for (line, expected) in [
-            ("local-user admin password cipher %^%#JvZxR2g8c;a9~FPN~n'$7`DEV&=G(=Et02P/%\\*!%^%#", "huawei_cipher"),
-            (" set authentication password cipher %$%$Qp,8Xw(v7X$3$2!T{Y[R,QbE%$%$", "huawei_cipher"),
-            ("snmp-agent community read cipher %@%@8P,:Q!j1(6W!cX8=sWO.,3#N%@%@", "huawei_cipher"),
-            ("%+%##!!!!!!!!!\"!!!!\"!!!!*!!!!{5r8>vOT`<BLj/p*;z0HoEJ{%+%#", "huawei_cipher"),
-            ("local-user admin password irreversible-cipher $1a$C}!N~8Fh@Q$~!2R%5Xa/k7e7X.nZ~i7Sq,Q8v&B(.,v%qI$", "huawei_irreversible"),
+            (
+                "local-user admin password cipher %^%#JvZxR2g8c;a9~FPN~n'$7`DEV&=G(=Et02P/%\\*!%^%#",
+                "huawei_cipher",
+            ),
+            (
+                " set authentication password cipher %$%$Qp,8Xw(v7X$3$2!T{Y[R,QbE%$%$",
+                "huawei_cipher",
+            ),
+            (
+                "snmp-agent community read cipher %@%@8P,:Q!j1(6W!cX8=sWO.,3#N%@%@",
+                "huawei_cipher",
+            ),
+            (
+                "%+%##!!!!!!!!!\"!!!!\"!!!!*!!!!{5r8>vOT`<BLj/p*;z0HoEJ{%+%#",
+                "huawei_cipher",
+            ),
+            (
+                "local-user admin password irreversible-cipher $1a$C}!N~8Fh@Q$~!2R%5Xa/k7e7X.nZ~i7Sq,Q8v&B(.,v%qI$",
+                "huawei_irreversible",
+            ),
             ("local-user admin password simple Huawei@123", "plaintext"),
-            ("local-user admin password cipher $c$3$xPfX1bY4Ks2XVUZVUEXSkbcY0c8Yvw==", "h3c_cipher"),
-            ("local-user admin password hash $h$6$3BmZtGqU2s1LjQGn$7VhQxhGvcQzvZAf1eL0F1eNhGU5pdKhJ", "h3c_hash"),
+            (" key authentication simple Radius-Key-1", "plaintext"),
+            (" description a simple test", "unknown"),
+            (
+                "local-user admin password cipher $c$3$xPfX1bY4Ks2XVUZVUEXSkbcY0c8Yvw==",
+                "h3c_cipher",
+            ),
+            (
+                "local-user admin password hash $h$6$3BmZtGqU2s1LjQGn$7VhQxhGvcQzvZAf1eL0F1eNhGU5pdKhJ",
+                "h3c_hash",
+            ),
         ] {
             assert_eq!(kind(line), expected, "{line}");
         }
@@ -531,13 +699,29 @@ mod tests {
 
     #[test]
     fn fortios() {
-        let admin = identify("set password ENC SH2nlSm9QL9tapcHPXIqAXvX7vBJuuqu22hpa0JX0sBuKIo7z2g0Kz/+0KyH4E=");
-        assert_eq!((admin.kind.as_str(), admin.reversible), ("fortios_hash", false));
+        let admin = identify(
+            "set password ENC SH2nlSm9QL9tapcHPXIqAXvX7vBJuuqu22hpa0JX0sBuKIo7z2g0Kz/+0KyH4E=",
+        );
+        assert_eq!(
+            (admin.kind.as_str(), admin.reversible),
+            ("fortios_hash", false)
+        );
         assert!(admin.name.contains("SHA-256"));
-        assert!(identify("set password ENC AK1P6IPcOA4ONEoOaNZ4xHNnonB0q16ZuAwrfzewhnY4CU=").name.contains("SHA-1"));
-        assert!(identify("set password ENC PB2aGVsbG8gd29ybGQ=").name.contains("PBKDF2"));
+        assert!(
+            identify("set password ENC AK1P6IPcOA4ONEoOaNZ4xHNnonB0q16ZuAwrfzewhnY4CU=")
+                .name
+                .contains("SHA-1")
+        );
+        assert!(
+            identify("set password ENC PB2aGVsbG8gd29ybGQ=")
+                .name
+                .contains("PBKDF2")
+        );
         let psk = identify("set psksecret ENC bHl0aGl1bSBwb2x5bWVyIGJhdHRlcnk=");
-        assert_eq!((psk.kind.as_str(), psk.reversible, psk.strength.as_str()), ("fortios_enc", true, "weak"));
+        assert_eq!(
+            (psk.kind.as_str(), psk.reversible, psk.strength.as_str()),
+            ("fortios_enc", true, "weak")
+        );
         assert!(psk.advice.contains("CVE-2019-6693"));
         assert_eq!(kind("ENC bHl0aGl1bSBwb2x5bWVyIGJhdHRlcnk="), "fortios_enc");
     }
@@ -547,14 +731,33 @@ mod tests {
         for (line, expected) in [
             ("snmp-server community public RO", "snmp_community"),
             ("snmp-server community S3cr3t-RW RW 99", "snmp_community"),
-            ("set snmp community public authorization read-only", "snmp_community"),
-            ("/snmp community add name=public addresses=10.0.0.0/8", "snmp_community"),
+            (
+                "set snmp community public authorization read-only",
+                "snmp_community",
+            ),
+            (
+                "/snmp community add name=public addresses=10.0.0.0/8",
+                "snmp_community",
+            ),
             ("snmp-agent community read public", "snmp_community"),
-            ("/user add name=admin password=Sup3rSecret group=full", "routeros_plain"),
-            ("/ppp secret add name=alice password=wonderland service=pppoe", "routeros_plain"),
+            ("snmp-server contact community-noc@example.net", "unknown"),
+            (
+                "/user add name=admin password=Sup3rSecret group=full",
+                "routeros_plain",
+            ),
+            (
+                "/ppp secret add name=alice password=wonderland service=pppoe",
+                "routeros_plain",
+            ),
             ("add name=bob secret=\"hunter2\"", "routeros_plain"),
-            ("set [ find default=yes ] wpa2-pre-shared-key=correcthorsebattery", "routeros_plain"),
-            ("/interface wireguard add name=wg0 private-key=\"yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\"", "routeros_plain"),
+            (
+                "set [ find default=yes ] wpa2-pre-shared-key=correcthorsebattery",
+                "routeros_plain",
+            ),
+            (
+                "/interface wireguard add name=wg0 private-key=\"yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\"",
+                "routeros_plain",
+            ),
         ] {
             assert_eq!(kind(line), expected, "{line}");
         }
@@ -563,23 +766,90 @@ mod tests {
 
     #[test]
     fn unknown_input_is_reported_as_such() {
-        for input in ["", "   ", "hunter2", "interface GigabitEthernet0/1", "hostname core-sw-01", "password=", "name=public", "🔑🔑🔑"] {
+        for input in [
+            "",
+            "   ",
+            "hunter2",
+            "interface GigabitEthernet0/1",
+            "hostname core-sw-01",
+            "password=",
+            "name=public",
+            "🔑🔑🔑",
+        ] {
             let found = identify(input);
-            assert_eq!((found.kind.as_str(), found.strength.as_str(), found.reversible), ("unknown", "unknown", false), "{input}");
+            assert_eq!(
+                (
+                    found.kind.as_str(),
+                    found.strength.as_str(),
+                    found.reversible
+                ),
+                ("unknown", "unknown", false),
+                "{input}"
+            );
         }
+    }
+
+    #[test]
+    fn only_the_start_of_very_long_input_is_examined() {
+        let padding = "é".repeat(MAX_INPUT_LEN);
+        assert_eq!(
+            kind(&format!("enable password 7 0822455D0A16 {padding}")),
+            "cisco_type7"
+        );
+        assert_eq!(
+            kind(&format!("{padding} enable password 7 0822455D0A16")),
+            "unknown"
+        );
     }
 
     #[test]
     fn every_kind_is_fully_described() {
         for kind in [
-            &CISCO_TYPE0, &CISCO_TYPE4, &CISCO_TYPE5, &CISCO_TYPE6, &CISCO_TYPE7, &CISCO_TYPE8, &CISCO_TYPE9, &CISCO_PIX_MD5,
-            &CISCO_ASA_PBKDF2, &MD5CRYPT, &SHA256CRYPT, &SHA512CRYPT, &BCRYPT, &JUNOS_9, &JUNOS_8, &HUAWEI_CIPHER,
-            &HUAWEI_IRREVERSIBLE, &H3C_CIPHER, &H3C_HASH, &FORTIOS_ENC, &FORTIOS_SHA256, &FORTIOS_SHA1, &FORTIOS_PBKDF2,
-            &ROUTEROS_PLAIN, &SNMP_COMMUNITY, &PLAINTEXT, &UNKNOWN_KIND,
+            &CISCO_TYPE0,
+            &CISCO_TYPE4,
+            &CISCO_TYPE5,
+            &CISCO_TYPE6,
+            &CISCO_TYPE7,
+            &CISCO_TYPE8,
+            &CISCO_TYPE9,
+            &CISCO_PIX_MD5,
+            &CISCO_ASA_PBKDF2,
+            &MD5CRYPT,
+            &SHA256CRYPT,
+            &SHA512CRYPT,
+            &BCRYPT,
+            &JUNOS_9,
+            &JUNOS_8,
+            &HUAWEI_CIPHER,
+            &HUAWEI_IRREVERSIBLE,
+            &H3C_CIPHER,
+            &H3C_HASH,
+            &FORTIOS_ENC,
+            &FORTIOS_SHA256,
+            &FORTIOS_SHA1,
+            &FORTIOS_PBKDF2,
+            &ROUTEROS_PLAIN,
+            &SNMP_COMMUNITY,
+            &PLAINTEXT,
+            &UNKNOWN_KIND,
         ] {
-            assert!(kind.kind.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'), "{}", kind.kind);
-            assert!(!kind.name.is_empty() && kind.advice.ends_with('.'), "{}", kind.kind);
-            assert!(["none", "weak", "moderate", "strong", "unknown"].contains(&kind.strength), "{}", kind.kind);
+            assert!(
+                kind.kind
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{}",
+                kind.kind
+            );
+            assert!(
+                !kind.name.is_empty() && kind.advice.ends_with('.'),
+                "{}",
+                kind.kind
+            );
+            assert!(
+                ["none", "weak", "moderate", "strong", "unknown"].contains(&kind.strength),
+                "{}",
+                kind.kind
+            );
             // What can be read back is never rated above "moderate" unless a separate key protects it.
             if kind.strength == "none" {
                 assert!(kind.reversible, "{}", kind.kind);

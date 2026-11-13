@@ -34,17 +34,34 @@ pub fn number(input: &str) -> Result<NumberForms, ToolError> {
     if text.is_empty() {
         return Err(ToolError::invalid(WHAT, "", "nothing was entered"));
     }
+    // 128 binary digits with separators fit several times over.
+    if text.len() > 1024 {
+        return Err(ToolError::TooLarge(format!(
+            "a number of {} characters does not fit in 128 bits",
+            text.len()
+        )));
+    }
     let value = if text.contains([':', '.']) {
+        // One dot is a decimal fraction, not an address with three octets missing.
+        if text.matches('.').count() == 1 && text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            return Err(ToolError::invalid(
+                WHAT,
+                text,
+                "only whole numbers can be converted",
+            ));
+        }
         Addr::parse(text)?.value
     } else {
         let (radix, digits, base) = match text.get(..2).map(str::to_ascii_lowercase).as_deref() {
-            Some("0x") => (16, &text[2..], "hexadecimal"),
-            Some("0b") => (2, &text[2..], "binary"),
-            Some("0o") => (8, &text[2..], "octal"),
-            _ => (10, text, "decimal"),
+            Some("0x") => (16, &text[2..], "a hexadecimal"),
+            Some("0b") => (2, &text[2..], "a binary"),
+            Some("0o") => (8, &text[2..], "an octal"),
+            _ => (10, text, "a decimal"),
         };
         parse_digits(digits, radix, base).map_err(|error| match error {
-            DigitError::TooLarge => ToolError::TooLarge(format!("`{}` does not fit in 128 bits", snip(text, 60))),
+            DigitError::TooLarge => {
+                ToolError::TooLarge(format!("`{}` does not fit in 128 bits", snip(text, 60)))
+            }
             DigitError::Invalid(reason) => ToolError::invalid(WHAT, text, reason),
         })?
     };
@@ -69,7 +86,9 @@ fn parse_digits(digits: &str, radix: u32, base: &str) -> Result<u128, DigitError
     for character in digits.chars() {
         if matches!(character, '_' | ' ') {
             if previous_was_separator {
-                return Err(DigitError::Invalid("digit separators must sit between digits".to_owned()));
+                return Err(DigitError::Invalid(
+                    "digit separators must sit between digits".to_owned(),
+                ));
             }
             previous_was_separator = true;
             continue;
@@ -79,9 +98,11 @@ fn parse_digits(digits: &str, radix: u32, base: &str) -> Result<u128, DigitError
             return Err(DigitError::Invalid(match character {
                 '-' => "only non-negative whole numbers can be converted".to_owned(),
                 'a'..='f' | 'A'..='F' if radix == 10 => {
-                    format!("`{character}` is not a decimal digit; write hexadecimal numbers with a `0x` prefix")
+                    format!(
+                        "`{character}` is not a decimal digit; write hexadecimal numbers with a `0x` prefix"
+                    )
                 }
-                _ => format!("`{character}` is not a {base} digit"),
+                _ => format!("`{character}` is not {base} digit"),
             }));
         };
         value = value
@@ -91,10 +112,14 @@ fn parse_digits(digits: &str, radix: u32, base: &str) -> Result<u128, DigitError
         seen += 1;
     }
     if seen == 0 {
-        return Err(DigitError::Invalid(format!("there are no {base} digits")));
+        return Err(DigitError::Invalid(format!(
+            "the digits are missing after the prefix for {base} number"
+        )));
     }
     if previous_was_separator {
-        return Err(DigitError::Invalid("digit separators must sit between digits".to_owned()));
+        return Err(DigitError::Invalid(
+            "digit separators must sit between digits".to_owned(),
+        ));
     }
     Ok(value)
 }
@@ -136,15 +161,32 @@ mod tests {
     fn small_and_large_values() {
         let ten = number("0b1010").unwrap();
         assert_eq!(
-            (ten.decimal.as_str(), ten.hex.as_str(), ten.binary.as_str(), ten.octal.as_str(), ten.ipv4.as_deref()),
+            (
+                ten.decimal.as_str(),
+                ten.hex.as_str(),
+                ten.binary.as_str(),
+                ten.octal.as_str(),
+                ten.ipv4.as_deref()
+            ),
             ("10", "0xA", "0b1010", "0o12", Some("0.0.0.10"))
         );
         let zero = number("0").unwrap();
-        assert_eq!((zero.decimal.as_str(), zero.hex.as_str(), zero.binary.as_str(), zero.octal.as_str()), ("0", "0x0", "0b0", "0o0"));
+        assert_eq!(
+            (
+                zero.decimal.as_str(),
+                zero.hex.as_str(),
+                zero.binary.as_str(),
+                zero.octal.as_str()
+            ),
+            ("0", "0x0", "0b0", "0o0")
+        );
         assert_eq!(number("0x0").unwrap(), zero);
         assert_eq!(number("0.0.0.0").unwrap(), zero);
 
-        assert_eq!(number("4294967295").unwrap().ipv4.as_deref(), Some("255.255.255.255"));
+        assert_eq!(
+            number("4294967295").unwrap().ipv4.as_deref(),
+            Some("255.255.255.255")
+        );
         let beyond = number("4294967296").unwrap();
         assert_eq!((beyond.hex.as_str(), beyond.ipv4), ("0x100000000", None));
 
@@ -157,29 +199,84 @@ mod tests {
         assert_eq!(max.hex, format!("0x{}", "F".repeat(32)));
         assert_eq!(max.binary.len(), 2 + 128);
         assert_eq!(number("0xffffffffffffffffffffffffffffffff").unwrap(), max);
-        assert_eq!(number("0o3777777777777777777777777777777777777777777").unwrap(), max);
+        assert_eq!(
+            number("0o3777777777777777777777777777777777777777777").unwrap(),
+            max
+        );
     }
 
     #[test]
     fn rejections_say_what_is_wrong() {
         let message = |input: &str| number(input).unwrap_err().to_string();
         assert_eq!(message(""), "invalid number: nothing was entered");
-        assert_eq!(message("340282366920938463463374607431768211456"), "`340282366920938463463374607431768211456` does not fit in 128 bits");
-        assert!(matches!(number(&"9".repeat(500)), Err(ToolError::TooLarge(_))));
-        assert_eq!(message("-5"), "invalid number `-5`: only non-negative whole numbers can be converted");
-        assert_eq!(message("ff"), "invalid number `ff`: `f` is not a decimal digit; write hexadecimal numbers with a `0x` prefix");
-        assert_eq!(message("0b102"), "invalid number `0b102`: `2` is not a binary digit");
-        assert_eq!(message("0o8"), "invalid number `0o8`: `8` is not a octal digit");
-        assert_eq!(message("0xg"), "invalid number `0xg`: `g` is not a hexadecimal digit");
-        assert_eq!(message("0x"), "invalid number `0x`: there are no hexadecimal digits");
-        assert_eq!(message("12a"), "invalid number `12a`: `a` is not a decimal digit; write hexadecimal numbers with a `0x` prefix");
-        assert_eq!(message("1__0"), "invalid number `1__0`: digit separators must sit between digits");
-        assert_eq!(message("_10"), "invalid number `_10`: digit separators must sit between digits");
-        assert_eq!(message("10_"), "invalid number `10_`: digit separators must sit between digits");
-        assert_eq!(message("1,000"), "invalid number `1,000`: `,` is not a decimal digit");
-        assert_eq!(message("١٢٣"), "invalid number `١٢٣`: `١` is not a decimal digit");
-        assert_eq!(message("300.1.1.1"), "invalid IPv4 address `300.1.1.1`: `300` is not a valid octet (0-255)");
-        assert_eq!(message("1.5"), "invalid IPv4 address `1.5`: expected 4 octets separated by dots, found 2");
+        assert_eq!(
+            message("340282366920938463463374607431768211456"),
+            "`340282366920938463463374607431768211456` does not fit in 128 bits"
+        );
+        assert!(matches!(
+            number(&"9".repeat(500)),
+            Err(ToolError::TooLarge(_))
+        ));
+        assert_eq!(
+            message("-5"),
+            "invalid number `-5`: only non-negative whole numbers can be converted"
+        );
+        assert_eq!(
+            message("ff"),
+            "invalid number `ff`: `f` is not a decimal digit; write hexadecimal numbers with a `0x` prefix"
+        );
+        assert_eq!(
+            message("0b102"),
+            "invalid number `0b102`: `2` is not a binary digit"
+        );
+        assert_eq!(
+            message("0o8"),
+            "invalid number `0o8`: `8` is not an octal digit"
+        );
+        assert_eq!(
+            message("0xg"),
+            "invalid number `0xg`: `g` is not a hexadecimal digit"
+        );
+        assert_eq!(
+            message("0x"),
+            "invalid number `0x`: the digits are missing after the prefix for a hexadecimal number"
+        );
+        assert_eq!(
+            message("12a"),
+            "invalid number `12a`: `a` is not a decimal digit; write hexadecimal numbers with a `0x` prefix"
+        );
+        assert_eq!(
+            message("1__0"),
+            "invalid number `1__0`: digit separators must sit between digits"
+        );
+        assert_eq!(
+            message("_10"),
+            "invalid number `_10`: digit separators must sit between digits"
+        );
+        assert_eq!(
+            message("10_"),
+            "invalid number `10_`: digit separators must sit between digits"
+        );
+        assert_eq!(
+            message("1,000"),
+            "invalid number `1,000`: `,` is not a decimal digit"
+        );
+        assert_eq!(
+            message("١٢٣"),
+            "invalid number `١٢٣`: `١` is not a decimal digit"
+        );
+        assert_eq!(
+            message("300.1.1.1"),
+            "invalid IPv4 address `300.1.1.1`: `300` is not a valid octet (0-255)"
+        );
+        assert_eq!(
+            message("1.5"),
+            "invalid number `1.5`: only whole numbers can be converted"
+        );
+        assert_eq!(
+            message("10.1.5"),
+            "invalid IPv4 address `10.1.5`: expected 4 octets separated by dots, found 3"
+        );
         assert!(message("é0").contains("is not a decimal digit"));
     }
 }

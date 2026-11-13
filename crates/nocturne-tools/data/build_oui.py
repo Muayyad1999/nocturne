@@ -34,10 +34,12 @@ import csv
 import datetime
 import gzip
 import html
+import http.client
 import io
 import pathlib
 import re
 import sys
+import time
 import urllib.request
 
 REGISTRIES = {
@@ -161,6 +163,19 @@ def trim_legal(name: str) -> str:
     return trimmed
 
 
+def download(url: str, attempts: int = 4) -> str:
+    """Fetch one registry; the IEEE server drops a connection now and then."""
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "oui-registry-fetch"})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.read().decode("utf-8")
+        except (OSError, http.client.HTTPException) as error:
+            print(f"{url}: {error} (attempt {attempt} of {attempts})", file=sys.stderr)
+            time.sleep(2 * attempt)
+    raise SystemExit(f"cannot download {url}")
+
+
 def read_registry(text: str, digits: int) -> list[tuple[str, str]]:
     rows = []
     reader = csv.reader(io.StringIO(text))
@@ -178,6 +193,32 @@ def read_registry(text: str, digits: int) -> list[tuple[str, str]]:
     return rows
 
 
+def verify(path: pathlib.Path, sources: dict[str, list[tuple[str, str]]]) -> None:
+    """Read the file back and check it against the registries it was built from."""
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        lines = handle.read().split("\n")
+    if not lines[0].startswith("#date\t") or lines[-1] != "":
+        raise SystemExit("verification failed: header or final newline is missing")
+    entries = dict(line.split("\t") for line in lines[1:-1])
+    prefixes = [line.split("\t")[0] for line in lines[1:-1]]
+    if prefixes != sorted(set(prefixes)):
+        raise SystemExit("verification failed: prefixes are not sorted and unique")
+    listed = 0
+    for rows in sources.values():
+        for prefix, name in rows:
+            listed += 1
+            stored = entries.get(prefix)
+            if stored is None:
+                raise SystemExit(f"verification failed: {prefix} ({name}) is missing")
+            # Trimming only ever removes the end of a name (and at most one
+            # full stop in front of the legal form).
+            if not any(name.startswith(part.rstrip(".")) for part in stored.split(" / ")):
+                raise SystemExit(f"verification failed: {prefix} is {stored!r}, the registry says {name!r}")
+    if set(entries) != {prefix for rows in sources.values() for prefix, _ in rows}:
+        raise SystemExit("verification failed: the file has prefixes the registries do not")
+    print(f"verified {len(entries)} prefixes against {listed} registry rows", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", type=pathlib.Path, help="directory holding the four CSV files (default: download)")
@@ -191,14 +232,14 @@ def main() -> None:
 
     assignments: dict[str, list[str]] = {}
     changes: dict[str, str] = {}
+    sources: dict[str, list[tuple[str, str]]] = {}
     for filename, (url, digits) in REGISTRIES.items():
         if args.source:
             text = (args.source / filename).read_text(encoding="utf-8")
         else:
-            request = urllib.request.Request(url, headers={"User-Agent": "oui-registry-fetch"})
-            with urllib.request.urlopen(request, timeout=120) as response:
-                text = response.read().decode("utf-8")
+            text = download(url)
         rows = read_registry(text, digits)
+        sources[filename] = rows
         print(f"{filename}: {len(rows)} assignments", file=sys.stderr)
         for prefix, name in rows:
             trimmed = trim_legal(name)
@@ -222,6 +263,7 @@ def main() -> None:
         f"{len(changes)} distinct names trimmed",
         file=sys.stderr,
     )
+    verify(args.out, sources)
     if args.report:
         for name in sorted(changes):
             print(f"{name}\t->\t{changes[name]}")

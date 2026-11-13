@@ -22,13 +22,37 @@ cargo fmt -p nocturne-tools
 - `mac.rs` + `data/oui.tsv.gz` (59,032 prefixes: MA-L + MA-M + MA-S + IAB, downloaded 2026-11-13,
   built by `data/build_oui.py`; raw CSVs are in the scratch dir, not in the repo).
 
+- `secrets/` — cisco7 (decode/encode), junos9 (decode + seeded encode helper), identify, password generator.
+  One test (`password::tests::pinned_outputs`) still has placeholder values: fill them from the Python
+  reference in `tests/generate_vectors.py` once that script exists.
+- `convert/` — number, units (sizes/rates/transfer time), duration, mtu (+ `encapsulations()` helper).
+- `text.rs` — regex_test, hashes, base64.
+
+- `reference/` — ports (225 entries, names checked against the IANA registry), dscp (IANA registry incl.
+  LE and NQB), ip protocols / ethertypes / icmp(v6), administrative distances (checked against vendor
+  docs), ethernet standards, syslog levels, interface names.
+- `tests/generate_vectors.py` + `tests/data/vectors.json.gz` + `tests/cross_check.rs`: subnet/vlsm vs Python
+  `ipaddress`, type 7 vs passlib, password generator vs a hashlib reference. Passes on the vendored set, on a
+  fresh live set, and on 3 x 147k cases (`NOCTURNE_TOOLS_VECTORS=file cargo test --test cross_check`).
+- clippy clean as of the reference module.
+
+- `tests/generate_junos9_vectors.pl` + `tests/data/junos9_vectors.json` + `tests/junos9_interop.rs`:
+  decode vs Crypt::Juniper (vendored + live), and Crypt::Juniper decrypts what `junos9_encode` writes.
+  (Crypt/Juniper.pm was copied to /usr/local/share/perl/5.38.2 on this machine for the live tests.)
+- `tests/robustness.rs`: junk / mutated / Unicode / 1 MiB inputs through every public function, limits.
+  Input-length guards were added where junk was needlessly expensive (addresses, secrets, units, regex
+  pattern, durations, port queries).
+- `tests/system_tools.rs`: digests vs coreutils, base64 vs coreutils, identify vs `openssl passwd`.
+- All suites green, clippy clean at this point.
+
+- `tests/api_contract.rs`: every signature, field name and derive from the spec, plus its examples.
+- `lib.rs` crate docs; rustdoc builds with `-D warnings`; `cargo fmt -p nocturne-tools` applied
+  (hand-written reference tables are one row per line under `#[rustfmt::skip]`).
+
 ## In progress
 
-- `secrets/` (cisco7, junos9, identify, password)
+- Final read-through of every module, then the report.
 
 ## Next
 
-- `convert/`, `reference/`, `text.rs`
-- Python `ipaddress` cross-check (generator under `tests/`, vendored JSON), robustness tests, interop tests
-  (passlib for type 7, Crypt::Juniper for `$9$`, coreutils for hashes/base64)
-- clippy / fmt / report
+- (nothing planned)

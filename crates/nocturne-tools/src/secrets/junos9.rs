@@ -10,7 +10,7 @@
 
 use sha2::{Digest, Sha256};
 
-use super::printable_text;
+use super::{MAX_INPUT_LEN, MAX_SECRET_LEN, printable_text, too_long};
 use crate::ToolError;
 use crate::error::snip;
 
@@ -18,20 +18,35 @@ const MAGIC: &str = "$9$";
 
 /// The alphabet, in four families. The salt's family decides how many filler
 /// characters follow it: three for the first family down to none for the last.
-const FAMILIES: [&str; 4] = ["QzF3n6/9CAtpu0O", "B1IREhcSyrleKvMW8LXx", "7N-dVbwsY2g4oaJZGUDj", "iHkq.mPf5T"];
+const FAMILIES: [&str; 4] = [
+    "QzF3n6/9CAtpu0O",
+    "B1IREhcSyrleKvMW8LXx",
+    "7N-dVbwsY2g4oaJZGUDj",
+    "iHkq.mPf5T",
+];
 
 const ALPHABET_LEN: usize = 65;
 
 /// The weights of the distances for the characters at position 0, 1, ... 6
 /// of the secret (then the cycle repeats).
-const WEIGHTS: [&[u32]; 7] =
-    [&[1, 4, 32], &[1, 16, 32], &[1, 8, 32], &[1, 64], &[1, 32], &[1, 4, 16, 128], &[1, 32, 64]];
+const WEIGHTS: [&[u32]; 7] = [
+    &[1, 4, 32],
+    &[1, 16, 32],
+    &[1, 8, 32],
+    &[1, 64],
+    &[1, 32],
+    &[1, 4, 16, 128],
+    &[1, 32, 64],
+];
 
 const WHAT: &str = "$9$ secret";
 
 fn alphabet() -> [u8; ALPHABET_LEN] {
     let mut alphabet = [0u8; ALPHABET_LEN];
-    for (slot, letter) in alphabet.iter_mut().zip(FAMILIES.iter().flat_map(|family| family.bytes())) {
+    for (slot, letter) in alphabet
+        .iter_mut()
+        .zip(FAMILIES.iter().flat_map(|family| family.bytes()))
+    {
         *slot = letter;
     }
     alphabet
@@ -59,6 +74,13 @@ pub fn junos9_decode(encoded: &str) -> Result<String, ToolError> {
     if text.is_empty() {
         return Err(ToolError::invalid(WHAT, "", "nothing was entered"));
     }
+    if text.len() > MAX_INPUT_LEN {
+        return Err(ToolError::invalid(
+            WHAT,
+            text,
+            "it is far too long to be a `$9$` secret",
+        ));
+    }
     let Some(start) = text.find(MAGIC) else {
         let other = super::identify::identify(text);
         let reason = if other.kind == super::identify::UNKNOWN {
@@ -70,7 +92,9 @@ pub fn junos9_decode(encoded: &str) -> Result<String, ToolError> {
     };
     // The value runs to the closing quote, the `;` or the end of the word.
     let value = &text[start..];
-    let value = &value[..value.find(|c: char| c.is_whitespace() || c == '"' || c == ';').unwrap_or(value.len())];
+    let value = &value[..value
+        .find(|c: char| c.is_whitespace() || c == '"' || c == ';')
+        .unwrap_or(value.len())];
     let fail = |reason: String| Err(ToolError::invalid(WHAT, value, reason));
 
     let body = &value[MAGIC.len()..];
@@ -84,15 +108,23 @@ pub fn junos9_decode(encoded: &str) -> Result<String, ToolError> {
     for character in body.chars() {
         match u8::try_from(character).ok().and_then(lookup) {
             Some(found) => letters.push(found),
-            None => return fail(format!("`{}` is not a character Junos uses in `$9$` secrets", snip(character.encode_utf8(&mut [0; 4]), 4))),
+            None => {
+                return fail(format!(
+                    "`{}` is not a character Junos uses in `$9$` secrets",
+                    snip(character.encode_utf8(&mut [0; 4]), 4)
+                ));
+            }
         }
     }
 
     let Some(&(salt, filler)) = letters.first() else {
         return fail("there is nothing after `$9$`".to_owned());
     };
-    let truncated = || fail("it ends in the middle of a character, so it is truncated or mistyped".to_owned());
-    let Some(mut rest) = letters.get(1 + filler..) else { return truncated() };
+    let truncated =
+        || fail("it ends in the middle of a character, so it is truncated or mistyped".to_owned());
+    let Some(mut rest) = letters.get(1 + filler..) else {
+        return truncated();
+    };
     if rest.is_empty() {
         return fail("it holds only the salt and no secret, so it is truncated".to_owned());
     }
@@ -101,7 +133,9 @@ pub fn junos9_decode(encoded: &str) -> Result<String, ToolError> {
     let mut bytes = Vec::with_capacity(rest.len() / 2);
     while !rest.is_empty() {
         let weights = WEIGHTS[bytes.len() % WEIGHTS.len()];
-        let Some((group, tail)) = rest.split_at_checked(weights.len()) else { return truncated() };
+        let Some((group, tail)) = rest.split_at_checked(weights.len()) else {
+            return truncated();
+        };
         let mut code = 0u32;
         for (&(index, _), weight) in group.iter().zip(weights) {
             // The distance from the previous character, minus one. Zero steps
@@ -113,13 +147,17 @@ pub fn junos9_decode(encoded: &str) -> Result<String, ToolError> {
             code += (steps as u32 - 1) * weight;
             previous = index;
         }
-        let Ok(byte) = u8::try_from(code) else { return fail(corrupt(bytes.len())) };
+        let Ok(byte) = u8::try_from(code) else {
+            return fail(corrupt(bytes.len()));
+        };
         bytes.push(byte);
         rest = tail;
     }
     match printable_text(&bytes) {
         Some(plain) => Ok(plain),
-        None => fail("it decodes to unprintable bytes, so it is mistyped or not a `$9$` secret".to_owned()),
+        None => fail(
+            "it decodes to unprintable bytes, so it is mistyped or not a `$9$` secret".to_owned(),
+        ),
     }
 }
 
@@ -138,13 +176,23 @@ fn corrupt(position: usize) -> String {
 /// Junos device, whatever the seed.
 pub fn junos9_encode(plain: &str, seed: &[u8; 32]) -> Result<String, ToolError> {
     if plain.is_empty() {
-        return Err(ToolError::invalid("secret", "", "there is nothing to encode"));
+        return Err(ToolError::invalid(
+            "secret",
+            "",
+            "there is nothing to encode",
+        ));
+    }
+    if plain.len() > MAX_SECRET_LEN {
+        return Err(too_long("secret", plain.chars().count()));
     }
     if let Some(bad) = plain.chars().find(|c| !(' '..='~').contains(c)) {
         return Err(ToolError::invalid(
             "secret",
             plain,
-            format!("`{}` cannot be encoded: Junos secrets are printable ASCII", bad.escape_default()),
+            format!(
+                "`{}` cannot be encoded: only printable ASCII is supported",
+                bad.escape_default()
+            ),
         ));
     }
     let alphabet = alphabet();
@@ -154,16 +202,29 @@ pub fn junos9_encode(plain: &str, seed: &[u8; 32]) -> Result<String, ToolError> 
     let mut random = Vec::with_capacity(4);
     let mut counter = 0u32;
     while random.len() < 4 {
-        let digest = Sha256::new().chain_update(b"nocturne-tools junos9 v1").chain_update(seed).chain_update(counter.to_be_bytes()).finalize();
-        random.extend(digest.iter().filter(|byte| **byte < 195).map(|byte| usize::from(*byte) % ALPHABET_LEN));
-        counter += 1;
+        let digest = Sha256::new()
+            .chain_update(b"nocturne-tools junos9 v1")
+            .chain_update(seed)
+            .chain_update(counter.to_be_bytes())
+            .finalize();
+        random.extend(
+            digest
+                .iter()
+                .filter(|byte| **byte < 195)
+                .map(|byte| usize::from(*byte) % ALPHABET_LEN),
+        );
+        counter = counter.wrapping_add(1);
     }
 
     let salt = random[0];
     let filler = lookup(alphabet[salt]).map_or(0, |(_, filler)| filler);
     let mut encoded = String::with_capacity(MAGIC.len() + 4 + 4 * plain.len());
     encoded.push_str(MAGIC);
-    encoded.extend(random[..=filler].iter().map(|index| char::from(alphabet[*index])));
+    encoded.extend(
+        random[..=filler]
+            .iter()
+            .map(|index| char::from(alphabet[*index])),
+    );
 
     let mut previous = salt;
     for (position, byte) in plain.bytes().enumerate() {
@@ -205,9 +266,15 @@ mod tests {
         assert_eq!(lookup(b'$'), None);
         // Every weight pattern can express 0..=255 with digits below 64.
         for weights in WEIGHTS {
-            let largest: u32 = weights.windows(2).map(|pair| (pair[1] / pair[0] - 1) * pair[0]).sum();
+            let largest: u32 = weights
+                .windows(2)
+                .map(|pair| (pair[1] / pair[0] - 1) * pair[0])
+                .sum();
             let top = weights[weights.len() - 1];
-            assert!(largest + (255 / top) * top >= 255 && 255 / top < 64, "{weights:?}");
+            assert!(
+                largest + (255 / top) * top >= 255 && 255 / top < 64,
+                "{weights:?}"
+            );
         }
     }
 
@@ -239,7 +306,13 @@ mod tests {
         let mut families_seen = [false; 4];
         for seed_byte in 0..=255u8 {
             let seed = [seed_byte; 32];
-            for plain in ["a", "lc", "juniper123", "Tr1cky~!@#$%^&*()_+{}|:<>? pass", &"x".repeat(300)] {
+            for plain in [
+                "a",
+                "lc",
+                "juniper123",
+                "Tr1cky~!@#$%^&*()_+{}|:<>? pass",
+                &"x".repeat(300),
+            ] {
                 let encoded = junos9_encode(plain, &seed).unwrap();
                 assert!(encoded.starts_with(MAGIC));
                 assert_eq!(junos9_decode(&encoded).unwrap(), plain, "{encoded}");
@@ -252,15 +325,23 @@ mod tests {
         }
         assert_eq!(families_seen, [true; 4]);
         // Deterministic for a seed, different across seeds.
-        assert_eq!(junos9_encode("secret", &[7; 32]).unwrap(), junos9_encode("secret", &[7; 32]).unwrap());
-        assert_ne!(junos9_encode("secret", &[7; 32]).unwrap(), junos9_encode("secret", &[8; 32]).unwrap());
+        assert_eq!(
+            junos9_encode("secret", &[7; 32]).unwrap(),
+            junos9_encode("secret", &[7; 32]).unwrap()
+        );
+        assert_ne!(
+            junos9_encode("secret", &[7; 32]).unwrap(),
+            junos9_encode("secret", &[8; 32]).unwrap()
+        );
     }
 
     #[test]
     fn every_byte_value_position_round_trips() {
         // All printable ASCII at every position of the weight cycle.
         for offset in 0..7 {
-            let plain: String = std::iter::repeat_n('.', offset).chain((' '..='~').cycle().take(95 * 7)).collect();
+            let plain: String = std::iter::repeat_n('.', offset)
+                .chain((' '..='~').cycle().take(95 * 7))
+                .collect();
             let encoded = junos9_encode(&plain, &[offset as u8; 32]).unwrap();
             assert_eq!(junos9_decode(&encoded).unwrap(), plain);
         }
@@ -270,8 +351,14 @@ mod tests {
     fn rejections_say_what_is_wrong() {
         let message = |input: &str| junos9_decode(input).unwrap_err().to_string();
         assert_eq!(message(""), "invalid $9$ secret: nothing was entered");
-        assert_eq!(message("hunter2"), "invalid $9$ secret `hunter2`: a Junos obfuscated secret starts with `$9$`");
-        assert_eq!(message("$9$"), "invalid $9$ secret `$9$`: there is nothing after `$9$`");
+        assert_eq!(
+            message("hunter2"),
+            "invalid $9$ secret `hunter2`: a Junos obfuscated secret starts with `$9$`"
+        );
+        assert_eq!(
+            message("$9$"),
+            "invalid $9$ secret `$9$`: there is nothing after `$9$`"
+        );
         assert!(message("$9$LbHX-wg4").contains("ends in the middle of a character"));
         assert!(message("$9$Lb").contains("ends in the middle of a character"));
         assert!(message("$9$P").contains("holds only the salt"));
@@ -279,22 +366,67 @@ mod tests {
         assert!(message("$9$LbHX-wg4Z*").contains("`*` is not a character Junos uses"));
         assert!(message("$9$LbHX-wgéZ").contains("`é` is not a character Junos uses"));
         // The examples Crypt::Juniper's own test suite expects to fail.
-        for invalid in ["$9jadsfdf", "$9$asd", "$9$asdf*", "$9$dLw2ajHmFnCZUnCtuEhVwYY", "$9$dLw2ajHmFnCZUnCtuEhVw"] {
+        for invalid in [
+            "$9jadsfdf",
+            "$9$asd",
+            "$9$asdf*",
+            "$9$dLw2ajHmFnCZUnCtuEhVwYY",
+            "$9$dLw2ajHmFnCZUnCtuEhVw",
+        ] {
             assert!(junos9_decode(invalid).is_err(), "{invalid}");
         }
         // A repeated character would be a step of zero.
         assert!(message("$9$PPT3").contains("position 1 of the secret are not a valid encoding"));
         // Steps that add up to more than a byte.
         assert!(message("$9$P5TP").contains("position 1 of the secret are not a valid encoding"));
-        assert!(message("$9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM").contains("Cisco type 9 (scrypt) hash"));
+        assert!(
+            message("$9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM")
+                .contains("Cisco type 9 (scrypt) hash")
+        );
         assert!(message("0822455D0A16").contains("this looks like Cisco type 7"));
         assert!(message("$1$mERr$hx5rVt7rPNoS4wqbXKX7m0").contains("this looks like MD5-crypt"));
     }
 
     #[test]
+    fn absurd_lengths_are_refused_quickly() {
+        let long = "A".repeat(MAX_SECRET_LEN);
+        assert_eq!(
+            junos9_decode(&junos9_encode(&long, &[9; 32]).unwrap()).unwrap(),
+            long
+        );
+        assert_eq!(
+            junos9_encode(&format!("{long}A"), &[9; 32]).unwrap_err(),
+            ToolError::TooLarge("a secret of 1,025 characters is beyond the limit of 1,024".into())
+        );
+        let error = junos9_decode(&format!("$9${}", "LbHX-wg4Z".repeat(MAX_INPUT_LEN)))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("it is far too long to be a `$9$` secret"),
+            "{error}"
+        );
+        assert!(error.len() < 200);
+    }
+
+    #[test]
     fn encode_rejects_what_cannot_be_represented() {
-        assert!(junos9_encode("", &[0; 32]).unwrap_err().to_string().contains("nothing to encode"));
-        assert!(junos9_encode("pässword", &[0; 32]).unwrap_err().to_string().contains("printable ASCII"));
-        assert!(junos9_encode("line\nbreak", &[0; 32]).unwrap_err().to_string().contains("`\\n` cannot be encoded"));
+        assert!(
+            junos9_encode("", &[0; 32])
+                .unwrap_err()
+                .to_string()
+                .contains("nothing to encode")
+        );
+        assert!(
+            junos9_encode("pässword", &[0; 32])
+                .unwrap_err()
+                .to_string()
+                .contains("printable ASCII")
+        );
+        assert!(
+            junos9_encode("line\nbreak", &[0; 32])
+                .unwrap_err()
+                .to_string()
+                .contains("`\\n` cannot be encoded")
+        );
     }
 }

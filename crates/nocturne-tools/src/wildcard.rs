@@ -3,12 +3,14 @@
 //! A wildcard mask is the mask ACLs and OSPF `network` statements use: a
 //! 1-bit means "don't care". For a prefix it is simply the inverted netmask,
 //! but a wildcard may also be non-contiguous (`0.0.255.0`, `0.0.0.254`), which
-//! no prefix can express; [`matches`] and [`explain`] handle those too.
+//! no prefix can express; [`matches()`] and [`explain`] handle those too.
 
 use serde::{Deserialize, Serialize};
 
 use crate::ToolError;
-use crate::ip::{format_ipv4, group_thousands, netmask_v4, parse_dotted_quad, pow2_string, prefix_from_netmask};
+use crate::ip::{
+    format_ipv4, group_thousands, netmask_v4, parse_dotted_quad, pow2_string, prefix_from_netmask,
+};
 
 /// A mask in all its spellings.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -53,7 +55,11 @@ pub fn convert(input: &str) -> Result<MaskInfo, ToolError> {
     }
     if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         if hex.is_empty() || hex.len() > 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(ToolError::invalid("mask", text, "a hexadecimal mask has up to 8 hex digits, e.g. `0xffffff00`"));
+            return Err(ToolError::invalid(
+                "mask",
+                text,
+                "a hexadecimal mask has up to 8 hex digits, e.g. `0xffffff00`",
+            ));
         }
         // Up to 8 hex digits always fit.
         return Ok(from_mask(u32::from_str_radix(hex, 16).unwrap_or_default()));
@@ -109,7 +115,9 @@ pub fn explain(address: &str, wildcard: &str) -> Result<String, ToolError> {
                 .iter()
                 .zip(wildcard.to_be_bytes())
                 .enumerate()
-                .map(|(index, (value, wild))| format!("octet {} {}", index + 1, describe_octet(*value, wild)))
+                .map(|(index, (value, wild))| {
+                    format!("octet {} {}", index + 1, describe_octet(*value, wild))
+                })
                 .collect();
             format!(
                 "{pair} is a non-contiguous wildcard, so no single prefix describes it. It matches {count} addresses \
@@ -165,7 +173,10 @@ fn from_mask(mask: u32) -> MaskInfo {
 }
 
 fn parse_pair(address: &str, wildcard: &str) -> Result<(u32, u32), ToolError> {
-    Ok((parse_v4(address, "address")?, parse_v4(wildcard, "wildcard mask")?))
+    Ok((
+        parse_v4(address, "address")?,
+        parse_v4(wildcard, "wildcard mask")?,
+    ))
 }
 
 fn parse_v4(text: &str, what: &str) -> Result<u32, ToolError> {
@@ -236,14 +247,39 @@ mod tests {
     #[test]
     fn converts_between_all_three_spellings() {
         let slash24 = mask(Some(24), "255.255.255.0", "0.0.0.255", "256");
-        for input in ["24", "/24", " /24 ", "/ 24", "255.255.255.0", "0.0.0.255", "0xffffff00", "0XFFFFFF00", "0xff"] {
+        for input in [
+            "24",
+            "/24",
+            " /24 ",
+            "/ 24",
+            "255.255.255.0",
+            "0.0.0.255",
+            "0xffffff00",
+            "0XFFFFFF00",
+            "0xff",
+        ] {
             assert_eq!(convert(input).unwrap(), slash24, "{input}");
         }
-        assert_eq!(convert("/19").unwrap(), mask(Some(19), "255.255.224.0", "0.0.31.255", "8192"));
-        assert_eq!(convert("255.255.255.252").unwrap(), mask(Some(30), "255.255.255.252", "0.0.0.3", "4"));
-        assert_eq!(convert("0.0.3.255").unwrap(), mask(Some(22), "255.255.252.0", "0.0.3.255", "1024"));
-        assert_eq!(convert("128.0.0.0").unwrap(), mask(Some(1), "128.0.0.0", "127.255.255.255", "2147483648"));
-        assert_eq!(convert("/31").unwrap(), mask(Some(31), "255.255.255.254", "0.0.0.1", "2"));
+        assert_eq!(
+            convert("/19").unwrap(),
+            mask(Some(19), "255.255.224.0", "0.0.31.255", "8192")
+        );
+        assert_eq!(
+            convert("255.255.255.252").unwrap(),
+            mask(Some(30), "255.255.255.252", "0.0.0.3", "4")
+        );
+        assert_eq!(
+            convert("0.0.3.255").unwrap(),
+            mask(Some(22), "255.255.252.0", "0.0.3.255", "1024")
+        );
+        assert_eq!(
+            convert("128.0.0.0").unwrap(),
+            mask(Some(1), "128.0.0.0", "127.255.255.255", "2147483648")
+        );
+        assert_eq!(
+            convert("/31").unwrap(),
+            mask(Some(31), "255.255.255.254", "0.0.0.1", "2")
+        );
     }
 
     #[test]
@@ -260,12 +296,27 @@ mod tests {
     #[test]
     fn non_contiguous_masks_have_no_prefix() {
         // Starts with 0-bits: a wildcard, e.g. "any value in the third octet".
-        assert_eq!(convert("0.0.255.0").unwrap(), mask(None, "255.255.0.255", "0.0.255.0", "256"));
-        assert_eq!(convert("0.0.0.254").unwrap(), mask(None, "255.255.255.1", "0.0.0.254", "128"));
+        assert_eq!(
+            convert("0.0.255.0").unwrap(),
+            mask(None, "255.255.0.255", "0.0.255.0", "256")
+        );
+        assert_eq!(
+            convert("0.0.0.254").unwrap(),
+            mask(None, "255.255.255.1", "0.0.0.254", "128")
+        );
         // Starts with 1-bits: a (discontiguous) netmask.
-        assert_eq!(convert("255.255.0.255").unwrap(), mask(None, "255.255.0.255", "0.0.255.0", "256"));
-        assert_eq!(convert("255.0.255.0").unwrap(), mask(None, "255.0.255.0", "0.255.0.255", "65536"));
-        assert_eq!(convert("0xff00ff00").unwrap(), mask(None, "255.0.255.0", "0.255.0.255", "65536"));
+        assert_eq!(
+            convert("255.255.0.255").unwrap(),
+            mask(None, "255.255.0.255", "0.0.255.0", "256")
+        );
+        assert_eq!(
+            convert("255.0.255.0").unwrap(),
+            mask(None, "255.0.255.0", "0.255.0.255", "65536")
+        );
+        assert_eq!(
+            convert("0xff00ff00").unwrap(),
+            mask(None, "255.0.255.0", "0.255.0.255", "65536")
+        );
     }
 
     #[test]
@@ -274,18 +325,42 @@ mod tests {
             convert("33").unwrap_err().to_string(),
             "invalid prefix length `33`: IPv4 prefix lengths range from 0 to 32 (IPv6 prefixes have no netmask or wildcard form)"
         );
-        assert!(convert("/64").unwrap_err().to_string().contains("IPv6 prefixes have no netmask"));
+        assert!(
+            convert("/64")
+                .unwrap_err()
+                .to_string()
+                .contains("IPv6 prefixes have no netmask")
+        );
         assert!(convert("999999999999999999999").is_err());
-        assert_eq!(convert("").unwrap_err().to_string(), "invalid mask: nothing was entered");
-        assert_eq!(convert("255.255.256.0").unwrap_err().to_string(), "invalid mask `255.255.256.0`: `256` is not a valid octet (0-255)");
-        assert_eq!(convert("255.255.0").unwrap_err().to_string(), "invalid mask `255.255.0`: expected 4 octets separated by dots, found 3");
-        assert!(convert("0xfffffff00").unwrap_err().to_string().contains("up to 8 hex digits"));
+        assert_eq!(
+            convert("").unwrap_err().to_string(),
+            "invalid mask: nothing was entered"
+        );
+        assert_eq!(
+            convert("255.255.256.0").unwrap_err().to_string(),
+            "invalid mask `255.255.256.0`: `256` is not a valid octet (0-255)"
+        );
+        assert_eq!(
+            convert("255.255.0").unwrap_err().to_string(),
+            "invalid mask `255.255.0`: expected 4 octets separated by dots, found 3"
+        );
+        assert!(
+            convert("0xfffffff00")
+                .unwrap_err()
+                .to_string()
+                .contains("up to 8 hex digits")
+        );
         assert!(convert("0x").is_err());
         assert!(convert("0xzz").is_err());
         assert!(convert("/").is_err());
         assert!(convert("/255.255.255.0").is_err());
         assert!(convert("-24").is_err());
-        assert!(convert("twenty-four").unwrap_err().to_string().contains("expected a prefix length such as `24`"));
+        assert!(
+            convert("twenty-four")
+                .unwrap_err()
+                .to_string()
+                .contains("expected a prefix length such as `24`")
+        );
     }
 
     #[test]
@@ -321,13 +396,25 @@ mod tests {
     #[test]
     fn matching_rejects_bad_input() {
         assert_eq!(
-            matches("10.1.2.0", "0.0.0.256", "10.1.2.3").unwrap_err().to_string(),
+            matches("10.1.2.0", "0.0.0.256", "10.1.2.3")
+                .unwrap_err()
+                .to_string(),
             "invalid wildcard mask `0.0.0.256`: `256` is not a valid octet (0-255)"
         );
         assert!(matches("10.1.2", "0.0.0.255", "10.1.2.3").is_err());
         assert!(matches("10.1.2.0", "0.0.0.255", "host").is_err());
-        assert!(matches("2001:db8::", "0.0.0.255", "10.1.2.3").unwrap_err().to_string().contains("IPv4 concept"));
-        assert!(matches("10.1.2.0", "0.0.0.255", "2001:db8::1").unwrap_err().to_string().contains("IPv4 concept"));
+        assert!(
+            matches("2001:db8::", "0.0.0.255", "10.1.2.3")
+                .unwrap_err()
+                .to_string()
+                .contains("IPv4 concept")
+        );
+        assert!(
+            matches("10.1.2.0", "0.0.0.255", "2001:db8::1")
+                .unwrap_err()
+                .to_string()
+                .contains("IPv4 concept")
+        );
         assert!(matches("10.1.2.0", "/24", "10.1.2.3").is_err());
     }
 
@@ -368,22 +455,50 @@ mod tests {
             "`192.168.1.1 0.0.0.254` is a non-contiguous wildcard, so no single prefix describes it. It matches 128 addresses \
              between 192.168.1.1 and 192.168.1.255: octet 1 must be 192, octet 2 must be 168, octet 3 must be 1, octet 4 must be odd."
         );
-        assert!(explain("192.168.1.0", "0.0.0.254").unwrap().ends_with("octet 4 must be even."));
-        assert!(explain("10.0.0.0", "0.0.254.255").unwrap().contains("octet 3 must be even, octet 4 can be anything."));
+        assert!(
+            explain("192.168.1.0", "0.0.0.254")
+                .unwrap()
+                .ends_with("octet 4 must be even.")
+        );
+        assert!(
+            explain("10.0.0.0", "0.0.254.255")
+                .unwrap()
+                .contains("octet 3 must be even, octet 4 can be anything.")
+        );
         // Low bits free in one octet, another octet fully free.
-        assert!(explain("10.0.16.0", "0.255.7.0").unwrap().contains("octet 2 can be anything, octet 3 must be between 16 and 23, octet 4 must be 0."));
+        assert!(explain("10.0.16.0", "0.255.7.0").unwrap().contains(
+            "octet 2 can be anything, octet 3 must be between 16 and 23, octet 4 must be 0."
+        ));
         // A few scattered bits: the values are listed.
-        assert!(explain("10.0.0.1", "0.0.0.6").unwrap().contains("octet 4 must be one of 1, 3, 5, 7."));
-        assert!(explain("10.0.0.0", "0.0.0.129").unwrap().contains("octet 4 must be one of 0, 1, 128, 129."));
+        assert!(
+            explain("10.0.0.1", "0.0.0.6")
+                .unwrap()
+                .contains("octet 4 must be one of 1, 3, 5, 7.")
+        );
+        assert!(
+            explain("10.0.0.0", "0.0.0.129")
+                .unwrap()
+                .contains("octet 4 must be one of 0, 1, 128, 129.")
+        );
         // Many scattered bits: a pattern.
-        assert!(explain("10.0.0.1", "0.0.0.170").unwrap().contains("octet 4 must match the bit pattern x0x0x0x1 (x = any)."));
+        assert!(
+            explain("10.0.0.1", "0.0.0.170")
+                .unwrap()
+                .contains("octet 4 must match the bit pattern x0x0x0x1 (x = any).")
+        );
     }
 
     #[test]
     fn explain_points_out_a_subnet_mask_used_as_wildcard() {
         let text = explain("10.1.2.0", "255.255.255.0").unwrap();
-        assert!(text.starts_with("`10.1.2.0 255.255.255.0` is a non-contiguous wildcard"), "{text}");
-        assert!(text.contains("It matches 16,777,216 addresses between 0.0.0.0 and 255.255.255.0"), "{text}");
+        assert!(
+            text.starts_with("`10.1.2.0 255.255.255.0` is a non-contiguous wildcard"),
+            "{text}"
+        );
+        assert!(
+            text.contains("It matches 16,777,216 addresses between 0.0.0.0 and 255.255.255.0"),
+            "{text}"
+        );
         assert!(
             text.ends_with("Note: 255.255.255.0 is a subnet mask; if you meant the network 10.1.2.0/24, its wildcard is 0.0.0.255."),
             "{text}"
@@ -391,14 +506,28 @@ mod tests {
         // No such note for real wildcards or for host/any.
         assert!(!explain("10.1.2.0", "0.0.0.255").unwrap().contains("Note:"));
         assert!(!explain("10.1.2.0", "0.0.0.0").unwrap().contains("Note:"));
-        assert!(!explain("10.1.2.0", "255.255.255.255").unwrap().contains("Note:"));
+        assert!(
+            !explain("10.1.2.0", "255.255.255.255")
+                .unwrap()
+                .contains("Note:")
+        );
     }
 
     #[test]
     fn explain_agrees_with_matches() {
         // For every wildcard octet pattern, the first and last address match
         // and the count is 2^(wildcard bits).
-        for wild in [0u32, 1, 6, 0xFE, 0x0000_FF00, 0x00FF_00FF, 0xFFFF_FFFF, 0x0F0F_0F0F, 0x8000_0001] {
+        for wild in [
+            0u32,
+            1,
+            6,
+            0xFE,
+            0x0000_FF00,
+            0x00FF_00FF,
+            0xFFFF_FFFF,
+            0x0F0F_0F0F,
+            0x8000_0001,
+        ] {
             let address = 0xC0A8_0155 & !wild;
             let (address_text, wild_text) = (format_ipv4(address), format_ipv4(wild));
             let text = explain(&address_text, &wild_text).unwrap();

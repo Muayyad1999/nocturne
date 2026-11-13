@@ -5,7 +5,7 @@
 //! in hex: `0822455D0A16` is offset 08 and five bytes that decode to `cisco`.
 
 use super::identify::{self, UNKNOWN};
-use super::printable_text;
+use super::{MAX_INPUT_LEN, MAX_SECRET_LEN, printable_text, too_long};
 use crate::ToolError;
 
 /// The key every IOS image has shipped since the early 1990s.
@@ -24,6 +24,13 @@ pub fn cisco7_decode(encoded: &str) -> Result<String, ToolError> {
     let text = encoded.trim();
     if text.is_empty() {
         return Err(ToolError::invalid(WHAT, "", "nothing was entered"));
+    }
+    if text.len() > MAX_INPUT_LEN {
+        return Err(ToolError::invalid(
+            WHAT,
+            text,
+            "it is far too long to be a type 7 string",
+        ));
     }
     let Some(value) = value_of(text) else {
         return Err(not_type7(
@@ -48,7 +55,11 @@ fn not_type7(input: &str, value: &str, reason: String) -> ToolError {
     if other.kind == UNKNOWN || other.kind == "cisco_type7" {
         ToolError::invalid(WHAT, value, reason)
     } else {
-        ToolError::invalid(WHAT, value, format!("this looks like {}, not type 7", other.name))
+        ToolError::invalid(
+            WHAT,
+            value,
+            format!("this looks like {}, not type 7", other.name),
+        )
     }
 }
 
@@ -67,9 +78,11 @@ pub(super) fn decode_value(value: &str) -> Option<String> {
 /// error is the reason it is not well-formed.
 fn parse(value: &str) -> Result<(usize, Vec<u8>), String> {
     if let Some(bad) = value.chars().find(|c| !c.is_ascii_hexdigit()) {
-        return Err(format!("`{bad}` is not a hex digit; a type 7 string is two decimal digits followed by hex digits"));
+        return Err(format!(
+            "`{bad}` is not a hex digit; a type 7 string is two decimal digits followed by hex digits"
+        ));
     }
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(format!(
             "its length is {}, but a type 7 string always has an even length \
              (2 offset digits, then 2 hex digits per character); it is probably truncated",
@@ -88,15 +101,26 @@ fn parse(value: &str) -> Result<(usize, Vec<u8>), String> {
     };
     // Every character is a hex digit (checked above).
     let hex = |digit: u8| (digit as char).to_digit(16).unwrap_or(0) as u8;
-    Ok((salt, body.as_bytes().chunks_exact(2).map(|pair| (hex(pair[0]) << 4) | hex(pair[1])).collect()))
+    Ok((
+        salt,
+        body.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| (hex(pair[0]) << 4) | hex(pair[1]))
+            .collect(),
+    ))
 }
 
 fn decode(value: &str) -> Result<String, String> {
     let (salt, encoded) = parse(value)?;
-    let bytes: Vec<u8> =
-        encoded.iter().enumerate().map(|(index, byte)| byte ^ KEY[(salt + index) % KEY.len()]).collect();
-    printable_text(&bytes)
-        .ok_or_else(|| "it decodes to unprintable bytes, so it is not type 7 obfuscation (or it is corrupted)".to_owned())
+    let bytes: Vec<u8> = encoded
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte ^ KEY[(salt + index) % KEY.len()])
+        .collect();
+    printable_text(&bytes).ok_or_else(|| {
+        "it decodes to unprintable bytes, so it is not type 7 obfuscation (or it is corrupted)"
+            .to_owned()
+    })
 }
 
 /// Encode `plain` as a Cisco type 7 string with the given key offset
@@ -110,29 +134,47 @@ pub fn cisco7_encode(plain: &str, salt: u8) -> Result<String, ToolError> {
         ));
     }
     if plain.is_empty() {
-        return Err(ToolError::invalid("password", "", "there is nothing to encode"));
+        return Err(ToolError::invalid(
+            "password",
+            "",
+            "there is nothing to encode",
+        ));
+    }
+    if plain.len() > MAX_SECRET_LEN {
+        return Err(too_long("password", plain.chars().count()));
     }
     if let Some(bad) = plain.chars().find(|c| !(' '..='~').contains(c)) {
         return Err(ToolError::invalid(
             "password",
             plain,
-            format!("`{}` cannot be encoded: IOS passwords are printable ASCII", bad.escape_default()),
+            format!(
+                "`{}` cannot be encoded: IOS passwords are printable ASCII",
+                bad.escape_default()
+            ),
         ));
     }
     let mut encoded = format!("{salt:02}");
     for (index, byte) in plain.bytes().enumerate() {
-        encoded.push_str(&format!("{:02X}", byte ^ KEY[(usize::from(salt) + index) % KEY.len()]));
+        encoded.push_str(&format!(
+            "{:02X}",
+            byte ^ KEY[(usize::from(salt) + index) % KEY.len()]
+        ));
     }
     Ok(encoded)
 }
 
-/// Pick the type 7 value out of what was pasted: the value itself, or the
-/// word after the last lone `7` of a configuration line.
+/// Pick the type 7 value out of what was pasted: the value itself, the word
+/// after the last lone `7` of a configuration line, or the word before a
+/// final `7` (`ntp authentication-key 1 md5 <value> 7`).
 fn value_of(text: &str) -> Option<&str> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let value = match words[..] {
         [only] => only,
-        _ => words.iter().rposition(|word| *word == "7").and_then(|index| words.get(index + 1))?,
+        [.., value, "7"] => value,
+        _ => words
+            .iter()
+            .rposition(|word| *word == "7")
+            .and_then(|index| words.get(index + 1))?,
     };
     Some(value.trim_matches('"'))
 }
@@ -183,6 +225,7 @@ mod tests {
             "neighbor 10.0.0.1 password 7 0822455D0A16",
             "tacacs-server key 7 \"0822455D0A16\"",
             "snmp-server community 7 0822455D0A16 RO",
+            "ntp authentication-key 10 md5 0822455D0A16 7",
             "  0822455D0A16\n",
         ] {
             assert_eq!(cisco7_decode(line).unwrap(), "cisco", "{line}");
@@ -195,7 +238,9 @@ mod tests {
             assert_eq!(cisco7_encode("cisco", salt as u8).unwrap(), *expected);
         }
         // Longer than the key, so the key index wraps around.
-        let long: String = (0..200).map(|index| char::from(b' ' + (index % 95) as u8)).collect();
+        let long: String = (0..200)
+            .map(|index| char::from(b' ' + (index % 95) as u8))
+            .collect();
         for salt in 0..=15 {
             let encoded = cisco7_encode(&long, salt).unwrap();
             assert_eq!(encoded.len(), 2 + 2 * long.len());
@@ -207,7 +252,12 @@ mod tests {
     fn offsets_above_fifteen_decode_but_are_not_generated() {
         // Offset 52 is the last key byte, '7' (0x37); the next index wraps to 'd'.
         assert_eq!(cisco7_decode("525405").unwrap(), "ca");
-        assert!(cisco7_decode("530000").unwrap_err().to_string().contains("key offset from 00 to 52"));
+        assert!(
+            cisco7_decode("530000")
+                .unwrap_err()
+                .to_string()
+                .contains("key offset from 00 to 52")
+        );
         assert_eq!(
             cisco7_encode("x", 16).unwrap_err().to_string(),
             "invalid type 7 salt `16`: IOS only uses key offsets 0 to 15"
@@ -219,7 +269,11 @@ mod tests {
         let message = |input: &str| cisco7_decode(input).unwrap_err().to_string();
         assert_eq!(message(""), "invalid type 7 string: nothing was entered");
         assert_eq!(message("   "), "invalid type 7 string: nothing was entered");
-        assert!(message("0822455D0A1").contains("its length is 11"), "{}", message("0822455D0A1"));
+        assert!(
+            message("0822455D0A1").contains("its length is 11"),
+            "{}",
+            message("0822455D0A1")
+        );
         assert!(message("0822455D0A1G").contains("`G` is not a hex digit"));
         assert!(message("AB22455D0A16").contains("must start with a decimal key offset"));
         assert!(message("0").contains("its length is 1,"));
@@ -240,14 +294,52 @@ mod tests {
     }
 
     #[test]
+    fn absurd_lengths_are_refused_quickly() {
+        let long = "A".repeat(MAX_SECRET_LEN);
+        assert_eq!(
+            cisco7_decode(&cisco7_encode(&long, 0).unwrap()).unwrap(),
+            long
+        );
+        assert_eq!(
+            cisco7_encode(&format!("{long}A"), 0).unwrap_err(),
+            ToolError::TooLarge(
+                "a password of 1,025 characters is beyond the limit of 1,024".into()
+            )
+        );
+        let error = cisco7_decode(&format!("08{}", "22".repeat(MAX_INPUT_LEN)))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("it is far too long to be a type 7 string"),
+            "{error}"
+        );
+        assert!(error.len() < 200);
+    }
+
+    #[test]
     fn an_offset_alone_is_an_empty_password() {
         assert_eq!(cisco7_decode("08").unwrap(), "");
     }
 
     #[test]
     fn encode_rejects_what_ios_would_not_take() {
-        assert!(cisco7_encode("", 3).unwrap_err().to_string().contains("nothing to encode"));
-        assert!(cisco7_encode("pässword", 3).unwrap_err().to_string().contains("printable ASCII"));
-        assert!(cisco7_encode("tab\there", 3).unwrap_err().to_string().contains("`\\t` cannot be encoded"));
+        assert!(
+            cisco7_encode("", 3)
+                .unwrap_err()
+                .to_string()
+                .contains("nothing to encode")
+        );
+        assert!(
+            cisco7_encode("pässword", 3)
+                .unwrap_err()
+                .to_string()
+                .contains("printable ASCII")
+        );
+        assert!(
+            cisco7_encode("tab\there", 3)
+                .unwrap_err()
+                .to_string()
+                .contains("`\\t` cannot be encoded")
+        );
     }
 }

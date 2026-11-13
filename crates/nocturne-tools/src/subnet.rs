@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ToolError;
 use crate::ip::{
-    Addr, Family, Interface, Net, expand_ipv6, format_ipv4, low_mask, low32, merge_ranges, netmask_v4,
-    pow2_string, range_to_nets,
+    Addr, Family, Interface, Net, expand_ipv6, format_ipv4, low_mask, low32, merge_ranges,
+    netmask_v4, pow2_string, range_to_nets,
 };
 
 /// [`split`] never returns more than this many subnets, whatever `limit` says.
@@ -104,19 +104,30 @@ pub fn split(network: &str, new_prefix: u8, limit: usize) -> Result<SplitResult,
         return Err(ToolError::invalid(
             "new prefix length",
             &format!("/{new_prefix}"),
-            format!("it is shorter than the /{} of {parent}; subnets cannot be larger than the network", parent.prefix),
+            format!(
+                "it is shorter than the /{} of {parent}; subnets cannot be larger than the network",
+                parent.prefix
+            ),
         ));
     }
     let doublings = new_prefix - parent.prefix;
     let total = 1u128.checked_shl(u32::from(doublings));
     let wanted = limit.min(MAX_SPLIT_SUBNETS);
-    let count = total.map_or(wanted, |total| usize::try_from(total).unwrap_or(usize::MAX).min(wanted));
+    let count = total.map_or(wanted, |total| {
+        usize::try_from(total).unwrap_or(usize::MAX).min(wanted)
+    });
 
     // The step is only undefined (2^128) when the single subnet is ::/0 itself.
-    let step = 1u128.checked_shl(u32::from(parent.family.bits() - new_prefix)).unwrap_or(0);
+    let step = 1u128
+        .checked_shl(u32::from(parent.family.bits() - new_prefix))
+        .unwrap_or(0);
     let subnets = (0..count as u128)
         .map(|index| {
-            let subnet = Net { family: parent.family, first: parent.first + index * step, prefix: new_prefix };
+            let subnet = Net {
+                family: parent.family,
+                first: parent.first + index * step,
+                prefix: new_prefix,
+            };
             describe(subnet.network(), subnet)
         })
         .collect();
@@ -136,7 +147,11 @@ pub fn summarize(networks: &[String]) -> Result<Vec<String>, ToolError> {
     let mut v4 = Vec::new();
     let mut v6 = Vec::new();
     for net in parse_all(networks)? {
-        let ranges = if net.family == Family::V4 { &mut v4 } else { &mut v6 };
+        let ranges = if net.family == Family::V4 {
+            &mut v4
+        } else {
+            &mut v6
+        };
         ranges.push((net.first, net.last()));
     }
     let mut nets = Vec::new();
@@ -152,23 +167,44 @@ pub fn summarize(networks: &[String]) -> Result<Vec<String>, ToolError> {
 pub fn supernet(networks: &[String]) -> Result<String, ToolError> {
     let nets = parse_all(networks)?;
     let Some(&first) = nets.first() else {
-        return Err(ToolError::invalid("network list", "", "at least one network is needed"));
+        return Err(ToolError::invalid(
+            "network list",
+            "",
+            "at least one network is needed",
+        ));
     };
     if let Some(other) = nets.iter().find(|net| net.family != first.family) {
         return Err(ToolError::invalid(
             "network list",
             &other.to_string(),
-            format!("it cannot share a supernet with {first}: IPv4 and IPv6 are separate address spaces"),
+            format!(
+                "it cannot share a supernet with {first}: IPv4 and IPv6 are separate address spaces"
+            ),
         ));
     }
-    let lowest = nets.iter().map(|net| net.first).min().unwrap_or(first.first);
-    let highest = nets.iter().map(|net| net.last()).max().unwrap_or(first.last());
+    let lowest = nets
+        .iter()
+        .map(|net| net.first)
+        .min()
+        .unwrap_or(first.first);
+    let highest = nets
+        .iter()
+        .map(|net| net.last())
+        .max()
+        .unwrap_or(first.last());
     // The supernet's prefix is the run of leading bits on which the lowest
     // and highest address agree.
     let bits = first.family.bits();
     let differing = lowest ^ highest;
     let common = (differing.leading_zeros() as u8).saturating_sub(128 - bits);
-    Ok(Net::containing(Addr { family: first.family, value: lowest }, common).to_string())
+    Ok(Net::containing(
+        Addr {
+            family: first.family,
+            value: lowest,
+        },
+        common,
+    )
+    .to_string())
 }
 
 /// Whether `address` lies inside `network`.
@@ -218,7 +254,9 @@ pub fn next_free(parent: &str, prefix: u8, used: &[String]) -> Result<Option<Str
     let parent = Interface::parse(parent)?.net;
     check_prefix(parent.family, prefix)?;
     if prefix < parent.prefix {
-        return Err(ToolError::DoesNotFit(format!("a /{prefix} is larger than the parent network {parent}")));
+        return Err(ToolError::DoesNotFit(format!(
+            "a /{prefix} is larger than the parent network {parent}"
+        )));
     }
     let block = low_mask(parent.family.bits() - prefix);
     let mut candidate = parent.first;
@@ -226,17 +264,27 @@ pub fn next_free(parent: &str, prefix: u8, used: &[String]) -> Result<Option<Str
         if last < candidate {
             continue;
         }
-        if candidate | block < first {
+        if (candidate | block) < first {
             break;
         }
         // Move to the first block boundary after this used range.
-        let aligned = last.checked_add(1).and_then(|next| next.checked_add(block)).map(|next| next & !block);
+        let aligned = last
+            .checked_add(1)
+            .and_then(|next| next.checked_add(block))
+            .map(|next| next & !block);
         match aligned {
             Some(next) if next <= parent.last() => candidate = next,
             _ => return Ok(None),
         }
     }
-    Ok(Some(Net { family: parent.family, first: candidate, prefix }.to_string()))
+    Ok(Some(
+        Net {
+            family: parent.family,
+            first: candidate,
+            prefix,
+        }
+        .to_string(),
+    ))
 }
 
 /// The address space of `parent` that none of the `used` networks occupy,
@@ -268,7 +316,11 @@ fn check_prefix(family: Family, prefix: u8) -> Result<(), ToolError> {
         return Err(ToolError::invalid(
             "prefix length",
             &format!("/{prefix}"),
-            format!("{} prefix lengths range from 0 to {}", family.label(), family.bits()),
+            format!(
+                "{} prefix lengths range from 0 to {}",
+                family.label(),
+                family.bits()
+            ),
         ));
     }
     Ok(())
@@ -286,7 +338,11 @@ fn parse_all(networks: &[String]) -> Result<Vec<Net>, ToolError> {
 fn parse_plain_address(text: &str) -> Result<Addr, ToolError> {
     let text = text.trim();
     if text.contains('/') || text.split_whitespace().count() > 1 {
-        return Err(ToolError::invalid("address", text, "a range runs between two plain addresses, without a mask"));
+        return Err(ToolError::invalid(
+            "address",
+            text,
+            "a range runs between two plain addresses, without a mask",
+        ));
     }
     Addr::parse(text)
 }
@@ -315,7 +371,11 @@ fn describe(addr: Addr, net: Net) -> SubnetInfo {
     let (first_host, last_host, usable_hosts) = match host_bits {
         0 => (addr.value, addr.value, "1".to_owned()),
         1 => (net.first, last, "2".to_owned()),
-        _ if family == Family::V4 => (net.first + 1, last - 1, (low_mask(host_bits) - 1).to_string()),
+        _ if family == Family::V4 => (
+            net.first + 1,
+            last - 1,
+            (low_mask(host_bits) - 1).to_string(),
+        ),
         _ => (net.first + 1, last, low_mask(host_bits).to_string()),
     };
 
@@ -327,7 +387,11 @@ fn describe(addr: Addr, net: Net) -> SubnetInfo {
         cidr: net.to_string(),
         netmask: String::new(),
         wildcard: String::new(),
-        broadcast: if has_broadcast { show(last) } else { String::new() },
+        broadcast: if has_broadcast {
+            show(last)
+        } else {
+            String::new()
+        },
         first_host: show(first_host),
         last_host: show(last_host),
         usable_hosts,
@@ -358,7 +422,9 @@ fn describe(addr: Addr, net: Net) -> SubnetInfo {
             info.reverse_dns = format!("{d}.{c}.{b}.{a}.in-addr.arpa");
         }
         Family::V6 => {
-            let nibbles: Vec<String> = (0..32).map(|index| format!("{:x}", (addr.value >> (4 * index)) & 0xf)).collect();
+            let nibbles: Vec<String> = (0..32)
+                .map(|index| format!("{:x}", (addr.value >> (4 * index)) & 0xf))
+                .collect();
             info.hex = format!("0x{:032X}", addr.value);
             info.reverse_dns = format!("{}.ip6.arpa", nibbles.join("."));
             info.expanded = expand_ipv6(addr.value);
@@ -411,23 +477,71 @@ const V6_SCOPES: &[(u128, u8, &str)] = &[
     (0, 128, "unspecified"),
     (1, 128, "loopback"),
     (0xffff_0000_0000, 96, "IPv4-mapped"),
-    (0x0064_ff9b_0000_0000_0000_0000_0000_0000, 96, "NAT64 (RFC 6052)"),
-    (0x0064_ff9b_0001_0000_0000_0000_0000_0000, 48, "local-use NAT64 (RFC 8215)"),
-    (0x0100_0000_0000_0000_0000_0000_0000_0000, 64, "discard-only (RFC 6666)"),
+    (
+        0x0064_ff9b_0000_0000_0000_0000_0000_0000,
+        96,
+        "NAT64 (RFC 6052)",
+    ),
+    (
+        0x0064_ff9b_0001_0000_0000_0000_0000_0000,
+        48,
+        "local-use NAT64 (RFC 8215)",
+    ),
+    (
+        0x0100_0000_0000_0000_0000_0000_0000_0000,
+        64,
+        "discard-only (RFC 6666)",
+    ),
     (0x2001_0000_0000_0000_0000_0000_0000_0000, 32, "Teredo"),
-    (0x2001_0002_0000_0000_0000_0000_0000_0000, 48, "benchmarking (RFC 5180)"),
-    (0x2001_0010_0000_0000_0000_0000_0000_0000, 28, "ORCHID (deprecated)"),
-    (0x2001_0020_0000_0000_0000_0000_0000_0000, 28, "ORCHIDv2 (RFC 7343)"),
-    (0x2001_0db8_0000_0000_0000_0000_0000_0000, 32, "documentation"),
-    (0x3fff_0000_0000_0000_0000_0000_0000_0000, 20, "documentation"),
-    (0x2001_0000_0000_0000_0000_0000_0000_0000, 23, "IETF protocol assignments (RFC 2928)"),
+    (
+        0x2001_0002_0000_0000_0000_0000_0000_0000,
+        48,
+        "benchmarking (RFC 5180)",
+    ),
+    (
+        0x2001_0010_0000_0000_0000_0000_0000_0000,
+        28,
+        "ORCHID (deprecated)",
+    ),
+    (
+        0x2001_0020_0000_0000_0000_0000_0000_0000,
+        28,
+        "ORCHIDv2 (RFC 7343)",
+    ),
+    (
+        0x2001_0db8_0000_0000_0000_0000_0000_0000,
+        32,
+        "documentation",
+    ),
+    (
+        0x3fff_0000_0000_0000_0000_0000_0000_0000,
+        20,
+        "documentation",
+    ),
+    (
+        0x2001_0000_0000_0000_0000_0000_0000_0000,
+        23,
+        "IETF protocol assignments (RFC 2928)",
+    ),
     (0x2002_0000_0000_0000_0000_0000_0000_0000, 16, "6to4"),
-    (0x5f00_0000_0000_0000_0000_0000_0000_0000, 16, "SRv6 SIDs (RFC 9602)"),
+    (
+        0x5f00_0000_0000_0000_0000_0000_0000_0000,
+        16,
+        "SRv6 SIDs (RFC 9602)",
+    ),
     (0xfc00_0000_0000_0000_0000_0000_0000_0000, 7, "unique local"),
     (0xfe80_0000_0000_0000_0000_0000_0000_0000, 10, "link-local"),
-    (0xfec0_0000_0000_0000_0000_0000_0000_0000, 10, "site-local (deprecated)"),
+    (
+        0xfec0_0000_0000_0000_0000_0000_0000_0000,
+        10,
+        "site-local (deprecated)",
+    ),
     (0xff00_0000_0000_0000_0000_0000_0000_0000, 8, "multicast"),
-    (0x2000_0000_0000_0000_0000_0000_0000_0000, 3, "global unicast"),
+    (
+        0x2000_0000_0000_0000_0000_0000_0000_0000,
+        3,
+        "global unicast",
+    ),
 ];
 
 fn scope(addr: Addr) -> &'static str {
@@ -483,9 +597,12 @@ mod tests {
             is_network_address: false,
             is_broadcast_address: false,
         };
-        for input in
-            ["192.168.1.10/24", "192.168.1.10 255.255.255.0", "192.168.1.10/255.255.255.0", "192.168.1.10 0.0.0.255"]
-        {
+        for input in [
+            "192.168.1.10/24",
+            "192.168.1.10 255.255.255.0",
+            "192.168.1.10/255.255.255.0",
+            "192.168.1.10 0.0.0.255",
+        ] {
             assert_eq!(info(input).unwrap(), expected, "{input}");
         }
     }
@@ -509,10 +626,18 @@ mod tests {
     fn info_edge_prefixes_v4() {
         let all = info("0.0.0.0/0").unwrap();
         assert_eq!(
-            (all.network.as_str(), all.broadcast.as_str(), all.first_host.as_str(), all.last_host.as_str()),
+            (
+                all.network.as_str(),
+                all.broadcast.as_str(),
+                all.first_host.as_str(),
+                all.last_host.as_str()
+            ),
             ("0.0.0.0", "255.255.255.255", "0.0.0.1", "255.255.255.254")
         );
-        assert_eq!((all.usable_hosts.as_str(), all.total_addresses.as_str()), ("4294967294", "4294967296"));
+        assert_eq!(
+            (all.usable_hosts.as_str(), all.total_addresses.as_str()),
+            ("4294967294", "4294967296")
+        );
         assert_eq!(all.netmask, "0.0.0.0");
         assert_eq!(all.wildcard, "255.255.255.255");
         assert!(all.is_network_address);
@@ -523,8 +648,14 @@ mod tests {
             assert_eq!(p2p.address, address);
             assert_eq!(p2p.cidr, "10.0.0.0/31");
             assert_eq!(p2p.broadcast, "");
-            assert_eq!((p2p.first_host.as_str(), p2p.last_host.as_str()), ("10.0.0.0", "10.0.0.1"));
-            assert_eq!((p2p.usable_hosts.as_str(), p2p.total_addresses.as_str()), ("2", "2"));
+            assert_eq!(
+                (p2p.first_host.as_str(), p2p.last_host.as_str()),
+                ("10.0.0.0", "10.0.0.1")
+            );
+            assert_eq!(
+                (p2p.usable_hosts.as_str(), p2p.total_addresses.as_str()),
+                ("2", "2")
+            );
             assert!(!p2p.is_network_address && !p2p.is_broadcast_address);
         }
 
@@ -532,12 +663,21 @@ mod tests {
         assert_eq!(host.cidr, "10.1.2.3/32");
         assert_eq!(host.netmask, "255.255.255.255");
         assert_eq!(host.broadcast, "");
-        assert_eq!((host.first_host.as_str(), host.last_host.as_str()), ("10.1.2.3", "10.1.2.3"));
-        assert_eq!((host.usable_hosts.as_str(), host.total_addresses.as_str()), ("1", "1"));
+        assert_eq!(
+            (host.first_host.as_str(), host.last_host.as_str()),
+            ("10.1.2.3", "10.1.2.3")
+        );
+        assert_eq!(
+            (host.usable_hosts.as_str(), host.total_addresses.as_str()),
+            ("1", "1")
+        );
         assert!(!host.is_network_address && !host.is_broadcast_address);
 
         let smallest = info("10.0.0.4/30").unwrap();
-        assert_eq!((smallest.first_host.as_str(), smallest.last_host.as_str()), ("10.0.0.5", "10.0.0.6"));
+        assert_eq!(
+            (smallest.first_host.as_str(), smallest.last_host.as_str()),
+            ("10.0.0.5", "10.0.0.6")
+        );
         assert_eq!(smallest.usable_hosts, "2");
     }
 
@@ -555,7 +695,11 @@ mod tests {
         // IPv6 has no broadcast; the all-zeros address is the subnet-router anycast address.
         let v6 = info("2001:db8::/64").unwrap();
         assert!(v6.is_network_address && !v6.is_broadcast_address);
-        assert!(!info("2001:db8::ffff:ffff:ffff:ffff/64").unwrap().is_broadcast_address);
+        assert!(
+            !info("2001:db8::ffff:ffff:ffff:ffff/64")
+                .unwrap()
+                .is_broadcast_address
+        );
     }
 
     #[test]
@@ -579,7 +723,8 @@ mod tests {
             binary_netmask: String::new(),
             hex: "0x20010DB8000000000000000000000001".into(),
             integer: "42540766411282592856903984951653826561".into(),
-            reverse_dns: "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa".into(),
+            reverse_dns: "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+                .into(),
             expanded: "2001:0db8:0000:0000:0000:0000:0000:0001".into(),
             compressed: "2001:db8::1".into(),
             is_network_address: false,
@@ -592,25 +737,49 @@ mod tests {
     #[test]
     fn info_edge_prefixes_v6() {
         let all = info("::/0").unwrap();
-        assert_eq!(all.total_addresses, "340282366920938463463374607431768211456");
+        assert_eq!(
+            all.total_addresses,
+            "340282366920938463463374607431768211456"
+        );
         assert_eq!(all.usable_hosts, "340282366920938463463374607431768211455");
-        assert_eq!((all.first_host.as_str(), all.last_host.as_str()), ("::1", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"));
+        assert_eq!(
+            (all.first_host.as_str(), all.last_host.as_str()),
+            ("::1", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+        );
 
         // RFC 6164 point-to-point.
         let p2p = info("2001:db8::1/127").unwrap();
         assert_eq!(p2p.cidr, "2001:db8::/127");
-        assert_eq!((p2p.first_host.as_str(), p2p.last_host.as_str()), ("2001:db8::", "2001:db8::1"));
-        assert_eq!((p2p.usable_hosts.as_str(), p2p.total_addresses.as_str()), ("2", "2"));
+        assert_eq!(
+            (p2p.first_host.as_str(), p2p.last_host.as_str()),
+            ("2001:db8::", "2001:db8::1")
+        );
+        assert_eq!(
+            (p2p.usable_hosts.as_str(), p2p.total_addresses.as_str()),
+            ("2", "2")
+        );
         assert!(!info("2001:db8::/127").unwrap().is_network_address);
 
         let host = info("2001:db8::5").unwrap();
         assert_eq!(host.cidr, "2001:db8::5/128");
-        assert_eq!((host.first_host.as_str(), host.last_host.as_str()), ("2001:db8::5", "2001:db8::5"));
-        assert_eq!((host.usable_hosts.as_str(), host.total_addresses.as_str()), ("1", "1"));
+        assert_eq!(
+            (host.first_host.as_str(), host.last_host.as_str()),
+            ("2001:db8::5", "2001:db8::5")
+        );
+        assert_eq!(
+            (host.usable_hosts.as_str(), host.total_addresses.as_str()),
+            ("1", "1")
+        );
 
         let quad = info("2001:db8::4/126").unwrap();
-        assert_eq!((quad.first_host.as_str(), quad.last_host.as_str()), ("2001:db8::5", "2001:db8::7"));
-        assert_eq!((quad.usable_hosts.as_str(), quad.total_addresses.as_str()), ("3", "4"));
+        assert_eq!(
+            (quad.first_host.as_str(), quad.last_host.as_str()),
+            ("2001:db8::5", "2001:db8::7")
+        );
+        assert_eq!(
+            (quad.usable_hosts.as_str(), quad.total_addresses.as_str()),
+            ("3", "4")
+        );
     }
 
     #[test]
@@ -628,8 +797,18 @@ mod tests {
 
     #[test]
     fn zone_ids_and_junk_are_rejected() {
-        assert!(info("fe80::1%eth0").unwrap_err().to_string().contains("zone identifier"));
-        assert!(info("fe80::1%eth0/64").unwrap_err().to_string().contains("zone identifier"));
+        assert!(
+            info("fe80::1%eth0")
+                .unwrap_err()
+                .to_string()
+                .contains("zone identifier")
+        );
+        assert!(
+            info("fe80::1%eth0/64")
+                .unwrap_err()
+                .to_string()
+                .contains("zone identifier")
+        );
         assert_eq!(
             info("10.0.300.1").unwrap_err().to_string(),
             "invalid IPv4 address `10.0.300.1`: `300` is not a valid octet (0-255)"
@@ -741,17 +920,37 @@ mod tests {
         let result = split("192.168.1.0/24", 26, 10).unwrap();
         assert_eq!(result.total, "4");
         assert!(!result.truncated);
-        let cidrs: Vec<&str> = result.subnets.iter().map(|subnet| subnet.cidr.as_str()).collect();
-        assert_eq!(cidrs, ["192.168.1.0/26", "192.168.1.64/26", "192.168.1.128/26", "192.168.1.192/26"]);
+        let cidrs: Vec<&str> = result
+            .subnets
+            .iter()
+            .map(|subnet| subnet.cidr.as_str())
+            .collect();
+        assert_eq!(
+            cidrs,
+            [
+                "192.168.1.0/26",
+                "192.168.1.64/26",
+                "192.168.1.128/26",
+                "192.168.1.192/26"
+            ]
+        );
         assert_eq!(result.subnets[1].broadcast, "192.168.1.127");
         assert_eq!(result.subnets[1].first_host, "192.168.1.65");
-        assert!(result.subnets.iter().all(|subnet| subnet.is_network_address));
+        assert!(
+            result
+                .subnets
+                .iter()
+                .all(|subnet| subnet.is_network_address)
+        );
 
         // Host bits in the input are ignored, as everywhere.
         assert_eq!(split("192.168.1.77/24", 26, 10).unwrap(), result);
         // Splitting into itself is the identity.
         let same = split("10.0.0.0/8", 8, 5).unwrap();
-        assert_eq!((same.total.as_str(), same.subnets.len(), same.truncated), ("1", 1, false));
+        assert_eq!(
+            (same.total.as_str(), same.subnets.len(), same.truncated),
+            ("1", 1, false)
+        );
     }
 
     #[test]
@@ -759,11 +958,18 @@ mod tests {
         let result = split("10.0.0.0/8", 24, 3).unwrap();
         assert_eq!(result.total, "65536");
         assert!(result.truncated);
-        let cidrs: Vec<&str> = result.subnets.iter().map(|subnet| subnet.cidr.as_str()).collect();
+        let cidrs: Vec<&str> = result
+            .subnets
+            .iter()
+            .map(|subnet| subnet.cidr.as_str())
+            .collect();
         assert_eq!(cidrs, ["10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"]);
 
         let none = split("10.0.0.0/8", 24, 0).unwrap();
-        assert_eq!((none.total.as_str(), none.subnets.len(), none.truncated), ("65536", 0, true));
+        assert_eq!(
+            (none.total.as_str(), none.subnets.len(), none.truncated),
+            ("65536", 0, true)
+        );
 
         // Astronomically many subnets: the count is exact, the list capped.
         let huge = split("::/0", 128, usize::MAX).unwrap();
@@ -773,7 +979,10 @@ mod tests {
         assert_eq!(huge.subnets[MAX_SPLIT_SUBNETS - 1].cidr, "::ffff/128");
 
         let whole = split("::/0", 0, 10).unwrap();
-        assert_eq!((whole.total.as_str(), whole.subnets.len(), whole.truncated), ("1", 1, false));
+        assert_eq!(
+            (whole.total.as_str(), whole.subnets.len(), whole.truncated),
+            ("1", 1, false)
+        );
         assert_eq!(whole.subnets[0].cidr, "::/0");
 
         let v6 = split("2001:db8::/32", 48, 2).unwrap();
@@ -802,18 +1011,36 @@ mod tests {
     #[test]
     fn summarize_merges_adjacent_nested_unsorted_and_duplicate_networks() {
         // Adjacent.
-        assert_eq!(summarize(&strings(&["10.0.0.0/24", "10.0.1.0/24"])).unwrap(), ["10.0.0.0/23"]);
+        assert_eq!(
+            summarize(&strings(&["10.0.0.0/24", "10.0.1.0/24"])).unwrap(),
+            ["10.0.0.0/23"]
+        );
         // Adjacent but not aligned: 10.0.1.0/24 + 10.0.2.0/24 is not a /23.
-        assert_eq!(summarize(&strings(&["10.0.1.0/24", "10.0.2.0/24"])).unwrap(), ["10.0.1.0/24", "10.0.2.0/24"]);
+        assert_eq!(
+            summarize(&strings(&["10.0.1.0/24", "10.0.2.0/24"])).unwrap(),
+            ["10.0.1.0/24", "10.0.2.0/24"]
+        );
         // Nested and duplicate.
         assert_eq!(
-            summarize(&strings(&["10.0.0.0/8", "10.1.2.0/24", "10.0.0.0/8", "10.255.255.255"])).unwrap(),
+            summarize(&strings(&[
+                "10.0.0.0/8",
+                "10.1.2.0/24",
+                "10.0.0.0/8",
+                "10.255.255.255"
+            ]))
+            .unwrap(),
             ["10.0.0.0/8"]
         );
         // Unsorted, with a gap.
         assert_eq!(
-            summarize(&strings(&["192.168.3.0/24", "192.168.0.0/24", "192.168.2.0/24", "192.168.1.0/24", "192.168.5.0/24"]))
-                .unwrap(),
+            summarize(&strings(&[
+                "192.168.3.0/24",
+                "192.168.0.0/24",
+                "192.168.2.0/24",
+                "192.168.1.0/24",
+                "192.168.5.0/24"
+            ]))
+            .unwrap(),
             ["192.168.0.0/22", "192.168.5.0/24"]
         );
         // Hosts merge into blocks.
@@ -822,10 +1049,21 @@ mod tests {
             ["10.0.0.1/32", "10.0.0.2/31", "10.0.0.4/32"]
         );
         // The two halves of everything.
-        assert_eq!(summarize(&strings(&["128.0.0.0/1", "0.0.0.0/1"])).unwrap(), ["0.0.0.0/0"]);
+        assert_eq!(
+            summarize(&strings(&["128.0.0.0/1", "0.0.0.0/1"])).unwrap(),
+            ["0.0.0.0/0"]
+        );
         // Host bits are ignored; blanks skipped; families kept apart, IPv4 first.
         assert_eq!(
-            summarize(&strings(&["2001:db8:1::/48", "", "10.0.0.77/25", "2001:db8::/48", "  ", "10.0.0.200/25"])).unwrap(),
+            summarize(&strings(&[
+                "2001:db8:1::/48",
+                "",
+                "10.0.0.77/25",
+                "2001:db8::/48",
+                "  ",
+                "10.0.0.200/25"
+            ]))
+            .unwrap(),
             ["10.0.0.0/24", "2001:db8::/47"]
         );
         assert_eq!(summarize(&[]).unwrap(), Vec::<String>::new());
@@ -834,17 +1072,54 @@ mod tests {
 
     #[test]
     fn supernet_of_several_networks() {
-        assert_eq!(supernet(&strings(&["10.0.0.0/24", "10.0.1.0/24"])).unwrap(), "10.0.0.0/23");
-        assert_eq!(supernet(&strings(&["10.0.1.0/24", "10.0.2.0/24"])).unwrap(), "10.0.0.0/22");
-        assert_eq!(supernet(&strings(&["192.168.10.0/24"])).unwrap(), "192.168.10.0/24");
-        assert_eq!(supernet(&strings(&["192.168.10.7"])).unwrap(), "192.168.10.7/32");
-        assert_eq!(supernet(&strings(&["10.0.0.1", "10.0.0.2"])).unwrap(), "10.0.0.0/30");
-        assert_eq!(supernet(&strings(&["0.0.0.0", "255.255.255.255"])).unwrap(), "0.0.0.0/0");
-        assert_eq!(supernet(&strings(&["172.16.0.0/16", "172.31.0.0/16", "172.20.5.0/24"])).unwrap(), "172.16.0.0/12");
-        assert_eq!(supernet(&strings(&["2001:db8:a::/48", "2001:db8:b::/48"])).unwrap(), "2001:db8:a::/47");
+        assert_eq!(
+            supernet(&strings(&["10.0.0.0/24", "10.0.1.0/24"])).unwrap(),
+            "10.0.0.0/23"
+        );
+        assert_eq!(
+            supernet(&strings(&["10.0.1.0/24", "10.0.2.0/24"])).unwrap(),
+            "10.0.0.0/22"
+        );
+        assert_eq!(
+            supernet(&strings(&["192.168.10.0/24"])).unwrap(),
+            "192.168.10.0/24"
+        );
+        assert_eq!(
+            supernet(&strings(&["192.168.10.7"])).unwrap(),
+            "192.168.10.7/32"
+        );
+        assert_eq!(
+            supernet(&strings(&["10.0.0.1", "10.0.0.2"])).unwrap(),
+            "10.0.0.0/30"
+        );
+        assert_eq!(
+            supernet(&strings(&["0.0.0.0", "255.255.255.255"])).unwrap(),
+            "0.0.0.0/0"
+        );
+        assert_eq!(
+            supernet(&strings(&[
+                "172.16.0.0/16",
+                "172.31.0.0/16",
+                "172.20.5.0/24"
+            ]))
+            .unwrap(),
+            "172.16.0.0/12"
+        );
+        assert_eq!(
+            supernet(&strings(&["2001:db8:a::/48", "2001:db8:b::/48"])).unwrap(),
+            "2001:db8:a::/47"
+        );
         assert_eq!(supernet(&strings(&["::", "ffff::"])).unwrap(), "::/0");
-        assert_eq!(supernet(&[]).unwrap_err().to_string(), "invalid network list: at least one network is needed");
-        assert!(supernet(&strings(&["10.0.0.0/8", "2001:db8::/32"])).unwrap_err().to_string().contains("separate address spaces"));
+        assert_eq!(
+            supernet(&[]).unwrap_err().to_string(),
+            "invalid network list: at least one network is needed"
+        );
+        assert!(
+            supernet(&strings(&["10.0.0.0/8", "2001:db8::/32"]))
+                .unwrap_err()
+                .to_string()
+                .contains("separate address spaces")
+        );
     }
 
     #[test]
@@ -874,59 +1149,147 @@ mod tests {
 
     #[test]
     fn ranges_become_minimal_cidr_lists() {
-        assert_eq!(range_to_cidrs("10.0.0.5", "10.0.1.20").unwrap(), [
-            "10.0.0.5/32",
-            "10.0.0.6/31",
-            "10.0.0.8/29",
-            "10.0.0.16/28",
-            "10.0.0.32/27",
-            "10.0.0.64/26",
-            "10.0.0.128/25",
-            "10.0.1.0/28",
-            "10.0.1.16/30",
-            "10.0.1.20/32"
-        ]);
-        assert_eq!(range_to_cidrs("192.168.0.0", "192.168.255.255").unwrap(), ["192.168.0.0/16"]);
-        assert_eq!(range_to_cidrs("10.0.0.1", "10.0.0.1").unwrap(), ["10.0.0.1/32"]);
-        assert_eq!(range_to_cidrs("0.0.0.0", "255.255.255.255").unwrap(), ["0.0.0.0/0"]);
-        assert_eq!(range_to_cidrs("2001:db8::", "2001:db8::ffff").unwrap(), ["2001:db8::/112"]);
-        assert_eq!(range_to_cidrs("::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff").unwrap(), ["::/0"]);
-        assert!(range_to_cidrs("10.0.0.9", "10.0.0.1").unwrap_err().to_string().contains("higher than the last"));
-        assert!(range_to_cidrs("10.0.0.1", "2001:db8::1").unwrap_err().to_string().contains("same family"));
-        assert!(range_to_cidrs("10.0.0.0/24", "10.0.0.9").unwrap_err().to_string().contains("without a mask"));
+        assert_eq!(
+            range_to_cidrs("10.0.0.5", "10.0.1.20").unwrap(),
+            [
+                "10.0.0.5/32",
+                "10.0.0.6/31",
+                "10.0.0.8/29",
+                "10.0.0.16/28",
+                "10.0.0.32/27",
+                "10.0.0.64/26",
+                "10.0.0.128/25",
+                "10.0.1.0/28",
+                "10.0.1.16/30",
+                "10.0.1.20/32"
+            ]
+        );
+        assert_eq!(
+            range_to_cidrs("192.168.0.0", "192.168.255.255").unwrap(),
+            ["192.168.0.0/16"]
+        );
+        assert_eq!(
+            range_to_cidrs("10.0.0.1", "10.0.0.1").unwrap(),
+            ["10.0.0.1/32"]
+        );
+        assert_eq!(
+            range_to_cidrs("0.0.0.0", "255.255.255.255").unwrap(),
+            ["0.0.0.0/0"]
+        );
+        assert_eq!(
+            range_to_cidrs("2001:db8::", "2001:db8::ffff").unwrap(),
+            ["2001:db8::/112"]
+        );
+        assert_eq!(
+            range_to_cidrs("::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff").unwrap(),
+            ["::/0"]
+        );
+        assert!(
+            range_to_cidrs("10.0.0.9", "10.0.0.1")
+                .unwrap_err()
+                .to_string()
+                .contains("higher than the last")
+        );
+        assert!(
+            range_to_cidrs("10.0.0.1", "2001:db8::1")
+                .unwrap_err()
+                .to_string()
+                .contains("same family")
+        );
+        assert!(
+            range_to_cidrs("10.0.0.0/24", "10.0.0.9")
+                .unwrap_err()
+                .to_string()
+                .contains("without a mask")
+        );
     }
 
     #[test]
     fn next_free_finds_the_lowest_gap() {
         let used = strings(&["10.0.0.0/26", "10.0.0.64/27", "10.0.0.128/25"]);
         // 10.0.0.96/27 is the only hole.
-        assert_eq!(next_free("10.0.0.0/24", 27, &used).unwrap().as_deref(), Some("10.0.0.96/27"));
-        assert_eq!(next_free("10.0.0.0/24", 28, &used).unwrap().as_deref(), Some("10.0.0.96/28"));
+        assert_eq!(
+            next_free("10.0.0.0/24", 27, &used).unwrap().as_deref(),
+            Some("10.0.0.96/27")
+        );
+        assert_eq!(
+            next_free("10.0.0.0/24", 28, &used).unwrap().as_deref(),
+            Some("10.0.0.96/28")
+        );
         assert_eq!(next_free("10.0.0.0/24", 26, &used).unwrap(), None);
-        assert_eq!(next_free("10.0.0.0/24", 24, &[]).unwrap().as_deref(), Some("10.0.0.0/24"));
-        assert_eq!(next_free("10.0.0.0/24", 30, &[]).unwrap().as_deref(), Some("10.0.0.0/30"));
+        assert_eq!(
+            next_free("10.0.0.0/24", 24, &[]).unwrap().as_deref(),
+            Some("10.0.0.0/24")
+        );
+        assert_eq!(
+            next_free("10.0.0.0/24", 30, &[]).unwrap().as_deref(),
+            Some("10.0.0.0/30")
+        );
         // A small used block near the start pushes a larger request to the next boundary.
-        assert_eq!(next_free("10.0.0.0/24", 26, &strings(&["10.0.0.4/30"])).unwrap().as_deref(), Some("10.0.0.64/26"));
+        assert_eq!(
+            next_free("10.0.0.0/24", 26, &strings(&["10.0.0.4/30"]))
+                .unwrap()
+                .as_deref(),
+            Some("10.0.0.64/26")
+        );
         // Used entries outside the parent, of the other family, or blank do not matter.
         assert_eq!(
-            next_free("10.0.0.0/24", 25, &strings(&["192.168.0.0/16", "2001:db8::/32", ""])).unwrap().as_deref(),
+            next_free(
+                "10.0.0.0/24",
+                25,
+                &strings(&["192.168.0.0/16", "2001:db8::/32", ""])
+            )
+            .unwrap()
+            .as_deref(),
             Some("10.0.0.0/25")
         );
         // A used supernet leaves nothing.
-        assert_eq!(next_free("10.0.0.0/24", 32, &strings(&["10.0.0.0/8"])).unwrap(), None);
+        assert_eq!(
+            next_free("10.0.0.0/24", 32, &strings(&["10.0.0.0/8"])).unwrap(),
+            None
+        );
         // The very top of the address space.
         assert_eq!(
-            next_free("255.255.255.0/24", 25, &strings(&["255.255.255.0/25"])).unwrap().as_deref(),
+            next_free("255.255.255.0/24", 25, &strings(&["255.255.255.0/25"]))
+                .unwrap()
+                .as_deref(),
             Some("255.255.255.128/25")
         );
-        assert_eq!(next_free("255.255.255.0/24", 25, &strings(&["255.255.255.0/25", "255.255.255.255"])).unwrap(), None);
         assert_eq!(
-            next_free("2001:db8::/32", 48, &strings(&["2001:db8::/48", "2001:db8:1::/48"])).unwrap().as_deref(),
+            next_free(
+                "255.255.255.0/24",
+                25,
+                &strings(&["255.255.255.0/25", "255.255.255.255"])
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            next_free(
+                "2001:db8::/32",
+                48,
+                &strings(&["2001:db8::/48", "2001:db8:1::/48"])
+            )
+            .unwrap()
+            .as_deref(),
             Some("2001:db8:2::/48")
         );
-        assert_eq!(next_free("::/0", 1, &strings(&["8000::/1"])).unwrap().as_deref(), Some("::/1"));
-        assert_eq!(next_free("::/0", 1, &strings(&["::/1"])).unwrap().as_deref(), Some("8000::/1"));
-        assert_eq!(next_free("::/0", 1, &strings(&["::1", "ffff::"])).unwrap(), None);
+        assert_eq!(
+            next_free("::/0", 1, &strings(&["8000::/1"]))
+                .unwrap()
+                .as_deref(),
+            Some("::/1")
+        );
+        assert_eq!(
+            next_free("::/0", 1, &strings(&["::/1"]))
+                .unwrap()
+                .as_deref(),
+            Some("8000::/1")
+        );
+        assert_eq!(
+            next_free("::/0", 1, &strings(&["::1", "ffff::"])).unwrap(),
+            None
+        );
 
         assert_eq!(
             next_free("10.0.0.0/24", 16, &[]).unwrap_err(),
@@ -941,36 +1304,64 @@ mod tests {
         let used = strings(&["10.0.0.0/26", "10.0.0.64/27", "10.0.0.128/25"]);
         assert_eq!(free_space("10.0.0.0/24", &used).unwrap(), ["10.0.0.96/27"]);
         assert_eq!(free_space("10.0.0.0/24", &[]).unwrap(), ["10.0.0.0/24"]);
-        assert_eq!(free_space("10.0.0.0/24", &strings(&["10.0.0.0/24"])).unwrap(), Vec::<String>::new());
-        assert_eq!(free_space("10.0.0.0/24", &strings(&["10.0.0.0/8"])).unwrap(), Vec::<String>::new());
-        assert_eq!(free_space("10.0.0.0/24", &strings(&["10.0.0.4/30"])).unwrap(), [
-            "10.0.0.0/30",
-            "10.0.0.8/29",
-            "10.0.0.16/28",
-            "10.0.0.32/27",
-            "10.0.0.64/26",
-            "10.0.0.128/25"
-        ]);
-        assert_eq!(free_space("10.0.0.0/24", &strings(&["10.0.0.255", "10.0.0.0"])).unwrap(), [
-            "10.0.0.1/32",
-            "10.0.0.2/31",
-            "10.0.0.4/30",
-            "10.0.0.8/29",
-            "10.0.0.16/28",
-            "10.0.0.32/27",
-            "10.0.0.64/26",
-            "10.0.0.128/26",
-            "10.0.0.192/27",
-            "10.0.0.224/28",
-            "10.0.0.240/29",
-            "10.0.0.248/30",
-            "10.0.0.252/31",
-            "10.0.0.254/32"
-        ]);
-        assert_eq!(free_space("0.0.0.0/0", &strings(&["128.0.0.0/1"])).unwrap(), ["0.0.0.0/1"]);
-        assert_eq!(free_space("::/0", &strings(&["8000::/1"])).unwrap(), ["::/1"]);
-        assert_eq!(free_space("::/0", &strings(&["::/1"])).unwrap(), ["8000::/1"]);
-        assert_eq!(free_space("2001:db8::/47", &strings(&["2001:db8:1::/48", "10.0.0.0/8"])).unwrap(), ["2001:db8::/48"]);
+        assert_eq!(
+            free_space("10.0.0.0/24", &strings(&["10.0.0.0/24"])).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            free_space("10.0.0.0/24", &strings(&["10.0.0.0/8"])).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            free_space("10.0.0.0/24", &strings(&["10.0.0.4/30"])).unwrap(),
+            [
+                "10.0.0.0/30",
+                "10.0.0.8/29",
+                "10.0.0.16/28",
+                "10.0.0.32/27",
+                "10.0.0.64/26",
+                "10.0.0.128/25"
+            ]
+        );
+        assert_eq!(
+            free_space("10.0.0.0/24", &strings(&["10.0.0.255", "10.0.0.0"])).unwrap(),
+            [
+                "10.0.0.1/32",
+                "10.0.0.2/31",
+                "10.0.0.4/30",
+                "10.0.0.8/29",
+                "10.0.0.16/28",
+                "10.0.0.32/27",
+                "10.0.0.64/26",
+                "10.0.0.128/26",
+                "10.0.0.192/27",
+                "10.0.0.224/28",
+                "10.0.0.240/29",
+                "10.0.0.248/30",
+                "10.0.0.252/31",
+                "10.0.0.254/32"
+            ]
+        );
+        assert_eq!(
+            free_space("0.0.0.0/0", &strings(&["128.0.0.0/1"])).unwrap(),
+            ["0.0.0.0/1"]
+        );
+        assert_eq!(
+            free_space("::/0", &strings(&["8000::/1"])).unwrap(),
+            ["::/1"]
+        );
+        assert_eq!(
+            free_space("::/0", &strings(&["::/1"])).unwrap(),
+            ["8000::/1"]
+        );
+        assert_eq!(
+            free_space(
+                "2001:db8::/47",
+                &strings(&["2001:db8:1::/48", "10.0.0.0/8"])
+            )
+            .unwrap(),
+            ["2001:db8::/48"]
+        );
         assert!(free_space("10.0.0.0/24", &strings(&["junk"])).is_err());
     }
 }

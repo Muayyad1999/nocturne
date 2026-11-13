@@ -33,19 +33,30 @@ pub enum ToolError {
 impl ToolError {
     /// An [`ToolError::Invalid`] that quotes at most [`ECHO_CHARS`] characters of `input`.
     pub(crate) fn invalid(what: &str, input: &str, reason: impl Into<String>) -> Self {
-        Self::Invalid { what: what.to_owned(), input: snip(input, ECHO_CHARS), reason: reason.into() }
+        Self::Invalid {
+            what: what.to_owned(),
+            input: snip(input, ECHO_CHARS),
+            reason: reason.into(),
+        }
     }
 }
 
 fn quoted(input: &str) -> String {
-    if input.is_empty() { String::new() } else { format!(" `{input}`") }
+    if input.is_empty() {
+        String::new()
+    } else {
+        format!(" `{input}`")
+    }
 }
 
 /// `text` cut to `max` characters, with control characters made visible, so
 /// that junk input cannot blow up or garble an error message.
 pub(crate) fn snip(text: &str, max: usize) -> String {
-    let mut out: String =
-        text.chars().take(max).map(|c| if c.is_control() { '\u{fffd}' } else { c }).collect();
+    let mut out: String = text
+        .chars()
+        .take(max)
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect();
     if text.chars().nth(max).is_some() {
         out.push_str("...");
     }
@@ -58,17 +69,32 @@ mod tests {
 
     #[test]
     fn messages_quote_the_input_and_say_what_is_wrong() {
-        let error = ToolError::invalid("IPv4 address", "10.0.300.1", "`300` is not a valid octet (0-255)");
-        assert_eq!(error.to_string(), "invalid IPv4 address `10.0.300.1`: `300` is not a valid octet (0-255)");
+        let error = ToolError::invalid(
+            "IPv4 address",
+            "10.0.300.1",
+            "`300` is not a valid octet (0-255)",
+        );
+        assert_eq!(
+            error.to_string(),
+            "invalid IPv4 address `10.0.300.1`: `300` is not a valid octet (0-255)"
+        );
         let empty = ToolError::invalid("MAC address", "", "nothing was entered");
-        assert_eq!(empty.to_string(), "invalid MAC address: nothing was entered");
-        assert_eq!(ToolError::DoesNotFit("no room".into()).to_string(), "no room");
+        assert_eq!(
+            empty.to_string(),
+            "invalid MAC address: nothing was entered"
+        );
+        assert_eq!(
+            ToolError::DoesNotFit("no room".into()).to_string(),
+            "no room"
+        );
     }
 
     #[test]
     fn long_or_binary_input_is_not_echoed_verbatim() {
         let error = ToolError::invalid("number", &"9".repeat(10_000), "too long");
-        let ToolError::Invalid { input, .. } = &error else { panic!("wrong variant") };
+        let ToolError::Invalid { input, .. } = &error else {
+            panic!("wrong variant")
+        };
         assert_eq!(input.chars().count(), ECHO_CHARS + 3);
         assert!(input.ends_with("..."));
         assert_eq!(snip("a\u{1b}[31mb\n", 20), "a\u{fffd}[31mb\u{fffd}");
