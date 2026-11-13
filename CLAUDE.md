@@ -163,4 +163,7 @@ fallback page that says so.
   `cargo tree -i aws-lc-rs` and `cargo tree -i openssl-sys` must find nothing.
 * **CI (`.github/workflows/ci.yml`) must stay green**: fmt, clippy with
   `-D warnings`, `cargo test`, a portability matrix, the interface's unit tests
-  and build, the end-to-end suite, and the Docker and desktop builds.
+  and build, the end-to-end suite, and a compile of the desktop shell
+  (which `cargo test` never touches, because it is outside
+  `default-members`). Installers and server binaries are built by
+  `release.yml` on a tag, not on every push.

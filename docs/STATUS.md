@@ -129,7 +129,8 @@ hardware.
 
 CI runs on every push: formatting, clippy with `-D warnings`, the whole test
 suite on Linux, macOS and Windows, the interface's unit tests and build, the
-end-to-end suite against a real server, and the Docker and desktop builds.
+end-to-end suite against a real server, and a compile of the desktop
+shell. Installers are built by a separate workflow on a tag.
 
 It has found real faults rather than only confirming ours, which is the point
 of it: a build break on a platform without raw sockets, certificates too

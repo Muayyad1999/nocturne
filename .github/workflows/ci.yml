@@ -93,3 +93,23 @@ jobs:
           name: playwright-report
           path: ui/test-results
           retention-days: 7
+
+  # The desktop shell is outside the workspace's `default-members`, so `cargo
+  # test` never compiles it: without this, it could stop building the moment a
+  # feature crate changes and nobody would find out until a release.
+  desktop:
+    name: Desktop shell — it still compiles
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the Linux WebView dependencies Tauri needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # Its `build.rs` embeds a built interface when there is one and a page
+      # saying there is not when there is not, so this needs no `pnpm build`.
+      - run: cargo clippy -p nocturne-desktop --all-targets -- -D warnings
+      - run: cargo test -p nocturne-desktop
