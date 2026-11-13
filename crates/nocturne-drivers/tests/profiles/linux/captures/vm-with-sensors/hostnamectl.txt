@@ -1,0 +1,12 @@
+ Static hostname: core-fw
+       Icon name: computer-vm
+         Chassis: vm
+      Machine ID: 7f3a0d6c2b1e4f0a9c8d5e6f7a8b9c0d
+         Boot ID: 1b2c3d4e5f607182939a4b5c6d7e8f90
+  Virtualization: kvm
+Operating System: Ubuntu 24.04.5 LTS
+          Kernel: Linux 6.8.0-45-generic
+    Architecture: x86-64
+ Hardware Vendor: QEMU
+  Hardware Model: Standard PC _Q35 + ICH9, 2009_
+Firmware Version: edk2-20240524

@@ -1,0 +1,56 @@
+# RouterOS answers a command it cannot run with one line, often naming the
+# character it stopped at. There is no configuration mode, so these are the
+# only error patterns the profile needs (`cli.errors`).
+exec:
+  rejected:
+    # The parser stopped at a word it does not know.
+    - output: "bad command name adress (line 1 column 5)\n"
+      error: "bad command name adress (line 1 column 5)"
+    - "expected end of command (line 1 column 25)\n"
+    - "syntax error (line 1 column 10)\n"
+    # The menu exists, the item does not.
+    - "no such item\n"
+    - output: "no such item (4)\n"
+      error: "no such item (4)"
+    - "no such command\n"
+    # A value the device will not take.
+    - "invalid value for argument address\n"
+    - "input does not match any value of interface\n"
+    # The command parsed, the device refused to do it.
+    - output: "failure: already have such address\n"
+      error: "failure: already have such address"
+    - "failure: interface does not exist\n"
+    - "action failed\n"
+    - "not enough permissions (9)\n"
+    - "couldn't change system identity - not enough permissions (9)\n"
+    - "interrupted\n"
+    # The echoed command line comes back before the message; the error line
+    # is still the one that must be reported.
+    - output: |
+        /ip adress print
+        bad command name adress (line 1 column 5)
+      error: "bad command name adress (line 1 column 5)"
+  clean:
+    # A property sheet: nothing here is a refusal. (Quoted rather than a
+    # block scalar because RouterOS right-aligns the keys, so the lines are
+    # indented differently from one another.)
+    - "                   uptime: 6w5d11h55m45s\n                  version: 6.48.6 (long-term)\n              free-memory: 40.2MiB\n                 cpu-load: 1%\n"
+    # Listings, including comments and values that read like trouble.
+    - |
+      Flags: X - disabled, I - invalid, D - dynamic
+       0   ;;; link failure monitoring
+           address=1.2.3.6/30 network=1.2.3.4 interface=ether1 actual-interface=ether1
+    - " 1  Db  dst-address=0.0.0.0/0 gateway=23.90.232.243 gateway-status=23.90.232.243 unreachable distance=20\n"
+    - " 0 D  185.163.212.158                   dmz-1-vlan\n"
+    # The log the device echoes into the session while something else runs.
+    - "17:20:06 echo: system,error,critical login failure for user admin from 65.160.140.13 via ssh\n"
+    # A ping that got no answer is a result, not a rejected command.
+    - |
+        SEQ HOST                                     SIZE TTL TIME       STATUS
+          0 8.8.8.8                                    56 118 11ms
+          1 8.8.8.8                                                      timeout
+          sent=2 received=1 packet-loss=50%
+    # An export of a firewall rule set.
+    - |
+      /ip firewall filter add action=drop chain=input comment="drop invalid" connection-state=invalid
+      /ip firewall filter add action=accept chain=input comment="cannot be reordered" protocol=icmp

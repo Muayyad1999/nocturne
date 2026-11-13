@@ -1,0 +1,19 @@
+# Two hand-written captures (see SOURCE.md) over the real ones, so that the
+# optional steps are exercised.
+synthetic: true
+kinds:
+  facts:
+    rows:
+      - hostname: vm                    # from uname: the first answer wins
+        os_version: 6.18.44-fc-v445
+        vendor: QEMU                    # Hardware Vendor:
+        model: Standard PC _Q35 + ICH9, 2009_
+        extra:
+          virtualization: kvm
+          architecture: x86_64
+  health:
+    rows:
+      - memory_total: 16867405824
+        memory_used: 1649405952
+        uptime_s: 2764
+        temperature_c: 45.0             # 45000 thousandths of a degree

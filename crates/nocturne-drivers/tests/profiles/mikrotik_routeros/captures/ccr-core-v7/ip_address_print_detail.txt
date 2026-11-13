@@ -1,0 +1,29 @@
+Flags: X - disabled, I - invalid, D - dynamic 
+ 0   ;;; INET Uplink
+     address=1.1.1.26/30 network=1.1.1.24 interface=vlan11@vlan975@sfp-sfpplus1 actual-interface=vlan11@vlan975@sfp-sfpplus1 
+
+ 1   ;;; MGMT Uplink
+     address=100.65.255.138/30 network=100.65.255.136 interface=vlan10@vlan975@sfp-sfpplus1 actual-interface=vlan10@vlan975@sfp-sfpplus1 
+
+ 2   ;;; MGMT Loopback
+     address=100.100.0.106/32 network=100.100.0.106 interface=Lo0 actual-interface=Lo0 
+
+ 3   ;;; Cust
+     address=1.1.1.49/30 network=1.1.1.48 interface=vlan4050@sfp-sfpplus11 actual-interface=vlan4050@sfp-sfpplus11 
+
+ 4   ;;; MGMT Link
+     address=100.64.5.1/30 network=100.64.5.0 interface=vlan1@bond1 actual-interface=vlan1@bond1 
+
+ 5   ;;; INET Link
+     address=1.1.1.121/30 network=1.1.1.120 interface=vlan2@bond1 actual-interface=vlan2@bond1 
+
+ 6   ;;; INET Loopback
+     address=1.1.1.1/32 network=1.1.1.1 interface=Lo1 actual-interface=Lo1 
+
+ 7   ;;; INET Uplink
+     address=1.1.1.30/30 network=1.1.1.28 interface=vlan12@vlan975@sfp-sfpplus1 actual-interface=vlan12@vlan975@sfp-sfpplus1 
+
+ 8   ;;; INET
+     address=1.1.1.66/25 network=1.1.1.0 interface=vlan111@sfp-sfpplus1 actual-interface=vlan111@sfp-sfpplus1 
+
+ 9 D address=100.64.247.75/32 network=100.64.1.248 interface=pppoe-out1 actual-interface=pppoe-out1 

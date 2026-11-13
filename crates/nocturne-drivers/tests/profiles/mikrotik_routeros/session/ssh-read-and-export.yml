@@ -1,0 +1,52 @@
+description: >-
+  An SSH session on RouterOS 7. The transport has already authenticated, so
+  the device opens with its banner and the prompt. Nothing is sent after
+  login — RouterOS has no command that turns paging off — so a long listing
+  still meets the pager, which is driven with `d` (dump). Then a command the
+  parser refuses, and the configuration fetched with `/export terse`, whose
+  dated header must be gone from what the driver returns. Scripted, not
+  recorded.
+credentials: {username: nocturne-ro, password: secret}
+greeting: "\r\n\r\n  MMM      MMM       KKK                             TTTTTTTTTTT      KKK\r\n  MikroTik RouterOS 7.15.1 (c) 1999-2024       https://www.mikrotik.com/\r\n\r\n[nocturne-ro@core-rtr] > "
+dialogue:
+  - recv: /system identity print
+    send: "/system identity print\r\n  name: core-rtr\r\n\r\n[nocturne-ro@core-rtr] > "
+  # A listing long enough for the pager of an interactive terminal.
+  - recv: /ip address print detail
+    send: "/ip address print detail\r\nFlags: X - disabled, I - invalid, D - dynamic \r\n 0   address=192.0.2.1/24 network=192.0.2.0 interface=bridge actual-interface=bridge \r\n\r\n 1   address=10.0.0.1/30 network=10.0.0.0 interface=ether1 actual-interface=ether1 \r\n-- [Q quit|D dump|down]"
+  # `d` prints the rest in one go; RouterOS redraws the line it was on.
+  - key: "d"
+    send: "\r                        \r\r\n 2 D address=10.9.9.9/32 network=10.9.9.9 interface=pppoe-out1 actual-interface=pppoe-out1 \r\n\r\n[nocturne-ro@core-rtr] > "
+  - recv: /ip adress print
+    send: "/ip adress print\r\nbad command name adress (line 1 column 5)\r\n\r\n[nocturne-ro@core-rtr] > "
+  - recv: /export terse
+    send: "/export terse\r\n# 2024-07-11 10:13:19 by RouterOS 7.15.1\r\n# software id = ABCD-1234\r\n#\r\n/interface bridge add name=bridge\r\n/ip address add address=192.0.2.1/24 interface=bridge network=192.0.2.0\r\n/system identity set name=core-rtr\r\n\r\n[nocturne-ro@core-rtr] > "
+actions:
+  - start:
+      hostname: core-rtr
+      prompt: "[nocturne-ro@core-rtr] >"
+      login_screen: MikroTik RouterOS 7.15.1
+    # RouterOS has no unprivileged mode and no configuration mode: whatever
+    # the account may do, the session is simply at the prompt.
+    mode: privileged
+  - exec: /system identity print
+    output: "  name: core-rtr"
+  - exec: /ip address print detail
+    output: |-
+      Flags: X - disabled, I - invalid, D - dynamic
+       0   address=192.0.2.1/24 network=192.0.2.0 interface=bridge actual-interface=bridge
+
+       1   address=10.0.0.1/30 network=10.0.0.0 interface=ether1 actual-interface=ether1
+
+       2 D address=10.9.9.9/32 network=10.9.9.9 interface=pppoe-out1 actual-interface=pppoe-out1
+  - exec: /ip adress print
+    error: bad command name adress (line 1 column 5)
+  - fetch_config: running
+    # The dated header line is gone; everything else is kept, so two fetches
+    # of a device nobody touched compare equal.
+    config: |
+      # software id = ABCD-1234
+      #
+      /interface bridge add name=bridge
+      /ip address add address=192.0.2.1/24 interface=bridge network=192.0.2.0
+      /system identity set name=core-rtr

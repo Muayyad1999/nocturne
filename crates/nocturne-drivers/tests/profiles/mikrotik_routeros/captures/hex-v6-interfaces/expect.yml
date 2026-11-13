@@ -1,0 +1,49 @@
+# Read from interface_print_detail.txt. Flags: D dynamic, X disabled, R running, S slave.
+# Only X means "switched off"; `oper_up` is the R flag.
+kinds:
+  interfaces:
+    count: 9
+    rows:
+      - name: ether1                 # " 0     name=..." — no flags at all
+        admin_up: true
+        oper_up: false
+        mtu: 1500                    # actual-mtu=1500
+        mac: 12:34:56:78:90:aa       # normalised to lower case
+        kind: ether
+        description: ""
+        ipv4: []
+        ipv6: []
+        vlan: null
+        speed_bps: null              # RouterOS does not print a link rate here
+      - name: ether2                 # " 1 D   "
+        admin_up: true
+        oper_up: false
+      - name: ether3                 # " 2  R  "
+        admin_up: true
+        oper_up: true
+        mac: 12:34:56:78:90:ac
+      - name: ether4                 # " 3   S " — a bridge port, enabled
+        admin_up: true
+        oper_up: false
+      - name: ether5                 # " 4 DR  "
+        oper_up: true
+      - name: ether6                 # " 5  RS "
+        oper_up: true
+        mac: 12:34:56:78:90:af
+      - name: lte1                   # " 6 D S " — two flag groups on one line
+        admin_up: true
+        oper_up: false
+        kind: lte
+        mtu: 1500
+        mac: 12:34:56:78:90:ba
+      - name: pptp-out1              # " 7 DRS " with a comment over two lines
+        description: very very long multiline description
+        oper_up: true
+        kind: pptp-out
+        mtu: 1450
+        mac: ""                      # a PPTP tunnel has no MAC address
+      - name: pptp-to-AH1100-HS
+        description: Free Wi-Fi HTTPS
+        oper_up: true
+        kind: pptp-out
+        mtu: 1596

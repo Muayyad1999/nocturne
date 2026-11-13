@@ -1,0 +1,30 @@
+# Read from interface_vlan_print_detail.txt. Every entry has the R (running) flag,
+# so every VLAN is active; two tags appear twice, on different parent interfaces.
+kinds:
+  vlans:
+    count: 8
+    rows:
+      - id: 1
+        name: vlan1@vlan602@interface
+        status: active
+        interfaces: [vlan602@interface]
+      - id: 6
+        name: vlan6@bond1
+        interfaces: [bond1]
+      - id: 10
+        name: vlan10@vlan975@interface
+        interfaces: [vlan975@interface]
+      - id: 11
+        name: vlan11@bond1
+        interfaces: [bond1]
+      - id: 11                        # the same tag, carried on another interface
+        name: vlan11@vlan975@interface
+        interfaces: [vlan975@interface]
+      - id: 12
+        name: vlan12@vlan975@interface
+      - id: 60
+        name: vlan60@interface
+        interfaces: [sfp-sfpplus1]    # the name says "interface", the property says the port
+      - id: 60
+        name: vlan60@bond1
+        interfaces: [bond1]

@@ -1,0 +1,12 @@
+# The RouterOS 7 sensor table, merged into the figures from /system resource print.
+synthetic: true
+kinds:
+  health:
+    rows:
+      - cpu_pct: 1
+        memory_total: 67108864
+        memory_used: 24956109
+        uptime_s: 4103745
+        # The first temperature the table lists; the volt and current rows a
+        # real board also prints are not temperatures and are not matched.
+        temperature_c: 46

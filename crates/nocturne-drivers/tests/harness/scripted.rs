@@ -96,6 +96,13 @@ pub async fn run(subject: &mut Subject<'_>) {
         let Some(transcript) = subject.load::<Transcript>(&file) else {
             continue;
         };
+        if transcript.description.trim().is_empty() {
+            subject.fail(
+                &file,
+                "`description` is empty: say what this session shows, and whether the device's \
+                 side was recorded from a real device or written by hand",
+            );
+        }
         play(subject, &file, transcript).await;
         subject.tally.sessions += 1;
     }

@@ -4,6 +4,7 @@ read_only:
   - get system status
   - show configuration | display set
   - /system resource print
+  - /interface print detail
   - print
   - uname -a
   - ping 10.0.0.1
@@ -15,6 +16,9 @@ change:
   - show configuration | save /var/tmp/x
   - write memory
   - /ip address add address=10.0.0.1/24 interface=ether1
+  # A read that writes its output to a file is not a read.
+  - /ip route print file=routes
+  - /export file=backup
 dangerous:
   - reload
   - reboot

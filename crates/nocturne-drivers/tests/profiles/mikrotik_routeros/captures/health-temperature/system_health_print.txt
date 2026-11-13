@@ -1,0 +1,5 @@
+Columns: NAME, VALUE
+# NAME             VALUE
+0 phy-temperature  46C
+1 cpu-temperature  50C
+2 board-temperature1 44C

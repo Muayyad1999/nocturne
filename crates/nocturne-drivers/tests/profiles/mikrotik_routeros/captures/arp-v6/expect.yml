@@ -1,0 +1,11 @@
+# Read from ip_arp_print_terse_without-paging.txt.
+kinds:
+  arp:
+    count: 2
+    rows:
+      - ip: 10.160.1.230
+        mac: 12:34:56:78:90:aa        # printed upper case, normalised
+        interface: ether2_BOX         # kept as the device spells it
+      - ip: 10.152.1.230
+        mac: 12:34:56:78:90:ab
+        interface: ether5_KFCcisco

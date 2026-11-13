@@ -1,0 +1,26 @@
+# A machine with no RouterBOARD: the optional step that reads the serial number
+# finds nothing to read, and nothing is invented in its place.
+kinds:
+  facts:
+    rows:
+      - hostname: Mikrotik-Device_Name
+        vendor: MikroTik
+        os: RouterOS
+        os_version: 7.12.2
+        model: CHR
+        serial: ""                              # no RouterBOARD, no serial number
+        # 5w3d20m51s = 5*604800 + 3*86400 + 20*60 + 51
+        uptime_s: 3284451
+        extra:
+          release_channel: stable
+          architecture: x86_64
+          cpu: Common
+          cpu_count: "2"
+          factory_software: "7.1"
+  health:
+    rows:
+      - cpu_pct: 53
+        memory_total: 201326592                 # 192.0MiB
+        memory_used: 162843853                  # 192.0MiB - 36.7MiB
+        uptime_s: 3284451
+        temperature_c: null                     # no sensor was read

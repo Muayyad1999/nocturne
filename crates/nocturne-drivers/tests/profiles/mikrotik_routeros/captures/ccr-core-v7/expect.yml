@@ -1,0 +1,104 @@
+# Two of the four capture files were written by hand (see SOURCE.md), so the
+# whole case is marked synthetic and does not earn the profile its `verified`
+# maturity; the real captures of the same kinds are in `hex-v6-interfaces/`
+# and `vlans-v7/`.
+synthetic: true
+kinds:
+  interfaces:
+    count: 27
+    rows:
+      - name: ether1                                # 0, R, with a comment
+        description: Management Port - 4G OOB
+        admin_up: true
+        oper_up: true
+        mtu: 1500
+        mac: aa:bb:cc:11:22:33
+        kind: ether
+        ipv4: []
+        ipv6: []
+        vlan: null
+      - name: sfp-sfpplus1                          # 1, jumbo MTU
+        description: Uplink
+        oper_up: true
+        mtu: 9216
+      - name: sfp-sfpplus2                          # 2, X: switched off
+        description: Spare Optic
+        admin_up: false
+        oper_up: false
+      - name: sfp-sfpplus9                          # 9, RS: a running bond member
+        admin_up: true
+        oper_up: true
+      - name: sfp28-1                               # 13, X and no comment
+        admin_up: false
+        description: ""
+      - name: Lo0                                   # 15, mtu=auto actual-mtu=1500
+        description: Loopback
+        kind: bridge
+        mtu: 1500
+        ipv4: [100.100.0.106/32]
+        ipv6: ["2001:db8:0:106::1/64"]
+      - name: Lo1                                   # 16, in VRF INET
+        kind: bridge
+        ipv4: [1.1.1.1/32]
+        ipv6: []
+      - name: bond1                                 # 17
+        kind: bond
+        mtu: 1500
+        ipv4: []
+        ipv6: ["fe80::aabb:ccff:fe11:2233/64"]      # D and L: a dynamic link-local
+      - name: pppoe-out1                            # 18, no MAC address
+        kind: pppoe-out
+        mtu: 1400
+        mac: ""
+        ipv4: [100.64.247.75/32]                    # the D (dynamic) address
+      - name: vlan1@bond1                           # 19, tag from /interface vlan print
+        description: MGMT
+        kind: vlan
+        mtu: 1574
+        vlan: 1
+        ipv4: [100.64.5.1/30]
+        ipv6: []                                    # its IPv6 address is disabled (X)
+      - name: vlan2@bond1
+        vlan: 2
+        ipv4: [1.1.1.121/30]
+      - name: vlan10@vlan975@sfp-sfpplus1
+        description: MGMT Uplink YDCE-M1
+        vlan: 10
+        ipv4: [100.65.255.138/30]
+      - name: vlan11@vlan975@sfp-sfpplus1
+        description: "INET: IX"
+        vlan: 11
+        ipv4: [1.1.1.26/30]
+      - name: vlan12@vlan975@sfp-sfpplus1
+        vlan: 12
+        ipv4: [1.1.1.30/30]
+      - name: vlan111@sfp-sfpplus1
+        vlan: 111
+        ipv4: [1.1.1.66/25]
+      - name: vlan975@sfp-sfpplus1                  # the carrier of the three VLANs above
+        description: Intercap
+        vlan: 975
+        ipv4: []
+      - name: vlan4050@sfp-sfpplus11
+        vlan: 4050
+        ipv4: [1.1.1.49/30]
+  vlans:
+    count: 8
+    rows:
+      - id: 1
+        name: vlan1@bond1
+        status: active
+        interfaces: [bond1]
+      - id: 2
+        name: vlan2@bond1
+      - id: 10
+        interfaces: [vlan975@sfp-sfpplus1]
+      - id: 11
+      - id: 12
+      - id: 111
+        interfaces: [sfp-sfpplus1]
+      - id: 975
+        name: vlan975@sfp-sfpplus1
+      - id: 4050
+        name: vlan4050@sfp-sfpplus11
+        interfaces: [sfp-sfpplus11]

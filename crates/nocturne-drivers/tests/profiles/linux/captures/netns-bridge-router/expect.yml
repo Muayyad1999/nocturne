@@ -1,0 +1,89 @@
+# Read from the four JSON files in this directory.
+kinds:
+  interfaces:
+    count: 8
+    rows:
+      - name: lo
+        admin_up: true
+        # operstate UNKNOWN with LOWER_UP: a device that reports no carrier
+        oper_up: true
+        mtu: 65536
+        mac: 00:00:00:00:00:00
+        kind: loopback                  # no linkinfo, so the link type
+        ipv4: [127.0.0.1/8]
+        ipv6: []
+        description: ""
+      - name: br0
+        admin_up: true
+        oper_up: true
+        mtu: 9000
+        mac: b2:f9:5a:d3:ce:d3
+        kind: bridge                    # linkinfo.info_kind
+        ipv4: [192.0.2.2/24, 192.0.2.3/24]   # primary and secondary
+        counters: {in_octets: 0, out_octets: 108, in_packets: 0, out_packets: 2, in_errors: 0, out_discards: 0}
+      - name: peer0
+        kind: veth
+        mtu: 1500
+        ipv4: []
+        counters: {in_octets: 108, in_packets: 2}
+      - name: eth0                      # a bridge port
+        admin_up: true
+        oper_up: true
+        kind: veth
+        mac: b2:f9:5a:d3:ce:d3
+      - name: peer1
+        oper_up: true
+      - name: eth1
+        description: uplink to core-sw1 # ifalias
+        mac: de:db:76:16:7d:9f
+        oper_up: true
+      - name: peer2
+        admin_up: false                 # never brought up
+        oper_up: false
+      - name: eth2
+        admin_up: false
+        oper_up: false
+        ipv4: [10.100.0.1/30]           # configured, but the link is down
+        mac: 46:8d:5e:15:48:5e
+  mac_table:
+    # Of the fourteen forwarding entries, twelve are the device's own: ten
+    # multicast groups with no `master`, and the two `permanent` entries that
+    # are the bridge ports' own addresses.
+    count: 2
+    rows:
+      - mac: aa:bb:cc:00:00:11
+        interface: eth0
+        kind: static
+        vlan: null                      # the bridge has no VLAN filtering
+      - mac: aa:bb:cc:00:00:12
+        interface: eth1
+        kind: static
+  arp:
+    # 192.0.2.77 is INCOMPLETE — it has no link-layer address and is left out.
+    count: 2
+    rows:
+      - ip: 192.0.2.50
+        mac: aa:bb:cc:00:00:02
+        interface: br0
+      - ip: 192.0.2.1
+        mac: aa:bb:cc:00:00:01
+        interface: br0
+  routes:
+    count: 4
+    rows:
+      - prefix: 0.0.0.0/0               # "default"
+        next_hop: 192.0.2.1
+        interface: br0
+        protocol: static                # added by hand: no proto in the output
+        metric: null
+      - prefix: 10.0.0.0/8
+        next_hop: 192.0.2.254
+        interface: br0
+        metric: 100
+      - prefix: 172.16.0.0/16           # scope link: no gateway
+        next_hop: ""
+        interface: br0
+      - prefix: 192.0.2.0/24
+        protocol: connected             # "proto kernel"
+        next_hop: ""
+        interface: br0

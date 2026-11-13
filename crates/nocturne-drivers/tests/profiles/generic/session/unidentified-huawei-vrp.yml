@@ -1,0 +1,32 @@
+description: >-
+  What the `generic` profile is for: a device nobody has written a profile
+  for — here a Huawei VRP switch — driven far enough to be useful. The prompt
+  is recognised, the paging that cannot be switched off without knowing the
+  platform is driven with the space bar, and the device's way of saying "no"
+  is understood. Nothing is sent after login: `cli.init` is empty, because a
+  command to turn paging off would be a guess. Scripted, not recorded.
+credentials: {username: nocturne-ro, password: secret}
+greeting: "\r\nInfo: The max number of VTY users is 10.\r\n<CORE-SW1>"
+dialogue:
+  - recv: display version
+    send: "display version\r\nHuawei Versatile Routing Platform Software\r\nVRP (R) software, Version 5.170 (S5720 V200R019C10SPC500)\r\nCopyright (C) 2000-2020 HUAWEI TECH CO., LTD\r\n  ---- More ---- "
+  # The space bar asks for the next page; VRP wipes the pager text with
+  # backspaces before printing it, the way most of these CLIs do.
+  - key: " "
+    send: "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b                 \b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bHUAWEI S5720-28X-SI-AC Routing Switch uptime is 102 days, 4 hours\r\n<CORE-SW1>"
+  - recv: display nonsense
+    send: "display nonsense\r\n                ^\r\nError: Unrecognized command found at '^' position.\r\n<CORE-SW1>"
+actions:
+  - start:
+      hostname: CORE-SW1
+      prompt: "<CORE-SW1>"
+      login_screen: "The max number of VTY users is 10."
+    mode: privileged
+  - exec: display version
+    output: |-
+      Huawei Versatile Routing Platform Software
+      VRP (R) software, Version 5.170 (S5720 V200R019C10SPC500)
+      Copyright (C) 2000-2020 HUAWEI TECH CO., LTD
+      HUAWEI S5720-28X-SI-AC Routing Switch uptime is 102 days, 4 hours
+  - exec: display nonsense
+    error: "Error: Unrecognized command found at '^' position."

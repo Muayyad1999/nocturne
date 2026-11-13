@@ -87,12 +87,30 @@ impl Expressions {
         Expressions { env }
     }
 
-    /// Check that an expression parses.
+    /// Check that an expression parses, and that the filters, tests and
+    /// functions it names exist.
+    ///
+    /// Compiling an expression does not look at the names of the filters it
+    /// uses, so `UPTIME | duratoin` parses perfectly and only fails on a
+    /// live device. Evaluating it once against an empty row finds the typo
+    /// while the profile is being loaded. Any other error an empty row
+    /// causes (a missing field, a lookup that finds nothing) is not a
+    /// problem with the expression and is ignored here.
     pub fn check(&self, expression: &str) -> Result<(), String> {
-        self.env
+        let compiled = self
+            .env
             .compile_expression(expression)
-            .map(|_| ())
-            .map_err(|err| describe(&err))
+            .map_err(|err| describe(&err))?;
+        let empty = serde_json::Value::Object(serde_json::Map::new());
+        if let Err(err) = compiled.eval(Value::from(Serde(&empty)))
+            && matches!(
+                err.kind(),
+                ErrorKind::UnknownFilter | ErrorKind::UnknownTest | ErrorKind::UnknownFunction
+            )
+        {
+            return Err(describe(&err));
+        }
+        Ok(())
     }
 
     /// Evaluate against a JSON context (usually one parsed row).
@@ -666,6 +684,27 @@ mod tests {
         let expressions = Expressions::new();
         assert!(expressions.check("INTERFACE | upper").is_ok());
         assert!(expressions.check("INTERFACE |").is_err());
+        // A misspelled filter parses but would fail on a live device, so it
+        // is caught while the profile is loaded.
+        let typo = expressions.check("UPTIME | duratoin").unwrap_err();
+        assert!(typo.contains("duratoin"), "{typo}");
+        assert!(expressions.check("X is mathcing('up')").is_err());
+        // Expressions that merely find nothing in an empty row are fine.
+        for fine in [
+            "UPTIME | duration",
+            "[IP_ADDRESS] if IP_ADDRESS else []",
+            "({'C': 'connected'}[PROTOCOL]) or PROTOCOL",
+            "(total_memory | bytes) - (free_memory | bytes) if total_memory else none",
+            "addr_info | selectattr('family', 'equalto', 'inet') | format_each('{local}/{prefixlen}')",
+            "NAME | default('') | upper not in ['CPU', '']",
+            "linkinfo.info_kind or link_type",
+        ] {
+            assert!(
+                expressions.check(fine).is_ok(),
+                "{fine}: {:?}",
+                expressions.check(fine)
+            );
+        }
         assert!(
             expressions
                 .eval("X | regex_search('(')", &json!({"X": "a"}))

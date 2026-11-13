@@ -1,0 +1,6 @@
+Flags: X - disabled, I - invalid, D - dynamic, G - global, L - link-local 
+ 0  G  address=2001:db8:0:106::1/64 from-pool="" interface=Lo0 actual-interface=Lo0 eui-64=no advertise=no 
+
+ 1 DL  address=fe80::aabb:ccff:fe11:2233/64 from-pool="" interface=bond1 actual-interface=bond1 eui-64=no advertise=no 
+
+ 2  X  address=2001:db8:0:1::1/64 from-pool="" interface=vlan1@bond1 actual-interface=vlan1@bond1 eui-64=no advertise=yes 

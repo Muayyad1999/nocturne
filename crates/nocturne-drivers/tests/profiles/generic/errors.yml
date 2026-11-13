@@ -11,9 +11,7 @@ exec:
     # Huawei VRP
     - "Error: Unrecognized command found at '^' position.\n"
     # Junos
-    - |
-               ^
-      syntax error, expecting <command>.
+    - "           ^\nsyntax error, expecting <command>.\n"
     - "unknown command.\n"
     # RouterOS
     - "bad command name show (line 1 column 1)\n"

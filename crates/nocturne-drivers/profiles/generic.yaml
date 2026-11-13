@@ -51,6 +51,13 @@ policy:
     - '^(show|display|get|print|list|ping|traceroute|tracert|dir|more|cat|ls|pwd|whoami|uptime|uname|df|free)\b'
     - '^terminal (length|width|pager)\b'
     - '^(screen-length|set cli screen-length|set cli screen-width)\b'
+    # RouterOS and other menu-driven CLIs: a path, then a read-only action.
+    # `/system resource print`, `/ip address print detail`, `/interface monitor ether1`.
+    # Nothing may follow but more bare words (`detail`, `terse`,
+    # `without-paging`): `print file=routes` writes a file.
+    - '^/[\w\-/]+(?:\s+[\w\-]+)*\s+(?:print|get|monitor)(?:\s+[\w\-]+)*\s*$'
+    # `/export`, `/export verbose` — but not `/export file=backup`, which writes a file.
+    - '^/?export(?:\s+(?:verbose|terse|compact|hide-sensitive|show-sensitive))*\s*$'
   dangerous:
     - '^(reload|reboot|restart|shutdown|halt|poweroff|format|erase|delete|rm|mkfs|dd)\b'
     - '^write erase\b'

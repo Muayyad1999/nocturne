@@ -344,3 +344,344 @@ fn clip(text: &str) -> String {
         clipped
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collect::Recorded;
+    use crate::profile::{Origin, Registry};
+    use crate::session::Mode;
+    use crate::session::testing::{FakeDevice, IOS_PROFILE, credentials};
+
+    /// The permissive profile every unidentified session starts with.
+    const GENERIC_PROFILE: &str = r#"
+id: generic
+name: Generic
+cli:
+  prompt: '^(?P<host>[\w.\-]+)(?:\([\w\-]+\))?[>#]\s?$'
+  errors: ['^% ']
+  # Paging cannot be switched off without knowing the platform, so the
+  # unidentified session pages through whatever a probe prints.
+  pager: {pattern: '--More--', key: " "}
+  timeout_s: 2
+policy:
+  read_only: ['^show\b', '^uname\b', '^/\w']
+detect:
+  priority: -100
+"#;
+
+    /// Something that answers `show vlan brief`: what FakeDevice is.
+    const SWITCH_PROFILE: &str = r#"
+id: fake_ios
+extends: test_ios
+name: Fake IOS
+detect:
+  banner: ['Authorised access only']
+  sysdescr: ['Fake IOS Software']
+  sysobjectid: ['1.3.6.1.4.1.9.1.']
+  probes:
+    - {command: show vlan brief, matches: 'Voice'}
+  priority: 50
+policy:
+  read_only: ['^show\b']
+"#;
+
+    /// A higher-priority profile whose probe this device cannot answer.
+    const ROUTER_PROFILE: &str = r#"
+id: other_os
+name: Other OS
+cli:
+  prompt: '^(?P<host>[\w.\-]+)[>#]\s?$'
+  timeout_s: 2
+detect:
+  sysdescr: ['OtherOS']
+  sysobjectid: ['1.3.6.1.4.1.9.']
+  probes:
+    - {command: show nonsense, matches: 'OtherOS version'}
+    - {command: show clock, matches: 'OtherOS'}
+  priority: 90
+policy:
+  read_only: ['^show\b']
+"#;
+
+    fn registry() -> Registry {
+        let mut registry = Registry::empty();
+        for profile in [GENERIC_PROFILE, IOS_PROFILE, SWITCH_PROFILE, ROUTER_PROFILE] {
+            registry.add(profile, Origin::Builtin).unwrap();
+        }
+        registry
+    }
+
+    #[test]
+    fn snmp_prefers_a_description_over_an_object_id_and_the_longer_prefix() {
+        let registry = registry();
+        // Both profiles claim the Cisco enterprise tree; `other_os` has the
+        // higher priority, `fake_ios` the longer prefix — priority first.
+        let found = from_snmp(&registry, "", "1.3.6.1.4.1.9.1.516").unwrap();
+        assert_eq!(found.profile_id, "other_os");
+        assert_eq!(found.method, DetectMethod::Snmp);
+        assert!(found.evidence.contains("1.3.6.1.4.1.9."), "{found:?}");
+
+        // A description that names the platform wins over another profile's
+        // object-id prefix, because it is the more specific evidence.
+        let found = from_snmp(&registry, "Fake IOS Software, Version 1.0", "").unwrap();
+        assert_eq!(found.profile_id, "fake_ios");
+        assert_eq!(found.evidence, "sysDescr: Fake IOS Software, Version 1.0");
+
+        assert!(from_snmp(&registry, "Something else", "1.2.3.4").is_none());
+        assert!(
+            from_snmp(&registry, "", "").is_none(),
+            "an empty object id matches no prefix"
+        );
+    }
+
+    #[test]
+    fn banner_matching_reports_the_line_that_matched() {
+        let registry = registry();
+        let found = from_banner(&registry, "\r\nAuthorised access only!\r\n\r\n").unwrap();
+        assert_eq!(found.profile_id, "fake_ios");
+        assert_eq!(found.method, DetectMethod::Banner);
+        assert_eq!(found.evidence, "Authorised access only!");
+        assert!(from_banner(&registry, "SSH-2.0-OpenSSH_9.6").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probes_run_in_priority_order_once_each_and_stop_at_the_first_match() {
+        let registry = registry();
+        let mut device = Recorded::new()
+            .with("show nonsense", "% Invalid input detected at '^' marker.")
+            .with("show clock", "*12:00:00.000 UTC Mon Mar 1 1993")
+            .with(
+                "show vlan brief",
+                "VLAN Name    Status\n30   Voice   active",
+            );
+        let found = from_probes(&registry, &mut device).await.unwrap().unwrap();
+        assert_eq!(found.profile_id, "fake_ios");
+        assert_eq!(found.method, DetectMethod::Probe);
+        assert!(
+            found.evidence.starts_with("`show vlan brief`:"),
+            "{found:?}"
+        );
+        assert_eq!(
+            device.commands_run(),
+            ["show nonsense", "show clock", "show vlan brief"],
+            "the higher-priority profile's probes are tried first, each command once"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_command_shared_by_two_profiles_is_run_once() {
+        let mut registry = registry();
+        registry
+            .add(
+                "id: third_os\nname: Third\ndetect:\n  probes:\n    - {command: show clock, matches: 'ThirdOS'}\n  priority: 95\npolicy:\n  read_only: ['^show\\b']\n",
+                Origin::Builtin,
+            )
+            .unwrap();
+        let mut device = Recorded::new()
+            .with("show nonsense", "% Invalid input")
+            .with("show clock", "*12:00:00.000 UTC Mon Mar 1 1993");
+        assert!(
+            from_probes(&registry, &mut device).await.unwrap().is_none(),
+            "nothing this device said matches any profile's probe"
+        );
+        assert_eq!(
+            device.commands_run(),
+            ["show clock", "show nonsense", "show vlan brief"],
+            "`show clock` is asked for once although two profiles probe with it"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn what_a_device_says_when_it_rejects_a_probe_can_identify_it_too() {
+        let mut registry = Registry::empty();
+        registry.add(GENERIC_PROFILE, Origin::Builtin).unwrap();
+        registry
+            .add(
+                "id: picky\nname: Picky\ndetect:\n  probes:\n    - {command: show version, matches: 'Unknown command: show'}\n  priority: 10\npolicy:\n  read_only: ['^show\\b']\n",
+                Origin::Builtin,
+            )
+            .unwrap();
+        let mut device = Recorded::new();
+        let found = from_probes(&registry, &mut device).await.unwrap();
+        assert!(
+            found.is_none(),
+            "this device has no recorded answer at all, so nothing matches"
+        );
+        let mut device = Recorded::new().with("show version", "Unknown command: show");
+        let found = from_probes(&registry, &mut device).await.unwrap().unwrap();
+        assert_eq!(found.profile_id, "picky");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_probed_session_continues_with_the_profile_that_matched() {
+        let registry = registry();
+        let (mut session, found) = probe_session(
+            Box::new(FakeDevice::ssh("SW1")),
+            &registry,
+            &credentials(),
+            &SessionOptions::default(),
+            Some("SSH-2.0-Cisco-1.25"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(found.profile_id, "fake_ios");
+        assert_eq!(found.method, DetectMethod::Probe);
+        assert_eq!(session.platform().id(), "fake_ios");
+        assert_eq!(
+            session.mode(),
+            Mode::Privileged,
+            "re-binding runs the detected profile's enable"
+        );
+        assert_eq!(session.hostname(), "SW1");
+        // The probes that failed on the way did not leave the session confused.
+        assert_eq!(
+            session.exec("show clock").await.unwrap().output,
+            "*12:00:00.000 UTC Mon Mar 1 1993"
+        );
+        // Paging was turned off by the detected profile's init commands, so a
+        // long listing comes back in one piece.
+        assert_eq!(
+            session
+                .exec("show vlan brief")
+                .await
+                .unwrap()
+                .output
+                .lines()
+                .count(),
+            6
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_device_nothing_matches_stays_on_the_generic_profile() {
+        let mut registry = Registry::empty();
+        registry.add(GENERIC_PROFILE, Origin::Builtin).unwrap();
+        registry
+            .add(
+                "id: nowhere\nname: Nowhere\ndetect:\n  probes:\n    - {command: show inventory, matches: 'NOWHERE'}\n  priority: 5\npolicy:\n  read_only: ['^show\\b']\n",
+                Origin::Builtin,
+            )
+            .unwrap();
+        let (mut session, found) = probe_session(
+            Box::new(FakeDevice::ssh("SW1")),
+            &registry,
+            &credentials(),
+            &SessionOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.profile_id, GENERIC);
+        assert!(
+            found.evidence.contains("nothing matched")
+                && found.evidence.contains("`show inventory`"),
+            "the evidence says what was tried: {found:?}"
+        );
+        assert_eq!(session.platform().id(), GENERIC);
+        // Unidentified, but still usable.
+        assert_eq!(
+            session.exec("show clock").await.unwrap().output,
+            "*12:00:00.000 UTC Mon Mar 1 1993"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_banner_decides_when_no_probe_matches() {
+        let mut registry = Registry::empty();
+        registry.add(GENERIC_PROFILE, Origin::Builtin).unwrap();
+        registry.add(IOS_PROFILE, Origin::Builtin).unwrap();
+        registry
+            .add(
+                "id: banner_only\nextends: test_ios\nname: Banner only\ndetect:\n  banner: ['Authorised access only']\n  priority: 40\npolicy:\n  read_only: ['^show\\b']\n",
+                Origin::Builtin,
+            )
+            .unwrap();
+        let (session, found) = probe_session(
+            Box::new(FakeDevice::ssh("SW1")),
+            &registry,
+            &credentials(),
+            &SessionOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.profile_id, "banner_only");
+        assert_eq!(found.method, DetectMethod::Banner);
+        assert_eq!(
+            session.platform().id(),
+            "banner_only",
+            "the login screen is evidence when no probe command answers"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_generic_profile_there_is_nothing_to_log_in_with() {
+        let registry = Registry::empty();
+        let result = probe_session(
+            Box::new(FakeDevice::ssh("SW1")),
+            &registry,
+            &credentials(),
+            &SessionOptions::default(),
+            None,
+        )
+        .await
+        .map(|_| ());
+        let Err(err) = result else {
+            panic!("a session was opened without any profile to drive it");
+        };
+        assert!(err.to_string().contains("generic"), "{err}");
+    }
+
+    #[test]
+    fn the_built_in_pack_identifies_the_platforms_it_claims() {
+        let (registry, errors) = Registry::builtin();
+        assert!(errors.is_empty(), "{errors:#?}");
+        assert_eq!(
+            from_banner(&registry, "SSH-2.0-ROSSSH")
+                .map(|found| found.profile_id)
+                .as_deref(),
+            Some("mikrotik_routeros")
+        );
+        assert_eq!(
+            from_snmp(
+                &registry,
+                "Cisco IOS Software, C3750E Software, Version 15.2(4)E10",
+                "1.3.6.1.4.1.9.1.516"
+            )
+            .map(|found| found.profile_id)
+            .as_deref(),
+            Some("cisco_ios")
+        );
+        assert_eq!(
+            from_snmp(
+                &registry,
+                "Linux fw 5.15.0-91-generic #101-Ubuntu SMP x86_64",
+                "1.3.6.1.4.1.8072.3.2.10"
+            )
+            .map(|found| found.profile_id)
+            .as_deref(),
+            Some("linux")
+        );
+        assert_eq!(
+            from_snmp(
+                &registry,
+                "RouterOS CCR2004-1G-12S+2XS",
+                "1.3.6.1.4.1.14988.1"
+            )
+            .map(|found| found.profile_id)
+            .as_deref(),
+            Some("mikrotik_routeros")
+        );
+        assert!(
+            from_banner(&registry, "SSH-2.0-OpenSSH_9.6").is_none(),
+            "a bare OpenSSH banner identifies nothing"
+        );
+        assert_eq!(
+            probe_commands(&registry),
+            ["show version", "/system resource print", "uname -sr"],
+            "the probes are tried most specific first, and `generic` has none"
+        );
+    }
+}

@@ -1,0 +1,34 @@
+# Read from the three property sheets in this directory.
+kinds:
+  facts:
+    rows:
+      - hostname: Mikrotik-Device_Name          # /system identity print
+        vendor: MikroTik                        # platform:
+        os: RouterOS
+        os_version: 6.48.6                      # "6.48.6 (long-term)", without the channel
+        model: hEX PoE lite                     # board-name:
+        serial: 8B0208F4D5F9                    # /system routerboard print
+        # 6w5d11h55m45s = 6*604800 + 5*86400 + 11*3600 + 55*60 + 45
+        uptime_s: 4103745
+        extra:
+          release_channel: long-term
+          architecture: mipsbe
+          cpu: MIPS 24Kc V7.4
+          cpu_count: "1"
+          build_time: Dec/03/2021 12:15:05
+          board_model: RouterBOARD 750UP r2
+          firmware: "3.41"                      # current-firmware, not upgrade-firmware
+          firmware_type: qca9531L
+  health:
+    rows:
+      - cpu_pct: 1                              # cpu-load: 1%
+        memory_total: 67108864                  # 64.0MiB
+        memory_used: 24956109                   # 64.0MiB - 40.2MiB, rounded to whole bytes
+        uptime_s: 4103745
+  inventory:
+    count: 1
+    rows:
+      - name: routerboard
+        description: hEX PoE lite
+        part_id: RouterBOARD 750UP r2
+        serial: 8B0208F4D5F9

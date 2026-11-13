@@ -16,10 +16,6 @@ use std::path::Path;
 
 use nocturne_drivers::profile::Registry;
 
-// The harness below is finished; the profile pack it tests is not written yet
-// (`profiles/` is empty), so there is nothing for it to check. Remove this
-// attribute together with the first profile.
-#[ignore = "the built-in profile pack has yet to be written"]
 #[tokio::test(start_paused = true)]
 async fn built_in_profiles_pass_their_recorded_tests() {
     let (registry, errors) = Registry::builtin();

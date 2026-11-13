@@ -1,0 +1,42 @@
+# The RouterOS prompt is `[<user>@<identity>] <menu>>`. The identity is free
+# text — spaces and punctuation included — and the menu is whatever path the
+# session is in. Safe Mode puts `<SAFE>` between the two.
+exec:
+  - "[admin@MikroTik] > "                       # the default identity, straight after login
+  - "[admin@MikroTik] >"                        # a transport that trims the trailing space
+  - "[admin@CCR2004-core] > "
+  - "[admin@rb3011.branch.example.com] > "      # an identity that is an FQDN
+  - "[monitoring@Core Router 1] > "             # identities may contain spaces
+  - "[admin@MikroTik] /interface> "
+  - "[admin@MikroTik] /ip address> "
+  - "[admin@CCR2004-core] /interface bridge port> "
+  - "[admin@MikroTik] /system resource> "
+  - "[admin@MikroTik] <SAFE> > "                # Safe Mode (Ctrl-X), nothing else differs
+  - "[admin@MikroTik] <SAFE> /ip firewall filter> "
+  - "[nocturne-ro@hex-poe-lite] > "             # a read-only service account
+not_prompts:
+  # Everything below is ordinary output of the commands this profile runs.
+  - "Flags: X - disabled, I - invalid, D - dynamic"
+  - " 0   address=1.2.3.6/30 network=1.2.3.4 interface=ether1 actual-interface=ether1"
+  - " 7 DRS ;;; very very long"
+  - "                   uptime: 6w5d11h55m45s"
+  - "  name: Mikrotik-Device_Name"
+  - "-- [Q quit|D dump|down]"
+  - "17:20:06 echo: system,error,critical login failure for user admin from 65.160.140.13 via ssh"
+  - "bad command name adress (line 1 column 5)"
+  - "/ip address"
+  - "add address=10.0.0.1/24 interface=bridge network=10.0.0.0"
+  - "# 2024-07-11 10:13:19 by RouterOS 7.15.1"
+  - "MikroTik RouterOS 7.15.1 (stable) RB450Gx4"
+  - "Login: "
+  - "Password: "
+  - "[admin@MikroTik]"                          # the prompt is not finished
+  - "[admin@MikroTik] /interface"
+  - "> "
+  - ""
+hosts:
+  "[admin@MikroTik] > ": MikroTik
+  "[admin@CCR2004-core] /ip address> ": CCR2004-core
+  "[monitoring@Core Router 1] > ": Core Router 1
+  "[admin@MikroTik] <SAFE> > ": MikroTik
+  "[admin@rb3011.branch.example.com] > ": rb3011.branch.example.com

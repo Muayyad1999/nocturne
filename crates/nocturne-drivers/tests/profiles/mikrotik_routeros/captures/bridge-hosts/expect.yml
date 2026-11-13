@@ -1,0 +1,17 @@
+# Read from interface_bridge_host_print_terse_without-paging.txt.
+# Flags: X disabled, I invalid, D dynamic, L local, E external.
+# Six of the eight entries are not hosts behind a port and are left out:
+#   index 2 (DLE) and 3 (DL)  — L, one of the bridge's own addresses
+#   index 4, 5 (I)            — invalid
+#   index 6, 7 (XI)           — disabled and invalid
+kinds:
+  mac_table:
+    count: 2
+    rows:
+      - mac: 11:22:33:44:55:01
+        interface: ether4
+        kind: dynamic
+        vlan: null                    # no vid property on this entry
+      - mac: 11:22:33:44:55:02
+        interface: ether3
+        kind: dynamic

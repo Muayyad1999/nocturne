@@ -1,0 +1,96 @@
+# A RouterOS command is a menu path followed by an action. Only the actions
+# that display something are read-only, and only while the rest of the line
+# is an argument of that action: anything with `file=` writes a file.
+read_only:
+  # Everything the collectors run.
+  - /system resource print
+  - /system identity print
+  - /system routerboard print
+  - /system health print
+  - /interface print detail
+  - /ip address print detail
+  - /ipv6 address print detail
+  - /interface vlan print detail
+  - /ip neighbor print detail
+  - /interface bridge host print terse without-paging
+  - /ip arp print terse without-paging
+  - /ip route print detail
+  - /export terse
+  # The rest of a day's reading.
+  - /interface print terse without-paging
+  - /interface print brief
+  - /ip route print where dst-address=0.0.0.0/0
+  - /ip route print count-only
+  - /ip firewall filter print
+  - /ip firewall nat print without-paging
+  - /ip firewall connection print terse
+  - /ip dhcp-server lease print detail
+  - /ip dns cache print
+  - /interface ethernet print
+  - /interface ethernet poe print
+  - /interface wireless registration-table print detail
+  - /interface bridge port print detail
+  - /routing bgp peer print status
+  - /routing ospf neighbor print
+  - /log print without-paging
+  - /user print detail
+  - /user active print
+  - /system package print
+  - /system clock print
+  - /system license print
+  - /system script print detail
+  - /queue simple print stats
+  - /tool netwatch print
+  - /interface ethernet monitor ether1 once
+  - /interface monitor-traffic ether1
+  - /ping 8.8.8.8 count=4
+  - /tool traceroute 8.8.8.8
+  - /system resource get uptime
+  - /export
+  - /export verbose
+  - /ip firewall export terse
+  - print
+  - print detail
+  - quit
+change:
+  # Anything that is not a listed read-only action is a change, even when it
+  # looks harmless.
+  - /ip address add address=10.0.0.1/24 interface=bridge
+  - /ip address set 0 address=10.0.0.2/24
+  - /ip address remove [find interface=ether5]
+  - /interface set ether1 disabled=yes
+  - /interface enable ether1
+  - /interface disable ether1
+  - /system identity set name=core-1
+  - /system ntp client set enabled=yes
+  - /ip route add dst-address=0.0.0.0/0 gateway=192.168.88.1
+  - /ip firewall filter move 7 destination=1
+  - /system backup save name=before-change
+  - /system clock set time-zone-name=Europe/Berlin
+  - /ip dhcp-server lease make-static [find address=10.0.0.5]
+  - /interface reset-counters ether1
+  - /password
+  # A read action that writes its output to a file is not a read.
+  - /export file=backup
+  - /ip route print file=routes
+  - /system resource print file=resource
+  - /log print without-paging file=log.txt
+  # Scripting can run anything at all.
+  - ":put [/system resource get uptime]"
+  - ":global x 1"
+dangerous:
+  - /system reset-configuration
+  - /system reset-configuration no-defaults=yes skip-backup=yes
+  - /system reboot
+  - /system shutdown
+  - /system package downgrade
+  - /system package uninstall
+  - /system routerboard upgrade
+  - /system backup load name=backup
+  - /system script run cleanup
+  - /system disk format-drive 1
+  - /file remove flash/backup.backup
+  - /import file-name=restore.rsc
+  - /certificate remove [find]
+  - /user remove admin
+  - ":execute script=\"/system reboot\""

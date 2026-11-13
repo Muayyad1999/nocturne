@@ -1,0 +1,100 @@
+# The command line is a shell line: every simple command on it is classified
+# on its own, and a redirection or a command substitution anywhere makes the
+# whole line a change.
+read_only:
+  # Everything the collectors run.
+  - uname -snrvm
+  - cat /etc/os-release
+  - cat /proc/uptime
+  - hostnamectl
+  - ip -json -details -statistics address show
+  - ip -json route show
+  - ip -json neighbour show
+  - bridge -json fdb show
+  - cat /proc/meminfo
+  - cat /sys/class/thermal/thermal_zone0/temp
+  # The rest of a day's reading.
+  - uname -a
+  - hostname
+  - hostname -f
+  - uptime
+  - whoami
+  - id
+  - nproc
+  - lscpu
+  - free -m
+  - df -h
+  - ps aux
+  - lsb_release -a
+  - systemctl status sshd
+  - systemctl is-active frr
+  - journalctl -n 50 -u ssh
+  - cat /proc/cpuinfo
+  - cat /proc/net/dev
+  - cat /proc/sys/net/ipv4/ip_forward
+  - cat /sys/class/net/eth0/operstate
+  - head -n 20 /proc/meminfo
+  - ip addr show
+  - ip -6 route show
+  - ip link show eth0
+  - ip route show table all
+  - ip neighbour show dev br0
+  - bridge fdb show
+  - bridge vlan show
+  - ss -tulpn
+  - ping -c 4 8.8.8.8
+  - traceroute 8.8.8.8
+  - dig example.com
+  - lldpctl -f keyvalue
+  - ethtool eth0
+  - grep MemTotal /proc/meminfo
+  - ls -l /etc/network
+  # Several reads on one line are still a read.
+  - uname -a; cat /proc/uptime
+  - cat /proc/meminfo | grep MemTotal
+  - uname -a && cat /proc/uptime
+change:
+  # Not on the read-only list.
+  - ip addr add 10.0.0.1/24 dev eth0
+  - ip link set eth0 down
+  - ip link set dev eth0 mtu 9000
+  - ip route add default via 10.0.0.1
+  - bridge fdb add aa:bb:cc:00:00:11 dev eth0 master
+  - systemctl restart networking
+  - systemctl enable frr
+  - apt-get update
+  - sysctl -w net.ipv4.ip_forward=1
+  - chmod 600 /etc/shadow
+  - chown root /etc/hosts
+  - vtysh
+  - su -
+  - sudo ip link set eth0 down
+  # Reading something that is nobody else's business.
+  - cat /etc/shadow
+  - cat /home/user/.ssh/id_rsa
+  - cat /proc/1/environ
+  # A read that writes, runs or reads from somewhere else is not a read.
+  - cat /proc/meminfo > /tmp/mem.txt
+  - ip -json route show > /tmp/routes.json
+  - cat < /proc/uptime
+  - uname -a $(touch /tmp/x)
+  - echo `touch /tmp/x`
+  - uname -a && touch /tmp/x
+  - uname -a | tee /tmp/x
+  - FOO=1 uname -a
+dangerous:
+  - rm -rf /var/lib/frr
+  - reboot
+  - shutdown -h now
+  - systemctl reboot
+  - poweroff
+  - init 0
+  - mkfs.ext4 /dev/sda1
+  - dd if=/dev/zero of=/dev/sda bs=1M
+  - iptables -F
+  - nft flush ruleset
+  - apt-get remove frr
+  - userdel nocturne
+  # The riskiest part of a line decides.
+  - uname -a; rm -rf /etc/frr
+  - cat /proc/uptime | rm -rf /tmp/x

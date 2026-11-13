@@ -762,6 +762,301 @@ fn remediate_routeros(running: &str, intended: &str) -> Remediation {
     }
 }
 
+// ------------------------------------------------------ applying commands
+
+/// What happened while applying configuration lines to a [`ConfigTree`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyReport {
+    /// Things the caller should tell the user about the prediction.
+    pub warnings: Vec<String>,
+    /// Lines whose effect on the configuration could not be modelled; the
+    /// prediction is incomplete where they appear.
+    pub unmodelled: Vec<String>,
+    /// False when the grammar has no block structure to apply lines to.
+    pub supported: bool,
+}
+
+/// Does this line open a configuration section (so that what follows is
+/// indented under it)?
+pub fn opens_section(line: &str, syntax: Syntax) -> bool {
+    let line = line.trim();
+    match syntax {
+        Syntax::Ios => IOS_SECTION.is_match(line) || IOS_NESTED.is_match(line),
+        Syntax::Vrp => VRP_SECTION.is_match(line),
+        _ => false,
+    }
+}
+
+/// Does this line only make sense at the top level, so that typing it inside
+/// a section is a mistake (or means the section was meant to be left first)?
+pub fn is_global(line: &str, syntax: Syntax) -> bool {
+    let line = line.trim();
+    let line = line
+        .strip_prefix("no ")
+        .or_else(|| line.strip_prefix("undo "))
+        .unwrap_or(line);
+    match syntax {
+        Syntax::Ios => IOS_GLOBAL.is_match(line) || IOS_SECTION.is_match(line),
+        Syntax::Vrp => VRP_GLOBAL.is_match(line) || VRP_SECTION.is_match(line),
+        _ => false,
+    }
+}
+
+/// A section that is opened *inside* another one (`address-family` under
+/// `router bgp`), rather than replacing it.
+pub fn opens_nested(line: &str, syntax: Syntax) -> bool {
+    syntax == Syntax::Ios && IOS_NESTED.is_match(line.trim())
+}
+
+static IOS_SECTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:interface \S|router \S|line (?:con|vty|aux|console)\b|vlan \d|ip(?:v6)? access-list \S|class-map \S|policy-map \S|route-map \S|vrf definition \S|ip vrf \S|key chain \S|ip dhcp pool \S|crypto map \S|archive$|spanning-tree mst configuration$)",
+    )
+    .expect("ios section pattern")
+});
+
+static IOS_NESTED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:address-family \S|class \S|template \S)").expect("ios nested pattern")
+});
+
+/// Commands that unambiguously belong at the top level: none of them is also
+/// a sub-command of an interface, a line or a routing process.
+static IOS_GLOBAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:hostname |sysname |username |enable (?:secret|password)\b|aaa |snmp-server |banner |clock |vtp |access-list |ip route |ipv6 route |ip domain|ip name-server |ip http |ip ssh |ip default-gateway |ip routing\b|ip forward-protocol |spanning-tree mode |spanning-tree vlan |spanning-tree portfast default|lldp run\b|cdp run\b|vlan internal |mac address-table |errdisable |boot system |crypto key |license |service (?:password-encryption|timestamps|compress|sequence|unsupported)\b)",
+    )
+    .expect("ios global pattern")
+});
+
+static VRP_SECTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:interface \S|vlan \d|user-interface \S|acl \S|aaa$|ospf \d|bgp \d|isis \d)",
+    )
+    .expect("vrp section pattern")
+});
+
+static VRP_GLOBAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:sysname |vlan batch |ip route-static |snmp-agent |info-center |dns )")
+        .expect("vrp global pattern")
+});
+
+/// The children at `path`, creating the sections on the way if they are missing.
+fn children_at<'a>(roots: &'a mut Vec<Node>, path: &[String]) -> &'a mut Vec<Node> {
+    let mut nodes = roots;
+    for segment in path {
+        let index = match nodes.iter().position(|node| node.text == *segment) {
+            Some(index) => index,
+            None => {
+                nodes.push(Node {
+                    text: segment.clone(),
+                    children: Vec::new(),
+                });
+                nodes.len() - 1
+            }
+        };
+        nodes = &mut nodes[index].children;
+    }
+    nodes
+}
+
+/// Add or replace one line among `nodes`, the way a device would: a
+/// replace-style command takes over the line that holds the same setting,
+/// anything else is appended unless it is already there.
+fn set_line(nodes: &mut Vec<Node>, line: &str, grammar: &Grammar) -> bool {
+    if let Some(rest) = line.strip_prefix(TRUNK_ALLOWED) {
+        return set_allowed_vlans(nodes, rest.trim());
+    }
+    if let Some(slot) = grammar.slot(line)
+        && let Some(position) = nodes
+            .iter()
+            .position(|node| grammar.slot(&node.text) == Some(slot))
+    {
+        nodes[position].text = line.to_string();
+        return true;
+    }
+    if !nodes.iter().any(|node| node.text == line) {
+        nodes.push(Node {
+            text: line.to_string(),
+            children: Vec::new(),
+        });
+    }
+    true
+}
+
+/// `switchport trunk allowed vlan …` edits one list, wherever the device
+/// chooses to print it: `add` and `remove` patch it, a bare list replaces it,
+/// and `add` on a trunk that has no list at all (every VLAN allowed) does
+/// nothing.
+fn set_allowed_vlans(nodes: &mut Vec<Node>, rest: &str) -> bool {
+    let had_list = nodes
+        .iter()
+        .any(|node| node.text.starts_with(TRUNK_ALLOWED));
+    let current: BTreeSet<u16> = nodes
+        .iter()
+        .filter_map(|node| node.text.strip_prefix(TRUNK_ALLOWED))
+        .find_map(|list| parse_vlan_ranges(list.trim()))
+        .unwrap_or_default();
+    let next = if let Some(added) = rest.strip_prefix("add ") {
+        if !had_list {
+            return true;
+        }
+        match parse_vlan_ranges(added.trim()) {
+            Some(added) => current.union(&added).copied().collect(),
+            None => return false,
+        }
+    } else if let Some(removed) = rest.strip_prefix("remove ") {
+        let Some(removed) = parse_vlan_ranges(removed.trim()) else {
+            return false;
+        };
+        let base: BTreeSet<u16> = if had_list {
+            current
+        } else {
+            (1..=4094).collect()
+        };
+        base.difference(&removed).copied().collect()
+    } else if rest == "none" {
+        BTreeSet::new()
+    } else if rest == "all" {
+        nodes.retain(|node| !node.text.starts_with(TRUNK_ALLOWED));
+        return true;
+    } else {
+        match parse_vlan_ranges(rest) {
+            Some(list) => list,
+            None => return false,
+        }
+    };
+    let list: Vec<u16> = next.into_iter().collect();
+    let text = format!("{TRUNK_ALLOWED}{}", format_vlan_ranges(&list));
+    let text = text.trim_end().to_string();
+    let position = nodes
+        .iter()
+        .position(|node| node.text.starts_with(TRUNK_ALLOWED));
+    nodes.retain(|node| !node.text.starts_with(TRUNK_ALLOWED));
+    let node = Node {
+        text,
+        children: Vec::new(),
+    };
+    match position {
+        Some(position) if position < nodes.len() => nodes.insert(position, node),
+        _ => nodes.push(node),
+    }
+    true
+}
+
+impl ConfigTree {
+    /// Apply configuration-mode lines to this tree, as the device would.
+    ///
+    /// This is the other half of [`remediate`]: it predicts what the running
+    /// configuration will look like after a list of commands has been sent,
+    /// so that a change can be compared with its own prediction afterwards
+    /// instead of being taken on trust. Section headers enter blocks, `exit`
+    /// and `end` leave them, `no …` removes, replace-style commands take over
+    /// the line that holds the same setting, and the allowed-VLAN list of a
+    /// trunk is patched as a set.
+    ///
+    /// Lines whose effect cannot be modelled are listed in the report rather
+    /// than guessed at.
+    pub fn apply(&mut self, commands: &[String], syntax: Syntax) -> ApplyReport {
+        let mut report = ApplyReport {
+            supported: matches!(syntax, Syntax::Ios | Syntax::Vrp),
+            ..ApplyReport::default()
+        };
+        if !report.supported {
+            report.warnings.push(
+                "This platform's configuration grammar is not modelled, so the result of these commands cannot be predicted."
+                    .into(),
+            );
+            return report;
+        }
+        let grammar = Grammar::for_syntax(syntax);
+        let comment = if syntax == Syntax::Vrp { '#' } else { '!' };
+        let mut path: Vec<String> = Vec::new();
+
+        for raw in commands {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with(comment) {
+                continue;
+            }
+            if line == grammar.exit_word {
+                path.pop();
+                continue;
+            }
+            if line == "end" || line == "return" {
+                path.clear();
+                continue;
+            }
+            if let Some(target) = line
+                .strip_prefix(grammar.negate_word)
+                .and_then(|rest| rest.strip_prefix(' '))
+            {
+                remove_line(&mut self.roots, &mut path, target.trim());
+                continue;
+            }
+            if let Some(name) = line.strip_prefix("default interface ") {
+                let section = format!("interface {}", name.trim());
+                match self
+                    .roots
+                    .iter_mut()
+                    .find(|node| node.text.eq_ignore_ascii_case(&section))
+                {
+                    Some(node) => node.children.clear(),
+                    None => self.roots.push(Node {
+                        text: section.clone(),
+                        children: Vec::new(),
+                    }),
+                }
+                path.clear();
+                report.warnings.push(format!(
+                    "`{line}` resets the port: the prediction assumes it removes every configuration line of `{section}`, and the device may also put back lines that belong to its defaults."
+                ));
+                continue;
+            }
+            if line.to_ascii_lowercase().starts_with("interface range ") {
+                report.unmodelled.push(line.to_string());
+                continue;
+            }
+            if opens_section(line, syntax) {
+                if opens_nested(line, syntax) && !path.is_empty() {
+                    path.push(line.to_string());
+                } else {
+                    path.clear();
+                    path.push(line.to_string());
+                }
+                children_at(&mut self.roots, &path);
+                continue;
+            }
+            let nodes = children_at(&mut self.roots, &path);
+            if !set_line(nodes, line, &grammar) {
+                report.unmodelled.push(line.to_string());
+            }
+        }
+        report
+    }
+}
+
+/// `no …` / `undo …`: inside the open section first, as the device does, then
+/// at the top level.
+fn remove_line(roots: &mut Vec<Node>, path: &mut Vec<String>, target: &str) {
+    let matches = |text: &str| text == target || text.starts_with(&format!("{target} "));
+    if !path.is_empty() {
+        let nodes = children_at(roots, path);
+        if target.starts_with(TRUNK_ALLOWED.trim_end()) {
+            nodes.retain(|node| !node.text.starts_with(TRUNK_ALLOWED));
+            return;
+        }
+        let before = nodes.len();
+        nodes.retain(|node| !matches(&node.text));
+        if nodes.len() != before || target == "shutdown" {
+            return;
+        }
+    }
+    let before = roots.len();
+    roots.retain(|node| !matches(&node.text));
+    if roots.len() != before {
+        path.clear();
+    }
+}
+
 /// One line of a unified diff, for display.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffLine {
@@ -1247,6 +1542,293 @@ end
     fn unknown_grammar_is_reported_not_guessed() {
         let result = remediate("a", "b", Syntax::Flat);
         assert!(!result.supported && result.commands.is_empty() && !result.warnings.is_empty());
+    }
+
+    /// Every line of a configuration with the section it sits in, sorted:
+    /// "the same configuration", whatever order the device prints it in.
+    fn canonical(text: &str, syntax: Syntax) -> Vec<String> {
+        fn walk(nodes: &[Node], prefix: &str, out: &mut Vec<String>) {
+            for node in nodes {
+                let path = if prefix.is_empty() {
+                    node.text.clone()
+                } else {
+                    format!("{prefix} / {}", node.text)
+                };
+                out.push(path.clone());
+                walk(&node.children, &path, out);
+            }
+        }
+        let mut lines = Vec::new();
+        walk(&ConfigTree::parse(text, syntax).roots, "", &mut lines);
+        lines.sort();
+        lines
+    }
+
+    fn apply_to(running: &str, commands: &[&str]) -> String {
+        let mut tree = ConfigTree::parse(running, Syntax::Ios);
+        let commands: Vec<String> = commands.iter().map(|line| line.to_string()).collect();
+        let report = tree.apply(&commands, Syntax::Ios);
+        assert!(
+            report.supported && report.unmodelled.is_empty(),
+            "{report:?}"
+        );
+        tree.render()
+    }
+
+    #[test]
+    fn applying_a_remediation_reaches_the_intended_configuration() {
+        let variants = [
+            // add a VLAN and extend a trunk
+            RUNNING
+                .replace(
+                    "vlan 20\n name Guests\n",
+                    "vlan 20\n name Guests\n!\nvlan 30\n name Voice\n",
+                )
+                .replace("allowed vlan 10,20", "allowed vlan 10,20,30"),
+            // change values held in a "slot"
+            RUNNING
+                .replace("description printer", "description scanner")
+                .replace("switchport access vlan 10", "switchport access vlan 20")
+                .replace(
+                    "ip address 10.0.10.2 255.255.255.0",
+                    "ip address 10.0.10.3 255.255.255.0",
+                ),
+            // remove things of several shapes
+            RUNNING
+                .replace("username olduser privilege 1 secret 5 $1$c$d\n", "")
+                .replace(" spanning-tree portfast\n", "")
+                .replace("ip route 0.0.0.0 0.0.0.0 10.0.10.1\n", "")
+                .replace("vlan 20\n name Guests\n", "")
+                .replace(
+                    "interface Loopback9\n ip address 9.9.9.9 255.255.255.255\n",
+                    "",
+                ),
+            // nested sections
+            format!("{RUNNING}router ospf 1\n network 10.0.10.0 0.0.0.255 area 0\n"),
+        ];
+        for intended in variants {
+            let commands = remediate(RUNNING, &intended, Syntax::Ios).commands;
+            let predicted = apply_to(
+                RUNNING,
+                &commands.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                canonical(&predicted, Syntax::Ios),
+                canonical(&intended, Syntax::Ios),
+                "commands: {commands:?}"
+            );
+            // And the remediation in the other direction undoes it exactly.
+            let back = remediate(&predicted, RUNNING, Syntax::Ios).commands;
+            let restored = apply_to(
+                &predicted,
+                &back.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                canonical(&restored, Syntax::Ios),
+                canonical(RUNNING, Syntax::Ios),
+                "rollback commands: {back:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sections_are_entered_and_left_the_way_a_device_does() {
+        let running =
+            "hostname SW1\ninterface Gi0/1\n description old\n shutdown\nvlan 10\n name Staff\n";
+        let after = apply_to(
+            running,
+            &[
+                "interface Gi0/1",
+                "description new",
+                "no shutdown",
+                "exit",
+                "ntp server 10.0.0.9",
+                "vlan 10",
+                "name Users",
+                "end",
+                "hostname SW2",
+            ],
+        );
+        assert_eq!(
+            after,
+            "hostname SW2\ninterface Gi0/1\n description new\nvlan 10\n name Users\nntp server 10.0.0.9\n"
+        );
+        // A section header typed inside a section switches to it, as on the device.
+        let switched = apply_to(
+            running,
+            &["interface Gi0/1", "vlan 10", "name Users", "exit"],
+        );
+        assert!(switched.contains("vlan 10\n name Users\n"), "{switched}");
+    }
+
+    #[test]
+    fn removals_sub_commands_and_whole_sections() {
+        let running = "hostname SW1\ninterface Gi0/2\n description printer\n switchport access vlan 10\nvlan 20\n name Guests\nip route 0.0.0.0 0.0.0.0 10.0.0.1\n";
+        assert_eq!(
+            apply_to(
+                running,
+                &[
+                    "interface Gi0/2",
+                    "no description",
+                    "exit",
+                    "no vlan 20",
+                    "no ip route 0.0.0.0 0.0.0.0 10.0.0.1",
+                    "no username nobody",
+                ]
+            ),
+            "hostname SW1\ninterface Gi0/2\n switchport access vlan 10\n"
+        );
+        // `default interface` empties the port and says so.
+        let mut tree = ConfigTree::parse(running, Syntax::Ios);
+        let report = tree.apply(&["default interface Gi0/2".to_string()], Syntax::Ios);
+        assert_eq!(
+            tree.render(),
+            "hostname SW1\ninterface Gi0/2\nvlan 20\n name Guests\nip route 0.0.0.0 0.0.0.0 10.0.0.1\n"
+        );
+        assert!(report.warnings[0].contains("resets the port"), "{report:?}");
+    }
+
+    #[test]
+    fn the_allowed_vlan_list_of_a_trunk_is_patched_as_a_set() {
+        let trunk = "interface Gi0/1\n switchport mode trunk\n switchport trunk allowed vlan 10,20\n description uplink\n";
+        let add = apply_to(
+            trunk,
+            &["interface Gi0/1", "switchport trunk allowed vlan add 30,40"],
+        );
+        assert!(
+            add.contains(" switchport trunk allowed vlan 10,20,30-40\n")
+                || add.contains(" switchport trunk allowed vlan 10,20,30,40\n"),
+            "{add}"
+        );
+        // the list keeps its place among the other lines
+        assert!(add.ends_with(" description uplink\n"), "{add}");
+        assert!(
+            apply_to(
+                trunk,
+                &["interface Gi0/1", "switchport trunk allowed vlan remove 20"]
+            )
+            .contains(" switchport trunk allowed vlan 10\n")
+        );
+        assert!(
+            apply_to(
+                trunk,
+                &["interface Gi0/1", "switchport trunk allowed vlan 99"]
+            )
+            .contains(" switchport trunk allowed vlan 99\n"),
+            "a bare list replaces — which is exactly why the planner flags it"
+        );
+        assert!(
+            apply_to(
+                trunk,
+                &["interface Gi0/1", "no switchport trunk allowed vlan"]
+            )
+            .contains("interface Gi0/1\n switchport mode trunk\n description uplink\n")
+        );
+        // On a trunk with no list every VLAN is allowed: `add` changes nothing,
+        // `remove` has to state the list the device is left with.
+        let open = "interface Gi0/1\n switchport mode trunk\n";
+        assert_eq!(
+            apply_to(
+                open,
+                &["interface Gi0/1", "switchport trunk allowed vlan add 30"]
+            ),
+            open
+        );
+        let removed = apply_to(
+            open,
+            &[
+                "interface Gi0/1",
+                "switchport trunk allowed vlan remove 4000-4094",
+            ],
+        );
+        assert!(
+            removed.contains(" switchport trunk allowed vlan 1-3999\n"),
+            "{removed}"
+        );
+    }
+
+    #[test]
+    fn what_cannot_be_predicted_is_reported_not_guessed() {
+        let mut tree = ConfigTree::parse("interface Gi0/1\n description x\n", Syntax::Ios);
+        let report = tree.apply(
+            &[
+                "interface range Gi0/1 - 4".to_string(),
+                "shutdown".to_string(),
+            ],
+            Syntax::Ios,
+        );
+        assert_eq!(report.unmodelled, vec!["interface range Gi0/1 - 4"]);
+
+        let mut flat = ConfigTree::parse("/ip address add address=10.0.0.1/24", Syntax::Routeros);
+        let report = flat.apply(
+            &["/ip dns set servers=9.9.9.9".to_string()],
+            Syntax::Routeros,
+        );
+        assert!(!report.supported && !report.warnings.is_empty());
+        assert_eq!(flat.roots.len(), 1, "nothing is guessed at");
+    }
+
+    #[test]
+    fn sections_and_global_commands_are_recognised() {
+        for line in [
+            "interface Vlan10",
+            "router ospf 1",
+            "line vty 0 4",
+            "vlan 30",
+            "ip access-list extended WEB",
+            "ip dhcp pool LAN",
+        ] {
+            assert!(opens_section(line, Syntax::Ios), "{line}");
+        }
+        for line in [
+            "vlan internal allocation policy ascending",
+            "description vlan 30",
+            "switchport trunk allowed vlan 10",
+            "spanning-tree portfast",
+        ] {
+            assert!(!opens_section(line, Syntax::Ios), "{line}");
+        }
+        for line in [
+            "hostname SW2",
+            "username bob privilege 15 secret x",
+            "no ip route 0.0.0.0 0.0.0.0 10.0.0.1",
+            "ip default-gateway 10.0.0.1",
+            "enable secret 5 x",
+            "spanning-tree mode rapid-pvst",
+            "interface Vlan10",
+        ] {
+            assert!(is_global(line, Syntax::Ios), "{line}");
+        }
+        // Sub-commands that merely look global must stay with their section.
+        for line in [
+            "ip address 10.0.0.1 255.255.255.0",
+            "spanning-tree portfast",
+            "service-policy input SHAPE",
+            "logging event link-status",
+            "switchport mode trunk",
+        ] {
+            assert!(!is_global(line, Syntax::Ios), "{line}");
+        }
+    }
+
+    #[test]
+    fn vrp_lines_are_applied_with_undo_and_quit() {
+        let running = "sysname SW-A\ninterface GigabitEthernet0/0/1\n description old\n port default vlan 10\n";
+        let mut tree = ConfigTree::parse(running, Syntax::Vrp);
+        let commands = [
+            "interface GigabitEthernet0/0/1",
+            "description new",
+            "undo port default vlan",
+            "quit",
+            "sysname SW-B",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert!(tree.apply(&commands, Syntax::Vrp).supported);
+        assert_eq!(
+            tree.render(),
+            "sysname SW-B\ninterface GigabitEthernet0/0/1\n description new\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,50 @@
+# Shell prompts as the distributions ship them. There is no privileged mode
+# and no configuration mode in a shell, so `user` and `config` are empty:
+# `#` only means the account is root, which changes nothing about the driver.
+exec:
+  - "user@host:~$ "                        # Debian, Ubuntu
+  - "root@host:~# "
+  - "root@core-fw:/etc/network# "
+  - "nocturne@sensor-01.dc1.example.com:~$ "
+  - "[user@host ~]$ "                      # RHEL, Fedora, Rocky
+  - "[root@host log]# "
+  - "[nocturne@rtr-1 ~]$ "
+  - "root@OpenWrt:/etc/config# "           # OpenWrt
+  - "host:~ # "                            # SUSE
+  - "bash-5.1$ "                           # no PS1 at all
+  - "sh-4.2# "
+  - "zsh-5.9% "
+  - "~ $ "                                 # BusyBox
+  - "/ # "
+  - "/var/log # "
+  - "user@host:~$"                         # a transport that trims the space
+not_prompts:
+  # Output of the commands this profile runs, and of the ones an engineer
+  # types next to them.
+  - "MemTotal:       16472076 kB"
+  - "Linux vm 6.18.44-fc-v445 #1 SMP PREEMPT_DYNAMIC @0 x86_64"
+  - "2764.85 5516.99"
+  - 'PRETTY_NAME="Ubuntu 24.04.5 LTS"'
+  - '[{"ifindex":1,"ifname":"lo","mtu":65536}]'
+  - "default via 192.0.2.1 dev br0"
+  - "2: br0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9000 qdisc noqueue state UP group default qlen 1000"
+  - "? (192.168.13.197) at 00:04:4b:cc:9c:ba [ether] on eth1.100"
+  - "-bash: show: command not found"
+  - "Last login: Thu Mar  6 09:12:44 2025 from 10.0.0.5"
+  - "Welcome to Ubuntu 24.04.5 LTS (GNU/Linux 6.8.0-45-generic x86_64)"
+  - "  System load:  0.08               Processes:             123"
+  - "Password: "
+  - "login: "
+  # `ls` of a directory holding files whose names end the way a prompt does:
+  # a bare word before the sign is deliberately not a prompt.
+  - "notes#"
+  - "price$"
+  - "100%"
+  - "#"
+  - "$"
+  - ""
+hosts:
+  "user@host:~$ ": host
+  "root@core-fw:/etc/network# ": core-fw
+  "[nocturne@rtr-1 ~]$ ": rtr-1
+  "nocturne@sensor-01.dc1.example.com:~$ ": sensor-01.dc1.example.com

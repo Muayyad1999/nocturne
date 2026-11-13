@@ -1,0 +1,28 @@
+description: >-
+  A line that does its own authentication (Telnet, or a console cable). Two
+  things are RouterOS's own: the driver appends `cli.login.username_suffix`
+  to the user name, so the device sees `nocturne-ro+ct511w4098h` — no
+  colour, no terminal detection and a terminal wide enough that a listing is
+  not wrapped in the middle of a `key=value` pair — and the first login of a
+  device asks about the software licence, which `cli.answers` declines
+  without a human. Scripted, not recorded.
+credentials: {username: nocturne-ro, password: secret}
+greeting: "\r\n\r\nMikroTik v7.15.1 (stable)\r\nLogin: "
+dialogue:
+  - recv: nocturne-ro+ct511w4098h
+    send: "nocturne-ro+ct511w4098h\r\nPassword: "
+  - recv: secret
+    send: "\r\n\r\nDo you want to see the software license? [Y/n]: "
+  - recv: "n"
+    send: "n\r\n\r\n[nocturne-ro@core-rtr] > "
+  - recv: /system resource print
+    send: "/system resource print\r\n                   uptime: 10w2d6h21m59s\r\n                  version: 7.15.1 (stable)\r\n                 cpu-load: 4%\r\n                 platform: MikroTik\r\n\r\n[nocturne-ro@core-rtr] > "
+actions:
+  - start:
+      hostname: core-rtr
+      prompt: "[nocturne-ro@core-rtr] >"
+    mode: privileged
+  - exec: /system resource print
+    # A quoted string, not a block scalar: RouterOS right-aligns the keys of
+    # a property sheet, so the lines are indented differently.
+    output: "                   uptime: 10w2d6h21m59s\n                  version: 7.15.1 (stable)\n                 cpu-load: 4%\n                 platform: MikroTik"

@@ -1,0 +1,24 @@
+# Read from the four files in this directory.
+kinds:
+  facts:
+    rows:
+      # "Linux vm 6.18.44-fc-v445 #1 SMP PREEMPT_DYNAMIC @0 x86_64"
+      - hostname: vm
+        os: Linux
+        os_version: 6.18.44-fc-v445
+        vendor: ""                      # no systemd, so hostnamectl said nothing
+        model: ""
+        serial: ""                      # DMI serials need root; nothing is invented
+        uptime_s: 2764                  # "2764.85 5516.99", whole seconds
+        extra:
+          architecture: x86_64
+          kernel_build: "#1 SMP PREEMPT_DYNAMIC @0"
+          distribution: Ubuntu 24.04.5 LTS
+  health:
+    rows:
+      # MemTotal 16472076 kB, MemAvailable 14861328 kB; kB means 1024 bytes.
+      - memory_total: 16867405824       # 16472076 * 1024
+        memory_used: 1649405952         # (16472076 - 14861328) * 1024
+        uptime_s: 2764
+        temperature_c: null             # no thermal zone on this machine
+        cpu_pct: null                   # Linux has no instantaneous CPU figure to read

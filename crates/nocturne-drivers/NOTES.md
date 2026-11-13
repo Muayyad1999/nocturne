@@ -37,14 +37,55 @@ Baseline: 61 unit tests green, clippy clean, fmt clean (before any change).
 - scratch helpers (NOT in repo): <scratch>/mkcases.py + cases_ios*.py copy corpus .raw files into
   capture dirs and write SOURCE.md
 
-### In progress
-- `generic` profile + tests
+- tests/profiles.rs: `#[ignore]` removed (profiles exist now)
+- `generic` profile + tests: DONE, harness green (43 prompts, 24 error samples, 27 commands,
+  5 detections). generic.yaml policy gained RouterOS-style `<path> print|get|monitor` and
+  bare `/export` read-only patterns, so an unidentified menu-driven CLI is still usable read-only.
 
-### Next (order fixed by the brief)
-1. `generic`, `mikrotik_routeros`, `linux` (+ their test data)
-2. detect.rs unit tests (priority, probe order, rejected probes, rebinding)
-3. `docs/profiles.md` + `tests/guide.rs` (loads the `# profile` YAML blocks)
-4. clippy -D warnings, fmt, final report
+- `mikrotik_routeros` profile + tests: DONE, harness green and `verified` (30 prompts,
+  22 error samples, 83 commands, 16 detections, 10 captures / 62 rows, 1 config + .again).
+  Collects facts, interfaces, neighbors, vlans, mac_table, arp, routes, health, inventory.
+  8 of 10 capture cases are real corpus output; `ccr-core-v7` and `health-temperature` are
+  marked synthetic (hand-written `/ip address print detail`, `/ipv6 address print detail`,
+  `/system health print`), and every kind is also covered by a real case.
+
+- `linux` profile + tests: DONE, harness green, `maturity: community` (36 prompts, 23 error
+  samples, 87 commands, 19 detections, 3 captures / 20 rows; no config — a Linux host has no
+  running configuration, `config.running` is empty on purpose). Collects facts, interfaces,
+  mac_table, arp, routes, health via `ip -json`/`bridge -json`/`/proc`.
+  Captures were RECORDED (not hand-written) from a real kernel: a network namespace built with
+  veth+bridge on this machine, plus this machine's own uname/os-release/proc files. Only
+  `hostnamectl` and the thermal-zone file are synthetic (no systemd, no sensors here).
+  No IPv6/VLAN/bond in the netns capture (kernel has no modules) — noted in SOURCE.md.
+
+- detect.rs unit tests: DONE (10 tests: snmp priority/prefix, banner, probe order + de-dup,
+  rejected probes, rebinding through probe_session, generic fallback, banner fallback,
+  missing generic, and the built-in pack's own detection). The test `generic` profile needed a
+  `pager` or long probe output stalls — that is why the real generic.yaml has one.
+- scripted sessions: mikrotik (ssh read + `d` pager + /export cleaning; telnet login with
+  the `+ct511w4098h` suffix and the licence question), linux (shell prompt, command not found,
+  permission denied), generic (an unidentified Huawei VRP driven through the pager).
+
+- docs/profiles.md + tests/guide.rs: DONE. 14 loadable `# profile` examples; the worked
+  example builds `arista_eos` up in 7 steps. tests/guide.rs loads every example on top of the
+  built-in pack (as Origin::User, so none may claim `verified`) and checks the steps grow.
+- expr.rs `Expressions::check` now also evaluates the expression once against an empty row and
+  reports UnknownFilter/UnknownTest/UnknownFunction — a misspelled filter used to pass
+  validation and only fail on a live device. (Additive; all existing profiles still load.)
+- tests/harness/scripted.rs now requires a non-empty `description` in a session transcript
+  (which also clears the pre-existing dead_code warning that failed clippy -D warnings).
+
+### State at hand-off
+- 100 lib tests + tests/profiles.rs (4 profiles) + tests/guide.rs (2) all green;
+  clippy -D warnings clean; fmt clean. Registry::builtin() loads 5 profiles with zero errors.
+
+### Next (nothing blocking; ideas for whoever carries on)
+- RouterOS interface counters: no reliable command whose output is in the corpus
+  (`/interface print stats` is a column table with space-separated thousands). Left out.
+- RouterOS bridge-VLAN membership (`/interface bridge vlan print detail`) would complete `vlans`.
+- Linux: no IPv6/VLAN/bond in the recorded netns (no kernel modules here); LLDP (`lldpctl -f
+  keyvalue`) would give the `neighbors` kind.
+- `Expressions::check` still cannot see a filter's argument types; only unknown names are caught.
 
 ## Decisions (keep; they go into the final report)
 
@@ -70,3 +111,12 @@ Baseline: 61 unit tests green, clippy clean, fmt clean (before any change).
 - IOS speed_bps only from the negotiated speed (never the BW figure); `reload cancel` is a change.
 - RouterOS: no `guard` (Safe Mode is interactive only), `newline: "\r"`, pager key `d` (dump),
   username suffix `+ct511w4098h` must be appended by the transport for SSH (app layer!).
+- RouterOS listings are read with the `kv`/`colon` parsers, not ntc-templates: the bundled
+  mikrotik templates match one release's `Flags:` legend and `^. -> Error` on anything else,
+  while kv copes with v6 and v7 and keeps every property.
+- RouterOS config is `/export terse` (needs 6.43+): the RouterOS diff/remediation in hier.rs
+  only understands one self-contained command per line, which plain `/export` does not give.
+- Linux: `ip -json`/`bridge -json` everywhere (no text parsing); no `config.running` (a Linux
+  host has no single configuration to print); `policy.shell: true`; read as the login user,
+  never through sudo. No cpu_pct: /proc has no instantaneous CPU figure, and calling the load
+  average a percentage would be a fabrication.

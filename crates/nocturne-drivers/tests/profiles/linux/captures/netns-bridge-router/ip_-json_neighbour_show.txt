@@ -1,0 +1,1 @@
+[{"dst":"192.0.2.77","dev":"br0","state":["INCOMPLETE"]},{"dst":"192.0.2.50","dev":"br0","lladdr":"aa:bb:cc:00:00:02","state":["STALE"]},{"dst":"192.0.2.1","dev":"br0","lladdr":"aa:bb:cc:00:00:01","state":["PERMANENT"]}]

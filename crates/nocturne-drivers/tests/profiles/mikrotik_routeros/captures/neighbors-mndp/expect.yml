@@ -1,0 +1,28 @@
+# Read from ip_neighbor_print_detail.txt.
+# `interface=` lists every interface the neighbour was heard on; the first is
+# the physical one. `interface-name=` is the neighbour's own port.
+kinds:
+  neighbors:
+    count: 3
+    rows:
+      - device: CLEAR
+        local_interface: ether2         # from "ether2,bridge_local"
+        remote_interface: ether1
+        platform: MikroTik RB750UPr2    # platform= and board= together
+        address: ""                     # this neighbour advertised no address
+        capabilities: bridge,router
+        protocol: mndp
+      - device: Device_1
+        local_interface: ether10        # from "ether10,bridge_255_mgmt"
+        remote_interface: ether1
+        platform: MikroTik RB450Gx4
+        address: 1.2.4.5
+        # system-caps= is the last property on the line and its value wrapped
+        # onto the next one; the wrapped line is still part of this entry.
+        capabilities: bridge,router
+      - device: Device-2
+        local_interface: eth1-vlan255
+        remote_interface: bridge_vlan255
+        platform: MikroTik RB1100x4
+        address: ""
+        capabilities: ""                # system-caps=""

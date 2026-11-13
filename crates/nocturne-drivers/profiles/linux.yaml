@@ -1,0 +1,311 @@
+# Linux hosts: servers, virtual machines, containers, and the Linux boxes
+# that do routing, firewalling or monitoring in a campus network.
+#
+# What makes this profile different from the network ones:
+#
+#   * there is no "configuration" to fetch. A Linux box is configured by its
+#     file system and its service manager, not by one command that prints the
+#     whole state, so `config.running` is empty and Nocturne says so instead
+#     of inventing a backup.
+#   * the CLI is a POSIX shell, so `policy.shell` is on: `|`, `&&`, `||` and
+#     `&` chain commands that are each classified, and a line with a
+#     redirection or a command substitution is never read-only.
+#   * everything is read as the user who logged in. Nothing here needs root
+#     and nothing is run through `sudo`: a read that needs privileges (DMI
+#     serial numbers, `dmesg`, another process's `/proc` entry) is simply not
+#     collected.
+#
+# Interfaces, addresses, routes, neighbours and bridge forwarding entries are
+# read as JSON (`ip -json`, `bridge -json`), which iproute2 has emitted since
+# 4.x (2016) and which needs no text parsing at all. The remaining facts come
+# from `uname`, `/etc/os-release` and `/proc`, which every Linux has.
+id: linux
+name: Linux
+vendor: Linux
+os: Linux
+description: >-
+  A Linux host reached over SSH: interfaces, addresses, routes, the ARP and
+  bridge tables, memory and uptime, read with iproute2's JSON output and
+  /proc as the logged-in user. No configuration backup and no write support.
+ntc_platform: linux
+# The collectors are checked against output recorded from a real Linux
+# kernel (see tests/profiles/linux/captures/*/SOURCE.md). The prompt,
+# error and policy patterns are checked against the shells' documented
+# messages, not against a live login of every distribution, and a shell
+# prompt is whatever its owner made it — hence `community` rather than
+# `verified`.
+maturity: community
+# eth0, enp3s0f1, br-218f5e637867, vrf-blue: Linux names are already unique
+# and must not be put through the Cisco abbreviation rules.
+interface_names: verbatim
+
+detect:
+  banner:
+    # Only banners that name Linux. A bare `SSH-2.0-OpenSSH_9.6` is not
+    # evidence: half the network appliances in the world run OpenSSH too.
+    - '^SSH-2\.0-OpenSSH_\S+ (?:Ubuntu|Debian|Raspbian|SUSE)'
+    - '(?m)^Welcome to (?:Ubuntu|Debian|Alpine|openSUSE|Rocky|AlmaLinux)\b'
+    - '(?m)^Linux \S+ \d+\.\d+\.\d+\S* .*GNU/Linux\s*$'
+  sysdescr:
+    # net-snmp's sysDescr: "Linux host 5.15.0-91-generic #101-Ubuntu SMP … x86_64"
+    - '^Linux \S+ \d+\.\d+'
+  sysobjectid:
+    # net-snmp, enterprise 8072: .3.2.10 is Linux.
+    - 1.3.6.1.4.1.8072.3.2.10
+  probes:
+    - command: uname -sr
+      matches: '^Linux\s+\d+\.\d+'
+  # Below the network platforms: a device that answers both a vendor probe
+  # and `uname` (a switch with a Linux shell underneath) is the switch.
+  priority: 20
+
+cli:
+  # Shell prompts are whatever their owner made them. These are the shapes
+  # the distributions ship:
+  #   user@host:~$      root@host:/etc#     [user@host ~]$     [root@host log]#
+  #   host:~ #          bash-5.1$           sh-4.2#            ~ $      / #
+  # A bare `word$` is deliberately not accepted: a file called `notes#` in
+  # the output of `ls` would then end a command early. The price is that a
+  # PS1 of nothing but `\u@\h$ ` — user and host, no path — is not matched;
+  # a site that uses one copies this profile and widens the pattern.
+  prompt: '^(?:(?:\[)?(?:[\w.\-]{1,32}@)?(?P<host>[\w.\-]{1,64})(?::\S{0,80}|\s[^\]\s]{0,80})\]?|(?:ba|z|k|a|c)?sh-[\d.]+|[~/][\w./\-]{0,80})\s?[$#%]\s?$'
+  login:
+    username_prompt: '(?i)^\s*(?:login|user ?name):\s*$'
+    password_prompt: "(?i)^\\s*(?:[\\w.\\-]+@[\\w.\\-]+'s )?password:\\s*$"
+    failure: '(?i)(?:permission denied|authentication failure|login incorrect|access denied)'
+  # Nothing is sent after login. Setting PS1 or TERM would change the
+  # shell's environment, and this profile only reads.
+  init: []
+  # If the login shell starts a pager for something, space pages on.
+  pager:
+    pattern: '(?i)^\s*(?:--More--|\(END\)|lines \d+-\d+)\s*$'
+    key: ' '
+  newline: "\n"
+  exit: exit
+  errors:
+    # The shell could not find the program.
+    - '(?i)(?:^|:\s)command not found\b'
+    - '(?i)^[\w.\-/]*sh: (?:\d+: )?\S+: not found\s*$'
+    # The program could not do what it was asked.
+    - '(?i)^[\w.\-/]+: .*: (?:Permission denied|No such file or directory|Is a directory|Operation not permitted|Invalid argument)\s*$'
+    - '(?i)^[\w.\-/]+: (?:unrecognized|invalid|illegal) option\b'
+    - '(?i)^[\w.\-/]+: command line is not complete'
+    # iproute2 and friends.
+    - '^Error: '
+    - '^RTNETLINK answers: '
+    - '(?i)^Cannot find device\b'
+    - '(?i)^Device "[^"]*" does not exist'
+    - '^Usage: '
+    - '(?i)^\S+: relocation error\b'
+    # Running something that needs privileges this session does not have.
+    - '(?i)^sudo: a (?:password|terminal) is required'
+    - '(?i)^\S+: must be run as root\b'
+  answers: []
+  timeout_s: 30
+
+config:
+  # A Linux host has no single "running configuration": it is a file system
+  # and a service manager. `config.running` is empty on purpose — Nocturne
+  # reports that this platform has none rather than fetching something that
+  # only looks like a backup. Diffs of individual files belong to a file
+  # based workflow, not to this profile.
+  syntax: flat
+  enter: []
+  exit: []
+  save: []
+  running: ""
+  startup: null
+  ignore: []
+  secrets:
+    - '(?i)\b(?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*(?P<secret>\S+)'
+    - '(?i)\bPSK="(?P<secret>[^"]*)"'
+
+policy:
+  # The command line is a shell line: see `Policy::shell`. Every simple
+  # command on the line is classified on its own, and a redirection or a
+  # command substitution anywhere makes the line a change.
+  shell: true
+  read_only:
+    # The system.
+    - '^uname(?:\s+-[a-zA-Z]+)*$'
+    - '^hostname(?:\s+-[a-zA-Z]+)?$'
+    - '^hostnamectl(?:\s+status)?$'
+    - '^(?:uptime|whoami|id|date|arch|nproc|lscpu|lsmod|lsblk|lsusb|lspci|dmidecode\s+-t\s+\w+)$'
+    - '^(?:free|df|du|vmstat|iostat|mpstat|top|htop|sensors)(?:\s+-{1,2}[\w\-]+)*(?:\s+\d+)*$'
+    # `ps` takes BSD-style options without a dash.
+    - '^ps(?:\s+-{0,2}[\w,\-=]+)*$'
+    - '^lsb_release(?:\s+-[a-z]+)*$'
+    - '^systemctl\s+(?:status|is-active|is-enabled|list-units|list-unit-files|show)\b[\w.@\- ]*$'
+    - '^journalctl\s+-n\s+\d+(?:\s+-u\s+[\w.@\-]+)?$'
+    # Reading files that cannot hurt: /proc (not another process's), /sys,
+    # and the handful of /etc files that say which distribution this is.
+    - '^cat\s+/proc/(?:[a-z_]+|net/[\w.\-]+|sys/[\w./\-]+)$'
+    - '^cat\s+/sys/[\w./\-]+$'
+    - '^cat\s+/etc/(?:os-release|lsb-release|hostname|debian_version|redhat-release|system-release|timezone)$'
+    - '^(?:head|tail)(?:\s+-n\s+\d+)?\s+/(?:proc|sys)/[\w./\-]+$'
+    - '^(?:ls|ll)(?:\s+-[\w]+)*(?:\s+[\w./\-]+)*$'
+    - '^(?:pwd|which\s+[\w.\-]+|type\s+[\w.\-]+|command\s+-v\s+[\w.\-]+)$'
+    # Networking. The verb must be `show` or `list`: without it,
+    # `ip addr add …` would look like a read.
+    - '^ip(?:\s+-[\w\-]+)*\s+(?:addr(?:ess)?|a|link|l|route|r|neigh(?:bour|bor)?|n|rule|vrf|maddr|mroute|tunnel|netns|monitor)\s+(?:show|list)(?:\s+[\w.\-/:@]+)*$'
+    - '^bridge(?:\s+-[\w\-]+)*\s+(?:fdb|link|vlan|mdb)\s+(?:show|list)(?:\s+[\w.\-/:@]+)*$'
+    - '^(?:ss|netstat)(?:\s+-[\w]+)*$'
+    - '^(?:arp|arp\s+-a|route|ifconfig)(?:\s+-[\w]+)*$'
+    - '^ping6?(?:\s+-[\w]+(?:\s+\d+)?)*\s+[\w.\-:]+$'
+    - '^(?:traceroute6?|tracepath6?|mtr\s+--report)\s+[\w.\-:]+$'
+    - '^(?:dig|host|nslookup)\s+[\w.\-]+(?:\s+[\w.@\-]+)?$'
+    - '^lldpctl(?:\s+-f\s+\w+)?$'
+    - '^ethtool(?:\s+-[a-zA-Z])?\s+[\w.\-]+$'
+    - '^grep(?:\s+-[\w]+)*\s+\S+\s+/(?:proc|sys|etc)/[\w./\-]+$'
+    # The filters an engineer puts after a pipe. They read what the command
+    # before them wrote, and take no file of their own.
+    - '^grep(?:\s+-[\w]+)*\s+\S+$'
+    - '^(?:sort|uniq|wc|column|nl|rev|cat)(?:\s+-[\w]+)*$'
+    - '^(?:head|tail)(?:\s+-n\s+\d+)?$'
+    - '^(?:echo\s+[\w .\-]*|true|exit|logout)$'
+  dangerous:
+    # Takes the machine, its data or its network away.
+    - '^(?:rm|rmdir|shred|mkfs(?:\.\w+)?|dd|fdisk|parted|wipefs|mkswap)\b'
+    - '^(?:reboot|shutdown|halt|poweroff|telinit)\b'
+    - '^init\s+[06]\b'
+    - '^systemctl\s+(?:reboot|poweroff|halt|kexec|isolate|emergency|rescue)\b'
+    - '^(?:iptables|ip6tables|nft|nftables)\s+(?:-F|-X|flush)\b'
+    - '^(?:kill|pkill|killall)\s+(?:-9\s+)?1\b'
+    - '^(?:mkfs|fsck)\b'
+    - '^(?:apt(?:-get)?|yum|dnf|zypper|apk)\s+(?:remove|purge|autoremove)\b'
+    - '^:\(\)'
+    - '^chmod\s+-R\s+\d+\s+/\s*$'
+    - '^(?:userdel|groupdel)\b'
+
+collect:
+  facts:
+    # sysname nodename release version machine — the version holds spaces.
+    - command: uname -snrvm
+      parser:
+        regex: '^(?P<sysname>\S+)\s+(?P<nodename>\S+)\s+(?P<release>\S+)\s+(?P<kernel_build>.+)\s+(?P<machine>\S+)\s*$'
+      map:
+        hostname: nodename
+        os: sysname
+        os_version: release
+        extra.architecture: machine
+        extra.kernel_build: kernel_build
+    - command: cat /etc/os-release
+      parser:
+        regex: '(?m)^PRETTY_NAME="(?P<pretty_name>[^"]*)"'
+      map:
+        extra.distribution: pretty_name
+      optional: true
+    - command: cat /proc/uptime
+      parser:
+        regex: '^(?P<seconds>\d+)'
+      map:
+        uptime_s: seconds
+    # systemd only, and it needs a running system bus; it is where the
+    # hardware the kernel runs on is named.
+    - command: hostnamectl
+      parser: colon
+      map:
+        vendor: hardware_vendor
+        model: hardware_model
+        extra.virtualization: virtualization
+      optional: true
+
+  interfaces:
+    # One command for the lot: `-details` adds the link kind (bridge, veth,
+    # vlan, bond) and `-statistics` the counters.
+    - command: ip -json -details -statistics address show
+      parser: {json: '*'}
+      map:
+        name: ifname
+        description: ifalias
+        # IFF_UP is what `ip link set … up` sets; operstate is the carrier.
+        # A device that never reports a carrier (loopback, tun) says UNKNOWN
+        # and is up when the kernel flagged LOWER_UP.
+        admin_up: "'UP' in flags"
+        oper_up: "operstate == 'UP' or (operstate == 'UNKNOWN' and 'LOWER_UP' in flags)"
+        mtu: mtu
+        mac: address | mac
+        kind: linkinfo.info_kind or link_type
+        ipv4: "addr_info | selectattr('family', 'equalto', 'inet') | format_each('{local}/{prefixlen}')"
+        ipv6: "addr_info | selectattr('family', 'equalto', 'inet6') | format_each('{local}/{prefixlen}')"
+        counters.in_octets: stats64.rx.bytes
+        counters.out_octets: stats64.tx.bytes
+        counters.in_packets: stats64.rx.packets
+        counters.out_packets: stats64.tx.packets
+        counters.in_errors: stats64.rx.errors
+        counters.out_errors: stats64.tx.errors
+        counters.in_discards: stats64.rx.dropped
+        counters.out_discards: stats64.tx.dropped
+
+  mac_table:
+    - command: bridge -json fdb show
+      parser: {json: '*'}
+      # Entries without a `master` belong to the device itself rather than to
+      # a bridge, and a `permanent` entry is one of the bridge's own port
+      # addresses — neither is a host learned behind a port.
+      when: "master and state != 'permanent'"
+      map:
+        mac: mac | mac
+        interface: ifname
+        vlan: vlan
+        kind: state or 'dynamic'
+
+  arp:
+    - command: ip -json neighbour show
+      parser: {json: '*'}
+      # An entry with no link-layer address never answered.
+      when: lladdr
+      map:
+        ip: dst
+        mac: lladdr | mac
+        interface: dev
+
+  routes:
+    - command: ip -json route show
+      parser: {json: '*'}
+      map:
+        # `default` is the whole of IPv4; a bare address is a host route.
+        prefix: >-
+          '0.0.0.0/0' if dst == 'default'
+          else (dst if '/' in dst else dst ~ '/32')
+        # The kernel labels the routes it derived from an address itself.
+        protocol: "'connected' if protocol == 'kernel' else (protocol or 'static')"
+        next_hop: gateway
+        interface: dev
+        metric: metric
+
+  health:
+    # MemAvailable is what a process could still get: memory held by caches
+    # the kernel will drop is not "used".
+    - command: cat /proc/meminfo
+      parser:
+        regex: '(?s)MemTotal:\s+(?P<total_kb>\d+) kB.*?MemAvailable:\s+(?P<available_kb>\d+) kB'
+      map:
+        memory_total: (total_kb ~ 'kB') | bytes
+        memory_used: ((total_kb | num) - (available_kb | num)) * 1024
+    - command: cat /proc/uptime
+      parser:
+        regex: '^(?P<seconds>\d+)'
+      map:
+        uptime_s: seconds
+    # The first thermal zone, in thousandths of a degree. Virtual machines
+    # and containers have none, which is why the step is optional.
+    - command: cat /sys/class/thermal/thermal_zone0/temp
+      parser:
+        regex: '^(?P<millidegrees>-?\d+)\s*$'
+      map:
+        temperature_c: (millidegrees | num) / 1000
+      optional: true
+
+snmp:
+  cpu:
+    - 1.3.6.1.4.1.2021.11.11.0      # ssCpuIdle (UCD-SNMP), subtract from 100
+    - 1.3.6.1.2.1.25.3.3.1.2        # hrProcessorLoad, per core
+  memory_used:
+    - 1.3.6.1.4.1.2021.4.6.0        # memAvailReal
+  memory_free:
+    - 1.3.6.1.4.1.2021.4.11.0       # memTotalFree
+  memory_total:
+    - 1.3.6.1.4.1.2021.4.5.0        # memTotalReal
+  temperature:
+    - 1.3.6.1.2.1.99.1.1.1.4        # entPhySensorValue

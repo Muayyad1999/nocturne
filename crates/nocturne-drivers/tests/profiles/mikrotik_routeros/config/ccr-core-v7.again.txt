@@ -1,0 +1,40 @@
+# 2024-07-11 16:48:02 by RouterOS 7.15.1
+# software id = ABCD-1234
+#
+# model = CCR2004-1G-12S+2XS
+# serial number = HFF08XJ9KLM
+/interface bridge add comment=Loopback name=Lo0 protocol-mode=none
+/interface bridge add comment="INET Loopback" name=Lo1 protocol-mode=none vrf=INET
+/interface bonding add mode=802.3ad name=bond1 slaves=sfp-sfpplus9,sfp-sfpplus10 transmit-hash-policy=layer-3-and-4
+/interface vlan add comment=MGMT interface=bond1 name=vlan1@bond1 vlan-id=1
+/interface vlan add comment=INET interface=bond1 name=vlan2@bond1 vlan-id=2
+/interface vlan add comment=Intercap interface=sfp-sfpplus1 name=vlan975@sfp-sfpplus1 vlan-id=975
+/interface vlan add comment="MGMT Uplink" interface=vlan975@sfp-sfpplus1 name=vlan10@vlan975@sfp-sfpplus1 vlan-id=10
+/interface vlan add comment="INET: IX" interface=vlan975@sfp-sfpplus1 name=vlan11@vlan975@sfp-sfpplus1 vlan-id=11
+/interface vlan add comment="INET: IX" interface=vlan975@sfp-sfpplus1 name=vlan12@vlan975@sfp-sfpplus1 vlan-id=12
+/interface vlan add comment="INET: IX" interface=sfp-sfpplus1 name=vlan111@sfp-sfpplus1 vlan-id=111
+/interface vlan add comment=Cust interface=sfp-sfpplus11 name=vlan4050@sfp-sfpplus11 vlan-id=4050
+/interface ethernet set [ find default-name=ether1 ] comment="Management Port - 4G OOB"
+/interface ethernet set [ find default-name=sfp-sfpplus2 ] comment="Spare Optic" disabled=yes
+/ip address add address=100.100.0.106/32 comment="MGMT Loopback" interface=Lo0 network=100.100.0.106
+/ip address add address=1.1.1.1/32 comment="INET Loopback" interface=Lo1 network=1.1.1.1
+/ip address add address=100.64.5.1/30 comment="MGMT Link" interface=vlan1@bond1 network=100.64.5.0
+/ip address add address=1.1.1.121/30 comment="INET Link" interface=vlan2@bond1 network=1.1.1.120
+/ip address add address=100.65.255.138/30 comment="MGMT Uplink" interface=vlan10@vlan975@sfp-sfpplus1 network=100.65.255.136
+/ip address add address=1.1.1.26/30 comment="INET Uplink" interface=vlan11@vlan975@sfp-sfpplus1 network=1.1.1.24
+/ip address add address=1.1.1.30/30 comment="INET Uplink" interface=vlan12@vlan975@sfp-sfpplus1 network=1.1.1.28
+/ip address add address=1.1.1.66/25 comment=INET interface=vlan111@sfp-sfpplus1 network=1.1.1.0
+/ip address add address=1.1.1.49/30 comment=Cust interface=vlan4050@sfp-sfpplus11 network=1.1.1.48
+/ip dns set servers=9.9.9.9,1.1.1.1
+16:48:02 echo: system,info,account user nocturne-ro logged in from 10.0.0.9 via ssh
+/ip firewall filter add action=accept chain=input comment="management over MGMT only" in-interface=vlan1@bond1 protocol=tcp dst-port=22
+/ip firewall filter add action=drop chain=input comment="drop everything else" in-interface-list=!MGMT
+/ip route add comment="default via upstream" disabled=no dst-address=0.0.0.0/0 gateway=100.65.255.137 routing-table=main
+/ip service set telnet disabled=yes
+/ip service set www disabled=yes
+/snmp set contact="noc@example.com" enabled=yes location="DC1 rack 4"
+/system clock set time-zone-name=Europe/Berlin
+/system identity set name=CCR2004-core
+/system note set show-at-login=no
+/system ntp client set enabled=yes
+/user add address=10.0.0.0/24 group=read name=nocturne-ro

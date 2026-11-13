@@ -1,0 +1,385 @@
+# MikroTik RouterOS v6 and v7.
+#
+# RouterOS is not an IOS-like CLI and does not extend `_cli_ios_like`:
+#   * the prompt carries the logged-in user and the device identity, and the
+#     menu the session is in: `[admin@MikroTik] /ip address>`;
+#   * there is no privileged mode and no configuration mode — a command
+#     typed at the prompt takes effect immediately, which is why this profile
+#     has no `config.enter` and no dead-man switch (Safe Mode exists, but it
+#     is entered with Ctrl-X from an interactive terminal and cannot be armed
+#     by sending a line);
+#   * "Enter" is a carriage return, and the parser answers with messages like
+#     `bad command name adress (line 1 column 5)`.
+#
+# Paging and colour: RouterOS decides from the terminal it detects, and there
+# is no command to turn them off afterwards. The transport appends
+# `cli.login.username_suffix` to the user name when it authenticates
+# (`admin+ct511w4098h`): `c` no colour, `t` no terminal detection (so no
+# paging), `511w` 511 columns, `4098h` 4098 rows. Without it — a console
+# cable, a transport that does not do this — the pager below is the fallback:
+# `d` dumps the rest of the output in one go.
+#
+# Listings are read with the `kv` parser rather than ntc-templates: RouterOS
+# `print detail` / `print terse` output is already `key=value`, and the kv
+# parser keeps every property, copes with the v7 flag letters (lower case,
+# `+`, items with no index), with comments that run over several lines and
+# with log lines echoed into the session. The bundled templates recognise one
+# release's flag legend and stop at anything else.
+id: mikrotik_routeros
+name: MikroTik RouterOS
+vendor: MikroTik
+os: RouterOS
+description: >-
+  MikroTik RouterOS 6 and 7 (hEX, hAP, RB, CCR, CRS, CHR). Reads interfaces,
+  addresses, VLANs, neighbours, bridge hosts, ARP, routes, health and the
+  RouterBOARD inventory; configuration is read with `/export terse`.
+ntc_platform: mikrotik_routeros
+# Every kind below is checked against output recorded from real RouterOS
+# devices (tests/profiles/mikrotik_routeros/captures/). Three steps are the
+# exception and are covered by hand-written captures, because no recording of
+# them exists: `/ip address print detail`, `/ipv6 address print detail` and
+# `/system health print`. Each of them only adds to rows another, recorded,
+# step has already made.
+maturity: verified
+# `vlan10@bond1`, `sfp-sfpplus1`, `ether2_BOX`: RouterOS names are free text
+# and must not be rewritten by the Cisco abbreviation rules.
+interface_names: verbatim
+
+detect:
+  banner:
+    # The SSH identification string of every RouterOS release.
+    - '^SSH-2\.0-ROSSSH'
+    - 'MikroTik RouterOS'
+  sysdescr:
+    - '(?i)RouterOS'
+    - '(?i)MikroTik'
+  sysobjectid:
+    # mtXRouterOs, under the MikroTik enterprise number.
+    - 1.3.6.1.4.1.14988.
+  probes:
+    - command: /system resource print
+      # `platform: MikroTik` is printed by every board and by CHR; the
+      # version line carries the release channel RouterOS always names.
+      matches: '(?m)^\s*platform:\s*MikroTik\s*$|(?m)^\s*version:\s*\d+\.\S*\s+\((?:stable|long-term|testing|development|beta)\)'
+  priority: 60
+
+cli:
+  # [admin@MikroTik] >            [admin@Core Router 1] /ip address>
+  # [admin@MikroTik] <SAFE> >     [user@rb3011] /interface bridge port>
+  # The identity may hold spaces and most punctuation; `[`, `]` and `@` are
+  # the only characters the prompt itself uses.
+  prompt: '^\[[^\[\]@\s]{1,64}@(?P<host>[^\[\]]{1,64})\](?:\s*<SAFE>)?(?:\s*/[\w\-/ ]{0,120})?\s*>\s?$'
+  login:
+    username_prompt: '(?i)^\s*login:\s*$'
+    password_prompt: '(?i)^\s*password:\s*$'
+    failure: '(?i)(?:login failed|invalid (?:user ?name|password)|access denied|incorrect login)'
+    # Console login options: no colour, no terminal detection (and so no
+    # paging), a wide and tall terminal so that long listings are not wrapped
+    # in the middle of a `key=value` pair.
+    username_suffix: '+ct511w4098h'
+  # Nothing to send: there is no RouterOS command that turns paging off for
+  # the session. It is a property of the terminal, set at login.
+  init: []
+  # The pager of an interactive terminal. `d` (dump) prints the rest at once,
+  # which is what a parser needs; space would only show the next page.
+  pager:
+    pattern: '-- \[Q quit\|D dump\|(?:down|up)\]'
+    key: 'd'
+  # RouterOS sends a bare carriage return; a line feed leaves the line unsent.
+  newline: "\r"
+  exit: quit
+  errors:
+    # The parser's own complaints, with the position it stopped at.
+    - '^\s*(?:bad command name|expected end of command|syntax error|ambiguous command name|invalid command name)\b'
+    - '^\s*no such (?:item|command|argument)\b'
+    - '^\s*(?:invalid value|input does not match|value of \S+ is invalid)\b'
+    # What a command says when the device refuses to do it:
+    # "failure: already have such address", "action failed", "couldn't ...".
+    - '(?i)^\s*(?:failure|error):\s+\S'
+    # `cannot` on its own is left out on purpose: it is a word that turns up
+    # in an interface or firewall comment, and a comment is not a refusal.
+    - "(?i)^\\s*(?:action failed|not enough permissions|couldn't|unable to)\\b"
+    - '(?i)^\s*interrupted\s*$'
+  answers:
+    # Asked once, at the first login of a fresh device.
+    - {prompt: 'Do you want to see the software license\?\s*\[Y/n\]:?\s*$', answer: 'n'}
+    # "Continue? [y/N]" guards the commands this profile never sends; say no
+    # rather than let a half-typed line do something.
+    - {prompt: '\[y/N\]:?\s*$', answer: 'n'}
+  # The console prints the log into the session when logging has an `echo`
+  # action: "17:20:06 echo: system,error,critical login failure for user ...",
+  # "jan/02 17:20:06 echo: ...".
+  unsolicited:
+    - '^\s*(?:[a-z]{3}/\d{2}\s+)?\d{2}:\d{2}:\d{2} echo: '
+  timeout_s: 30
+
+config:
+  # `/export terse` prints one self-contained command per line
+  # (`/ip address add address=10.0.0.1/24 interface=bridge`), which is the
+  # form the RouterOS diff and remediation understand. Plain `/export` groups
+  # commands under a menu line and cannot be remediated line by line.
+  syntax: routeros
+  # `terse` needs RouterOS 6.43 or newer. On anything older the command is
+  # refused, with the device's own message, instead of returning a grouped
+  # export that the RouterOS diff cannot read line by line.
+  running: /export terse
+  # There is no startup configuration: RouterOS writes every change straight
+  # into the configuration store, which is also why `save` is empty — nothing
+  # needs persisting, and `/system backup save` writes a file instead.
+  startup: null
+  enter: []
+  exit: []
+  save: []
+  ignore:
+    # The header RouterOS puts on every export, with the time it ran:
+    #   "# jan/02/1970 03:04:05 by RouterOS 6.48.6"   (v6)
+    #   "# 2024-07-11 10:13:19 by RouterOS 7.15.1"    (v7)
+    - '^#\s+(?:[a-z]{3}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}:\d{2}\s+by RouterOS\b'
+    # Log lines echoed into the session while the export was printing.
+    - '^\s*(?:[a-z]{3}/\d{2}\s+)?\d{2}:\d{2}:\d{2} echo: '
+  # No `guard`: RouterOS's dead-man switch is Safe Mode, which is entered
+  # with Ctrl-X on an interactive terminal and released the same way. It
+  # cannot be armed or disarmed by sending a command line, so this profile
+  # does not pretend to have one.
+  guard: null
+  secrets:
+    - '\b(?:password|secret|passphrase|wpa-pre-shared-key|wpa2-pre-shared-key|pre-shared-key)="(?P<secret>[^"]*)"'
+    - '\b(?:password|secret|passphrase|wpa-pre-shared-key|wpa2-pre-shared-key|pre-shared-key)=(?P<secret>\S+)'
+    - '\bprivate-key="(?P<secret>[^"]*)"'
+    - '\b(?:key|auth-key|encryption-key)=(?P<secret>"[^"]*"|\S+)'
+
+policy:
+  # Default-deny. A RouterOS command is a menu path and then an action, so
+  # the read-only patterns name the actions that only display things and
+  # insist that the rest of the line is an argument of that action. Anything
+  # with `file=` writes a file and is therefore not read-only.
+  read_only:
+    # /ip address print detail, /interface print terse without-paging,
+    # /ip route print where dst-address=0.0.0.0/0, print at the current menu.
+    - '^/?[\w\-]+(?:/[\w\-]+)*(?:\s+[\w\-]+)*\s+print(?:\s+(?:detail|terse|brief|stats|stats-detail|all|count-only|without-paging|follow-only|oid|append|interval=\S+|proplist=[\w,.\-]+|from=\S+|value-list|as-value|status|where\s.*))*\s*$'
+    - '^print(?:\s+(?:detail|terse|brief|without-paging))*\s*$'
+    # /export, /ip firewall export terse — but not `export file=backup`.
+    - '^/?[\w\-]*(?:/[\w\-]+)*(?:\s+[\w\-]+)*\s*export(?:\s+(?:verbose|terse|compact|hide-sensitive|show-sensitive))*\s*$'
+    # /system resource get uptime, /interface get ether1 running
+    - '^/?[\w\-]+(?:/[\w\-]+)*(?:\s+[\w\-]+)*\s+get\s+[\w\-."\[\]= ]+$'
+    # /interface ethernet monitor ether1 once, /interface monitor-traffic ether1
+    - '^/?[\w\-]+(?:/[\w\-]+)*(?:\s+[\w\-]+)*\s+monitor(?:-traffic)?\s+[\w\-,.]+(?:\s+(?:once|duration=\S+|interval=\S+))*\s*$'
+    - '^/?(?:ping|tool\s+(?:ping|traceroute|flood-ping|netwatch\s+print))\s+\S'
+    - '^(?:\?|quit|exit)\s*$'
+  dangerous:
+    # Everything that takes the device, its configuration or its software away.
+    - '^/?system\s+(?:reset-configuration|reboot|shutdown)\b'
+    - '^/?system\s+(?:package|routerboard)\s+(?:downgrade|upgrade|uninstall|reinstall)\b'
+    - '^/?system\s+backup\s+load\b'
+    - '^/?system\s+script\s+run\b'
+    - '^/?system\s+(?:disk|store)\s+(?:format-drive|destroy)\b'
+    - '^/?file\s+remove\b'
+    - '^/?import\b'
+    - '^/?certificate\s+(?:reset-certificate-cache|remove)\b'
+    - '^:execute\b'
+    - '^/?user\s+remove\b'
+
+collect:
+  facts:
+    - command: /system resource print
+      parser: colon
+      map:
+        os: "'RouterOS'"
+        vendor: platform
+        model: board_name
+        # "6.48.6 (long-term)" → version and channel apart.
+        os_version: version | regex_search('^(\S+)')
+        uptime_s: uptime | duration
+        extra.release_channel: version | regex_search('\(([^)]+)\)')
+        extra.architecture: architecture_name
+        extra.cpu: cpu
+        extra.cpu_count: cpu_count
+        extra.build_time: build_time
+        extra.factory_software: factory_software
+    - command: /system identity print
+      parser: colon
+      map:
+        hostname: name
+    # Boards only: CHR and x86 answer `routerboard: no` and have no serial.
+    - command: /system routerboard print
+      parser: colon
+      when: "routerboard == 'yes'"
+      map:
+        serial: serial_number
+        extra.board_model: model
+        extra.board_revision: revision
+        extra.firmware: current_firmware
+        extra.firmware_type: firmware_type
+      optional: true
+
+  interfaces:
+    - command: /interface print detail
+      parser: kv
+      map:
+        name: name
+        description: comment
+        # X is the only flag that means "switched off"; D (dynamic),
+        # R (running), S (slave) and P (passthrough) say something else.
+        admin_up: "'X' not in flags"
+        oper_up: "'R' in flags"
+        # `mtu=auto` on a bridge: the figure that counts is the actual one.
+        mtu: actual_mtu or mtu
+        mac: mac_address | mac
+        kind: type
+    # The addresses, which the interface listing does not carry. A disabled
+    # or invalid address is configured but not on the wire.
+    - command: /ip address print detail
+      parser: kv
+      when: "'X' not in flags and 'I' not in flags"
+      map:
+        name: actual_interface or interface
+        ipv4: "[address] if address else []"
+      merge_on: name
+      optional: true
+    - command: /ipv6 address print detail
+      parser: kv
+      when: "'X' not in flags and 'I' not in flags"
+      map:
+        name: actual_interface or interface
+        ipv6: "[address] if address else []"
+      merge_on: name
+      optional: true
+    # A VLAN is an interface of its own on RouterOS; this is its tag.
+    - command: /interface vlan print detail
+      parser: kv
+      map:
+        name: name
+        vlan: vlan_id
+      merge_on: name
+      optional: true
+
+  neighbors:
+    # RouterOS keeps one neighbour table. It is filled by MNDP and, when
+    # they are enabled on the interface, by LLDP and CDP as well; the
+    # listing does not say which protocol found an entry, so `protocol` says
+    # where the entry came from (the neighbour table) rather than guessing.
+    - command: /ip neighbor print detail
+      parser: kv
+      map:
+        # `interface=ether10,bridge_255_mgmt` lists every interface the
+        # neighbour was heard on; the first is the physical one.
+        local_interface: interface | regex_search('^([^,]+)')
+        device: identity
+        remote_interface: interface_name
+        platform: "((platform or '') ~ ' ' ~ (board or '')) | trim"
+        address: address or address4 or address6
+        capabilities: system_caps
+        protocol: "'mndp'"
+
+  vlans:
+    - command: /interface vlan print detail
+      parser: kv
+      map:
+        id: vlan_id
+        name: name
+        status: "'disabled' if 'X' in flags else ('active' if 'R' in flags else 'inactive')"
+        # The interface the tag is carried on. Which bridge ports carry it
+        # is a question for `/interface bridge vlan`, which this profile
+        # does not read yet.
+        interfaces: "[interface] if interface else []"
+
+  mac_table:
+    - command: /interface bridge host print terse without-paging
+      parser: kv
+      # L is one of the bridge's own addresses, X a disabled entry and I an
+      # invalid one: none of them is a host learned behind a port.
+      when: "'L' not in flags and 'X' not in flags and 'I' not in flags"
+      map:
+        mac: mac_address | mac
+        vlan: vid
+        interface: interface
+        kind: "'dynamic' if 'D' in flags else 'static'"
+
+  arp:
+    - command: /ip arp print terse without-paging
+      parser: kv
+      # An entry without a MAC address is an address that never answered,
+      # and an invalid one is stale.
+      when: "mac_address and 'I' not in flags"
+      map:
+        ip: address
+        mac: mac_address | mac
+        interface: interface
+
+  routes:
+    - command: /ip route print detail
+      parser: kv
+      map:
+        prefix: dst_address
+        # The flag letters name the source of the route. RouterOS 6 writes
+        # connected and static in capitals (ADC, A S), RouterOS 7 writes
+        # every protocol in lower case (DAc, As, DAb); B, U and P are route
+        # types (blackhole, unreachable, prohibit), not protocols.
+        protocol: >-
+          'connected' if 'C' in flags or 'c' in flags
+          else 'static' if 'S' in flags or 's' in flags
+          else 'bgp' if 'b' in flags
+          else 'ospf' if 'o' in flags
+          else 'rip' if 'r' in flags
+          else 'dhcp' if 'd' in flags
+          else 'vpn' if 'v' in flags
+          else 'modem' if 'm' in flags
+          else none
+        # A gateway is either an address or, for a connected route, the
+        # interface itself.
+        next_hop: >-
+          gateway if gateway is matching('^\d{1,3}(\.\d{1,3}){3}$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:]*$')
+          else none
+        interface: >-
+          gateway if gateway and not gateway is matching('^\d{1,3}(\.\d{1,3}){3}$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:]*$')
+          else (immediate_gw | regex_search('%(\S+)$')
+                or gateway_status | regex_search('(?:via|reachable)\s+(?:\S+\s+)?(\S+)\s*$'))
+        distance: distance
+        # v6 marks a table with `routing-mark`, v7 with `routing-table`;
+        # `main` is the ordinary table and is not worth recording.
+        vrf: "routing_mark or (routing_table if routing_table and routing_table != 'main' else none)"
+
+  health:
+    - command: /system resource print
+      parser: colon
+      map:
+        cpu_pct: cpu_load | num
+        memory_total: total_memory | bytes
+        memory_used: >-
+          (total_memory | bytes) - (free_memory | bytes)
+          if total_memory and free_memory else none
+        uptime_s: uptime | duration
+    # Only boards with a sensor answer. RouterOS 6 prints a property sheet
+    # (`temperature: 30C`), RouterOS 7 a table (`0 cpu-temperature 50C`).
+    - command: /system health print
+      parser:
+        regex: '(?im)^\s*(?:\d+\s+)?(?P<sensor>[a-z0-9-]*temperature)\s*[:=]?\s+(?P<celsius>\d+(?:\.\d+)?)\s*C?\s*$'
+      map:
+        temperature_c: celsius | num
+      optional: true
+
+  inventory:
+    # RouterOS has no field-replaceable modules to list; what it does have
+    # is the board itself, with the serial number and firmware that support
+    # asks for. CHR and x86 answer `routerboard: no` and contribute nothing.
+    - command: /system routerboard print
+      parser: colon
+      when: "routerboard == 'yes'"
+      map:
+        name: "'routerboard'"
+        description: board_name
+        part_id: model
+        serial: serial_number
+
+snmp:
+  cpu:
+    - 1.3.6.1.2.1.25.3.3.1.2        # hrProcessorLoad, per core
+  memory_used:
+    - 1.3.6.1.4.1.14988.1.1.1.4.1.3 # mtxrHlMemoryUsed (older boards)
+  memory_free:
+    - 1.3.6.1.2.1.25.2.3.1.6        # hrStorageUsed over the memory entry
+  memory_total:
+    - 1.3.6.1.4.1.14988.1.1.1.4.1.4 # mtxrHlMemoryTotal
+  temperature:
+    - 1.3.6.1.4.1.14988.1.1.3.10    # mtxrHlTemperature, tenths of a degree
+    - 1.3.6.1.4.1.14988.1.1.3.11    # mtxrHlProcessorTemperature

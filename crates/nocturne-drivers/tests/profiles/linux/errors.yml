@@ -1,0 +1,39 @@
+# A shell says "no" through the program it could not run, or through the
+# program's own message on stderr.
+exec:
+  rejected:
+    - output: "-bash: show: command not found\n"
+      error: "-bash: show: command not found"
+    - "bash: /usr/local/bin/lldpctl: No such file or directory\n"
+    - "sh: 1: hostnamectl: not found\n"
+    - "zsh: command not found: ip\n"
+    - "hostnamectl: command not found\n"
+    - output: "cat: /sys/class/thermal/thermal_zone0/temp: No such file or directory\n"
+      error: "cat: /sys/class/thermal/thermal_zone0/temp: No such file or directory"
+    - "cat: /proc/1/environ: Permission denied\n"
+    - "ls: cannot access '/nope': No such file or directory\n"
+    - "ip: unrecognized option '--jsonn'\n"
+    - "Error: either \"dev\" is duplicate, or \"show\" is a garbage.\n"
+    - "RTNETLINK answers: Operation not permitted\n"
+    - "Cannot find device \"eth9\"\n"
+    - "Device \"eth9\" does not exist.\n"
+    - "Usage: bridge [ OPTIONS ] OBJECT { COMMAND | help }\n"
+    - "sudo: a password is required\n"
+  clean:
+    # Real output of this profile's commands, including the words that look
+    # alarming: a counter called `errors`, a route marked `linkdown`.
+    - '[{"ifindex":2,"ifname":"br0","mtu":9000,"stats64":{"rx":{"bytes":0,"errors":0,"dropped":0}}}]'
+    - "192.168.88.0/24 dev br0 proto kernel scope link src 192.168.88.254 metric 425 linkdown\n"
+    - "Linux vm 6.18.44-fc-v445 #1 SMP PREEMPT_DYNAMIC @0 x86_64\n"
+    - |
+      MemTotal:       16472076 kB
+      MemFree:         4260212 kB
+      MemAvailable:   14861328 kB
+    - |
+      PRETTY_NAME="Ubuntu 24.04.5 LTS"
+      NAME="Ubuntu"
+      HOME_URL="https://www.ubuntu.com/"
+    - " Static hostname: core-fw\n  Virtualization: kvm\nOperating System: Ubuntu 24.04.5 LTS\n"
+    - "45000\n"
+    # A file listing is not an error, whatever the files are called.
+    - "total 8\ndrwxr-xr-x 2 root root 4096 Nov 13 03:51 Usage\n"

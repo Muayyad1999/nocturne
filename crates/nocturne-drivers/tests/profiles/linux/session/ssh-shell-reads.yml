@@ -1,0 +1,34 @@
+description: >-
+  A shell over SSH. The transport authenticated, so the device opens with the
+  message of the day and the prompt; the driver must read the hostname out of
+  `user@host:~$` and send nothing of its own afterwards (`cli.init` is empty:
+  this profile does not change the shell's environment). A program the host
+  does not have is a rejected command, not output. Scripted, not recorded.
+credentials: {username: nocturne, password: secret}
+greeting: "Welcome to Ubuntu 24.04.5 LTS (GNU/Linux 6.8.0-45-generic x86_64)\r\n\r\n  System load:  0.08               Processes:             123\r\n\r\nLast login: Thu Mar  6 09:12:44 2025 from 10.0.0.5\r\nnocturne@core-fw:~$ "
+dialogue:
+  - recv: uname -snrvm
+    send: "uname -snrvm\r\nLinux core-fw 6.8.0-45-generic #45-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug 30 12:02:04 UTC 2024 x86_64\r\nnocturne@core-fw:~$ "
+  - recv: cat /proc/uptime
+    send: "cat /proc/uptime\r\n1234567.89 9876543.21\r\nnocturne@core-fw:~$ "
+  - recv: hostnamectl
+    send: "hostnamectl\r\n-bash: hostnamectl: command not found\r\nnocturne@core-fw:~$ "
+  # Reading a file that is not this session's business is refused by the host.
+  - recv: cat /proc/1/environ
+    send: "cat /proc/1/environ\r\ncat: /proc/1/environ: Permission denied\r\nnocturne@core-fw:~$ "
+actions:
+  - start:
+      hostname: core-fw
+      prompt: "nocturne@core-fw:~$"
+      login_screen: Welcome to Ubuntu 24.04.5 LTS
+    # A shell has one mode. `#` instead of `$` would only mean the account is
+    # root, which changes nothing the driver does.
+    mode: privileged
+  - exec: uname -snrvm
+    output: "Linux core-fw 6.8.0-45-generic #45-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug 30 12:02:04 UTC 2024 x86_64"
+  - exec: cat /proc/uptime
+    output: "1234567.89 9876543.21"
+  - exec: hostnamectl
+    error: "-bash: hostnamectl: command not found"
+  - exec: cat /proc/1/environ
+    error: "cat: /proc/1/environ: Permission denied"

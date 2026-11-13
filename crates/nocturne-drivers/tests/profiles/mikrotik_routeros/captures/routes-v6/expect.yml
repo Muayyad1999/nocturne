@@ -1,0 +1,43 @@
+# Read from ip_route_print_detail.txt. RouterOS 6 flags: X disabled, A active,
+# D dynamic, C connect, S static, b bgp, o ospf, B blackhole, U unreachable.
+kinds:
+  routes:
+    count: 7
+    rows:
+      - prefix: 0.0.0.0/0               # 0, flags ADS
+        protocol: static
+        next_hop: 192.168.8.1
+        interface: lte1                 # "192.168.8.1 reachable via  lte1"
+        distance: 2
+        vrf: ""
+      - prefix: 10.160.1.228/30         # 1, flags ADC: the gateway is the port
+        protocol: connected
+        next_hop: ""
+        interface: ether1
+        distance: 0
+      - prefix: 10.213.20.64/32         # 2, flags "A S"
+        protocol: static
+        next_hop: 10.160.1.229
+        interface: ether1
+        distance: 1
+      - prefix: 0.0.0.0/0               # 3, with a comment and a routing mark
+        next_hop: 10.160.1.230
+        interface: ether2
+        protocol: static
+        distance: 1
+        vrf: to-reserve
+      - prefix: 0.0.0.0/0               # 4, recursive: "via 10.152.1.230 ether5"
+        next_hop: 1.2.3.4
+        interface: ether5
+        vrf: Free_Wi-Fi
+      - prefix: 10.0.0.0/8              # 5, flags "A SB": a static blackhole
+        protocol: static
+        next_hop: ""                    # no gateway at all
+        interface: ""
+        distance: 100
+        vrf: Free_Wi-Fi
+      - prefix: 0.0.0.0/0               # 6, same as 4 but with check-gateway
+        next_hop: 1.2.3.4
+        interface: ether5
+        distance: 1
+        vrf: ""

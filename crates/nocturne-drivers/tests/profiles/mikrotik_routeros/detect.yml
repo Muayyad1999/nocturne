@@ -1,0 +1,42 @@
+banner:
+  match:
+    # Every RouterOS release identifies its SSH server this way.
+    - "SSH-2.0-ROSSSH"
+    # A console or Telnet login screen.
+    - "\r\n\r\n  MMM      MMM       KKK                          TTTTTTTTTTT      KKK\r\n  MikroTik RouterOS 7.15.1 (c) 1999-2024       https://www.mikrotik.com/\r\n\r\nLogin: "
+  reject:
+    - "SSH-2.0-Cisco-1.25"
+    - "SSH-1.99-Cisco-1.25"
+    - "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
+    - "SSH-2.0-dropbear_2022.83"
+snmp:
+  match:
+    - sysdescr: "RouterOS CCR2004-1G-12S+2XS"
+      sysobjectid: 1.3.6.1.4.1.14988.1
+    - sysdescr: "MikroTik RouterOS 6.49.7 (long-term) RB750Gr3"
+      sysobjectid: .1.3.6.1.4.1.14988.1
+    # The object id alone, when sysDescr could not be read.
+    - sysdescr: ""
+      sysobjectid: 1.3.6.1.4.1.14988.1.1.1
+  reject:
+    - sysdescr: "Cisco IOS Software, C3750E Software (C3750E-UNIVERSALK9-M), Version 15.2(4)E10, RELEASE SOFTWARE (fc2)"
+      sysobjectid: 1.3.6.1.4.1.9.1.516
+    - sysdescr: "Linux core-fw 5.15.0-91-generic #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023 x86_64"
+      sysobjectid: 1.3.6.1.4.1.8072.3.2.10
+    - sysdescr: "Juniper Networks, Inc. ex2200-24t-4g Ethernet Switch, kernel JUNOS 12.3R9.4"
+      sysobjectid: 1.3.6.1.4.1.2636.1.1.1.2.31
+probe:
+  match:
+    # RouterOS right-aligns the keys of a property sheet, so these are quoted
+    # strings rather than block scalars: the lines are indented differently.
+    # A RouterOS 6 board.
+    - "/system resource print": "                   uptime: 6w5d11h55m45s\n                  version: 6.48.6 (long-term)\n              free-memory: 40.2MiB\n        architecture-name: mipsbe\n               board-name: hEX PoE lite\n                 platform: MikroTik\n"
+    # CHR on x86: no board, but the same platform and release channel.
+    - "/system resource print": "                   uptime: 5w3d20m51s\n                  version: 7.12.2 (stable)\n        architecture-name: x86_64\n               board-name: CHR\n                 platform: MikroTik\n"
+  reject:
+    # A device that has no such command must not be taken for RouterOS.
+    - "/system resource print": "              ^\n% Invalid input detected at '^' marker.\n"
+    # A Cisco answering its own probe selects cisco_ios, not this profile.
+    - "show version": |
+        Cisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 12.2(55)SE9, RELEASE SOFTWARE (fc1)
+        SW1 uptime is 5 weeks, 2 days, 3 hours, 4 minutes
