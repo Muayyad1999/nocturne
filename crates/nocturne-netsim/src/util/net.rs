@@ -57,10 +57,6 @@ impl Prefix {
         }
     }
 
-    pub(crate) fn from_mask(addr: Ipv4Addr, mask: Ipv4Addr) -> Option<Prefix> {
-        Some(Prefix::new(addr, len_from_mask(mask)?))
-    }
-
     pub(crate) fn mask(self) -> Ipv4Addr {
         mask_from_len(self.len)
     }
@@ -137,10 +133,6 @@ impl std::fmt::Display for IfAddr {
 pub(crate) fn wildcard_match(ip: Ipv4Addr, base: Ipv4Addr, wildcard: Ipv4Addr) -> bool {
     let care = !u32::from(wildcard);
     u32::from(ip) & care == u32::from(base) & care
-}
-
-pub(crate) fn invert(ip: Ipv4Addr) -> Ipv4Addr {
-    Ipv4Addr::from(!u32::from(ip))
 }
 
 pub(crate) fn is_multicast(ip: Ipv4Addr) -> bool {

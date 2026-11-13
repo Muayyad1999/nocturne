@@ -159,8 +159,8 @@ impl Node {
         }
         let phase = self.hsrp_phase(fx);
         for key in wanted {
-            if !self.hsrp.groups.contains_key(&key) {
-                let group = Group {
+            if let std::collections::btree_map::Entry::Vacant(slot) = self.hsrp.groups.entry(key) {
+                slot.insert(Group {
                     state: HsrpState::Listen,
                     active: None,
                     standby: None,
@@ -170,8 +170,7 @@ impl Node {
                     last_change: fx.now,
                     settings: None,
                     token: 0,
-                };
-                self.hsrp.groups.insert(key, group);
+                });
                 fx.cp_change = true;
             }
             // A raised priority or a new `preempt` may change who should be active.

@@ -53,7 +53,7 @@ pub(crate) struct Args {
 impl Args {
     /// Was this keyword part of the line?
     pub(crate) fn has(&self, keyword: &str) -> bool {
-        self.keywords.iter().any(|k| *k == keyword)
+        self.keywords.contains(&keyword)
     }
 
     /// The keywords of the line, in the order they were typed.

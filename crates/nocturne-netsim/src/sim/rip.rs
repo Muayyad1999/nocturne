@@ -59,10 +59,6 @@ pub(crate) struct Rip {
 }
 
 impl Node {
-    fn rip_version(&self) -> Option<u8> {
-        self.cfg.rip.as_ref().and_then(|rip| rip.version)
-    }
-
     /// Bring the running RIP state in line with configuration and interfaces.
     pub(crate) fn rip_sync(&mut self, fx: &mut Fx) {
         let Some(cfg) = self.cfg.rip.as_ref().filter(|_| self.routes_packets()) else {
@@ -379,19 +375,18 @@ impl Node {
                         changed = true;
                     }
                 }
-                Some(entry) => {
-                    // Worse news only matters when it comes from the router we use.
-                    if entry.paths.iter().any(from_src) {
-                        entry.paths.retain(|p| !from_src(p));
-                        if entry.paths.is_empty() && *metric < INFINITY {
-                            *entry = RipEntry {
-                                metric: *metric,
-                                paths: vec![path],
-                            };
-                        }
-                        changed = true;
+                // Worse news only matters when it comes from the router we use.
+                Some(entry) if entry.paths.iter().any(from_src) => {
+                    entry.paths.retain(|p| !from_src(p));
+                    if entry.paths.is_empty() && *metric < INFINITY {
+                        *entry = RipEntry {
+                            metric: *metric,
+                            paths: vec![path],
+                        };
                     }
+                    changed = true;
                 }
+                Some(_) => {}
             }
         }
         self.rip.learned.retain(|_, entry| !entry.paths.is_empty());

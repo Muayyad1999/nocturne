@@ -567,9 +567,7 @@ impl Node {
             fx.changed = true;
             self.ospf_send_hello(fx, iface);
         }
-        if waiting && sees_us && backup_seen {
-            self.ospf_elect(fx, iface);
-        } else if elect {
+        if (waiting && sees_us && backup_seen) || elect {
             self.ospf_elect(fx, iface);
         } else {
             self.ospf_adjacencies(fx, iface);
@@ -601,7 +599,7 @@ impl Node {
         let own = state.addr.ip;
         let before = (state.dr, state.bdr, state.role);
         // Candidates: (priority, router id, address, declared DR, declared BDR).
-        let mut pass = |dr: Ipv4Addr, bdr: Ipv4Addr| -> (Ipv4Addr, Ipv4Addr) {
+        let pass = |dr: Ipv4Addr, bdr: Ipv4Addr| -> (Ipv4Addr, Ipv4Addr) {
             let mut candidates: Vec<(u8, Ipv4Addr, Ipv4Addr, Ipv4Addr, Ipv4Addr)> =
                 vec![(state.priority, own_id, own, dr, bdr)];
             candidates.extend(

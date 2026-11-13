@@ -424,10 +424,6 @@ impl IfConfig {
             _ => None,
         }
     }
-
-    pub(crate) fn is_switchport(&self) -> bool {
-        self.l2.is_some()
-    }
 }
 
 // ----------------------------------------------------------------- routing
@@ -448,8 +444,6 @@ pub(crate) struct Area {
 }
 
 impl Area {
-    pub(crate) const BACKBONE: u32 = 0;
-
     pub(crate) fn parse(text: &str) -> Option<Area> {
         if let Ok(id) = text.parse::<u32>() {
             return Some(Area { id, dotted: false });
@@ -1102,7 +1096,7 @@ mod tests {
         assert_eq!(router.vty.len(), 5);
         let switch = DeviceConfig::factory(model("switch").unwrap(), "SW1");
         assert!(!switch.ip_routing && switch.vlans.contains_key(&1));
-        assert!(switch.interfaces[&IfId::parse("fa0/1").unwrap()].is_switchport());
+        assert!(switch.interfaces[&IfId::parse("fa0/1").unwrap()].l2.is_some());
         assert!(switch.interfaces[&IfId::vlan(1)].shutdown);
         assert_eq!(switch.vty.len(), 16);
     }

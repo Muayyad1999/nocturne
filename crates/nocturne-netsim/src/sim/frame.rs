@@ -117,7 +117,10 @@ pub(crate) enum TcpFlags {
     Syn,
     SynAck,
     Rst,
-    /// A segment of an established connection.
+    /// A segment of an established connection. Nothing in the simulator holds
+    /// a connection open yet, so none is sent; a flag set without it would be
+    /// a lie about TCP.
+    #[allow(dead_code)]
     Ack,
 }
 
@@ -127,6 +130,9 @@ pub(crate) enum UdpApp {
     Rip(Box<RipMsg>),
     Hsrp(HsrpMsg),
     Dns(DnsMsg),
+    /// Logging to a remote collector. Devices keep their own buffer; no
+    /// datagram leaves them yet.
+    #[allow(dead_code)]
     Syslog,
     /// Traceroute probe or other opaque datagram.
     Data,
@@ -134,6 +140,9 @@ pub(crate) enum UdpApp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unreach {
+    /// No route to the network. Routers here answer with `Host` instead, as
+    /// Cisco ones do; the code is in the model because the protocol has it.
+    #[allow(dead_code)]
     Net,
     Host,
     Port,
@@ -208,8 +217,13 @@ pub(crate) struct DhcpMsg {
     pub(crate) mask_len: u8,
     pub(crate) routers: Vec<Ipv4Addr>,
     pub(crate) dns: Vec<Ipv4Addr>,
-    pub(crate) domain: Option<String>,
     pub(crate) lease_s: Option<u64>,
+    /// Options 15 and 12: carried on the wire because a server sends them,
+    /// and ignored by the clients here, which have no resolver and keep the
+    /// name they were configured with.
+    #[allow(dead_code)]
+    pub(crate) domain: Option<String>,
+    #[allow(dead_code)]
     pub(crate) hostname: String,
 }
 
@@ -265,7 +279,6 @@ pub(crate) const IP_PROTO_OSPF: u8 = 89;
 pub(crate) const PORT_DNS: u16 = 53;
 pub(crate) const PORT_DHCP_SERVER: u16 = 67;
 pub(crate) const PORT_DHCP_CLIENT: u16 = 68;
-pub(crate) const PORT_SYSLOG: u16 = 514;
 pub(crate) const PORT_RIP: u16 = 520;
 pub(crate) const PORT_HSRP: u16 = 1985;
 pub(crate) const PORT_TRACEROUTE: u16 = 33434;

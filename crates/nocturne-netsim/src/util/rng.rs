@@ -1,29 +1,9 @@
-//! The lab's only source of randomness: a seeded xorshift generator plus a
-//! stateless mixer for "noise" that must not depend on call order.
-
-#[derive(Clone, Debug)]
-pub(crate) struct Rng(u64);
-
-impl Rng {
-    pub(crate) fn new(seed: u64) -> Self {
-        // xorshift must never hold zero.
-        Rng(mix(seed ^ 0x9E37_79B9_7F4A_7C15) | 1)
-    }
-
-    pub(crate) fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// Uniform in `0..n` (`n == 0` yields 0).
-    pub(crate) fn below(&mut self, n: u64) -> u64 {
-        if n == 0 { 0 } else { self.next_u64() % n }
-    }
-}
+//! The lab's source of randomness: a stateless mixer, so that "noise" does
+//! not depend on the order it is asked for.
+//!
+//! There is deliberately no running generator. Every value here is a pure
+//! function of the world's seed and of what it describes, so the same lab
+//! replays identically however the event queue happens to interleave.
 
 /// splitmix64 finaliser: a good stateless 64-bit mixer.
 pub(crate) fn mix(mut x: u64) -> u64 {
@@ -46,14 +26,13 @@ mod tests {
 
     #[test]
     fn deterministic_and_spread() {
-        let mut a = Rng::new(7);
-        let mut b = Rng::new(7);
-        let xs: Vec<u64> = (0..8).map(|_| a.next_u64()).collect();
-        let ys: Vec<u64> = (0..8).map(|_| b.next_u64()).collect();
-        assert_eq!(xs, ys);
-        assert!(xs.windows(2).all(|w| w[0] != w[1]));
-        assert_ne!(Rng::new(0).next_u64(), Rng::new(1).next_u64());
-        assert!((0..100).all(|_| a.below(10) < 10));
+        // The same inputs always give the same value, different inputs
+        // almost never do, and the order of the inputs matters.
+        assert_eq!(hash(&[1, 2, 3]), hash(&[1, 2, 3]));
         assert_ne!(hash(&[1, 2]), hash(&[2, 1]));
+        assert_ne!(mix(0), mix(1));
+        let spread: Vec<u64> = (0..64).map(|i| hash(&[7, i]) % 10).collect();
+        assert!(spread.contains(&0) && spread.contains(&9));
+        assert!(spread.windows(2).any(|w| w[0] != w[1]));
     }
 }

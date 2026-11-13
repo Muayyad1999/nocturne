@@ -1140,7 +1140,7 @@ fn stp_priority(cx: &mut Cx, a: &Args) {
         return;
     }
     let priority = a.num("priority").unwrap_or(32768) as u16;
-    if priority % 4096 != 0 {
+    if !priority.is_multiple_of(4096) {
         cx.say("% Bridge Priority must be in increments of 4096.");
         cx.say("% Allowed values are:");
         cx.say("  0     4096  8192  12288 16384 20480 24576 28672");

@@ -335,14 +335,6 @@ impl Node {
         self.l3_addrs().iter().any(|(_, addr)| addr.ip == ip)
     }
 
-    /// The up interface whose subnet contains `ip`, with the matching address.
-    pub(crate) fn iface_on_link(&self, ip: Ipv4Addr) -> Option<(IfId, IfAddr)> {
-        self.l3_addrs()
-            .into_iter()
-            .filter(|(_, addr)| addr.on_link(ip))
-            .max_by_key(|(_, addr)| addr.len)
-    }
-
     /// Operational VLAN-carrying mode of a switch port.
     pub(crate) fn is_trunk(&self, id: IfId) -> bool {
         self.ifs.get(&id).is_some_and(|state| state.trunking)

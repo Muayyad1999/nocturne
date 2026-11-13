@@ -67,10 +67,6 @@ impl ArpCache {
         self.pending.clear();
     }
 
-    pub(crate) fn remove(&mut self, ip: Ipv4Addr) {
-        self.entries.remove(&ip);
-    }
-
     pub(crate) fn rows(&self, now: SimTime) -> Vec<(Ipv4Addr, &ArpEntry)> {
         self.entries
             .iter()
@@ -121,13 +117,12 @@ impl Node {
             return;
         }
         // Learn from ARP traffic addressed to us; refresh what we already know.
-        if answer.is_some() || self.arp.contains(arp.sender_ip) {
-            if self
+        if (answer.is_some() || self.arp.contains(arp.sender_ip))
+            && self
                 .arp
                 .insert(arp.sender_ip, arp.sender_mac, iface, fx.now)
-            {
-                fx.changed = true;
-            }
+        {
+            fx.changed = true;
         }
         match (arp.request, answer) {
             (true, Some(mac)) => {
@@ -215,14 +210,11 @@ impl Node {
             return None;
         }
         self.arp.pending.insert(next_hop, fx.now);
-        let Some(source) = self
+        let source = self
             .addrs(iface)
             .into_iter()
             .find(|a| a.on_link(next_hop))
-            .or_else(|| self.addr(iface))
-        else {
-            return None;
-        };
+            .or_else(|| self.addr(iface))?;
         let mac = self.mac_for(iface);
         let request = Arp {
             request: true,

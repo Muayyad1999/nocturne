@@ -30,6 +30,9 @@ pub(crate) struct Lease {
     pub(crate) server: Ipv4Addr,
     pub(crate) gateway: Option<Ipv4Addr>,
     pub(crate) dns: Vec<Ipv4Addr>,
+    /// When the lease was taken. Part of what a lease is; nothing shows the
+    /// age of one yet.
+    #[allow(dead_code)]
     pub(crate) obtained: SimTime,
     pub(crate) expires: Option<SimTime>,
 }

@@ -135,10 +135,6 @@ impl IfId {
         IfId { sub: 0, ..self }
     }
 
-    pub(crate) fn with_sub(self, sub: u32) -> IfId {
-        IfId { sub, ..self }
-    }
-
     pub(crate) fn is_physical(self) -> bool {
         self.kind.is_physical() && self.sub == 0
     }

@@ -466,11 +466,6 @@ impl Session {
         }
     }
 
-    /// The command history of the current mode, oldest first (`show history`).
-    pub(crate) fn history(&self) -> &[String] {
-        &self.history[self.shell.history_bucket()]
-    }
-
     // -------------------------------------------------------------- input
 
     fn key(&mut self, world: &mut World, out: &mut Vec<u8>, key: Key) -> Turn {
@@ -577,10 +572,10 @@ impl Session {
                 shown,
                 connect,
             } => {
-                if matches!(key, Key::Interrupt | Key::Abort) {
-                    if let Some(node) = world.nodes.get_mut(&self.node) {
-                        node.proc_abort(proc);
-                    }
+                if matches!(key, Key::Interrupt | Key::Abort)
+                    && let Some(node) = world.nodes.get_mut(&self.node)
+                {
+                    node.proc_abort(proc);
                 }
                 self.stage = Stage::Job {
                     proc,
@@ -1111,12 +1106,5 @@ impl Console {
                 break;
             }
         }
-    }
-
-    /// Is the active session waiting for a process to finish?
-    pub(crate) fn busy(&self) -> bool {
-        self.stack
-            .last()
-            .is_some_and(|s| matches!(s.stage, Stage::Job { .. }))
     }
 }

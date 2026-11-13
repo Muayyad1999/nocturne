@@ -317,16 +317,15 @@ impl Node {
             let (local, port) = match (entry, one_to_one) {
                 (Some(entry), _) => (entry.inside_local.0, Some(entry.inside_local.1)),
                 (None, Some(entry)) => (entry.inside_local.0, None),
-                (None, None) => match self
-                    .cfg
-                    .nat
-                    .statics
-                    .iter()
-                    .find(|s| s.ports.is_none() && s.global == orig.src)
-                {
-                    Some(entry) => (entry.local, None),
-                    None => return None,
-                },
+                (None, None) => {
+                    let entry = self
+                        .cfg
+                        .nat
+                        .statics
+                        .iter()
+                        .find(|s| s.ports.is_none() && s.global == orig.src)?;
+                    (entry.local, None)
+                }
             };
             orig.src = local;
             if let Some(port) = port {

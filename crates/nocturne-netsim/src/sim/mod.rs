@@ -38,7 +38,7 @@ use crate::api::{
     CableKind, Fault, FaultId, FlowId, LabEvent, LinkId, NodeId, PacketEventKind, SimTime, TraceId,
 };
 use crate::ifname::IfId;
-use crate::util::rng::{self, Rng};
+use crate::util::rng;
 use frame::Frame;
 use fx::{Fx, Note, Timer, Why};
 use node::Node;
@@ -139,6 +139,9 @@ impl Ord for Queued {
 /// Progress of one traced PDU (and everything it caused).
 #[derive(Clone, Debug)]
 pub(crate) struct TraceState {
+    /// Where the trace started. Carried so a finished trace can say whose it
+    /// was; the live path reaches the origin through the flow instead.
+    #[allow(dead_code)]
     pub(crate) origin: NodeId,
     pub(crate) request_pdu: u64,
     pub(crate) started: SimTime,
@@ -161,7 +164,6 @@ pub(crate) struct World {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) seed: u64,
-    pub(crate) rng: Rng,
     pub(crate) now: SimTime,
     pub(crate) nodes: BTreeMap<NodeId, Node>,
     pub(crate) links: BTreeMap<LinkId, Link>,
@@ -208,7 +210,6 @@ impl World {
             name: name.to_string(),
             description: String::new(),
             seed,
-            rng: Rng::new(seed),
             now: 0,
             nodes: BTreeMap::new(),
             links: BTreeMap::new(),

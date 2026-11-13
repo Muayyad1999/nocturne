@@ -14,6 +14,9 @@ const BUFFER_LINES: usize = 500;
 #[derive(Clone, Debug)]
 pub(crate) struct LogEntry {
     pub(crate) seq: u64,
+    /// The level the line was logged at. Recorded with every line; nothing
+    /// filters on it yet (`logging buffered <level>` is not implemented).
+    #[allow(dead_code)]
     pub(crate) severity: u8,
     pub(crate) line: String,
 }

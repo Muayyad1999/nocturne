@@ -230,14 +230,7 @@ fn route_detail(node: &Node, now: SimTime, ip: Ipv4Addr) -> String {
         _ => "",
     };
     let known = if matches!(route.source, Source::Connected | Source::Local) {
-        format!(
-            "  Known via \"connected\", distance 0, metric 0 (connected{})",
-            if route.source == Source::Local {
-                ", via interface"
-            } else {
-                ", via interface"
-            }
-        )
+        "  Known via \"connected\", distance 0, metric 0 (connected, via interface)".to_string()
     } else {
         format!(
             "  Known via \"{}\", distance {}, metric {}{}{kind}",

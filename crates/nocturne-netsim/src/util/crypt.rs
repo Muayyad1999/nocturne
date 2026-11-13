@@ -223,7 +223,7 @@ pub(crate) fn type7_encode(password: &str, seed: u8) -> String {
 }
 
 pub(crate) fn type7_decode(encoded: &str) -> Option<String> {
-    if !encoded.is_ascii() || encoded.len() < 2 || encoded.len() % 2 != 0 {
+    if !encoded.is_ascii() || encoded.len() < 2 || !encoded.len().is_multiple_of(2) {
         return None;
     }
     let seed: usize = encoded[..2].parse().ok()?;

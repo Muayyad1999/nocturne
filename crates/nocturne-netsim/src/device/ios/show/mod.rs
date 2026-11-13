@@ -19,7 +19,6 @@ macro_rules! emit {
         }
     };
 }
-pub(crate) use emit;
 
 pub(crate) fn table(role: Role, privileged: bool) -> Table {
     let mut t: Table = vec![
