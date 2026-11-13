@@ -1,127 +1,75 @@
 # nocturne-textfsm — working notes (resume file)
 
-Spec: `docs/dev/spec-textfsm.md`. Upstream: `/home/user/.cache/vendor/ntc-templates`
-(commit `84ae82fd022807810d73a19655cca113b734de58`, 979 templates + `index`).
-Python reference: `pip install textfsm` (2.1.1) — `textfsm/parser.py`, `clitable.py`, `texttable.py`.
-Cargo: always `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/textfsm cargo <cmd> -p nocturne-textfsm`.
-Formatting: `cargo fmt -p nocturne-textfsm` ONLY (never a bare `cargo fmt`; it would rewrite other crates).
-Rules: touch only this crate, no git commands, do not edit the workspace Cargo.toml.
-Scratch (not committed): `/tmp/claude-0/-home-user-netops-ai/862b16f9-1524-5810-bc17-cca256bcf369/scratchpad`
-(`venv/` has textfsm+pyyaml; `baseline.json` = Python reference output for all 1897 cases, 0 failures upstream).
+Spec: `docs/dev/spec-textfsm.md`. Upstream: ntc-templates at commit
+`84ae82fd022807810d73a19655cca113b734de58` (979 templates + `index`), reference engine:
+`pip install textfsm` (2.1.1, run on CPython 3.13).
 
-## Status (keep current)
+Rules of the build: `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/textfsm`, every cargo
+command with `-p nocturne-textfsm` (also `cargo fmt -p nocturne-textfsm`, never a bare `cargo fmt`),
+touch only this crate, no git commands, do not edit the workspace `Cargo.toml`.
 
-Design decisions taken (see code docs for detail):
-- `src/pyregex/`: full port of CPython's regex parser -> AST -> emit Rust syntax. Groups are
-  emitted unnamed (names kept in our AST). `\s` -> `[\s\x1c-\x1f]`, `\w` -> `[\p{L}\p{N}_]`,
-  `\d` -> `\d` (verified equal to Python over all code points), `\Z` -> `\z`, `\<`/`\>` literal.
-  `regex` crate unless AST has look-around/backref/atomic/possessive/conditional -> `fancy-regex`.
-- Run engine must assign EVERY named group incl. non-participating ones (None), model
-  `value` separately from the List accumulator, and process options in declared order.
-- List item None is rendered "None" (that is what clitable/ntc-templates return; corpus expects it).
-- Index: 6 rows list several templates `a:b`; the corpus EXPECTS clitable's merge of extra
-  columns (keyed on `Key` values) -> `ntc::parse` must merge; `ntc::find` returns the first.
-- Platform cells may be regexes: `(hp|aruba)_procurve`, `.*vyos.*`, `cisco_(asa|ftd)`; matching is
-  `re.match` (prefix). Bundle: flate2/zlib blob built by build.rs (1.2 MB raw -> ~261 KB).
-- Corpus: 1897 cases (tests/<platform>/<command>/*.raw + .yml; skip tests/mocks). All YAML
-  values are double-quoted strings or lists of them.
+## Status: done
 
-Done:
-- [x] bundle copied into `templates/` (+ LICENSE, README.md); `build.rs` packs it (zlib, ~270 KB)
-- [x] `src/pyregex/{ast,parser,emit,language,mod}.rs`: regex oracle (543,213 evaluations taken from
-      the Python reference over the whole corpus) passes with 0 differences, all groups compared.
-      Oracle file: scratch `textfsm/regex_oracle.jsonl` (made by scratch `py/regex_oracle.py`),
-      test: `PYREGEX_ORACLE=<file> cargo test --release -p nocturne-textfsm agrees_with_python -- --nocapture`
-- [x] `src/{text,error,value,template,fsm}.rs`, `src/ntc/{bundle,index,merge,mod}.rs`, `src/lib.rs`
-- [x] `tests/common/mod.rs` + `tests/conformance.rs`: **1897 / 1897 cases pass (100 %)**, no skips,
-      no fallbacks. Run: `NTC_TEMPLATES_DIR=/home/user/.cache/vendor/ntc-templates cargo test --release
-      -p nocturne-textfsm --test conformance -- --nocapture` (5 s)
+Nothing is in progress. This file can be deleted once the crate is committed; everything a
+maintainer needs is in the code documentation (`src/lib.rs`, `src/pyregex/mod.rs`,
+`src/pyregex/loops.rs`, `templates/README.md`, the doc comments of `tests/*.rs` and `tools/*.py`).
 
-- [x] `tests/semantics/{values,rules,states,input,regex}.yml` (147 cases) + `tests/semantics.rs`;
-      expectations verified against Python with `tools/check_semantics.py`
-      (`<scratch>/venv/bin/python -I -W ignore tools/check_semantics.py tests/semantics/*.yml` -> 0 problems);
-      all pass in Rust.
+## Layout
 
-- [x] `tests/fixtures/` (115 pairs, 374 KB, 14 platforms; picked by scratch `py/pick_fixtures.py`)
-      + `tests/fixtures.rs` (passes, 1.5 s debug)
-- [x] `examples/timing.rs`: release, noisy shared box: compile cisco_ios_show_interfaces 9-21 ms,
-      parse 5003 lines 8-17 ms (best total 17.4 ms). ASCII-only classes would halve compile time
-      (experiment, reverted): we keep Unicode-aware classes = exact Python semantics.
-- [x] all 979 templates compile (test `ntc::tests::every_bundled_template_compiles`, 6.6 s debug -> parallelise)
+- `templates/` — verbatim upstream bundle (+ `LICENSE`, `README.md`); `build.rs` packs it into one
+  zlib blob (270,130 bytes; 1,197,038 raw) embedded by `src/ntc/bundle.rs`.
+- `src/template.rs` (template language), `src/fsm.rs` (run engine), `src/text.rs` (Python string
+  semantics), `src/value.rs`, `src/error.rs`.
+- `src/pyregex/` — Python `re` on the Rust engines: `parser.rs` (port of CPython's parser),
+  `emit.rs` (translation, two flavours), `loops.rs` (final empty iteration), `language.rs`,
+  `mod.rs` (`Regex`: ASCII flavour for ASCII text, lazily compiled Unicode-aware flavour otherwise).
+- `src/ntc/` — `bundle.rs`, `index.rs` (clitable index), `merge.rs` (multi-template rows),
+  `mod.rs` (public API).
+- `tests/semantics/*.yml` + `tests/semantics.rs` — 151 reference-verified cases.
+- `tests/fixtures/` + `tests/fixtures.rs` — 118 upstream cases (always on).
+- `tests/conformance.rs` — the whole upstream corpus (`NTC_TEMPLATES_DIR`).
+- `tools/semantics.py`, `tools/regex_oracle.py`, `tools/fuzz_regex.py` — reference data generators.
+- `examples/timing.rs` — timing measurement.
 
-- [x] `src/pyregex/loops.rs`: generalised final-empty-iteration emulation; `src/pyregex/tests.rs`:
-      22 unit tests incl. 67 syntax errors with Python's message+position, every ASCII char on both
-      engines, loop table (44 same as Python, 7 pinned known differences).
-- [x] `tools/regex_oracle.py` + `tools/check_semantics.py` committed (reference-verification tooling)
-- [x] state at this point: all tests green (40 unit + conformance 1897/1897 + fixtures + 5 semantics + doctest)
+## How to re-verify everything
 
-- [x] unit tests: template.rs (7), fsm.rs (2), ntc (58 index resolutions verified vs clitable, merge, bundle)
-- [x] clippy --all-targets -D warnings clean, fmt clean, rustdoc clean (state before the dual-flavour work)
+```sh
+export CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/textfsm
+cargo fmt -p nocturne-textfsm -- --check
+cargo clippy -p nocturne-textfsm --all-targets -- -D warnings
+cargo test -p nocturne-textfsm                      # always-on tests
 
-MEASUREMENTS (release, Unicode-only regexes, before optimisation):
-- all 979 templates compiled: 506 MiB RSS, 3.6 s; compiled AND run over the corpus: 919 MiB, 4.5 s
-- per class occurrence: \w 47.7 KB, \d 5.1 KB, \S 1.9 KB, \s 0.7 KB (ASCII: ~100 bytes)
-- experiment with ASCII bytes-mode regexes: corpus run 319 MiB, 1.6 s  => 3x less memory, 2.8x faster
+# reference data (python3 -m venv venv && venv/bin/pip install textfsm pyyaml)
+python tools/semantics.py check tests/semantics/*.yml
+python tools/regex_oracle.py /home/user/.cache/vendor/ntc-templates /tmp/oracle.jsonl
+python tools/fuzz_regex.py 150000 7 /tmp/fuzz_regex.json
+python tools/semantics.py fuzz 100000 99 /tmp/fuzz_cases.json
 
-DONE: dual-flavour regexes in `src/pyregex/` (emit.rs `Charset`, mod.rs `Engine::Linear{ascii, unicode}`):
-- ASCII flavour (`regex::bytes::Regex`, unicode(false)) for `text.is_ascii()`; Unicode flavour lazily.
-- oracle: 543,213 evaluations = Python; 539,216 ASCII evaluations repeated with the Unicode flavour: 0 diffs.
-- results (release): compile show_interfaces ~3 ms, parse 5003 lines ~8.5 ms (quiet runs);
-  whole corpus (979 templates compiled+used, 1897 cases): 329 MiB RSS, 2.0 s (was 919 MiB, 4.5 s).
-- scratch memory example saved at scratch `textfsm/scratch_mem.rs` (not committed).
+NTC_TEMPLATES_DIR=/home/user/.cache/vendor/ntc-templates PYREGEX_ORACLE=/tmp/oracle.jsonl \
+PYREGEX_FUZZ=/tmp/fuzz_regex.json TEXTFSM_CASES=/tmp/fuzz_cases.json \
+  cargo test --release -p nocturne-textfsm -- --nocapture
+cargo run --release -p nocturne-textfsm --example timing
+```
 
-Next:
-- [ ] final review pass of every file; clippy --all-targets; fmt; rustdoc; rerun everything
-- [ ] binary size of the bundle (blob 270,130 bytes)
-- [ ] final report
+## Results at hand-over
 
-Known deviations to report:
-- nullable-loop corner of regex translation (see `src/pyregex/emit.rs` module docs)
-- List value with nested named groups: plain text item instead of Python dict
-- `ntc::find_all` + `Error::Merge` added; `ntc::parse` merges multi-template rows like clitable
-- `serde_json` moved to dev-dependencies; `flate2` added (dep + build-dep)
+- Corpus: 1897 / 1897 cases pass, no skips, no fallbacks (the Python reference also passes all).
+- Regex oracle: 543,213 evaluations equal to Python; 539,216 repeated with the Unicode flavour.
+- Random patterns: 150,002 cases, 0 unexplained differences (67 in the documented classes).
+- Random templates: about 520,000 cases over six seeds (300,000 of them with damaged templates),
+  all equal to Python.
+- Timing (release, loaded 4-core box): compile `cisco_ios_show_interfaces` 2.9 ms, parse 5,003
+  lines 12 ms (medians of 25 runs). Memory: all 979 templates compiled and used: 329 MiB.
 
-## Reference semantics that are easy to get wrong (from parser.py)
+## Decisions worth knowing
 
-Template parsing
-- Value line: `line.rstrip().split(' ')`; < 3 tokens = error. If token[2] does not start
-  with `(` then token[1] is the option list (split on `,`, unknown/duplicate = error),
-  name = token[2], regex = rest joined by ' '. Otherwise name = token[1].
-- Name <= 48 chars. Regex must start with `(`, end with `)`, and not end with `\)`.
-- Value block ends at the first blank line; `^\s*#` lines are comments; other text = error.
-- State name: `^\w+$`, <= 48 chars, not a line/record operator name, unique.
-  Rules follow until a blank line; each must start with ` ^`, `  ^` or `\t^`.
-- Rule: strip; split at the LAST `\s->` (greedy `(.*)(\s->(.*))`). Match part goes through
-  `string.Template.substitute`: `$$` -> `$`, `$name`, `${name}`; any other `$` or an unknown
-  name is a template error.
-- Action: `\s+LineOp(.RecOp)?(\s+NewState)?$` | `\s+RecOp(\s+NewState)?$` | `(\s+NewState)?$`
-  where NewState = `\w+|".*"`. `Continue` + new state = error. Quoted new state only with Error.
-- Validation: `Start` required; `End`/`EOF` must be empty; `End` is dropped; every target
-  state must exist (except End/EOF and Error rules).
-
-Run
-- `text.splitlines()` (splits on \n, \r, \r\n, \v, \f, \x1c-\x1e, \x85, U+2028, U+2029).
-- For each rule: `re.match` (anchored at start only). On match assign EVERY named group in
-  the rule regex, including groups that did not participate (value becomes None; this
-  resets Filldown memory and appends None to a List).
-- Record op first (Record/Clear/Clearall), then line op. Error raises. Continue keeps the
-  line and goes on with the next rule (no state change). Otherwise switch state and stop.
-- After a line, stop if state is End or EOF. At the end: implicit Record unless state is
-  End or the template declares an (empty) EOF state.
-- Record: options run in declared order. Required: skip + clear when value is falsy
-  (None, '' or []). Row is dropped (WITHOUT clearing) when every cell is None or [];
-  a matched empty string '' counts as present. None cells become ''.
-- Clear: value = None, Filldown restores last assigned value; List cleared unless Filldown.
-- Clearall: everything including Filldown memory.
-- Fillup: on assigning a truthy value, walk result rows from the end and fill the column
-  until a row already has a truthy value there.
-- List: appends each match; with nested named groups appends a dict of the groups.
-  clitable then turns every cell into `str(...)` (list items individually).
-
-clitable index
-- CSV: header row, `#` comment lines, cells stripped, rows with wrong cell count dropped.
-- Command cell: `[[xyz]]` -> `(x(y(z)?)?)?`; Platform/Command/Hostname are regexes used with
-  `re.match` (prefix match!). First matching row wins. Template cell may be `a:b` (use first).
-- ntc `parse_output` lower-cases header names for the dict keys.
-- Upstream test: platform = dir, command = dir name with `_` -> ' ', raw read in text mode
-  (universal newlines), compared to `parsed_sample` in the .yml.
+- `\d`, `\w`, `\s`, `\b` are Unicode aware exactly as in Python (the spec suggested ASCII classes;
+  on ASCII text there is no difference, and ASCII text is served by a small ASCII flavour).
+- A `List` item for a group that took no part in a match is the string `"None"` (corpus expects it).
+- Six index rows list several templates; `ntc::parse` merges their columns like clitable,
+  `ntc::find` returns the first, `ntc::find_all` all of them.
+- Known differences from Python: loops over empty matches other than the emulated shape
+  (`src/pyregex/loops.rs`), `\B` in an empty text (Python 3.14 behaviour), `(?a)` and `\N{...}`
+  unsupported, nested named groups in `List` values give plain text. Where the reference crashes
+  with a `TypeError` (a `List` value with nested groups whose group took no part in the match),
+  this crate records a `"None"` item (pinned by a unit test in `src/fsm.rs`).

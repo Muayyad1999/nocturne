@@ -45,8 +45,10 @@ pub enum RunError {
         /// The input line the rule matched.
         input_line: String,
     },
-    /// The regex engine gave up on a rule. Only rules with look-around or
-    /// back-references run on a backtracking engine, which limits its work.
+    /// The regex engine gave up on a rule: a rule with look-around or
+    /// back-references exceeded the step limit of the backtracking engine, or
+    /// the Unicode-aware form of a rule, which is only built when a line
+    /// outside ASCII first needs it, turned out too large to compile.
     #[error("template line {rule_line}: {message}")]
     Regex {
         /// The 1-based template line of the rule.

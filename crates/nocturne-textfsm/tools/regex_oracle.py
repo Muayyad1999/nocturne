@@ -1,9 +1,15 @@
-"""Build a regex oracle from the Python reference.
+#!/usr/bin/env python3
+"""Record every regex evaluation the Python reference performs on the corpus.
 
-Usage: regex_oracle.py <ntc-templates-dir> <out.jsonl>
+    pip install textfsm
+    python3 tools/regex_oracle.py /path/to/ntc-templates <out.jsonl>
+    PYREGEX_ORACLE=<out.jsonl> cargo test --release -p nocturne-textfsm \\
+        agrees_with_python_on_the_corpus -- --nocapture
 
-Runs every corpus case through the reference TextFSM and records each regex
-evaluation the engine performs (rule pattern x input line) with its outcome.
+Runs every test case of the ntc-templates checkout through the reference
+TextFSM and notes, for each rule the engine tries on each input line, whether
+the rule's regex matched and what its groups captured. The Rust test replays
+all of it.
 
 One JSON object per template:
   {"template": name,

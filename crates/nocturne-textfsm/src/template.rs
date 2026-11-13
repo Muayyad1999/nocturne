@@ -368,7 +368,12 @@ fn parse_rule(
     let error = |message: String| TemplateError::new(number, message);
     let line = text::strip(line);
     let (pattern, action) = split_action(line);
-    let pattern = substitute(pattern, values).map_err(error)?;
+    // The reference skips the substitution altogether when no value is declared.
+    let pattern = if values.is_empty() {
+        pattern.to_owned()
+    } else {
+        substitute(pattern, values).map_err(error)?
+    };
     let regex = Regex::new(&pattern)
         .map_err(|cause| error(format!("invalid regular expression '{pattern}': {cause}")))?;
     let assignments = regex

@@ -2,8 +2,11 @@
 //!
 //! The cases live in `tests/semantics/*.yml`. Each one states what the Python
 //! reference implementation does for a template and an input, and
-//! `tools/check_semantics.py` checks those statements against the reference
+//! `tools/semantics.py check` verifies those statements against the reference
 //! itself, so these tests pin the engine to the reference's actual behaviour.
+//!
+//! `tools/semantics.py fuzz` writes random cases in the same format; point
+//! `TEXTFSM_CASES` at such a file to run them as well.
 
 use std::path::Path;
 
@@ -102,11 +105,24 @@ fn check(case: &Case) -> Result<(), String> {
 }
 
 fn check_file(name: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/semantics")
-        .join(name);
-    let text = std::fs::read_to_string(&path).unwrap();
-    let cases: Vec<Case> = serde_yaml_ng::from_str(&text).unwrap();
+    check_cases(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/semantics")
+            .join(name),
+    );
+}
+
+/// Runs the cases of a YAML or JSON file and reports all that fail.
+fn check_cases(path: &Path) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let cases: Vec<Case> = if path
+        .extension()
+        .is_some_and(|extension| extension == "json")
+    {
+        serde_json::from_str(&text).unwrap()
+    } else {
+        serde_yaml_ng::from_str(&text).unwrap()
+    };
     assert!(!cases.is_empty());
     let failures: Vec<String> = cases
         .iter()
@@ -116,13 +132,16 @@ fn check_file(name: &str) {
                 .map(|reason| format!("{}: {reason}", case.name))
         })
         .collect();
+    let shown: Vec<&str> = failures.iter().take(20).map(String::as_str).collect();
     assert!(
         failures.is_empty(),
-        "{name}: {} of {} cases fail:\n{}",
+        "{}: {} of {} cases fail:\n{}",
+        path.display(),
         failures.len(),
         cases.len(),
-        failures.join("\n")
+        shown.join("\n")
     );
+    println!("{}: {} cases", path.display(), cases.len());
 }
 
 #[test]
@@ -148,4 +167,14 @@ fn input() {
 #[test]
 fn regex() {
     check_file("regex.yml");
+}
+
+/// Further cases from the file named by `TEXTFSM_CASES`, such as the random
+/// ones written by `tools/semantics.py fuzz`.
+#[test]
+fn cases_from_the_environment() {
+    match std::env::var_os("TEXTFSM_CASES") {
+        Some(path) => check_cases(Path::new(&path)),
+        None => eprintln!("TEXTFSM_CASES is not set; no additional cases"),
+    }
 }

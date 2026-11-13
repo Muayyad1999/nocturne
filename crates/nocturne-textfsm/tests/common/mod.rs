@@ -15,8 +15,7 @@ use nocturne_textfsm::{Record, Value, ntc};
 /// The outcome of running every case below a directory.
 #[derive(Default)]
 pub struct Report {
-    /// Per platform: (passed, failed).
-    pub platforms: BTreeMap<String, (usize, usize)>,
+    pub platforms: BTreeMap<String, Tally>,
     /// Failed cases with the first difference found.
     pub failures: Vec<(String, String)>,
     /// Cases whose command the index did not resolve, so that the template
@@ -24,30 +23,35 @@ pub struct Report {
     pub fallbacks: Vec<String>,
 }
 
+/// The number of cases of one platform that passed and failed.
+#[derive(Clone, Copy, Default)]
+pub struct Tally {
+    pub passed: usize,
+    pub failed: usize,
+}
+
 impl Report {
     pub fn passed(&self) -> usize {
-        self.platforms.values().map(|(passed, _)| passed).sum()
+        self.platforms.values().map(|tally| tally.passed).sum()
     }
 
     pub fn total(&self) -> usize {
         self.platforms
             .values()
-            .map(|(passed, failed)| passed + failed)
+            .map(|tally| tally.passed + tally.failed)
             .sum()
     }
 
     /// The per-platform table and the list of failures.
     pub fn summary(&self) -> String {
+        let row = |name: &str, passed: usize, failed: usize| {
+            format!("{name:<28} {passed:>6} {failed:>6}\n")
+        };
         let mut text = format!("{:<28} {:>6} {:>6}\n", "platform", "passed", "failed");
-        for (platform, (passed, failed)) in &self.platforms {
-            text.push_str(&format!("{platform:<28} {passed:>6} {failed:>6}\n"));
+        for (platform, tally) in &self.platforms {
+            text.push_str(&row(platform, tally.passed, tally.failed));
         }
-        let failed = self.total() - self.passed();
-        text.push_str(&format!(
-            "{:<28} {:>6} {failed:>6}\n",
-            "total",
-            self.passed()
-        ));
+        text.push_str(&row("total", self.passed(), self.total() - self.passed()));
         for (case, reason) in &self.failures {
             text.push_str(&format!("FAILED {case}: {reason}\n"));
         }
@@ -69,9 +73,9 @@ pub fn run_cases(root: &Path, skip: &[&str]) -> Report {
                 }
                 let tally = report.platforms.entry(platform.clone()).or_default();
                 match check_case(&platform, &command, &raw, &mut report.fallbacks) {
-                    Ok(()) => tally.0 += 1,
+                    Ok(()) => tally.passed += 1,
                     Err(reason) => {
-                        tally.1 += 1;
+                        tally.failed += 1;
                         report.failures.push((case, reason));
                     }
                 }

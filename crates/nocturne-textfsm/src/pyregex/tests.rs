@@ -3,7 +3,9 @@
 //! Wherever an expectation describes what Python does, it was produced with
 //! the `re` module of CPython 3.13.
 
+use super::ast::{Assertion, Node};
 use super::emit::{Charset, translate};
+use super::loops::has_divergent_loop;
 use super::parser::parse;
 use super::*;
 
@@ -47,13 +49,26 @@ fn flavour(pattern: &str, charset: Charset) -> String {
 
 /// [`groups`], forcing the Unicode flavour.
 fn unicode_groups(pattern: &str, text: &str) -> Option<Vec<Option<String>>> {
-    let regex = Regex::new(pattern).unwrap();
-    let captures = regex.match_start_unicode(text).unwrap()?;
-    Some(
+    groups_of(&Regex::new(pattern).unwrap(), text, true).unwrap()
+}
+
+/// The whole match and all groups, with the flavour chosen by the text or
+/// with the Unicode flavour.
+fn groups_of(
+    regex: &Regex,
+    text: &str,
+    unicode_flavour: bool,
+) -> Result<Option<Vec<Option<String>>>, MatchError> {
+    let captures = if unicode_flavour {
+        regex.match_start_unicode(text)?
+    } else {
+        regex.match_start(text)?
+    };
+    Ok(captures.map(|captures| {
         (0..=regex.group_count())
             .map(|group| captures.get(group).map(str::to_owned))
-            .collect(),
-    )
+            .collect()
+    }))
 }
 
 fn syntax_error(pattern: &str) -> (String, usize) {
@@ -114,7 +129,17 @@ fn translates_literals_and_assertions() {
     assert_eq!(translated(r"a\.b\\c\/d"), r":a\.b\\c/d");
     assert_eq!(translated(r"}]"), r":\}\]");
     assert_eq!(translated(r"\t\x41é\101\0"), ":\\x09A\u{e9}A\\x00");
-    assert_eq!(translated(r"^a$\A\b\B\Z"), r":^a$\A\b\B\z");
+    assert_eq!(translated(r"^a$\A\Z"), r":^a$\A\z");
+    // Word boundaries between Python's word characters.
+    assert_eq!(flavour(r"\b\B", Charset::Ascii), r":\b\B");
+    assert_eq!(
+        translated(r"\b"),
+        r":(?:(?<=[\p{L}\p{N}_])(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?=[\p{L}\p{N}_]))"
+    );
+    assert_eq!(
+        translated(r"\B"),
+        r":(?:(?<=[\p{L}\p{N}_])(?=[\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?![\p{L}\p{N}_]))"
+    );
 }
 
 #[test]
@@ -191,6 +216,22 @@ fn translates_backtracking_constructs() {
         translated(r"(?=a)+(?!b)*(?<=c)??"),
         r":(?=a)(?:(?!b)|)(?:|(?<=c))"
     );
+    // The same goes for anything else that consumes no text.
+    assert_eq!(translated(r"a(?:)*b(?:){2,3}?"), r":a(?:(?:)|)b(?:)");
+    assert_eq!(translated(r"(?:(?<!x)+){0,2}"), r":(?:(?:(?<!x))|)");
+    assert_eq!(translated(r"(?:^|(?=a))*?"), r":(?:|(?:^|(?=a)))");
+    // A capture group is not reduced.
+    assert_eq!(translated(r"((?=a))+"), r":((?=a))+");
+    // Zero repetitions: the look-ahead is never evaluated, as in Python.
+    assert_eq!(translated(r"(?=(a)){0}(.)"), r":(?:(?=(a))|){0}(.)");
+    assert_eq!(
+        groups(r"(?=(a)){0}(.)", "a"),
+        found(&[Some("a"), None, Some("a")])
+    );
+    assert_eq!(
+        groups(r"(?=(a))?(.)", "a"),
+        found(&[Some("a"), Some("a"), Some("a")])
+    );
 }
 
 #[test]
@@ -231,7 +272,7 @@ fn ascii_flavour_keeps_the_ascii_part_of_every_class() {
     // Everything else is the same in both flavours.
     for pattern in [
         r"^a.b$",
-        r"(a|b)*c{2,3}?\b",
+        r"(a|b)*c{2,3}?",
         r"(?i:x)(?s:.)",
         "é",
         r"(\s*-*)*",
@@ -726,6 +767,11 @@ fn known_difference_for_other_loops_over_empty_matches() {
             found(ours),
             "{pattern:?} on {text:?}"
         );
+        // The tests on random patterns rely on recognising this kind of loop.
+        assert!(
+            has_divergent_loop(&parse(pattern).unwrap().root),
+            "{pattern:?}"
+        );
     }
 }
 
@@ -754,24 +800,6 @@ fn agrees_with_python_on_the_corpus() {
         misses: Vec<(usize, usize)>,
         hits: Vec<(usize, usize, String, Vec<Option<String>>)>,
     }
-    /// The whole match and all groups, with either flavour.
-    fn evaluate(
-        regex: &Regex,
-        text: &str,
-        unicode: bool,
-    ) -> Result<Option<Vec<Option<String>>>, MatchError> {
-        let captures = if unicode {
-            regex.match_start_unicode(text)?
-        } else {
-            regex.match_start(text)?
-        };
-        Ok(captures.map(|captures| {
-            (0..=regex.group_count())
-                .map(|group| captures.get(group).map(str::to_owned))
-                .collect()
-        }))
-    }
-
     let oracle = std::fs::read_to_string(path).unwrap();
     let mut failures = Vec::new();
     let (mut patterns, mut evaluations, mut ascii_evaluations) = (0, 0, 0);
@@ -824,7 +852,7 @@ fn agrees_with_python_on_the_corpus() {
                     entry.template, entry.patterns[pattern]
                 )
             };
-            match evaluate(regex, text, false) {
+            match groups_of(regex, text, false) {
                 Ok(actual) if actual == expected => {}
                 Ok(actual) => {
                     failures.push(format!("{}: {actual:?}, expected {expected:?}", context()))
@@ -833,7 +861,7 @@ fn agrees_with_python_on_the_corpus() {
             }
             if text.is_ascii() && regex.has_ascii_flavour() {
                 ascii_evaluations += 1;
-                match evaluate(regex, text, true) {
+                match groups_of(regex, text, true) {
                     Ok(actual) if actual == expected => {}
                     Ok(actual) => failures.push(format!(
                         "{}: the Unicode flavour finds {actual:?}, expected {expected:?}",
@@ -858,6 +886,85 @@ fn agrees_with_python_on_the_corpus() {
     assert!(
         failures.is_empty(),
         "{} disagreements with the Python reference",
+        failures.len()
+    );
+}
+
+/// Random patterns and what CPython does with them, as written by
+/// `tools/fuzz_regex.py` to the file named by `PYREGEX_FUZZ`.
+#[test]
+fn agrees_with_python_on_random_patterns() {
+    let Some(path) = std::env::var_os("PYREGEX_FUZZ") else {
+        eprintln!("PYREGEX_FUZZ is not set; skipping the random pattern test");
+        return;
+    };
+    #[derive(serde::Deserialize)]
+    struct Case {
+        pattern: String,
+        text: String,
+        error: Option<String>,
+        result: Option<Vec<Option<String>>>,
+    }
+    /// Whether Python and this crate are known to differ on the case.
+    fn is_known_difference(case: &Case) -> bool {
+        fn has_non_boundary(node: &Node) -> bool {
+            match node {
+                Node::Assertion(Assertion::NotWordBoundary) => true,
+                Node::Concat(nodes) | Node::Alternation(nodes) => {
+                    nodes.iter().any(has_non_boundary)
+                }
+                Node::Group { node, .. } | Node::Look { node, .. } | Node::Repeat { node, .. } => {
+                    has_non_boundary(node)
+                }
+                Node::Conditional { yes, no, .. } => has_non_boundary(yes) || has_non_boundary(no),
+                _ => false,
+            }
+        }
+        let ast = parse(&case.pattern).unwrap();
+        // Before Python 3.14, `\B` never matches in an empty text.
+        has_divergent_loop(&ast.root) || (case.text.is_empty() && has_non_boundary(&ast.root))
+    }
+
+    let cases: Vec<Case> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let (mut same, mut same_errors, mut known) = (0, 0, 0);
+    let mut failures = Vec::new();
+    for case in &cases {
+        let regex = match (Regex::new(&case.pattern), &case.error) {
+            (Err(RegexError::Syntax(error)), Some(expected)) if &error.message == expected => {
+                same_errors += 1;
+                continue;
+            }
+            (Ok(regex), None) => regex,
+            (result, expected) => {
+                let outcome = result.map(|_| "accepted");
+                failures.push(format!(
+                    "{:?}: {outcome:?}, python: {expected:?}",
+                    case.pattern
+                ));
+                continue;
+            }
+        };
+        match groups_of(&regex, &case.text, false) {
+            Ok(actual) if actual == case.result => same += 1,
+            Ok(_) if is_known_difference(case) => known += 1,
+            outcome => failures.push(format!(
+                "{:?} on {:?}: {outcome:?}, python: {:?}",
+                case.pattern, case.text, case.result
+            )),
+        }
+    }
+    eprintln!(
+        "random patterns: {} cases, {same} same results, {same_errors} same errors, \
+         {known} known differences, {} failures",
+        cases.len(),
+        failures.len()
+    );
+    for failure in failures.iter().take(40) {
+        eprintln!("  {failure}");
+    }
+    assert!(
+        failures.is_empty(),
+        "{} disagreements with Python",
         failures.len()
     );
 }

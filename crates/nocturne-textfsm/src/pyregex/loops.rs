@@ -18,12 +18,23 @@
 //! captures; the emitter marks the end of such a loop with an empty group, and
 //! when the marker took part in the match those groups read as `""`.
 //!
+//! # The remaining difference
+//!
 //! Other loops over a possibly empty body are translated as they are and keep
-//! the Rust behaviour. That concerns bodies whose empty match comes before
-//! another alternative (`(a*|b)*`), is lazy (`(a*?)*`) or depends on an
-//! assertion (`(a*$)*`). Python may end such a loop earlier than Rust does,
-//! and the groups inside may capture different iterations. None of the
-//! bundled templates contains such a loop.
+//! the Rust behaviour:
+//!
+//! * unbounded loops whose body can be empty before another alternative is
+//!   tried (`(a*|b)*`), lazily (`(a*?)*`) or depending on an assertion or a
+//!   back-reference (`(a*$)*`), and lazy loops over a possibly empty body
+//!   (`(a*)*?`): Python may end the loop earlier than Rust does, and the
+//!   groups inside may capture different iterations;
+//! * bounded loops such as `(x?){2,3}` are unrolled by the Rust engines, which
+//!   agrees with Python unless the body refers back to a group or tests one
+//!   with `(?(1)...)`, so that it behaves differently after an empty iteration.
+//!
+//! None of the bundled templates contains such a loop. The test helper
+//! `has_divergent_loop` recognises them, so that the comparisons with Python
+//! on random patterns can tell this difference from a bug.
 
 use super::ast::{GroupKind, Node, RepeatMode};
 
@@ -109,6 +120,50 @@ fn empty_match(node: &Node) -> EmptyMatch {
             _ => Other,
         },
     }
+}
+
+/// Whether the tree contains a loop on which this crate and Python may
+/// disagree (see the module documentation). The tests that compare against
+/// Python on random patterns use it to tell known differences from bugs.
+#[cfg(test)]
+pub(super) fn has_divergent_loop(node: &Node) -> bool {
+    fn refers_to_groups(node: &Node) -> bool {
+        match node {
+            Node::Backref(_) | Node::Conditional { .. } => true,
+            Node::Concat(nodes) | Node::Alternation(nodes) => nodes.iter().any(refers_to_groups),
+            Node::Group { node, .. } | Node::Look { node, .. } | Node::Repeat { node, .. } => {
+                refers_to_groups(node)
+            }
+            _ => false,
+        }
+    }
+    let children: Vec<&Node> = match node {
+        Node::Concat(nodes) | Node::Alternation(nodes) => nodes.iter().collect(),
+        Node::Group { node, .. } | Node::Look { node, .. } => vec![node],
+        Node::Conditional { yes, no, .. } => vec![yes, no],
+        Node::Repeat {
+            node: body,
+            max,
+            mode,
+            ..
+        } => {
+            let divergent = match (empty_match(body), max) {
+                (EmptyMatch::Never, _) | (_, Some(0 | 1)) => false,
+                // An unbounded loop that is not emulated.
+                (EmptyMatch::Other, None) => true,
+                (EmptyMatch::Last(_), None) => *mode == RepeatMode::Lazy,
+                // A bounded loop is unrolled, which goes wrong only if an
+                // iteration can behave differently after an empty one.
+                (_, Some(_)) => refers_to_groups(body),
+            };
+            if divergent {
+                return true;
+            }
+            vec![body]
+        }
+        _ => Vec::new(),
+    };
+    children.into_iter().any(has_divergent_loop)
 }
 
 #[cfg(test)]

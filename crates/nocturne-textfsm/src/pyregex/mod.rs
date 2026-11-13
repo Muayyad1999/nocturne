@@ -44,38 +44,49 @@ const BACKTRACK_LIMIT: usize = 10_000_000;
 /// text but not necessarily up to its end.
 #[derive(Debug)]
 pub(crate) struct Regex {
-    engine: Engine,
+    /// Serves ASCII text. Missing if the pattern needs the backtracking
+    /// engine, or if its ASCII flavour would not be equivalent.
+    ascii: Option<regex::bytes::Regex>,
+    /// Serves all other text.
+    unicode: UnicodeFlavour,
     group_names: Vec<Option<String>>,
     /// Where each Python group lives in the translated pattern.
     groups: Vec<GroupSlot>,
-}
-
-#[derive(Debug)]
-enum Engine {
-    /// The `regex` crate. `ascii` serves ASCII text; it is missing for the
-    /// rare pattern whose ASCII flavour would not be equivalent.
-    Linear {
-        ascii: Option<regex::bytes::Regex>,
-        unicode: UnicodeFlavour,
-    },
-    /// The `fancy-regex` crate, for what the `regex` crate cannot express.
-    Backtracking(Box<fancy_regex::Regex>),
 }
 
 /// The Unicode-aware flavour of a pattern, compiled when it is first needed.
 #[derive(Debug)]
 struct UnicodeFlavour {
     pattern: String,
-    compiled: OnceLock<Result<regex::Regex, String>>,
+    needs_backtracking: bool,
+    compiled: OnceLock<Result<Compiled, String>>,
+}
+
+#[derive(Debug)]
+enum Compiled {
+    /// The `regex` crate.
+    Linear(regex::Regex),
+    /// The `fancy-regex` crate, for what the `regex` crate cannot express.
+    Backtracking(Box<fancy_regex::Regex>),
 }
 
 impl UnicodeFlavour {
-    fn get(&self) -> Result<&regex::Regex, &str> {
+    fn get(&self) -> Result<&Compiled, &str> {
         let compiled = self.compiled.get_or_init(|| {
-            regex::RegexBuilder::new(&self.pattern)
-                .size_limit(SIZE_LIMIT)
-                .build()
-                .map_err(|error| error.to_string())
+            if self.needs_backtracking {
+                fancy_regex::RegexBuilder::new(&self.pattern)
+                    .delegate_size_limit(SIZE_LIMIT)
+                    .backtrack_limit(BACKTRACK_LIMIT)
+                    .build()
+                    .map(|regex| Compiled::Backtracking(Box::new(regex)))
+                    .map_err(|error| error.to_string())
+            } else {
+                regex::RegexBuilder::new(&self.pattern)
+                    .size_limit(SIZE_LIMIT)
+                    .build()
+                    .map(Compiled::Linear)
+                    .map_err(|error| error.to_string())
+            }
         });
         compiled.as_ref().map_err(String::as_str)
     }
@@ -87,35 +98,27 @@ impl Regex {
             |error: &dyn std::fmt::Display| RegexError::Unsupported(error.to_string());
         let ast = parser::parse(pattern)?;
         let translation = emit::translate(&ast, Charset::Unicode);
-        let engine = if translation.needs_backtracking {
-            let regex = fancy_regex::RegexBuilder::new(&translation.pattern)
-                .delegate_size_limit(SIZE_LIMIT)
-                .backtrack_limit(BACKTRACK_LIMIT)
+        let unicode = UnicodeFlavour {
+            pattern: translation.pattern,
+            needs_backtracking: translation.needs_backtracking,
+            compiled: OnceLock::new(),
+        };
+        let ascii = emit::translate(&ast, Charset::Ascii);
+        let ascii = if ascii.needs_backtracking || !emit::has_ascii_flavour(&ast) {
+            // The Unicode flavour serves every text, so compile it right away.
+            unicode.get().map_err(|error| unsupported(&error))?;
+            None
+        } else {
+            let regex = regex::bytes::RegexBuilder::new(&ascii.pattern)
+                .unicode(false)
+                .size_limit(SIZE_LIMIT)
                 .build()
                 .map_err(|error| unsupported(&error))?;
-            Engine::Backtracking(Box::new(regex))
-        } else {
-            let unicode = UnicodeFlavour {
-                pattern: translation.pattern,
-                compiled: OnceLock::new(),
-            };
-            let ascii = if emit::has_ascii_flavour(&ast) {
-                let pattern = emit::translate(&ast, Charset::Ascii).pattern;
-                let regex = regex::bytes::RegexBuilder::new(&pattern)
-                    .unicode(false)
-                    .size_limit(SIZE_LIMIT)
-                    .build()
-                    .map_err(|error| unsupported(&error))?;
-                Some(regex)
-            } else {
-                // Nothing else would check that the pattern compiles.
-                unicode.get().map_err(|error| unsupported(&error))?;
-                None
-            };
-            Engine::Linear { ascii, unicode }
+            Some(regex)
         };
         Ok(Regex {
-            engine,
+            ascii,
+            unicode,
             group_names: ast.group_names,
             groups: translation.groups,
         })
@@ -134,37 +137,49 @@ impl Regex {
         &'r self,
         text: &'t str,
     ) -> Result<Option<Captures<'r, 't>>, MatchError> {
-        let found = match &self.engine {
-            // `captures` allocates its result before searching; the vast
-            // majority of attempts fail, and `is_match` rejects those for free.
-            Engine::Linear {
-                ascii: Some(ascii), ..
-            } if text.is_ascii() => {
+        match &self.ascii {
+            Some(ascii) if text.is_ascii() => {
+                // `captures` allocates its result before searching; the vast
+                // majority of attempts fail, and `is_match` rejects those for free.
                 if !ascii.is_match(text.as_bytes()) {
                     return Ok(None);
                 }
-                ascii
-                    .captures(text.as_bytes())
-                    .map(|captures| Found::Ascii(captures, text))
+                let found = ascii.captures(text.as_bytes());
+                Ok(found.map(|captures| self.captures(Found::Ascii(captures, text))))
             }
-            Engine::Linear { unicode, .. } => {
-                let unicode = unicode
-                    .get()
-                    .map_err(|error| MatchError(error.to_owned()))?;
-                if !unicode.is_match(text) {
+            _ => self.match_start_unicode(text),
+        }
+    }
+
+    /// [`Regex::match_start`] with the Unicode-aware flavour, whatever the text.
+    pub fn match_start_unicode<'r, 't>(
+        &'r self,
+        text: &'t str,
+    ) -> Result<Option<Captures<'r, 't>>, MatchError> {
+        let compiled = self
+            .unicode
+            .get()
+            .map_err(|error| MatchError(error.to_owned()))?;
+        let found = match compiled {
+            Compiled::Linear(regex) => {
+                if !regex.is_match(text) {
                     return Ok(None);
                 }
-                unicode.captures(text).map(Found::Unicode)
+                regex.captures(text).map(Found::Unicode)
             }
-            Engine::Backtracking(regex) => regex
+            Compiled::Backtracking(regex) => regex
                 .captures(text)
                 .map_err(|error| MatchError(error.to_string()))?
                 .map(Found::Backtracking),
         };
-        Ok(found.map(|found| Captures {
+        Ok(found.map(|found| self.captures(found)))
+    }
+
+    fn captures<'r, 't>(&'r self, found: Found<'t>) -> Captures<'r, 't> {
+        Captures {
             found,
             groups: &self.groups,
-        }))
+        }
     }
 }
 
@@ -248,30 +263,13 @@ impl Regex {
         self.group_names.len()
     }
 
-    /// Whether the pattern runs on the backtracking engine.
+    /// Whether the pattern runs on the backtracking engine for every text.
     pub fn uses_backtracking(&self) -> bool {
-        matches!(self.engine, Engine::Backtracking(_))
+        self.ascii.is_none() && self.unicode.needs_backtracking
     }
 
     /// Whether ASCII text is served by the ASCII flavour.
     pub fn has_ascii_flavour(&self) -> bool {
-        matches!(self.engine, Engine::Linear { ascii: Some(_), .. })
-    }
-
-    /// Like [`Regex::match_start`], but never uses the ASCII flavour.
-    pub fn match_start_unicode<'r, 't>(
-        &'r self,
-        text: &'t str,
-    ) -> Result<Option<Captures<'r, 't>>, MatchError> {
-        let Engine::Linear { unicode, .. } = &self.engine else {
-            return self.match_start(text);
-        };
-        let unicode = unicode
-            .get()
-            .map_err(|error| MatchError(error.to_owned()))?;
-        Ok(unicode.captures(text).map(|captures| Captures {
-            found: Found::Unicode(captures),
-            groups: &self.groups,
-        }))
+        self.ascii.is_some()
     }
 }

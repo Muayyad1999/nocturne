@@ -148,6 +148,49 @@
     - ["ab"]
     - ["ay"]
 
+- name: quantifiers on groups that consume nothing
+  template: |
+    Value A (\w+)
+
+    Start
+      ^(?:)*${A}(?:(?<=b)+){1,2}(?:(?=!)*)+(?:^|$$)??! -> Record
+  input: |
+    ab!
+    ac!
+  rows:
+    - ["ab"]
+
+- name: word boundaries follow the Unicode-aware word class
+  template: |
+    Value A (\w+)
+    Value B (\S*)
+
+    Start
+      ^${A}\b${B} -> Record
+  input: |
+    m²/s
+    é½x-y
+    ab‿cd
+  rows:
+    - ["m²", "/s"]
+    - ["é½x", "-y"]
+    - ["ab", "‿cd"]
+
+- name: a non-boundary between two word characters
+  template: |
+    Value A (\S)
+    Value B (\S+)
+
+    Start
+      ^${A}\B${B} -> Record
+  input: |
+    m²x
+    a-b
+    ²³
+  rows:
+    - ["m", "²x"]
+    - ["²", "³"]
+
 - name: back-references
   template: |
     Value A ((\w)\2+)

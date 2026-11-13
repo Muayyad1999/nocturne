@@ -15,8 +15,12 @@
 //! * Capture groups are emitted without names and referenced by number
 //!   (`(?P=name)`, `(?(name)...)`); [`GroupSlot`] maps Python's group numbers
 //!   to the emitted ones.
-//! * A quantified look-around such as `(?<=x)+` (legal in Python, rejected by
-//!   the Rust engines) is reduced to a single, possibly optional, evaluation.
+//! * `\b` and `\B` are spelled out with look-arounds in the Unicode flavour,
+//!   because they depend on what a word character is. (As in Python 3.14,
+//!   `\B` matches in an empty text; earlier versions never matched there.)
+//! * A quantified look-around or empty group such as `(?<=x)+` or `(?:)*`
+//!   (legal in Python, rejected by the Rust engines) is reduced to a single,
+//!   possibly optional, evaluation.
 //! * The final empty iteration of a loop, see [`super::loops`], which also
 //!   describes the one known difference from Python that remains.
 //!
@@ -41,7 +45,7 @@ pub(crate) enum Charset {
     /// text it matches exactly what the Unicode flavour matches, provided
     /// [`has_ascii_flavour`] holds; the compiled pattern is far smaller and
     /// faster because `\w`, `\d`, `.` and negated classes shrink from tables
-    /// of Unicode ranges to a few bytes.
+    /// of Unicode ranges to a few bytes, and `\b` needs no look-around.
     Ascii,
 }
 
@@ -80,8 +84,9 @@ const SPECIAL_IN_CLASS: &str = r"\[]^-&~";
 pub(crate) struct Translation {
     /// The pattern in Rust syntax, anchored at the start of the text like `re.match`.
     pub pattern: String,
-    /// Whether the pattern needs a backtracking engine (look-around,
-    /// back-references, atomic groups, possessive quantifiers, conditionals).
+    /// Whether the pattern needs a backtracking engine: it contains a
+    /// look-around, a back-reference, an atomic group, a possessive quantifier
+    /// or a conditional, or it is the Unicode flavour of a pattern with `\b`.
     pub needs_backtracking: bool,
     /// Where to find each Python capture group (index = group number - 1).
     /// The same for both flavours.
@@ -200,14 +205,19 @@ fn number_groups(node: &Node, groups: &mut [GroupSlot], emitted: &mut usize) {
     }
 }
 
-/// Whether `node` is a look-around, possibly inside non-capturing groups.
-fn is_look_around(node: &Node) -> bool {
+/// Whether `node` can only match the empty string and captures nothing
+/// itself: look-arounds, assertions and empty groups, however they are
+/// grouped, alternated and repeated.
+fn is_zero_width(node: &Node) -> bool {
     match node {
-        Node::Look { .. } => true,
+        Node::Empty | Node::Assertion(_) | Node::Look { .. } => true,
         Node::Group {
-            kind: GroupKind::NonCapture | GroupKind::Flags { .. },
+            kind: GroupKind::NonCapture | GroupKind::Flags { .. } | GroupKind::Atomic,
             node,
-        } => is_look_around(node),
+        }
+        | Node::Repeat { node, .. } => is_zero_width(node),
+        Node::Concat(nodes) | Node::Alternation(nodes) => nodes.iter().all(is_zero_width),
+        Node::Conditional { yes, no, .. } => is_zero_width(yes) && is_zero_width(no),
         _ => false,
     }
 }
@@ -250,14 +260,18 @@ impl Emitter<'_> {
             Node::Literal(c) => self.literal(*c, SPECIAL),
             Node::Dot => self.out.push('.'),
             Node::Class(class) => self.class(class),
-            Node::Assertion(assertion) => self.out.push_str(match assertion {
-                Assertion::LineStart => "^",
-                Assertion::LineEnd => "$",
-                Assertion::TextStart => r"\A",
-                Assertion::TextEnd => r"\z",
-                Assertion::WordBoundary => r"\b",
-                Assertion::NotWordBoundary => r"\B",
-            }),
+            Node::Assertion(assertion) => match (assertion, self.charset) {
+                (Assertion::WordBoundary, Charset::Unicode) => self.word_boundary(false),
+                (Assertion::NotWordBoundary, Charset::Unicode) => self.word_boundary(true),
+                _ => self.out.push_str(match assertion {
+                    Assertion::LineStart => "^",
+                    Assertion::LineEnd => "$",
+                    Assertion::TextStart => r"\A",
+                    Assertion::TextEnd => r"\z",
+                    Assertion::WordBoundary => r"\b",
+                    Assertion::NotWordBoundary => r"\B",
+                }),
+            },
             Node::Concat(_) | Node::Alternation(_) => self.non_capturing(node),
             Node::Repeat {
                 node: body,
@@ -314,6 +328,19 @@ impl Emitter<'_> {
         }
     }
 
+    /// `\b` or `\B` between Python's word characters. The engines' own `\b`
+    /// follows their idea of `\w`, which differs outside ASCII (`²` is a word
+    /// character in Python only), so the boundary is spelled out.
+    fn word_boundary(&mut self, negated: bool) {
+        self.needs_backtracking = true;
+        let word = self.categories.word;
+        self.out.push_str(&if negated {
+            format!("(?:(?<=[{word}])(?=[{word}])|(?<![{word}])(?![{word}]))")
+        } else {
+            format!("(?:(?<=[{word}])(?![{word}])|(?<![{word}])(?=[{word}]))")
+        });
+    }
+
     fn conditional_branch(&mut self, node: &Node) {
         match node {
             Node::Alternation(_) => self.non_capturing(node),
@@ -355,18 +382,25 @@ impl Emitter<'_> {
     }
 
     fn repeat(&mut self, node: &Node, min: u32, max: Option<u32>, mode: RepeatMode) {
-        if is_look_around(node) {
-            // Repeating a zero-width assertion evaluates it once; with a minimum
-            // of zero it may also be skipped.
-            match (min, mode) {
-                (0, RepeatMode::Lazy) => {
+        if is_zero_width(node) {
+            // Repeating something that consumes no text evaluates it once, and
+            // with a minimum of zero it may also be skipped. Python allows
+            // `(?<=x)+` and `(?:)*`; the Rust engines reject such quantifiers.
+            match (min, max, mode) {
+                // Never evaluated; its groups still have to exist.
+                (_, Some(0), _) => {
+                    self.out.push_str("(?:");
+                    self.sequence(node);
+                    self.out.push_str("|){0}");
+                }
+                (0, _, RepeatMode::Lazy) => {
                     self.out.push_str("(?:|");
-                    self.item(node);
+                    self.sequence(node);
                     self.out.push(')');
                 }
-                (0, _) => {
+                (0, _, _) => {
                     self.out.push_str("(?:");
-                    self.item(node);
+                    self.sequence(node);
                     self.out.push_str("|)");
                 }
                 _ => self.item(node),

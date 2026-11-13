@@ -303,6 +303,22 @@ Start
         assert!(template.run("").unwrap().is_empty());
     }
 
+    /// The reference crashes here (a `TypeError` from matching `None` against
+    /// the value's regex), so the semantics cases cannot cover it: the item is
+    /// recorded like that of any other `List` value.
+    #[test]
+    fn list_values_with_nested_groups_tolerate_missing_matches() {
+        let template = Template::parse(
+            "Value List MAC ([0-9a-f]{2}(:[0-9a-f]{2}){5})\n\nStart\n  ^port( mac ${MAC})?\n  ^end -> Record\n",
+        )
+        .unwrap();
+        let rows = template
+            .run("port mac 00:11:22:33:44:55\nport\nend\n")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["MAC"].as_list(), ["00:11:22:33:44:55", "None"]);
+    }
+
     #[test]
     fn error_rules_stop_the_run() {
         let template = Template::parse(TEMPLATE).unwrap();

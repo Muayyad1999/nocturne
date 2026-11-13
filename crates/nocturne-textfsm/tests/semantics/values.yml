@@ -1,6 +1,6 @@
 # Value declarations and their options.
 #
-# Each case states what the Python reference does; `tools/check_semantics.py`
+# Each case states what the Python reference does; `tools/semantics.py check`
 # verifies the expectations and `tests/semantics.rs` holds the engine to them.
 # `rows` lists the cells of every recorded row in header order.
 
@@ -444,6 +444,11 @@
     x
   header: []
   rows: []
+
+- name: without values the rules are taken literally
+  template: "\nStart\n  ^a$$ -> Error \"seen\"\n  ^${x}$ -> Error\n"
+  input: "ab\na\n"
+  run_error: {message: "seen", rule_line: 3, input_line: "a"}
 
 - name: unknown option
   template: |
