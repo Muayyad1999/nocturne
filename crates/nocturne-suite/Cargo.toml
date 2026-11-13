@@ -16,6 +16,7 @@ nocturne-changes.workspace = true
 nocturne-config.workspace = true
 nocturne-discovery.workspace = true
 nocturne-insights.workspace = true
+nocturne-ipam.workspace = true
 nocturne-lab.workspace = true
 nocturne-logs.workspace = true
 nocturne-monitor.workspace = true

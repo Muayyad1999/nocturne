@@ -21,6 +21,7 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_lab::init(builder);
     nocturne_logs::init(builder);
     nocturne_automation::init(builder);
+    nocturne_ipam::init(builder);
     nocturne_topology::init(builder);
     nocturne_monitor::init(builder);
     // After monitoring and the topology, which it asks for alerts, interface
@@ -133,6 +134,15 @@ mod tests {
             "schedules.save",
             "triggers.save",
             "ansible.status",
+            // addressing
+            "ipam.prefixes",
+            "ipam.next_prefix",
+            "ipam.next_address",
+            "ipam.sync",
+            "ipam.reconcile",
+            "ipam.conflicts",
+            "ipam.vlans",
+            "ipam.summary",
             // the topology
             "topology.get",
             "topology.path",

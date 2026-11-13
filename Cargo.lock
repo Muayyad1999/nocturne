@@ -3813,20 +3813,17 @@ dependencies = [
 name = "nocturne-ipam"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "csv",
- "futures",
  "nocturne-app",
  "nocturne-drivers",
+ "nocturne-netsim",
  "nocturne-tools",
- "parking_lot",
  "pretty_assertions",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -4033,6 +4030,7 @@ dependencies = [
  "nocturne-config",
  "nocturne-discovery",
  "nocturne-insights",
+ "nocturne-ipam",
  "nocturne-lab",
  "nocturne-logs",
  "nocturne-monitor",
@@ -4094,6 +4092,7 @@ dependencies = [
  "nocturne-app",
  "nocturne-drivers",
  "nocturne-netprobe",
+ "nocturne-snmp",
  "nocturne-tools",
  "nocturne-transport",
  "parking_lot",

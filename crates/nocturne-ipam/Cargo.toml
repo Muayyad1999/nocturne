@@ -11,21 +11,25 @@ publish.workspace = true
 nocturne-app.workspace = true
 nocturne-drivers.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
-futures.workspace = true
-async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
-parking_lot.workspace = true
 nocturne-tools.workspace = true
 csv.workspace = true
+# Records and observations live in this feature's own two tables: the
+# addresses of a prefix are a range query and a search is a `LIKE` over
+# hundreds of thousands of rows, neither of which a document collection does.
+rusqlite.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# The reconciliation tests read what a real (simulated) device said about its
+# own addresses instead of inventing collected rows. The simulator is an
+# engine, not a feature, so depending on it here breaks no layering rule.
+nocturne-netsim.workspace = true
 
 [lints]
 workspace = true
