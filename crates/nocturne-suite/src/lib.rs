@@ -32,6 +32,11 @@ pub fn init(builder: &mut AppBuilder) {
     // engine only `autonomy`, so this order is the one where every key is
     // visible to a settings screen.
     nocturne_assistant::init(builder);
+    // Last, because it reads every other feature: what is down, what is
+    // firing, what changed, what is drifting. It copes with any of them being
+    // absent, but registering it here means a fresh build's overview says
+    // "that feature is not installed" rather than nothing at all.
+    nocturne_ops::init(builder);
 }
 
 /// Assemble and start the application.
@@ -146,6 +151,16 @@ mod tests {
             "insights.coverage",
             "insights.dismiss",
             "insights.fix",
+            // operations
+            "overview.get",
+            "incidents.create",
+            "incidents.note",
+            "incidents.resolve",
+            "handover.generate",
+            "reports.generate",
+            "notes.save",
+            "search.query",
+            "audit.search",
             // the assistant
             "ai.status",
             "ai.send",

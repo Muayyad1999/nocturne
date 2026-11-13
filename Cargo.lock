@@ -4036,6 +4036,7 @@ dependencies = [
  "nocturne-lab",
  "nocturne-logs",
  "nocturne-monitor",
+ "nocturne-ops",
  "nocturne-terminal",
  "nocturne-topology",
  "serde_json",

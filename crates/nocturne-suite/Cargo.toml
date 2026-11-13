@@ -19,6 +19,7 @@ nocturne-insights.workspace = true
 nocturne-lab.workspace = true
 nocturne-logs.workspace = true
 nocturne-monitor.workspace = true
+nocturne-ops.workspace = true
 nocturne-terminal.workspace = true
 nocturne-topology.workspace = true
 

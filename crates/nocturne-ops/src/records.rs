@@ -138,6 +138,19 @@ pub fn body(store: &Store, kind: Kind, id: &str) -> AppResult<Option<String>> {
     store.with(|conn| read_body(conn, kind, id))
 }
 
+/// Just what a list shows, for joining a reference to the record it names
+/// without reading the whole body.
+pub fn head(store: &Store, kind: Kind, id: &str) -> AppResult<Option<String>> {
+    store.with(|conn| {
+        conn.query_row(
+            "SELECT head FROM ops_records WHERE kind = ?1 AND id = ?2",
+            params![kind.as_str(), id],
+            |row| row.get(0),
+        )
+        .optional()
+    })
+}
+
 pub fn delete(store: &Store, kind: Kind, id: &str) -> AppResult<bool> {
     store.transaction(|tx| {
         tx.execute(
@@ -183,7 +196,9 @@ fn parse_cursor(cursor: &str) -> AppResult<(i64, String)> {
         .split_once(':')
         .and_then(|(sort, id)| Some((sort.parse().ok()?, id.to_string())))
         .ok_or_else(|| {
-            AppError::invalid("that list position is no longer valid; load the list again from the start")
+            AppError::invalid(
+                "that list position is no longer valid; load the list again from the start",
+            )
         })
 }
 
@@ -263,17 +278,6 @@ pub fn facet_counts(store: &Store, kind: Kind) -> AppResult<Vec<(String, u64)>> 
     })
 }
 
-/// Ids of the records that refer to `target`.
-pub fn linked(store: &Store, kind: Kind, target: &str) -> AppResult<Vec<String>> {
-    store.with(|conn| {
-        let mut statement = conn.prepare_cached(
-            "SELECT id FROM ops_links WHERE kind = ?1 AND target = ?2 ORDER BY id",
-        )?;
-        let rows = statement.query_map(params![kind.as_str(), target], |row| row.get(0))?;
-        rows.collect()
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +301,21 @@ mod tests {
             body: format!("body-{id}"),
             links: links.iter().map(|link| link.to_string()).collect(),
         }
+    }
+
+    /// The note ids that refer to `target`.
+    fn by_link(store: &Store, target: &str) -> Vec<String> {
+        let found = page(
+            store,
+            Kind::Note,
+            &Query {
+                links: vec![target.to_string()],
+                limit: 10,
+                ..Query::default()
+            },
+        )
+        .unwrap();
+        ids(&found).into_iter().map(str::to_string).collect()
     }
 
     fn ids(page: &Page) -> Vec<&str> {
@@ -365,7 +384,13 @@ mod tests {
         save(
             &store,
             Kind::Incident,
-            &record("a", 1, "open", "core switch down in hq", &["device:d1", "alert:x"]),
+            &record(
+                "a",
+                1,
+                "open",
+                "core switch down in hq",
+                &["device:d1", "alert:x"],
+            ),
         )
         .unwrap();
         save(
@@ -380,10 +405,12 @@ mod tests {
             &record("c", 3, "mitigated", "core router 100% cpu", &["device:d2"]),
         )
         .unwrap();
-        let find = |query: Query| ids(&page(&store, Kind::Incident, &Query { limit: 10, ..query }).unwrap())
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        let find = |query: Query| {
+            ids(&page(&store, Kind::Incident, &Query { limit: 10, ..query }).unwrap())
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
 
         assert_eq!(
             find(Query {
@@ -436,14 +463,17 @@ mod tests {
                 ("resolved".to_string(), 1)
             ]
         );
-        assert_eq!(linked(&store, Kind::Incident, "device:d1").unwrap(), ["a", "b"]);
-        assert!(linked(&store, Kind::Note, "device:d1").unwrap().is_empty());
     }
 
     #[test]
     fn update_is_read_modify_write_and_replaces_links() {
         let store = store();
-        save(&store, Kind::Note, &record("n", 1, "", "old", &["device:d1"])).unwrap();
+        save(
+            &store,
+            Kind::Note,
+            &record("n", 1, "", "old", &["device:d1"]),
+        )
+        .unwrap();
 
         let seen = update(&store, Kind::Note, "n", "note", |body| {
             let mut next = record("n", 2, "", "new", &["device:d2"]);
@@ -456,8 +486,10 @@ mod tests {
             body(&store, Kind::Note, "n").unwrap().as_deref(),
             Some("body-n+changed")
         );
-        assert!(linked(&store, Kind::Note, "device:d1").unwrap().is_empty());
-        assert_eq!(linked(&store, Kind::Note, "device:d2").unwrap(), ["n"]);
+        // The link index follows the record: the old link is gone and the
+        // new one finds it.
+        assert!(by_link(&store, "device:d1").is_empty());
+        assert_eq!(by_link(&store, "device:d2"), ["n"]);
 
         // A refused change stores nothing; `None` leaves the record alone.
         let refused = update(&store, Kind::Note, "n", "note", |_| {
@@ -473,11 +505,18 @@ mod tests {
 
         let missing = update(&store, Kind::Note, "nope", "note", |_| Ok((None, ()))).unwrap_err();
         assert_eq!(missing.code, "not_found");
-        assert!(missing.message.contains("note `nope`"), "{}", missing.message);
+        assert!(
+            missing.message.contains("note `nope`"),
+            "{}",
+            missing.message
+        );
 
         assert!(delete(&store, Kind::Note, "n").unwrap());
         assert!(!delete(&store, Kind::Note, "n").unwrap());
         assert_eq!(body(&store, Kind::Note, "n").unwrap(), None);
-        assert!(linked(&store, Kind::Note, "device:d2").unwrap().is_empty());
+        assert!(
+            by_link(&store, "device:d2").is_empty(),
+            "deleting a record drops its links"
+        );
     }
 }

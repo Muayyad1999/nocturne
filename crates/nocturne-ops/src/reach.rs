@@ -338,7 +338,11 @@ mod tests {
         // One missed poll inside an outage does not split it.
         let analysis = analyse(&minute_series(0, "10.01"), 0, 5 * MINUTE, MINUTE);
         assert_eq!(analysis.outages.len(), 1);
-        assert_eq!(analysis.outages[0].down_ms, 2 * MINUTE, "only what was seen");
+        assert_eq!(
+            analysis.outages[0].down_ms,
+            2 * MINUTE,
+            "only what was seen"
+        );
     }
 
     #[test]
@@ -395,7 +399,9 @@ mod tests {
     fn slow_pollers_are_measured_against_their_own_interval() {
         // Polled every 10 minutes for an hour: 6 samples are full coverage.
         let series = Series {
-            points: (0..6).map(|index| sample(index * 10 * MINUTE, index != 2)).collect(),
+            points: (0..6)
+                .map(|index| sample(index * 10 * MINUTE, index != 2))
+                .collect(),
             bucket_ms: 720,
             resolution: Resolution::Raw,
         };
@@ -447,7 +453,9 @@ mod tests {
         // Sparse 5-minute buckets on the hour are still 5-minute buckets.
         let on_the_hour = [at(HOUR_MS * 5), at(HOUR_MS * 9)];
         assert_eq!(
-            resolution_of(&on_the_hour, wanted, now - week, now).unwrap().1,
+            resolution_of(&on_the_hour, wanted, now - week, now)
+                .unwrap()
+                .1,
             Resolution::FiveMinutes
         );
         // Beyond the roll-up window only hourly data is left.
@@ -465,7 +473,9 @@ mod tests {
         // Timestamps that fit no bucket width are refused, not interpreted.
         let odd = [at(1_234_567)];
         assert_eq!(
-            resolution_of(&odd, 1_000, now - HOUR_MS, now).unwrap_err().code,
+            resolution_of(&odd, 1_000, now - HOUR_MS, now)
+                .unwrap_err()
+                .code,
             "internal"
         );
     }

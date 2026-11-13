@@ -19,7 +19,7 @@ pub(crate) fn is_false(flag: &bool) -> bool {
 }
 
 /// A span of time, `since` inclusive and `until` exclusive, in ms since the epoch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Period {
     pub since: i64,
     pub until: i64,
@@ -86,14 +86,24 @@ impl Devices {
         Devices::matching(app, &DeviceFilter::default())
     }
 
+    /// No inventory at all, for code paths that only need names resolved and
+    /// for tests.
+    pub fn empty() -> Devices {
+        Devices::from_rows(Vec::new())
+    }
+
     pub fn matching(app: &App, filter: &DeviceFilter) -> AppResult<Devices> {
-        let rows = inventory::list(app, filter)?;
+        Ok(Devices::from_rows(inventory::list(app, filter)?))
+    }
+
+    /// For tests and for views that have the rows already.
+    pub fn from_rows(rows: Vec<DeviceRow>) -> Devices {
         let by_id = rows
             .iter()
             .enumerate()
             .map(|(index, row)| (row.device.id.clone(), index))
             .collect();
-        Ok(Devices { rows, by_id })
+        Devices { rows, by_id }
     }
 
     /// In the inventory's own (natural name) order.

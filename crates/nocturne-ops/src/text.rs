@@ -49,8 +49,10 @@ pub fn md(text: &str) -> String {
         let escape = match ch {
             '\\' | '|' | '`' | '*' | '[' | ']' | '<' | '>' | '~' | '&' => true,
             // Inside a word (`core_sw_1`) an underscore is never emphasis.
-            '_' => !(before.is_some_and(char::is_alphanumeric)
-                && after.is_some_and(char::is_alphanumeric)),
+            '_' => {
+                !(before.is_some_and(char::is_alphanumeric)
+                    && after.is_some_and(char::is_alphanumeric))
+            }
             // At the start of a line these would open a heading or a list.
             '#' => index == 0,
             '-' | '+' => index == 0 && after.is_none_or(|next| next == ' '),
@@ -141,7 +143,10 @@ mod tests {
     #[test]
     fn markdown_text_cannot_become_markup() {
         assert_eq!(md("uplink | core"), r"uplink \| core");
-        assert_eq!(md("<script>alert(1)</script>"), r"\<script\>alert(1)\</script\>");
+        assert_eq!(
+            md("<script>alert(1)</script>"),
+            r"\<script\>alert(1)\</script\>"
+        );
         assert_eq!(md("[click](javascript:x)"), r"\[click\](javascript:x)");
         assert_eq!(md("![img](x)"), r"!\[img\](x)");
         assert_eq!(md("*bold* and `code`"), r"\*bold\* and \`code\`");
@@ -163,7 +168,10 @@ mod tests {
 
     #[test]
     fn slugs_are_safe_file_names() {
-        assert_eq!(slug("Core switch DOWN in HQ!", 40), "core-switch-down-in-hq");
+        assert_eq!(
+            slug("Core switch DOWN in HQ!", 40),
+            "core-switch-down-in-hq"
+        );
         assert_eq!(slug("../../etc/passwd", 40), "etc-passwd");
         assert_eq!(slug("a very long title indeed", 10), "a-very-lon");
         assert_eq!(slug("日本語", 40), "");
@@ -179,8 +187,14 @@ mod tests {
             excerpt(text, &words, 40),
             "…and watch BGP converge on the backup. Th…"
         );
-        assert_eq!(excerpt(text, &["nothing".into()], 20), "To fail over the WAN…");
+        assert_eq!(
+            excerpt(text, &["nothing".into()], 20),
+            "To fail over the WAN…"
+        );
         assert_eq!(excerpt("short", &words, 40), "short");
-        assert_eq!(excerpt("ÜBER den Wolken", &["über".into()], 40), "ÜBER den Wolken");
+        assert_eq!(
+            excerpt("ÜBER den Wolken", &["über".into()], 40),
+            "ÜBER den Wolken"
+        );
     }
 }

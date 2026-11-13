@@ -76,6 +76,18 @@ pub enum Reason {
     NoData,
 }
 
+impl Reason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reason::NotInstalled => "not_installed",
+            Reason::Failed => "failed",
+            Reason::Timeout => "timeout",
+            Reason::Malformed => "malformed",
+            Reason::NoData => "no_data",
+        }
+    }
+}
+
 /// A section that could not be filled, as results report it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Unavailable {
@@ -105,7 +117,9 @@ impl Gap {
     fn malformed(method: &str, detail: impl std::fmt::Display) -> Gap {
         Gap {
             reason: Reason::Malformed,
-            message: format!("`{method}` answered with something this version cannot read: {detail}"),
+            message: format!(
+                "`{method}` answered with something this version cannot read: {detail}"
+            ),
             code: None,
         }
     }
@@ -123,7 +137,7 @@ impl Gap {
         AppError::unavailable(self.message)
     }
 
-    fn is_not_found(&self) -> bool {
+    pub fn is_not_found(&self) -> bool {
         self.code == Some("not_found")
     }
 }
@@ -260,6 +274,23 @@ impl Alert {
     }
 }
 
+/// `alerts.summary`'s answer: the one place that knows how many alerts are
+/// open without listing them.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct AlertSummary {
+    pub open: u64,
+    #[serde(default)]
+    pub by_severity: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub newest: Vec<Alert>,
+}
+
+/// The alert summary, when this build has one.
+pub async fn alert_summary(app: &App) -> Result<AlertSummary, Gap> {
+    let value = call(app, "alerts.summary", json!({}), BUDGET).await?;
+    one("alerts.summary", value)
+}
+
 pub async fn alerts(app: &App, params: Value) -> Result<Vec<Alert>, Gap> {
     let value = call(app, "alerts.list", params, BUDGET).await?;
     rows("alerts.list", value, "alerts")
@@ -310,9 +341,12 @@ impl ChangeSummary {
     /// `None` when the summary carries neither.
     pub fn devices(&self) -> Option<Vec<String>> {
         self.device_ids.clone().or_else(|| {
-            self.targets
-                .as_ref()
-                .map(|targets| targets.iter().map(|target| target.device_id.clone()).collect())
+            self.targets.as_ref().map(|targets| {
+                targets
+                    .iter()
+                    .map(|target| target.device_id.clone())
+                    .collect()
+            })
         })
     }
 
@@ -429,7 +463,11 @@ impl ChangeDetail {
 }
 
 pub async fn changes(app: &App, params: Value) -> Result<Vec<ChangeSummary>, Gap> {
-    let value = call(app, "changes.list", params, BUDGET).await?;
+    change_rows(call(app, "changes.list", params, BUDGET).await?)
+}
+
+/// `changes.list`'s answer, for callers that made the call themselves.
+pub fn change_rows(value: Value) -> Result<Vec<ChangeSummary>, Gap> {
     rows("changes.list", value, "changes")
 }
 
@@ -669,7 +707,10 @@ mod tests {
 
     #[test]
     fn lists_are_read_bare_or_under_their_key() {
-        assert_eq!(list("m", json!([1, 2]), "items").unwrap(), [json!(1), json!(2)]);
+        assert_eq!(
+            list("m", json!([1, 2]), "items").unwrap(),
+            [json!(1), json!(2)]
+        );
         assert_eq!(
             list("m", json!({"items": [1], "total": 9}), "items").unwrap(),
             [json!(1)]
@@ -677,7 +718,10 @@ mod tests {
         let gap = list("alerts.list", json!({"rows": []}), "alerts").unwrap_err();
         assert_eq!(gap.reason, Reason::Malformed);
         assert!(gap.message.contains("`alerts.list`") && gap.message.contains("`alerts`"));
-        assert_eq!(list("m", json!("text"), "items").unwrap_err().reason, Reason::Malformed);
+        assert_eq!(
+            list("m", json!("text"), "items").unwrap_err().reason,
+            Reason::Malformed
+        );
     }
 
     #[test]
@@ -704,7 +748,11 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(gap.reason, Reason::Malformed);
-        assert!(gap.message.contains("item 1") && gap.message.contains("started_at"), "{}", gap.message);
+        assert!(
+            gap.message.contains("item 1") && gap.message.contains("started_at"),
+            "{}",
+            gap.message
+        );
 
         // A severity ops does not know is not mapped to a neighbour.
         let gap = rows::<Alert>(
@@ -744,9 +792,18 @@ mod tests {
         assert!(alert(100, None).active_in(100, 200));
         assert!(alert(50, None).active_in(100, 200), "still firing");
         assert!(alert(199, Some(500)).active_in(100, 200));
-        assert!(!alert(200, None).active_in(100, 200), "fired at the end of the window");
-        assert!(alert(10, Some(100)).active_in(100, 200), "resolved at the start");
-        assert!(!alert(10, Some(99)).active_in(100, 200), "resolved before it");
+        assert!(
+            !alert(200, None).active_in(100, 200),
+            "fired at the end of the window"
+        );
+        assert!(
+            alert(10, Some(100)).active_in(100, 200),
+            "resolved at the start"
+        );
+        assert!(
+            !alert(10, Some(99)).active_in(100, 200),
+            "resolved before it"
+        );
     }
 
     #[test]
@@ -756,7 +813,10 @@ mod tests {
             json!({"id": "c", "title": "t", "state": "applied", "created_at": 1, "updated_at": 2, "device_ids": ["d1", "d2"]}),
         )
         .unwrap();
-        assert_eq!(with_ids.devices(), Some(vec!["d1".to_string(), "d2".to_string()]));
+        assert_eq!(
+            with_ids.devices(),
+            Some(vec!["d1".to_string(), "d2".to_string()])
+        );
         let with_targets: ChangeSummary = one(
             "changes.list",
             json!({"id": "c", "title": "t", "state": "failed", "created_at": 1, "updated_at": 2, "targets": [{"device_id": "d3", "intent": {"type": "lines", "lines": []}}]}),
@@ -778,9 +838,16 @@ mod tests {
                    "targets": [{"device_id": "d1", "result": {"state": "applied", "started_at": 10, "finished_at": 0, "after_version_id": 7}}, {"device_id": "d2"}]}),
         )
         .unwrap();
-        assert_eq!(detail.summary().devices(), Some(vec!["d1".to_string(), "d2".to_string()]));
+        assert_eq!(
+            detail.summary().devices(),
+            Some(vec!["d1".to_string(), "d2".to_string()])
+        );
         let result = detail.targets[0].result.as_ref().unwrap();
-        assert_eq!((result.started(), result.finished()), (Some(10), None), "0 is not a time");
+        assert_eq!(
+            (result.started(), result.finished()),
+            (Some(10), None),
+            "0 is not a time"
+        );
         assert!(result.touched_device());
     }
 }
