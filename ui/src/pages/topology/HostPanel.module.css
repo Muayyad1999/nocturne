@@ -1,0 +1,173 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nothing h3,
+.answer h3 {
+  margin: 0 0 6px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.nothing h3 {
+  color: var(--text-1);
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.nothing p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.identity span {
+  display: flex;
+  flex-direction: column;
+}
+
+.identity small {
+  color: var(--text-3);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.identity b {
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.best {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+
+.best[data-unsure] {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+}
+
+.best h3 {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.port {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.port:hover {
+  color: var(--accent);
+}
+
+.port b {
+  font-weight: 600;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.seen {
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
+.why {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.others ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.others li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-2);
+}
+
+.others .port {
+  font-size: 12px;
+}
+
+.others .why {
+  margin: 0;
+  font-size: 10.5px;
+}
+
+.kind {
+  color: var(--text-3);
+  font-size: 10.5px;
+  text-transform: lowercase;
+}
+
+.how ol {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.how li {
+  margin-bottom: 3px;
+}

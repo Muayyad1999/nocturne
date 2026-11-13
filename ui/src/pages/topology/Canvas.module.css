@@ -1,0 +1,388 @@
+.viewport {
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.background {
+  fill: transparent;
+}
+
+/* ------------------------------------------------------------------ groups */
+
+/* A site, a subnet or a lab: a quiet band behind the nodes that belong to it. */
+.group rect {
+  fill: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.group text {
+  fill: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.group[data-kind='subnet'] rect {
+  stroke: color-mix(in srgb, var(--info) 45%, transparent);
+  stroke-dasharray: 4 4;
+}
+
+.group[data-kind='lab'] rect {
+  stroke: color-mix(in srgb, var(--maint) 45%, transparent);
+  stroke-dasharray: 8 5;
+}
+
+.group[data-kind='lab'] text {
+  fill: var(--maint);
+}
+
+/* ------------------------------------------------------------------- links */
+
+.links {
+  pointer-events: stroke;
+}
+
+.links[data-dimmed] .link:not([data-path]) {
+  opacity: 0.25;
+}
+
+.link .hit {
+  stroke: transparent;
+  stroke-width: 16;
+  fill: none;
+  cursor: pointer;
+}
+
+.link .wire {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/*
+ * Colour says where the claim came from; the dash pattern says how strong the
+ * claim is. The patterns are the ones the backend's own SVG export uses, so a
+ * drawing exported from this screen reads the same way as the screen.
+ */
+.link[data-source='reported'] .wire {
+  stroke: var(--text-3);
+}
+
+.link[data-source='derived'] .wire {
+  stroke: var(--info);
+}
+
+.link[data-source='drawn'] .wire {
+  stroke: var(--accent);
+}
+
+.link[data-source='lab'] .wire {
+  stroke: var(--maint);
+}
+
+/* Confirmed: both ends reported it. A whole line. */
+.link[data-confidence='confirmed'] .wire {
+  stroke-dasharray: none;
+}
+
+/* One-sided: only one end reported it. A broken line, and warmer. */
+.link[data-confidence='one_sided'] .wire {
+  stroke-dasharray: 7 4;
+  stroke: var(--warn);
+}
+
+/* Inferred: nobody reported it; it was worked out. Barely a line at all. */
+.link[data-confidence='inferred'] .wire {
+  stroke-dasharray: 2 3;
+  stroke: var(--info);
+}
+
+/* A folded port-channel stands for several cables, so it is drawn thicker. */
+.link[data-aggregate] .wire {
+  stroke-width: 3.4;
+}
+
+/* A link the devices say is down: red, and still drawn in its own pattern. */
+.link[data-status='down'] .wire {
+  stroke: var(--crit);
+}
+
+.link[data-selected] .wire {
+  stroke: var(--accent-strong);
+  stroke-width: 3.4;
+}
+
+.link:hover .wire {
+  stroke-width: 3;
+}
+
+/*
+ * The word on the line. Every link that is not one both ends reported says so
+ * in writing as well as in its pattern, because a dash pattern alone is a
+ * legend lookup and this is the part people must not get wrong. Drawn after
+ * the cards, so a short link's word is never half under one.
+ */
+.chips {
+  pointer-events: none;
+}
+
+.chips[data-dimmed] text {
+  opacity: 0.3;
+}
+
+.chips text {
+  font-size: 9px;
+  font-weight: 500;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  /* A halo in the canvas colour keeps the word legible over the line. */
+  paint-order: stroke;
+  stroke: var(--bg-0);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.chips text[data-confidence='one_sided'] {
+  fill: var(--warn);
+}
+
+.chips text[data-confidence='inferred'] {
+  fill: var(--info);
+}
+
+.chips text[data-source='drawn'] {
+  fill: var(--accent);
+}
+
+.chips text[data-source='lab'] {
+  fill: var(--maint);
+}
+
+.port {
+  fill: var(--text-3);
+  paint-order: stroke;
+  stroke: var(--bg-0);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------------- path */
+
+.trace {
+  pointer-events: none;
+}
+
+.traceLine {
+  stroke: var(--accent);
+  stroke-width: 6;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+
+.hop circle {
+  fill: var(--accent);
+  stroke: var(--bg-0);
+  stroke-width: 2;
+}
+
+.hop text {
+  fill: var(--bg-0);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+/* Where the data ran out: a stub that goes nowhere, and says so. */
+.gap line {
+  stroke: var(--warn);
+  stroke-width: 3;
+  stroke-dasharray: 5 6;
+  stroke-linecap: round;
+}
+
+.gap circle {
+  fill: none;
+  stroke: var(--warn);
+  stroke-width: 2;
+  stroke-dasharray: 3 3;
+}
+
+.gap text {
+  fill: var(--warn);
+  font-size: 11px;
+  font-weight: 500;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg-0);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+/* ------------------------------------------------------------------- nodes */
+
+.node {
+  cursor: grab;
+  outline: none;
+}
+
+.node[data-dimmed] {
+  opacity: 0.3;
+}
+
+.node .body {
+  fill: var(--bg-2);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.node:hover .body {
+  fill: var(--bg-3);
+}
+
+.node[data-selected] .body {
+  fill: var(--bg-4);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.node:focus-visible .body {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+/* Not in the inventory: a card that is not quite a device, drawn as one. */
+.node[data-unmanaged] .body {
+  stroke-dasharray: 6 4;
+  fill: color-mix(in srgb, var(--bg-2) 65%, transparent);
+}
+
+.node[data-lab] .body {
+  stroke: color-mix(in srgb, var(--maint) 55%, var(--line-strong));
+}
+
+.statusBar {
+  fill: var(--idle);
+}
+
+.node[data-status='up'] .statusBar {
+  fill: var(--ok);
+}
+
+.node[data-status='down'] .statusBar {
+  fill: var(--crit);
+}
+
+.glyph {
+  color: var(--text-2);
+  fill: none;
+  stroke: currentcolor;
+}
+
+.node[data-kind='router'] .glyph,
+.node[data-kind='firewall'] .glyph {
+  color: var(--text-1);
+}
+
+.node[data-lab] .glyph {
+  color: var(--maint);
+}
+
+.name {
+  fill: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  dominant-baseline: middle;
+}
+
+.second {
+  fill: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  dominant-baseline: middle;
+}
+
+.pill rect {
+  fill: var(--bg-3);
+  stroke: none;
+}
+
+.pill text {
+  font-size: 8px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  letter-spacing: 0.04em;
+}
+
+.pill[data-tone='lab'] rect {
+  fill: color-mix(in srgb, var(--maint) 22%, transparent);
+}
+
+.pill[data-tone='lab'] text {
+  fill: var(--maint);
+}
+
+.pill[data-tone='unmanaged'] rect {
+  fill: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.pill[data-tone='unmanaged'] text {
+  fill: var(--accent);
+  font-size: 11px;
+}
+
+.pill[data-tone='stale'] rect {
+  fill: color-mix(in srgb, var(--warn) 20%, transparent);
+}
+
+.pill[data-tone='stale'] text {
+  fill: var(--warn);
+}
+
+.alerts circle {
+  fill: var(--crit);
+}
+
+.alerts text {
+  fill: var(--bg-0);
+  font-size: 9px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+/* What `locate.host` decided, written under the card it decided on. */
+.hostMark {
+  fill: var(--accent);
+  font-size: 10px;
+  font-weight: 500;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg-0);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.node[data-host='access'] .body {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.node[data-host='passing'] .body {
+  stroke: color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+  stroke-dasharray: 3 3;
+}
+
+.node[data-host='passing'] .hostMark {
+  fill: var(--text-3);
+}

@@ -1,0 +1,129 @@
+/* `Page flush` has no padding of its own, so the toolbar brings its own. */
+.toolbar {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/*
+ * A control in a flex row is full width unless it is told otherwise, and the
+ * design system's controls are `width: 100%`: without this each select took a
+ * row of its own and the toolbar was three rows tall.
+ */
+.filter {
+  flex: none;
+  width: 148px;
+}
+
+.search {
+  flex: none;
+  width: 196px;
+}
+
+.loading {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+}
+
+.body {
+  container: topologybody / inline-size;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.canvasWrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+/* What the drawing contains, under the canvas's own zoom controls. */
+.stats {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 2;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-1) 90%, transparent);
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 320px;
+  border-left: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  padding: 5px 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-1);
+}
+
+.tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text-1);
+}
+
+.sideBody {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* The Inspector is itself a panel; inside the side column it only needs to fill it. */
+.sideBody > :global(aside) {
+  width: auto;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: none;
+}
+
+/*
+ * With the assistant dock open at 1280 the body is 684px wide, and a 320px
+ * panel would leave the drawing a strip. A container query needs a container,
+ * which is why `.body` declares one.
+ */
+@container topologybody (width < 880px) {
+  .side {
+    width: 268px;
+  }
+
+  .tab {
+    padding: 5px 7px;
+  }
+}
