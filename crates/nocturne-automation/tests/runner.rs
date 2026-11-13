@@ -761,3 +761,35 @@ async fn cancelling_a_run_stops_it_and_the_devices_it_never_reached_say_so() {
         .clone();
     assert_eq!(run["cancelled"], json!(true));
 }
+
+/// A finished run has to stay joined to its job, because the job holds the
+/// per-device log and the run record is what a person opens afterwards. The
+/// id is only known once `jobs::start` has returned, which is after the
+/// record the job closure owns was cloned — so this is a regression test for
+/// storing the stale copy at the end.
+#[tokio::test]
+async fn a_finished_run_still_names_the_job_that_carried_it_out() {
+    let lab = lab(&["SW1"]).await;
+    let started = lab
+        .app
+        .rpc(
+            "runner.run",
+            json!({"filter": {"site": "Lab"}, "commands": ["show version"], "name": "Versions"}),
+        )
+        .await
+        .expect("the run starts");
+    let job_id = started["job_id"].as_str().expect("a job id").to_string();
+    let run_id = started["run_id"].as_str().expect("a run id").to_string();
+    common::finished(&lab.app, &started).await;
+
+    let run = lab
+        .app
+        .rpc("runner.get", json!({"run_id": run_id}))
+        .await
+        .expect("the finished run is readable");
+    assert_eq!(
+        run["run"]["job_id"].as_str(),
+        Some(job_id.as_str()),
+        "the stored run should still point at its job after it has finished"
+    );
+}

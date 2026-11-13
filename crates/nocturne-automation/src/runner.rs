@@ -217,6 +217,10 @@ pub fn fan_out_then(
                 result.ok = result.state == DeviceState::Ok;
             }
             record.cancelled = ctx.is_cancelled();
+            // From the job itself, not from the copy taken before `jobs::start`
+            // returned: that one was cloned while the id was still empty, so
+            // storing it here is what loses a finished run's link to its log.
+            record.job_id = ctx.id().to_string();
             finish(&app_for_job, &mut record, &results)?;
             ctx.info(format!(
                 "{} ok, {} failed, {} unreached, {} skipped",

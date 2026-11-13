@@ -10,9 +10,13 @@
  * tasks,schedules,triggers,ansible,settings}.rs`.
  *
  * Each RPC method is documented as `method` {@link Params} → {@link Result}.
- * A field written as absent (`?`) is genuinely missing from the response, not
- * `null`: `parsed?` absent means "no parser covers this command", which is a
- * different thing from "the parser matched nothing".
+ * A field written as absent (`?`) may arrive either genuinely absent or as an
+ * explicit `null`, and the two mean the same thing: serde omits a `None` only
+ * where the struct asks it to, and most of these do not. So test for a value,
+ * never for `undefined` — `given()` in `pages/automation/given.ts` is the
+ * guard. What the `?` does say is that the *absence itself* carries meaning
+ * worth distinguishing: `parsed` with no value means "no parser covers this
+ * command", which is a different thing from "the parser matched nothing".
  *
  * Two things to keep in mind when building screens on this:
  *
@@ -66,6 +70,25 @@ export interface Selector {
   device_ids?: string[];
   filter?: Filter;
   exclude_device_ids?: string[];
+}
+
+// ------------------------------------------------------------ small shapes
+
+/**
+ * `{id}` — what every `*.get` and `*.delete` in this feature takes.
+ *
+ * (Added by the Automation screen: the method list below documented the shape
+ * but nothing named it. `monitor.ts` has the same two types for the same
+ * reason; a third screen wanting them is the point at which they should move
+ * into `core.ts`.)
+ */
+export interface IdParams {
+  id: string;
+}
+
+/** What a `*.delete` answers. */
+export interface Deleted {
+  deleted: boolean;
 }
 
 // -------------------------------------------------------------------- runs

@@ -1,0 +1,29 @@
+.editor {
+  position: relative;
+  min-width: 0;
+}
+
+.editor :global(.cm-editor) {
+  min-height: var(--editor-min-height, 256px);
+  max-height: 520px;
+}
+
+.editor :global(.cm-scroller) {
+  overflow: auto;
+}
+
+/* The hint while the box is empty: drawn behind the (empty) document. */
+.editor[data-placeholder]::after {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: var(--sp-8);
+  left: 56px;
+  z-index: 1;
+  padding-top: 1px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 20px;
+  white-space: pre;
+  pointer-events: none;
+}
