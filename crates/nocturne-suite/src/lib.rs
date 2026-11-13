@@ -17,6 +17,7 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_terminal::init(builder);
     nocturne_config::init(builder);
     nocturne_changes::init(builder);
+    nocturne_lab::init(builder);
 }
 
 /// Assemble and start the application.
@@ -68,6 +69,14 @@ mod tests {
             "changes.rollback",
             "changes.assistant_apply",
             "changes.preview",
+            // the lab
+            "labs.create",
+            "labs.start",
+            "labs.node.add",
+            "labs.link.add",
+            "labs.connectivity",
+            "labs.expose",
+            "labs.twin",
             "config.drift",
         ] {
             assert!(

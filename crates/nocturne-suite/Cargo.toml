@@ -12,6 +12,7 @@ publish.workspace = true
 nocturne-app.workspace = true
 nocturne-changes.workspace = true
 nocturne-config.workspace = true
+nocturne-lab.workspace = true
 nocturne-terminal.workspace = true
 
 [dev-dependencies]

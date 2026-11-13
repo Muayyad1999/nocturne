@@ -9,21 +9,22 @@ publish.workspace = true
 
 [dependencies]
 nocturne-app.workspace = true
+# The simulator this crate gives a life to.
+nocturne-netsim.workspace = true
+# `Connection` for consoles, and the SSH and Telnet servers `labs.expose` uses.
+nocturne-transport.workspace = true
+# Collected models and interface-name normalisation, for `labs.twin`.
 nocturne-drivers.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-futures.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+# Lab files are shareable as YAML as well as JSON.
+serde_yaml_ng.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
-nocturne-netsim.workspace = true
-nocturne-design.workspace = true
-nocturne-transport.workspace = true
-bytes.workspace = true
-serde_yaml_ng.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
