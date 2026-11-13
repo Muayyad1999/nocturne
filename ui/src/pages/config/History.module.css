@@ -1,0 +1,240 @@
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+  flex: 1;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.toolbar > :first-child {
+  flex: 0 1 460px;
+  min-width: 260px;
+}
+
+/* A native select stretches to its flex line unless it is told otherwise. */
+.kind {
+  width: 190px;
+  flex: 0 0 auto;
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.split {
+  min-height: 0;
+  flex: 1;
+}
+
+.emptyLine {
+  margin: 0 0 var(--sp-6);
+  max-width: 62ch;
+}
+
+/* ----------------------------------------------------------- version list */
+
+.versions {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.versionsHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+  color: var(--text-2);
+}
+
+.hint {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.versionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.version {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+}
+
+.version:hover {
+  background: var(--bg-3);
+}
+
+.versionOn {
+  background: var(--accent-soft);
+}
+
+.versionButton {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-2) 0;
+  background: none;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.versionButton:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-control);
+}
+
+.versionWhen {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.pin {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.versionMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* ------------------------------------------------------------ right pane */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-height: 0;
+  height: 100%;
+  padding-left: var(--sp-12);
+}
+
+.paneHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.paneTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.paneVersion {
+  font-weight: 400;
+  font-size: var(--fs-11);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.find {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-left: auto;
+}
+
+.find > :first-child {
+  width: 220px;
+}
+
+.findCount {
+  font-size: var(--fs-11);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-8) var(--sp-16);
+  margin: 0;
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+}
+
+.meta dt {
+  font-size: var(--fs-11);
+  color: var(--text-3);
+  margin-bottom: 2px;
+}
+
+.meta dd {
+  margin: 0;
+  font-size: var(--fs-12);
+  color: var(--text-1);
+}
+
+.meta code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.emptyCapture {
+  display: flex;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.emptyCapture p {
+  margin: 0;
+  max-width: 70ch;
+  line-height: 1.5;
+}
+
+.emptyCapture code {
+  font-family: var(--font-mono);
+}
+

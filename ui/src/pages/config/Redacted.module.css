@@ -1,0 +1,64 @@
+.note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+}
+
+.note[data-tone='maint'] {
+  border-color: color-mix(in oklab, var(--maint) 35%, transparent);
+  background: var(--maint-soft);
+}
+
+.note[data-tone='warn'] {
+  border-color: color-mix(in oklab, var(--warn) 35%, transparent);
+  background: var(--warn-soft);
+}
+
+.note[data-tone='crit'] {
+  border-color: color-mix(in oklab, var(--crit) 40%, transparent);
+  background: var(--crit-soft);
+}
+
+.icon {
+  flex: none;
+  color: var(--text-2);
+}
+
+.text {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.lead {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.lead::after {
+  content: ' · ';
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.marker {
+  font-family: var(--font-mono);
+  color: var(--maint);
+  background: var(--maint-soft);
+  border: 1px solid color-mix(in oklab, var(--maint) 45%, transparent);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.marker[data-weak] {
+  color: var(--crit);
+  background: var(--crit-soft);
+  border-color: color-mix(in oklab, var(--crit) 45%, transparent);
+}

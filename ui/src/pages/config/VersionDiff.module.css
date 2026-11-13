@@ -1,0 +1,158 @@
+.diff {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  min-height: 34px;
+}
+
+.counts {
+  display: flex;
+  gap: var(--sp-6);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  flex: none;
+}
+
+.stat[data-kind='add'],
+.sectionCounts [data-kind='add'] {
+  color: var(--ok);
+}
+
+.stat[data-kind='remove'],
+.sectionCounts [data-kind='remove'] {
+  color: var(--crit);
+}
+
+.sections {
+  display: flex;
+  gap: var(--sp-4);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  align-items: center;
+}
+
+.sections > * {
+  min-width: 0;
+}
+
+.sectionName {
+  display: inline-block;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.sectionCounts {
+  display: inline-flex;
+  gap: var(--sp-4);
+  margin-left: var(--sp-4);
+  font-family: var(--font-mono);
+}
+
+.quiet {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.nothing {
+  margin: 0;
+  padding: var(--sp-16);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.scroll:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: calc(var(--focus-offset) * -1);
+}
+
+.table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: 18px;
+}
+
+.row[data-kind='add'] {
+  background: color-mix(in oklab, var(--ok) 12%, transparent);
+}
+
+.row[data-kind='remove'] {
+  background: color-mix(in oklab, var(--crit) 12%, transparent);
+}
+
+.row[data-kind='change'] {
+  background: color-mix(in oklab, var(--warn) 10%, transparent);
+}
+
+.row[data-kind='gap'] {
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+
+.number {
+  width: 1%;
+  padding: 0 var(--sp-6);
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.sign {
+  width: 1%;
+  padding: 0 var(--sp-4);
+  color: var(--text-2);
+  user-select: none;
+}
+
+.text {
+  padding: 0 var(--sp-8) 0 var(--sp-4);
+  white-space: pre;
+  color: var(--text-1);
+}
+
+.gap {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.table[data-split] .text {
+  width: 50%;
+  max-width: 0;
+  overflow: hidden;
+}
+
+.table[data-split] .text[data-empty] {
+  background: color-mix(in oklab, var(--bg-0) 60%, transparent);
+}
+
+.table[data-split] .text[data-side='left'] {
+  border-right: 1px solid var(--line);
+}

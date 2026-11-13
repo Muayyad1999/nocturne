@@ -1,0 +1,12 @@
+.view {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-0);
+}
+
+.view :global(.cm-editor) {
+  height: 100%;
+}

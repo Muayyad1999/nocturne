@@ -1,0 +1,249 @@
+.compliance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.head {
+  display: flex;
+  gap: var(--sp-16);
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.stats {
+  display: flex;
+  gap: var(--sp-12);
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.stats > * {
+  flex: 1 1 110px;
+  min-width: 110px;
+}
+
+.runBar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.scoreNote {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: flex-start;
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.scoreNote[data-tone='ok'] {
+  border-color: color-mix(in oklab, var(--ok) 30%, transparent);
+  background: var(--ok-soft);
+}
+
+.scoreNote[data-tone='warn'] {
+  border-color: color-mix(in oklab, var(--warn) 30%, transparent);
+  background: var(--warn-soft);
+}
+
+.scoreNote[data-tone='crit'] {
+  border-color: color-mix(in oklab, var(--crit) 30%, transparent);
+  background: var(--crit-soft);
+}
+
+.scoreNote strong {
+  color: var(--text-1);
+}
+
+.filters {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* A native select stretches to its flex line unless it is told otherwise. */
+.filter {
+  width: 170px;
+  flex: 0 0 auto;
+}
+
+/* --------------------------------------------------------------- policies */
+
+.policies {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.policy {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  padding: var(--sp-8);
+  background: var(--bg-1);
+}
+
+.policyHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex-wrap: wrap;
+}
+
+.policyName {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.policyName:hover {
+  color: var(--accent);
+}
+
+.policyName:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-badge);
+}
+
+.policyDescription {
+  margin: var(--sp-4) 0 var(--sp-8);
+  font-size: var(--fs-12);
+  color: var(--text-2);
+  max-width: 90ch;
+}
+
+.rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--sp-4);
+}
+
+.rule {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  padding: var(--sp-6);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rule:hover {
+  background: var(--bg-3);
+  border-color: var(--line-strong);
+}
+
+.rule:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.rule > :first-child {
+  align-self: flex-start;
+}
+
+.ruleTitle {
+  font-size: var(--fs-12);
+  color: var(--text-1);
+}
+
+.ruleCheck {
+  font-size: var(--fs-11);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- findings */
+
+.deviceLink,
+.ruleLink {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.deviceLink:hover,
+.ruleLink:hover {
+  text-decoration: underline;
+}
+
+.deviceLink:focus-visible,
+.ruleLink:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-badge);
+}
+
+.detail {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  color: var(--text-2);
+}
+
+/* Block, not inline-flex: an inline-flex box cannot be ellipsised, and a
+   redaction marker cut in half reads as a broken value. */
+.evidence {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.evidenceNo {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  margin-right: var(--sp-6);
+}
+
+.missing {
+  color: var(--warn);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.quiet {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}

@@ -1,0 +1,157 @@
+.backups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.nameText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.never {
+  color: var(--text-3);
+}
+
+.problem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--crit);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.skipped {
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  margin: 0;
+}
+
+/* ------------------------------------------------------------- unsaved */
+
+.unsaved {
+  list-style: none;
+  margin: 0 0 var(--sp-6);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.unsaved li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: var(--fs-12);
+}
+
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.linkish:hover {
+  text-decoration: underline;
+}
+
+.linkish:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-badge);
+}
+
+.unsavedDiff {
+  display: inline-flex;
+  gap: var(--sp-6);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.unsavedDiff [data-kind='add'] {
+  color: var(--ok);
+}
+
+.unsavedDiff [data-kind='remove'] {
+  color: var(--crit);
+}
+
+/* ------------------------------------------------------------- job report */
+
+.jobActions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.jobRows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-height: 260px;
+  overflow: auto;
+}
+
+.jobRows li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  font-size: var(--fs-12);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.jobRows li:last-child {
+  border-bottom: 0;
+}
+
+.jobDevice {
+  font-weight: 500;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.jobDetail {
+  color: var(--text-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.jobNote {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--warn);
+}

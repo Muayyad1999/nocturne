@@ -1,0 +1,19 @@
+.page {
+  container-type: inline-size;
+}
+
+/*
+ * The primary action keeps to the right even when the toolbar wraps: a
+ * ToolbarSpacer takes the whole first row when it wraps, which would leave
+ * the action alone on the left of the second row.
+ */
+.primary {
+  margin-left: auto;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
