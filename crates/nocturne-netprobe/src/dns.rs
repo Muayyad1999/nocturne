@@ -375,7 +375,7 @@ async fn lookup_at(
             Ok(length) => length,
             Err(error) => {
                 channels[index] = Channel::Done;
-                last_error = ProbeError::from_network_io(error);
+                last_error = ProbeError::from_datagram_io(error);
                 next_send = Instant::now();
                 continue;
             }
@@ -428,14 +428,14 @@ async fn transmit(
         socket
             .connect(server)
             .await
-            .map_err(ProbeError::from_network_io)?;
+            .map_err(ProbeError::from_datagram_io)?;
         *channel = Channel::Open(socket);
     }
     if let Channel::Open(socket) = channel {
         socket
             .send(wire)
             .await
-            .map_err(ProbeError::from_network_io)?;
+            .map_err(ProbeError::from_datagram_io)?;
     }
     Ok(())
 }
@@ -483,7 +483,7 @@ async fn tcp_exchange(
     let exchange = async {
         let mut stream = TcpStream::connect(server)
             .await
-            .map_err(ProbeError::from_network_io)?;
+            .map_err(ProbeError::from_datagram_io)?;
         let length = u16::try_from(wire.len())
             .map_err(|_| ProbeError::invalid("the DNS query is too long"))?;
         let mut framed = Vec::with_capacity(wire.len() + 2);

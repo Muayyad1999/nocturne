@@ -140,7 +140,7 @@ fn send_error(error: io::Error, target: IpAddr, payload: usize) -> ProbeError {
              need an interface scope, which a bare address cannot carry"
         ));
     }
-    ProbeError::from_network_io(error)
+    ProbeError::from_datagram_io(error)
 }
 
 fn reply(sent_at: Instant, received_at: Instant, ttl: Option<u8>, payload_len: usize) -> PingReply {
@@ -250,7 +250,7 @@ async fn datagram_event(socket: &UdpSocket, buffer: &mut [u8]) -> Result<Event, 
             match socket.try_io(Interest::ERROR, || linux::recv_error(socket, &mut quoted)) {
                 Ok(error) => return Ok(Event::Unreachable(describe_queued(&error))),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(ProbeError::from_network_io(error)),
+                Err(error) => return Err(ProbeError::from_datagram_io(error)),
             }
         }
         if ready.is_readable() {
@@ -263,7 +263,7 @@ async fn datagram_event(socket: &UdpSocket, buffer: &mut [u8]) -> Result<Event, 
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(ProbeError::from_network_io(error)),
+                Err(error) => return Err(ProbeError::from_datagram_io(error)),
             }
         }
     }
@@ -285,7 +285,7 @@ async fn datagram_event(socket: &UdpSocket, buffer: &mut [u8]) -> Result<Event, 
     let (len, from) = socket
         .recv_from(buffer)
         .await
-        .map_err(ProbeError::from_network_io)?;
+        .map_err(ProbeError::from_datagram_io)?;
     Ok(Event::Datagram {
         len,
         from: Some(from.ip()),

@@ -850,7 +850,8 @@ mod tests {
 
     use super::*;
     use crate::tls::test_support::{
-        NOW, TestCa, VALID_FROM, VALID_UNTIL, self_signed, server_config, tls_server,
+        EXPIRED_FROM, EXPIRED_UNTIL, TestCa, days_left, days_until, now, self_signed,
+        server_config, tls_server, valid_from, valid_until,
     };
     use pretty_assertions::assert_eq;
     use tokio::net::TcpListener;
@@ -1133,7 +1134,7 @@ mod tests {
             reply("HTTP/1.1 200 OK\r\nServer: TestServer/1.0\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, world!")
         })
         .await;
-        let report = check(&format!("{base}/status?verbose=1"), &quick(), NOW)
+        let report = check(&format!("{base}/status?verbose=1"), &quick(), now())
             .await
             .unwrap();
         assert_eq!(report.url, format!("{base}/status?verbose=1"));
@@ -1192,7 +1193,7 @@ mod tests {
             )
         })
         .await;
-        let report = check(&base, &quick(), NOW).await.unwrap();
+        let report = check(&base, &quick(), now()).await.unwrap();
         assert_eq!(report.status, 200);
         assert_eq!(report.body_bytes, 7 + 17);
         assert_eq!(report.body_preview, "MozillaDeveloper Network");
@@ -1206,7 +1207,7 @@ mod tests {
             keep_open: false,
         })
         .await;
-        let report = check(&base, &quick(), NOW).await.unwrap();
+        let report = check(&base, &quick(), now()).await.unwrap();
         assert_eq!(report.version, "HTTP/1.0");
         assert_eq!(report.body_bytes, 18);
         assert_eq!(report.body_preview, "line one\nline two\n");
@@ -1225,7 +1226,7 @@ mod tests {
             }
         })
         .await;
-        let report = check(&base, &quick(), NOW).await.unwrap();
+        let report = check(&base, &quick(), now()).await.unwrap();
         assert_eq!(report.status, 200);
         assert_eq!(report.url, format!("{base}/"));
         assert_eq!(report.final_url, format!("{base}/final"));
@@ -1268,7 +1269,7 @@ mod tests {
                 follow_redirects: 3,
                 ..quick()
             },
-            NOW,
+            now(),
         )
         .await
         .unwrap();
@@ -1289,7 +1290,7 @@ mod tests {
                 follow_redirects: 0,
                 ..quick()
             },
-            NOW,
+            now(),
         )
         .await
         .unwrap();
@@ -1325,7 +1326,7 @@ mod tests {
             ],
             ..quick()
         };
-        let report = check(&format!("{base}/submit"), &options, NOW)
+        let report = check(&format!("{base}/submit"), &options, now())
             .await
             .unwrap();
         assert_eq!(report.status, 200);
@@ -1367,7 +1368,7 @@ mod tests {
                 method: "HEAD".to_owned(),
                 ..quick()
             },
-            NOW,
+            now(),
         )
         .await
         .unwrap();
@@ -1379,14 +1380,14 @@ mod tests {
                 .unwrap()
                 .starts_with("HEAD / HTTP/1.1\r\n")
         );
-        let empty = check(&format!("{base}/empty"), &quick(), NOW)
+        let empty = check(&format!("{base}/empty"), &quick(), now())
             .await
             .unwrap();
         assert_eq!(
             (empty.status, empty.body_bytes, empty.reason.as_str()),
             (204, 0, "No Content")
         );
-        let cached = check(&format!("{base}/cached"), &quick(), NOW)
+        let cached = check(&format!("{base}/cached"), &quick(), now())
             .await
             .unwrap();
         assert_eq!((cached.status, cached.body_bytes), (304, 0));
@@ -1398,7 +1399,7 @@ mod tests {
             reply("HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
         })
         .await;
-        let report = check(&base, &quick(), NOW).await.unwrap();
+        let report = check(&base, &quick(), now()).await.unwrap();
         assert_eq!((report.status, report.body_preview.as_str()), (200, "hi"));
         assert_eq!(report.headers.len(), 1);
     }
@@ -1437,7 +1438,7 @@ mod tests {
         })
         .await;
         for path in ["/length", "/chunked", "/close"] {
-            let all = check(&format!("{base}{path}"), &quick(), NOW)
+            let all = check(&format!("{base}{path}"), &quick(), now())
                 .await
                 .unwrap();
             assert_eq!(all.body_bytes, 300_000, "{path}");
@@ -1447,7 +1448,7 @@ mod tests {
                 max_body_bytes: 70_000,
                 ..quick()
             };
-            let some = check(&format!("{base}{path}"), &limited, NOW)
+            let some = check(&format!("{base}{path}"), &limited, now())
                 .await
                 .unwrap();
             assert_eq!(some.body_bytes, 70_000, "{path}");
@@ -1456,7 +1457,7 @@ mod tests {
                 max_body_bytes: 0,
                 ..quick()
             };
-            let nothing = check(&format!("{base}{path}"), &none, NOW).await.unwrap();
+            let nothing = check(&format!("{base}{path}"), &none, now()).await.unwrap();
             assert_eq!(
                 (nothing.body_bytes, nothing.body_preview.as_str()),
                 (0, ""),
@@ -1471,7 +1472,7 @@ mod tests {
             reply("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Length: 11\r\n\r\nmaintenance")
         })
         .await;
-        let report = check(&base, &quick(), NOW).await.unwrap();
+        let report = check(&base, &quick(), now()).await.unwrap();
         assert_eq!(
             (report.status, report.reason.as_str()),
             (503, "Service Unavailable")
@@ -1510,7 +1511,7 @@ mod tests {
                 keep_open,
             })
             .await;
-            let error = check(&base, &quick(), NOW).await.unwrap_err();
+            let error = check(&base, &quick(), now()).await.unwrap_err();
             assert!(
                 matches!(error, ProbeError::Protocol(_)),
                 "{expected}: {error:?}"
@@ -1527,7 +1528,7 @@ mod tests {
             }
         })
         .await;
-        let error = check(&base, &quick(), NOW).await.unwrap_err();
+        let error = check(&base, &quick(), now()).await.unwrap_err();
         assert!(error.to_string().contains("larger than 64 KiB"), "{error}");
     }
 
@@ -1543,7 +1544,7 @@ mod tests {
                 timeout_ms: 300,
                 ..quick()
             },
-            NOW,
+            now(),
         )
         .await
         .unwrap_err();
@@ -1551,12 +1552,12 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(listener);
 
-        let error = check(&format!("http://127.0.0.1:{port}/"), &quick(), NOW)
+        let error = check(&format!("http://127.0.0.1:{port}/"), &quick(), now())
             .await
             .unwrap_err();
         assert!(matches!(error, ProbeError::Refused), "{error:?}");
         assert!(matches!(
-            check("http://no-such-host.invalid/", &quick(), NOW).await,
+            check("http://no-such-host.invalid/", &quick(), now()).await,
             Err(ProbeError::Resolve)
         ));
 
@@ -1587,7 +1588,7 @@ mod tests {
             },
         ];
         for options in bad {
-            let error = check("http://127.0.0.1:9/", &options, NOW)
+            let error = check("http://127.0.0.1:9/", &options, now())
                 .await
                 .unwrap_err();
             assert!(
@@ -1638,11 +1639,11 @@ mod tests {
         let ca = TestCa::new();
         let url = https_server(server_config(ca.issue(
             &["localhost"],
-            VALID_FROM,
-            VALID_UNTIL,
+            valid_from(),
+            valid_until(),
         )))
         .await;
-        let report = check_with(&url, &quick(), NOW, ca.trust()).await.unwrap();
+        let report = check_with(&url, &quick(), now(), ca.trust()).await.unwrap();
         assert_eq!(
             (report.status, report.body_preview.as_str()),
             (200, "secure")
@@ -1655,7 +1656,7 @@ mod tests {
         assert_eq!(tls.host, "localhost");
         assert_eq!(tls.protocol, "TLSv1.3");
         assert_eq!(tls.chain[0].common_name, "localhost");
-        assert_eq!(tls.expires_in_days, 151);
+        assert_eq!(tls.expires_in_days, days_left());
         assert_eq!(report.tls_ms, Some(tls.handshake_ms));
         assert!(report.total_ms >= tls.handshake_ms);
     }
@@ -1665,11 +1666,11 @@ mod tests {
         let ca = TestCa::new();
         let self_signed_url = https_server(server_config(self_signed(
             &["localhost"],
-            VALID_FROM,
-            VALID_UNTIL,
+            valid_from(),
+            valid_until(),
         )))
         .await;
-        let error = check_with(&self_signed_url, &quick(), NOW, ca.trust())
+        let error = check_with(&self_signed_url, &quick(), now(), ca.trust())
             .await
             .unwrap_err();
         assert!(
@@ -1681,11 +1682,11 @@ mod tests {
 
         let expired_url = https_server(server_config(ca.issue(
             &["localhost"],
-            (2020, 1, 1),
-            (2021, 1, 1),
+            EXPIRED_FROM,
+            EXPIRED_UNTIL,
         )))
         .await;
-        let error = check_with(&expired_url, &quick(), NOW, ca.trust())
+        let error = check_with(&expired_url, &quick(), now(), ca.trust())
             .await
             .unwrap_err();
         assert!(
@@ -1695,11 +1696,11 @@ mod tests {
 
         let misnamed_url = https_server(server_config(ca.issue(
             &["other.example"],
-            VALID_FROM,
-            VALID_UNTIL,
+            valid_from(),
+            valid_until(),
         )))
         .await;
-        let error = check_with(&misnamed_url, &quick(), NOW, ca.trust())
+        let error = check_with(&misnamed_url, &quick(), now(), ca.trust())
             .await
             .unwrap_err();
         assert!(
@@ -1712,7 +1713,7 @@ mod tests {
             verify_tls: false,
             ..quick()
         };
-        let report = check_with(&self_signed_url, &lenient, NOW, ca.trust())
+        let report = check_with(&self_signed_url, &lenient, now(), ca.trust())
             .await
             .unwrap();
         let tls = report.tls.unwrap();
@@ -1724,7 +1725,7 @@ mod tests {
                 .contains("not signed by an authority")
         );
 
-        let report = check_with(&expired_url, &lenient, NOW, ca.trust())
+        let report = check_with(&expired_url, &lenient, now(), ca.trust())
             .await
             .unwrap();
         let tls = report.tls.unwrap();
@@ -1732,9 +1733,9 @@ mod tests {
             tls.trust_error.as_deref(),
             Some("the certificate has expired")
         );
-        assert_eq!(tls.expires_in_days, -1826);
+        assert_eq!(tls.expires_in_days, days_until(EXPIRED_UNTIL));
 
-        let report = check_with(&misnamed_url, &lenient, NOW, ca.trust())
+        let report = check_with(&misnamed_url, &lenient, now(), ca.trust())
             .await
             .unwrap();
         let tls = report.tls.unwrap();
@@ -1746,8 +1747,8 @@ mod tests {
         let ca = TestCa::new();
         let secure = https_server(server_config(ca.issue(
             &["localhost"],
-            VALID_FROM,
-            VALID_UNTIL,
+            valid_from(),
+            valid_until(),
         )))
         .await;
         let target = secure.clone();
@@ -1757,7 +1758,9 @@ mod tests {
             ))
         })
         .await;
-        let report = check_with(&base, &quick(), NOW, ca.trust()).await.unwrap();
+        let report = check_with(&base, &quick(), now(), ca.trust())
+            .await
+            .unwrap();
         assert_eq!(report.status, 200);
         assert_eq!(report.final_url, secure);
         assert_eq!(report.redirects, vec![(301, secure)]);

@@ -51,6 +51,22 @@ impl ProbeError {
         ProbeError::Unsupported(message.into())
     }
 
+    /// Classifies an error from sending or receiving a **datagram**.
+    ///
+    /// A closed UDP port answers with ICMP port-unreachable, which the next
+    /// receive on a connected socket reports. Unix calls that
+    /// `ECONNREFUSED`; Windows calls it `WSAECONNRESET`. For a datagram the
+    /// two mean the same thing — nothing is listening — so both are a
+    /// refusal here. This is deliberately *not* true of a stream, where a
+    /// reset means a connection that existed was torn down, which is why
+    /// this is a separate function from [`from_network_io`].
+    pub(crate) fn from_datagram_io(error: io::Error) -> Self {
+        match error.kind() {
+            io::ErrorKind::ConnectionReset => ProbeError::Refused,
+            _ => ProbeError::from_network_io(error),
+        }
+    }
+
     /// Classifies an error from `connect`, `send` or `recv` towards a remote host.
     pub(crate) fn from_network_io(error: io::Error) -> Self {
         match error.kind() {
@@ -99,6 +115,20 @@ mod tests {
 
     #[test]
     fn network_errors_are_classified() {
+        // Windows reports a closed UDP port as a reset, and a datagram
+        // reset means exactly that; a stream reset does not, and is left
+        // alone so that a server which accepts and hangs up is not read as
+        // a refusal.
+        let reset = io::Error::from(io::ErrorKind::ConnectionReset);
+        assert!(matches!(
+            ProbeError::from_datagram_io(reset),
+            ProbeError::Refused
+        ));
+        let reset = io::Error::from(io::ErrorKind::ConnectionReset);
+        assert!(matches!(
+            ProbeError::from_network_io(reset),
+            ProbeError::Io(_)
+        ));
         let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
         assert!(matches!(
             ProbeError::from_network_io(refused),

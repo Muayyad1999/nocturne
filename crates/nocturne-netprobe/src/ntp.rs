@@ -72,7 +72,7 @@ pub async fn query(
     socket
         .connect(address)
         .await
-        .map_err(ProbeError::from_network_io)?;
+        .map_err(ProbeError::from_datagram_io)?;
 
     // T1: the local clock at transmission (name resolution took part of the time since the call).
     let sent_at = Instant::now();
@@ -81,7 +81,7 @@ pub async fn query(
     socket
         .send(&request)
         .await
-        .map_err(ProbeError::from_network_io)?;
+        .map_err(ProbeError::from_datagram_io)?;
 
     let exchange = async {
         let mut buffer = [0u8; 1024];
@@ -89,7 +89,7 @@ pub async fn query(
             let length = socket
                 .recv(&mut buffer)
                 .await
-                .map_err(ProbeError::from_network_io)?;
+                .map_err(ProbeError::from_datagram_io)?;
             let t4 = t1 + sent_at.elapsed().as_secs_f64();
             // A reply to someone else's (or an earlier) request does not echo our timestamp.
             if let Some(reply) = parse_reply(&buffer[..length], &request[40..48])? {

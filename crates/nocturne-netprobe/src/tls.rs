@@ -786,8 +786,8 @@ pub(crate) mod test_support;
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        NOW, TestCa, VALID_FROM, VALID_UNTIL, drain, self_signed, self_signed_rsa, server_config,
-        tls_server,
+        EXPIRED_FROM, EXPIRED_UNTIL, TestCa, date_text, days_left, days_until, drain, now,
+        self_signed, self_signed_rsa, server_config, tls_server, valid_from, valid_until,
     };
     use super::*;
     use pretty_assertions::assert_eq;
@@ -798,18 +798,18 @@ mod tests {
     const NAMES: [&str; 2] = ["localhost", "127.0.0.1"];
 
     async fn inspect_local(port: u16, sni: Option<&str>, trust: Trust) -> TlsReport {
-        inspect_with("127.0.0.1", port, sni, TIMEOUT, NOW, trust)
+        inspect_with("127.0.0.1", port, sni, TIMEOUT, now(), trust)
             .await
             .unwrap()
     }
 
     #[tokio::test]
     async fn self_signed_certificate_is_described_and_not_trusted() {
-        let identity = self_signed(&NAMES, VALID_FROM, VALID_UNTIL);
+        let identity = self_signed(&NAMES, valid_from(), valid_until());
         let der = identity.chain[0].clone();
         let port = tls_server(server_config(identity), drain).await;
 
-        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, now())
             .await
             .unwrap();
         assert_eq!(report.host, "127.0.0.1");
@@ -835,8 +835,7 @@ mod tests {
         );
         assert!(report.hostname_matches);
         assert!(report.handshake_ms > 0.0 && report.handshake_ms < 5000.0);
-        // 2026-01-01 to 2026-06-01: 31 + 28 + 31 + 30 + 31 days.
-        assert_eq!(report.expires_in_days, 151);
+        assert_eq!(report.expires_in_days, days_left());
 
         assert_eq!(report.chain.len(), 1);
         let leaf = &report.chain[0];
@@ -844,9 +843,9 @@ mod tests {
         assert_eq!(leaf.issuer, leaf.subject);
         assert_eq!(leaf.common_name, "localhost");
         assert_eq!(leaf.sans, ["localhost", "127.0.0.1"]);
-        assert_eq!(leaf.not_before, "2025-07-01T00:00:00Z");
-        assert_eq!(leaf.not_after, "2026-06-01T00:00:00Z");
-        assert_eq!(leaf.days_left, 151);
+        assert_eq!(leaf.not_before, date_text(valid_from()));
+        assert_eq!(leaf.not_after, date_text(valid_until()));
+        assert_eq!(leaf.days_left, days_left());
         assert_eq!(leaf.signature_algorithm, "ecdsa-with-SHA256");
         assert_eq!(leaf.public_key, "ECDSA P-256");
         assert!(leaf.self_signed && !leaf.is_ca);
@@ -866,18 +865,21 @@ mod tests {
 
     #[tokio::test]
     async fn expired_certificate_is_still_inspected() {
-        let identity = self_signed(&NAMES, (2020, 1, 1), (2021, 1, 1));
+        let identity = self_signed(&NAMES, EXPIRED_FROM, EXPIRED_UNTIL);
         let port = tls_server(server_config(identity), drain).await;
-        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, now())
             .await
             .unwrap();
         assert!(!report.trusted);
         assert!(report.trust_error.is_some());
         let leaf = &report.chain[0];
-        assert_eq!(leaf.not_after, "2021-01-01T00:00:00Z");
+        assert_eq!(leaf.not_after, date_text(EXPIRED_UNTIL));
         // 2021-01-01 to 2026-01-01 is 1826 days ago.
-        assert_eq!(leaf.days_left, -1826);
-        assert_eq!(report.expires_in_days, -1826);
+        // Long expired, counted from today rather than from a number that
+        // was true on the day it was written.
+        assert_eq!(leaf.days_left, days_until(EXPIRED_UNTIL));
+        assert_eq!(report.expires_in_days, days_until(EXPIRED_UNTIL));
+        assert!(leaf.days_left < -1_000, "{}", leaf.days_left);
 
         // The day it expires, to the second.
         let last_second = 1_609_459_199;
@@ -901,7 +903,7 @@ mod tests {
     async fn chain_from_a_trusted_authority_is_trusted() {
         let ca = TestCa::new();
         let port = tls_server(
-            server_config(ca.issue(&NAMES, VALID_FROM, VALID_UNTIL)),
+            server_config(ca.issue(&NAMES, valid_from(), valid_until())),
             drain,
         )
         .await;
@@ -914,7 +916,7 @@ mod tests {
         assert!(!leaf.self_signed && !leaf.is_ca);
 
         // The same server without the test root in the trust store.
-        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, now())
             .await
             .unwrap();
         assert!(!report.trusted);
@@ -924,7 +926,7 @@ mod tests {
     async fn validity_is_judged_at_the_given_time() {
         let ca = TestCa::new();
         let port = tls_server(
-            server_config(ca.issue(&NAMES, VALID_FROM, VALID_UNTIL)),
+            server_config(ca.issue(&NAMES, valid_from(), valid_until())),
             drain,
         )
         .await;
@@ -946,7 +948,7 @@ mod tests {
             Some("the certificate is not valid yet")
         );
 
-        let during = check(NOW).await.unwrap();
+        let during = check(now()).await.unwrap();
         assert!(during.trusted);
 
         let after = check(1_900_000_000).await.unwrap(); // March 2030
@@ -962,7 +964,7 @@ mod tests {
     async fn a_wrong_name_is_reported_separately_from_trust() {
         let ca = TestCa::new();
         let port = tls_server(
-            server_config(ca.issue(&NAMES, VALID_FROM, VALID_UNTIL)),
+            server_config(ca.issue(&NAMES, valid_from(), valid_until())),
             drain,
         )
         .await;
@@ -979,7 +981,7 @@ mod tests {
         assert!(report.hostname_matches && report.trusted);
 
         // A wildcard certificate asked for the wrong domain.
-        let wildcard = ca.issue(&["*.lab.example"], VALID_FROM, VALID_UNTIL);
+        let wildcard = ca.issue(&["*.lab.example"], valid_from(), valid_until());
         let port = tls_server(server_config(wildcard), drain).await;
         let report = inspect_local(port, Some("sw1.lab.example"), ca.trust()).await;
         assert!(report.hostname_matches && report.trusted);
@@ -992,7 +994,7 @@ mod tests {
     #[tokio::test]
     async fn the_whole_chain_the_server_sends_is_listed() {
         let ca = TestCa::new();
-        let mut identity = ca.issue(&NAMES, VALID_FROM, VALID_UNTIL);
+        let mut identity = ca.issue(&NAMES, valid_from(), valid_until());
         identity.chain.push(ca.certificate.clone());
         let port = tls_server(server_config(identity), drain).await;
         let report = inspect_local(port, Some("localhost"), ca.trust()).await;
@@ -1003,13 +1005,13 @@ mod tests {
         assert_eq!(root.sans, Vec::<String>::new());
         assert_eq!(root.not_after, "2040-01-01T00:00:00Z");
         // Expiry is the server certificate's, not the root's.
-        assert_eq!(report.expires_in_days, 151);
+        assert_eq!(report.expires_in_days, days_left());
     }
 
     #[tokio::test]
     async fn rsa_certificates_are_described() {
         let port = tls_server(server_config(self_signed_rsa(&NAMES)), drain).await;
-        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, now())
             .await
             .unwrap();
         let leaf = &report.chain[0];
@@ -1019,10 +1021,10 @@ mod tests {
 
     #[tokio::test]
     async fn tls_1_2_servers_are_reported_as_such() {
-        let identity = self_signed(&NAMES, VALID_FROM, VALID_UNTIL);
+        let identity = self_signed(&NAMES, valid_from(), valid_until());
         let config = ServerConfigBuilder::tls12_only(identity);
         let port = tls_server(config, drain).await;
-        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, now())
             .await
             .unwrap();
         assert_eq!(report.protocol, "TLSv1.2");
@@ -1049,18 +1051,18 @@ mod tests {
 
     #[tokio::test]
     async fn the_application_protocol_the_server_selects_is_reported() {
-        let mut config = server_config(self_signed(&NAMES, VALID_FROM, VALID_UNTIL));
+        let mut config = server_config(self_signed(&NAMES, valid_from(), valid_until()));
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let port = tls_server(config, drain).await;
-        let report = inspect("127.0.0.1", port, None, TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, None, TIMEOUT, now())
             .await
             .unwrap();
         assert_eq!(report.alpn.as_deref(), Some("http/1.1"));
 
-        let mut config = server_config(self_signed(&NAMES, VALID_FROM, VALID_UNTIL));
+        let mut config = server_config(self_signed(&NAMES, valid_from(), valid_until()));
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let port = tls_server(config, drain).await;
-        let report = inspect("127.0.0.1", port, None, TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, None, TIMEOUT, now())
             .await
             .unwrap();
         assert_eq!(report.alpn.as_deref(), Some("h2"));
@@ -1069,10 +1071,10 @@ mod tests {
     #[tokio::test]
     async fn a_server_that_rejects_the_offered_protocols_is_inspected_without_them() {
         // An IMAPS-style server: it insists on its own application protocol.
-        let mut config = server_config(self_signed(&NAMES, VALID_FROM, VALID_UNTIL));
+        let mut config = server_config(self_signed(&NAMES, valid_from(), valid_until()));
         config.alpn_protocols = vec![b"imap".to_vec()];
         let port = tls_server(config, drain).await;
-        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, NOW)
+        let report = inspect("127.0.0.1", port, Some("localhost"), TIMEOUT, now())
             .await
             .unwrap();
         assert_eq!(report.alpn, None);
@@ -1095,16 +1097,20 @@ mod tests {
             }
         };
 
-        let session = attempt(ca.issue(&NAMES, VALID_FROM, VALID_UNTIL), "localhost", NOW)
-            .await
-            .unwrap();
+        let session = attempt(
+            ca.issue(&NAMES, valid_from(), valid_until()),
+            "localhost",
+            now(),
+        )
+        .await
+        .unwrap();
         assert!(session.trusted && session.hostname_matches);
         assert_eq!(session.chain.len(), 1);
 
         let error = attempt(
-            self_signed(&NAMES, VALID_FROM, VALID_UNTIL),
+            self_signed(&NAMES, valid_from(), valid_until()),
             "localhost",
-            NOW,
+            now(),
         )
         .await
         .unwrap_err();
@@ -1118,7 +1124,7 @@ mod tests {
         );
 
         let error = attempt(
-            ca.issue(&NAMES, VALID_FROM, VALID_UNTIL),
+            ca.issue(&NAMES, valid_from(), valid_until()),
             "localhost",
             1_900_000_000,
         )
@@ -1127,9 +1133,9 @@ mod tests {
         assert!(error.contains("has expired"), "{error}");
 
         let error = attempt(
-            ca.issue(&NAMES, VALID_FROM, VALID_UNTIL),
+            ca.issue(&NAMES, valid_from(), valid_until()),
             "other.example",
-            NOW,
+            now(),
         )
         .await
         .unwrap_err();
@@ -1147,7 +1153,7 @@ mod tests {
                 drain(stream).await;
             }
         });
-        let error = inspect("127.0.0.1", port, None, TIMEOUT, NOW)
+        let error = inspect("127.0.0.1", port, None, TIMEOUT, now())
             .await
             .unwrap_err();
         assert!(
@@ -1159,7 +1165,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let hangup = listener.local_addr().unwrap().port();
         tokio::spawn(async move { while let Ok((_stream, _)) = listener.accept().await {} });
-        let error = inspect("127.0.0.1", hangup, None, TIMEOUT, NOW)
+        let error = inspect("127.0.0.1", hangup, None, TIMEOUT, now())
             .await
             .unwrap_err();
         assert!(
@@ -1172,7 +1178,7 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             listener.local_addr().unwrap().port()
         };
-        let error = inspect("127.0.0.1", closed, None, TIMEOUT, NOW)
+        let error = inspect("127.0.0.1", closed, None, TIMEOUT, now())
             .await
             .unwrap_err();
         assert!(matches!(error, ProbeError::Refused), "{error:?}");
@@ -1181,7 +1187,7 @@ mod tests {
         let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = silent.local_addr().unwrap().port();
         let started = Instant::now();
-        let error = inspect("127.0.0.1", port, None, Duration::from_millis(300), NOW)
+        let error = inspect("127.0.0.1", port, None, Duration::from_millis(300), now())
             .await
             .unwrap_err();
         assert!(matches!(error, ProbeError::Timeout), "{error:?}");
@@ -1196,14 +1202,14 @@ mod tests {
             ("two words", 443, None),
             ("127.0.0.1", 443, Some("not a name")),
         ] {
-            let error = inspect(host, port, sni, TIMEOUT, NOW).await.unwrap_err();
+            let error = inspect(host, port, sni, TIMEOUT, now()).await.unwrap_err();
             assert!(
                 matches!(error, ProbeError::Invalid(_) | ProbeError::Refused),
                 "{host:?}:{port} {sni:?}: {error:?}"
             );
         }
         assert!(matches!(
-            inspect("no-such-host.invalid", 443, None, TIMEOUT, NOW).await,
+            inspect("no-such-host.invalid", 443, None, TIMEOUT, now()).await,
             Err(ProbeError::Resolve)
         ));
     }
@@ -1212,7 +1218,7 @@ mod tests {
     fn undecodable_certificates_never_panic() {
         let placeholder = describe_certificate(
             &CertificateDer::from(vec![0x30, 0x03, 0x02, 0x01, 0x01]),
-            NOW,
+            now(),
         );
         assert_eq!(
             placeholder.subject,
@@ -1220,9 +1226,11 @@ mod tests {
         );
         assert_eq!(placeholder.sha256_fingerprint.len(), 95);
 
-        let good = self_signed(&NAMES, VALID_FROM, VALID_UNTIL).chain.remove(0);
+        let good = self_signed(&NAMES, valid_from(), valid_until())
+            .chain
+            .remove(0);
         for cut in 0..good.len() {
-            let _ = describe_certificate(&CertificateDer::from(good[..cut].to_vec()), NOW);
+            let _ = describe_certificate(&CertificateDer::from(good[..cut].to_vec()), now());
             let _ = own_names(&CertificateDer::from(good[..cut].to_vec()));
         }
         let mut state = 0xdead_beef_cafe_f00du64;
@@ -1235,7 +1243,7 @@ mod tests {
                 let index = (state % mutated.len() as u64) as usize;
                 mutated[index] = (state >> 32) as u8;
             }
-            let _ = describe_certificate(&CertificateDer::from(mutated.clone()), NOW);
+            let _ = describe_certificate(&CertificateDer::from(mutated.clone()), now());
             let _ = own_names(&CertificateDer::from(mutated));
         }
     }
