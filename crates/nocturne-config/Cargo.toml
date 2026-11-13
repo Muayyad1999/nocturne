@@ -10,23 +10,24 @@ publish.workspace = true
 [dependencies]
 nocturne-app.workspace = true
 nocturne-drivers.workspace = true
+nocturne-ai.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
-futures.workspace = true
-async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-parking_lot.workspace = true
-nocturne-ai.workspace = true
-regex.workspace = true
 serde_yaml_ng.workspace = true
-indexmap.workspace = true
-sha2.workspace = true
-hex.workspace = true
+tracing.workspace = true
+regex.workspace = true
+# The feature keeps its own tables (version metadata, pins, compliance findings) next to the core's.
+rusqlite.workspace = true
+# Remediation lines are templates over the device (`{{ device.name }}`, `{{ section }}`).
+minijinja.workspace = true
+chrono.workspace = true
+
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
+nocturne-transport.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

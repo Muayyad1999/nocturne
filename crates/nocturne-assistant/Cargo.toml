@@ -23,6 +23,9 @@ nocturne-ai.workspace = true
 regex.workspace = true
 indexmap.workspace = true
 chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+zeroize.workspace = true
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
