@@ -893,189 +893,36 @@ pub fn init(builder: &mut AppBuilder) {
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
-    //! A tiny IOS-flavoured device behind a `Connection`, for tests of
-    //! everything that talks to devices.
-
-    use super::*;
-    use nocturne_transport::{Backend, Input, TransportKind};
-
-    #[derive(Clone)]
-    pub struct FakeDevice {
-        pub hostname: String,
-        pub enable_secret: Option<String>,
-        /// Commands the device has been sent, across all sessions.
-        pub seen: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl FakeDevice {
-        pub fn new(hostname: &str) -> FakeDevice {
-            FakeDevice {
-                hostname: hostname.into(),
-                enable_secret: Some("ena".into()),
-                seen: Arc::default(),
-            }
-        }
-
-        pub fn connection(&self) -> Connection {
-            let info = ConnectionInfo {
-                kind: Some(TransportKind::Sim),
-                peer: format!("lab:{}", self.hostname),
-                ..ConnectionInfo::default()
-            };
-            let (connection, backend) = Connection::pair(info, 64);
-            tokio::spawn(self.clone().run(backend));
-            connection
-        }
-
-        async fn run(self, mut backend: Backend) {
-            let send = |text: String| {
-                let output = backend.output.clone();
-                async move {
-                    let _ = output
-                        .send(Output::Data(text.replace('\n', "\r\n").into_bytes().into()))
-                        .await;
-                }
-            };
-            let mut privileged = false;
-            let mut config = false;
-            let mut awaiting_secret = false;
-            let mut line = String::new();
-            let prompt = |privileged: bool, config: bool| match (privileged, config) {
-                (_, true) => format!("{}(config)#", self.hostname),
-                (true, _) => format!("{}#", self.hostname),
-                _ => format!("{}>", self.hostname),
-            };
-            send(format!("\n{}", prompt(privileged, config))).await;
-            while let Some(input) = backend.input.recv().await {
-                let Input::Data(bytes) = input else { continue };
-                for byte in bytes.iter().copied() {
-                    if byte != b'\n' && byte != b'\r' {
-                        line.push(byte as char);
-                        if !awaiting_secret {
-                            send((byte as char).to_string()).await;
-                        }
-                        continue;
-                    }
-                    let command = std::mem::take(&mut line);
-                    let command = command.trim().to_string();
-                    send("\n".into()).await;
-                    if awaiting_secret {
-                        awaiting_secret = false;
-                        if Some(&command) == self.enable_secret.as_ref() {
-                            privileged = true;
-                        } else {
-                            send("% Access denied\n".into()).await;
-                        }
-                    } else if !command.is_empty() {
-                        self.seen.lock().push(command.clone());
-                        match command.as_str() {
-                            "enable" if privileged => {}
-                            "enable" => match self.enable_secret {
-                                Some(_) => {
-                                    awaiting_secret = true;
-                                    send("Password: ".into()).await;
-                                    continue;
-                                }
-                                None => privileged = true,
-                            },
-                            "terminal length 0" | "write memory" => {}
-                            "configure terminal" if privileged => config = true,
-                            "end" => config = false,
-                            "exit" if config => config = false,
-                            "exit" => {
-                                let _ = backend.output.send(Output::Closed { reason: None }).await;
-                                return;
-                            }
-                            "show version" => {
-                                send(format!(
-                                    "Fake IOS Software, Version 15.2(4)E\n{} uptime is 1 week\n",
-                                    self.hostname
-                                ))
-                                .await
-                            }
-                            "show clock" => send("12:00:00.000 UTC Fri Nov 13 2026\n".into()).await,
-                            other if config && other.starts_with("hostname ") => {}
-                            other if other.starts_with("show ") || config => {
-                                send("% Invalid input detected at '^' marker.\n".into()).await
-                            }
-                            _ => send("% Unknown command\n".into()).await,
-                        }
-                    }
-                    send(prompt(privileged, config)).await;
-                }
-            }
-        }
-    }
-
-    /// Serves `FakeDevice`s as the lab simulator would.
-    pub struct FakeSim {
-        pub devices: Vec<FakeDevice>,
-    }
-
-    #[async_trait]
-    impl SimConnector for FakeSim {
-        async fn open(&self, lab: &LabRef, _cols: u16, _rows: u16) -> AppResult<Connection> {
-            self.devices
-                .iter()
-                .find(|device| device.hostname == lab.node)
-                .map(FakeDevice::connection)
-                .ok_or_else(|| AppError::not_found(format!("lab node `{}`", lab.node)))
-        }
-    }
-
-    /// An app with one simulated device `R1` (profile `test_ios`, enable secret `ena`).
-    pub async fn app_with_fake_device() -> (App, FakeDevice, String) {
-        let mut builder = AppBuilder::new(crate::app::AppConfig::in_memory()).unwrap();
-        crate::init(&mut builder);
-        let app = builder.build();
-        let fake = FakeDevice::new("R1");
-        app.state::<ConnectState>()
-            .set_sim_connector(Arc::new(FakeSim {
-                devices: vec![fake.clone()],
-            }));
-        profiles::save(&app, profiles::testing::LAB_IOS).unwrap();
-        let credential = app
-            .rpc("credentials.create", json!({"name": "lab", "username": "admin", "password": "pw", "enable_secret": "ena"}))
-            .await
-            .unwrap();
-        let device = app
-            .rpc(
-                "devices.create",
-                json!({"name": "R1", "profile": "test_ios", "credential_id": credential["id"], "lab": {"lab_id": "lab1", "node": "R1"}}),
-            )
-            .await
-            .unwrap();
-        let id = device["id"].as_str().unwrap().to_string();
-        (app, fake, id)
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::testing::*;
     use super::*;
+    use crate::testing::{FakeDevice, Lab, builder, lab};
     use nocturne_transport::serve::{ServerHandle, SessionHandler, SshServerConfig, serve_ssh};
     use serde_json::{Value, json};
     use std::net::SocketAddr;
 
+    async fn one_device() -> (Lab, String) {
+        let lab = lab(builder(), &["R1"]).await;
+        let id = lab.id("R1");
+        (lab, id)
+    }
+
     #[tokio::test]
     async fn cli_logs_in_enables_and_reads() {
-        let (app, fake, id) = app_with_fake_device().await;
-        let mut session = cli(&app, &id, CliOptions::default()).await.unwrap();
+        let (lab, id) = one_device().await;
+        let mut session = cli(&lab.app, &id, CliOptions::default()).await.unwrap();
         assert_eq!(session.hostname(), "R1");
         assert_eq!(session.platform.profile.id, "test_ios");
         let version = session.read("show version").await.unwrap();
-        assert!(version.output.contains("Version 15.2(4)E"), "{version:?}");
+        assert!(version.output.contains("Version 15.2(4)E10"), "{version:?}");
         assert_eq!(version.error, None);
         // A rejected command comes back with the device's error line, not as a transport failure.
         let bad = session.read("show nonsense").await.unwrap();
         assert!(bad.error.unwrap().contains("Invalid input"));
-        assert!(session.take_transcript().contains("Fake IOS Software"));
+        assert!(session.take_transcript().contains("Cisco IOS Software"));
         session.close().await;
         // (`exit` is sent on close but the fake may not have processed it yet.)
         assert_eq!(
-            fake.seen.lock()[..4],
+            lab.fake("R1").seen()[..4],
             [
                 "enable",
                 "terminal length 0",
@@ -1087,8 +934,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_refuses_anything_that_is_not_read_only() {
-        let (app, fake, id) = app_with_fake_device().await;
-        let mut session = cli(&app, &id, CliOptions::default()).await.unwrap();
+        let (lab, id) = one_device().await;
+        let (app, fake) = (&lab.app, lab.fake("R1"));
+        let mut session = cli(app, &id, CliOptions::default()).await.unwrap();
         for command in [
             "configure terminal",
             "reload",
@@ -1104,14 +952,13 @@ mod tests {
         session.close().await;
         assert!(
             !fake
-                .seen
-                .lock()
+                .seen()
                 .iter()
                 .any(|command| command.contains("reload") || command.contains("configure"))
         );
 
         // Over RPC a batch with one non-read-only command sends nothing at all.
-        fake.seen.lock().clear();
+        fake.clear_seen();
         let err = app
             .rpc(
                 "devices.exec",
@@ -1123,8 +970,7 @@ mod tests {
         assert!(err.message.contains("write erase"));
         assert!(
             !fake
-                .seen
-                .lock()
+                .seen()
                 .iter()
                 .any(|command| command.starts_with("show"))
         );
@@ -1138,7 +984,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_connection_reports_success_and_the_stage_of_failure() {
-        let (app, _fake, id) = app_with_fake_device().await;
+        let (lab, id) = one_device().await;
+        let app = &lab.app;
         let ok = app.rpc("devices.test", json!({"id": id})).await.unwrap();
         assert_eq!(
             (
@@ -1150,9 +997,12 @@ mod tests {
         );
 
         // Wrong enable secret: the connection works, the login does not.
-        app.rpc("credentials.update", json!({"id": app.rpc("credentials.list", Value::Null).await.unwrap()[0]["id"], "enable_secret": "wrong"}))
-            .await
-            .unwrap();
+        app.rpc(
+            "credentials.update",
+            json!({"id": lab.credential_id, "enable_secret": "wrong"}),
+        )
+        .await
+        .unwrap();
         let failed = app.rpc("devices.test", json!({"id": id})).await.unwrap();
         assert_eq!(
             (failed["ok"].as_bool(), failed["failed_at"].as_str()),
@@ -1189,10 +1039,10 @@ mod tests {
 
     #[tokio::test]
     async fn one_automated_session_per_device_at_a_time() {
-        let (app, _fake, id) = app_with_fake_device().await;
-        let first = cli(&app, &id, CliOptions::default()).await.unwrap();
+        let (lab, id) = one_device().await;
+        let first = cli(&lab.app, &id, CliOptions::default()).await.unwrap();
         let busy = cli(
-            &app,
+            &lab.app,
             &id,
             CliOptions {
                 wait: Duration::from_millis(50),
@@ -1203,7 +1053,7 @@ mod tests {
         assert_eq!(busy.err().map(|err| err.code), Some("unavailable"));
         first.close().await;
         cli(
-            &app,
+            &lab.app,
             &id,
             CliOptions {
                 wait: Duration::from_millis(50),
@@ -1245,21 +1095,21 @@ mod tests {
 
     #[tokio::test]
     async fn ssh_host_keys_are_learned_then_enforced() {
-        let (app, fake, _) = app_with_fake_device().await;
-        let server = ssh_server("127.0.0.1:0".parse().unwrap(), &fake).await;
+        let (lab, _) = one_device().await;
+        let (app, fake) = (&lab.app, lab.fake("R1"));
+        let server = ssh_server("127.0.0.1:0".parse().unwrap(), fake).await;
         let addr = server.local_addr();
-        let credential = app.rpc("credentials.list", Value::Null).await.unwrap()[0]["id"].clone();
         let device = app
             .rpc(
                 "devices.create",
-                json!({"name": "ssh-r1", "address": "127.0.0.1", "port": addr.port(), "profile": "test_ios", "credential_id": credential}),
+                json!({"name": "ssh-r1", "address": "127.0.0.1", "port": addr.port(), "profile": "test_ios", "credential_id": lab.credential_id}),
             )
             .await
             .unwrap();
         let id = device["id"].as_str().unwrap();
 
         // First contact: the key is remembered.
-        let mut session = cli(&app, id, CliOptions::default()).await.unwrap();
+        let mut session = cli(app, id, CliOptions::default()).await.unwrap();
         assert!(
             session
                 .read("show clock")
@@ -1284,7 +1134,7 @@ mod tests {
 
         // The same port answers with a different key: refused, announced, audited.
         server.shutdown().await;
-        let server = ssh_server(addr, &fake).await;
+        let server = ssh_server(addr, fake).await;
         let mut events = app.subscribe();
         let refused = app.rpc("devices.test", json!({"id": id})).await.unwrap();
         assert_eq!(
@@ -1352,7 +1202,7 @@ mod tests {
         .unwrap();
         app.rpc(
             "credentials.update",
-            json!({"id": credential, "password": "nope"}),
+            json!({"id": lab.credential_id, "password": "nope"}),
         )
         .await
         .unwrap();

@@ -15,6 +15,8 @@ pub mod profiles;
 pub mod settings;
 pub mod store;
 pub mod system;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod util;
 pub mod vault;
 

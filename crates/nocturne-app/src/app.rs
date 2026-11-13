@@ -96,17 +96,32 @@ pub struct AppConfig {
     /// Directory for the database, vault key, user profiles and logs.
     /// `None` keeps everything in memory (tests).
     pub data_dir: Option<PathBuf>,
+    /// Whether callers of the RPC surface sit at this machine. The desktop
+    /// app: yes. A server reached over the network: no — features that touch
+    /// the local machine (a local shell, reading and writing local files)
+    /// are then refused.
+    pub local_access: bool,
 }
 
 impl AppConfig {
     pub fn in_memory() -> AppConfig {
-        AppConfig { data_dir: None }
+        AppConfig {
+            data_dir: None,
+            local_access: true,
+        }
     }
 
     pub fn at(dir: impl Into<PathBuf>) -> AppConfig {
         AppConfig {
             data_dir: Some(dir.into()),
+            local_access: true,
         }
+    }
+
+    /// For a backend whose users are remote (server mode).
+    pub fn remote_users(mut self) -> AppConfig {
+        self.local_access = false;
+        self
     }
 }
 
@@ -182,6 +197,7 @@ impl AppBuilder {
                 states: self.states,
                 events,
                 shutdown: CancellationToken::new(),
+                local_access: self.config.local_access,
                 data_dir: self.config.data_dir,
             }),
         };
@@ -200,6 +216,7 @@ struct Inner {
     events: broadcast::Sender<Event>,
     shutdown: CancellationToken,
     data_dir: Option<PathBuf>,
+    local_access: bool,
 }
 
 /// A cheap, cloneable handle to the running application.
@@ -219,6 +236,22 @@ impl App {
 
     pub fn data_dir(&self) -> Option<&Path> {
         self.inner.data_dir.as_deref()
+    }
+
+    /// Whether RPC callers are at this machine (see [`AppConfig::local_access`]).
+    pub fn local_access(&self) -> bool {
+        self.inner.local_access
+    }
+
+    /// `Err(forbidden)` unless callers are at this machine.
+    pub fn require_local_access(&self, what: &str) -> AppResult<()> {
+        if self.inner.local_access {
+            Ok(())
+        } else {
+            Err(AppError::forbidden(format!(
+                "{what} is only available in the desktop app, not when Nocturne runs as a server"
+            )))
+        }
     }
 
     /// A module's runtime state, registered with [`AppBuilder::state`].

@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Test support for feature crates: a fake device and an in-memory app (see `testing.rs`).
+testing = []
+
 [dependencies]
 nocturne-drivers.workspace = true
 nocturne-transport.workspace = true

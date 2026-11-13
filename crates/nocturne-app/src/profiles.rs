@@ -391,37 +391,10 @@ pub fn init(builder: &mut AppBuilder) {
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
-    /// A small IOS-like profile for tests that must not depend on the built-in pack.
-    pub const LAB_IOS: &str = r#"
-id: test_ios
-name: Test IOS
-vendor: Test
-os: IOS
-cli:
-  prompt: '^(?P<host>[\w.\-]{1,63})(\([\w\-/. ]+\))?[>#]\s?$'
-  user_prompt: '^[\w.\-]{1,63}>\s?$'
-  config_prompt: '^[\w.\-]{1,63}\([\w\-/. ]+\)#\s?$'
-  enable: {}
-  init: ['terminal length 0']
-  errors: ['^% ']
-config:
-  syntax: ios
-  enter: ['configure terminal']
-  exit: ['end']
-  save: ['write memory']
-  running: 'show running-config'
-  errors: ['^% ']
-policy:
-  read_only: ['^show ', '^ping ', '^terminal length ']
-  dangerous: ['^reload', '^erase ', '^write erase']
-"#;
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::AppConfig;
+    use crate::testing;
     use serde_json::{Value, json};
 
     fn app() -> App {
