@@ -113,7 +113,7 @@ async fn closing_releases_the_port() {
     let (writer, reader) = again.inner.split();
     let mut reader = tap(reader);
     writer.close().await;
-    let (_, reason) = reader.to_close().await;
+    let (_, reason) = reader.until_closed().await;
     assert_eq!(reason, None);
 }
 
@@ -122,7 +122,7 @@ async fn unplugging_the_device_ends_the_session() {
     let (device, path) = cable();
     let mut conn = open(&path).await;
     drop(device);
-    let (_, reason) = conn.to_close().await;
+    let (_, reason) = conn.until_closed().await;
     let reason = reason.unwrap();
     assert!(reason.starts_with("serial port error"), "{reason}");
 }

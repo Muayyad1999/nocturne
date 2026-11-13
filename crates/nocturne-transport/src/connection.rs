@@ -391,7 +391,9 @@ mod tests {
         conn.send("show version\r").await.unwrap();
         conn.resize(132, 50).await.unwrap();
         conn.send_break().await.unwrap();
-        assert!(matches!(backend.input.recv().await, Some(Input::Data(d)) if &d[..] == b"show version\r"));
+        assert!(
+            matches!(backend.input.recv().await, Some(Input::Data(d)) if &d[..] == b"show version\r")
+        );
         assert!(matches!(
             backend.input.recv().await,
             Some(Input::Resize {
@@ -453,10 +455,7 @@ mod tests {
             Some(Output::Closed { reason: None })
         ));
         assert!(conn.recv().await.is_none());
-        assert!(matches!(
-            conn.send("x").await,
-            Err(TransportError::Closed)
-        ));
+        assert!(matches!(conn.send("x").await, Err(TransportError::Closed)));
         assert!(matches!(
             conn.resize(1, 1).await,
             Err(TransportError::Closed)

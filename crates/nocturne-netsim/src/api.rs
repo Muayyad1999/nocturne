@@ -89,6 +89,11 @@ pub struct NodeSpec {
     /// save/load. Hand-written labs can simply put `vlan` lines in `startup_config`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlan_dat: Option<String>,
+    /// Addition to the contract: size of the device's RSA host key, if one was
+    /// generated (`crypto key generate rsa`). Real devices keep the key outside
+    /// the configuration; without it SSH to the device is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rsa_key_bits: Option<u16>,
 }
 
 impl Default for NodeSpec {
@@ -102,6 +107,7 @@ impl Default for NodeSpec {
             startup_config: None,
             host: None,
             vlan_dat: None,
+            rsa_key_bits: None,
         }
     }
 }

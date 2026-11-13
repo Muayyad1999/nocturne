@@ -5,8 +5,6 @@
 //! a [`Connection`], a duplex byte stream with resize and break
 //! side-channels.
 
-#![allow(dead_code)] // TEMP while the crate is being assembled
-
 mod connection;
 mod error;
 mod local;

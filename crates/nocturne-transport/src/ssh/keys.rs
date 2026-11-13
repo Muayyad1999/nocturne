@@ -181,9 +181,8 @@ pub enum KeyKind {
 /// RSA generation is CPU-bound and can take seconds; call it from
 /// `spawn_blocking` in async code.
 pub fn generate_keypair(kind: KeyKind, comment: &str) -> Result<(String, String), TransportError> {
-    let failed = |error: ssh_key::Error| {
-        TransportError::Protocol(format!("key generation failed: {error}"))
-    };
+    let failed =
+        |error: ssh_key::Error| TransportError::Protocol(format!("key generation failed: {error}"));
     let mut rng = russh::keys::key::safe_rng();
     let mut key = match kind {
         KeyKind::Ed25519 => PrivateKey::random(&mut rng, Algorithm::Ed25519).map_err(failed)?,
@@ -229,7 +228,11 @@ mod tests {
     fn ed25519_keys_are_generated_in_openssh_format() {
         let (private, public) = generate_keypair(KeyKind::Ed25519, "nocturne@test").unwrap();
         assert!(private.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----\n"));
-        assert!(private.trim_end().ends_with("-----END OPENSSH PRIVATE KEY-----"));
+        assert!(
+            private
+                .trim_end()
+                .ends_with("-----END OPENSSH PRIVATE KEY-----")
+        );
         assert!(public.starts_with("ssh-ed25519 AAAA"));
         assert!(public.ends_with(" nocturne@test"));
 

@@ -66,6 +66,8 @@ pub(crate) struct Fx {
     pub(crate) notes: Vec<Note>,
     /// Traces whose goal was reached (reply received / datagram delivered).
     pub(crate) trace_ok: Vec<TraceId>,
+    /// Negative answers received by the origin of a trace ("connection refused").
+    pub(crate) trace_verdict: Vec<(TraceId, String)>,
     /// Derived state must be recomputed (interface state, tables).
     pub(crate) dirty: bool,
     /// The control plane changed: restarts the quiescence clock.
@@ -91,6 +93,7 @@ impl Fx {
             events: Vec::new(),
             notes: Vec::new(),
             trace_ok: Vec::new(),
+            trace_verdict: Vec::new(),
             dirty: false,
             cp_change: false,
             changed: false,

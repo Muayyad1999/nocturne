@@ -162,7 +162,11 @@ mod tests {
         relay.forward_one().await.unwrap();
         let received = data(rx.recv().await);
         assert_eq!(received, chunk);
-        assert_eq!(received.as_ptr(), chunk.as_ptr(), "no copy on the fast path");
+        assert_eq!(
+            received.as_ptr(),
+            chunk.as_ptr(),
+            "no copy on the fast path"
+        );
         assert!(relay.is_empty());
     }
 

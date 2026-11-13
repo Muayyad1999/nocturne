@@ -119,34 +119,86 @@ mod tests {
     /// with the bundled index.
     const RESOLUTIONS: &[(&str, &str, &[&str])] = &[
         // Abbreviations expand the way the index spells them out.
-        ("cisco_ios", "sh ip int br", &["cisco_ios_show_ip_interface_brief"]),
-        ("cisco_ios", "show ip interface brief", &["cisco_ios_show_ip_interface_brief"]),
+        (
+            "cisco_ios",
+            "sh ip int br",
+            &["cisco_ios_show_ip_interface_brief"],
+        ),
+        (
+            "cisco_ios",
+            "show ip interface brief",
+            &["cisco_ios_show_ip_interface_brief"],
+        ),
         ("cisco_ios", "sh ver", &["cisco_ios_show_version"]),
         ("cisco_ios", "s ver", &[]),
         ("cisco_ios", "sh int", &["cisco_ios_show_interfaces"]),
-        ("arista_eos", "sh ip bgp sum", &["arista_eos_show_ip_bgp_summary"]),
-        ("huawei_vrp", "dis vlan brief", &["huawei_vrp_display_vlan_brief"]),
+        (
+            "arista_eos",
+            "sh ip bgp sum",
+            &["arista_eos_show_ip_bgp_summary"],
+        ),
+        (
+            "huawei_vrp",
+            "dis vlan brief",
+            &["huawei_vrp_display_vlan_brief"],
+        ),
         // Only the start of the command has to match ...
-        ("cisco_ios", "sho ver | include uptime", &["cisco_ios_show_version"]),
+        (
+            "cisco_ios",
+            "sho ver | include uptime",
+            &["cisco_ios_show_version"],
+        ),
         ("cisco_ios", "show vers extra", &["cisco_ios_show_version"]),
-        ("cisco_ios", "show int gi0/1", &["cisco_ios_show_interfaces"]),
-        ("cisco_ios", "show ip route vrf X", &["cisco_ios_show_ip_route"]),
+        (
+            "cisco_ios",
+            "show int gi0/1",
+            &["cisco_ios_show_interfaces"],
+        ),
+        (
+            "cisco_ios",
+            "show ip route vrf X",
+            &["cisco_ios_show_ip_route"],
+        ),
         ("cisco_ios", "show version\n", &["cisco_ios_show_version"]),
         // ... unless the index entry is anchored.
         ("cisco_ios", "show switch detail extra", &[]),
-        ("alcatel_aos", "show interfaces", &["alcatel_aos_show_interfaces_ethernet"]),
-        ("alcatel_aos", "show interfaces status", &["alcatel_aos_show_interfaces_status"]),
+        (
+            "alcatel_aos",
+            "show interfaces",
+            &["alcatel_aos_show_interfaces_ethernet"],
+        ),
+        (
+            "alcatel_aos",
+            "show interfaces status",
+            &["alcatel_aos_show_interfaces_status"],
+        ),
         // The first matching entry wins; longer commands are listed first.
-        ("cisco_ios", "show interfaces status", &["cisco_ios_show_interfaces_status"]),
+        (
+            "cisco_ios",
+            "show interfaces status",
+            &["cisco_ios_show_interfaces_status"],
+        ),
         ("cisco_ios", "show ip bgp", &["cisco_ios_show_ip_bgp"]),
-        ("cisco_ios", "show ip bgp summary", &["cisco_ios_show_ip_bgp_summary"]),
+        (
+            "cisco_ios",
+            "show ip bgp summary",
+            &["cisco_ios_show_ip_bgp_summary"],
+        ),
         (
             "cisco_ios",
             "show ip bgp neighbors 10.0.0.1 advertised-routes",
             &["cisco_ios_show_ip_bgp_neighbors_advertised-routes"],
         ),
-        ("cisco_ios", "show mac address-table", &["cisco_ios_show_mac-address-table"]),
-        ("cisco_ios", "show mac-address-table", &["cisco_ios_show_mac-address-table"]),
+        (
+            "cisco_ios",
+            "show mac address-table",
+            &["cisco_ios_show_mac-address-table"],
+        ),
+        (
+            "cisco_ios",
+            "show mac-address-table",
+            &["cisco_ios_show_mac-address-table"],
+        ),
         // Matching is case sensitive and starts at the first character.
         ("cisco_ios", "Show version", &[]),
         ("cisco_ios", " show version", &[]),
@@ -156,40 +208,114 @@ mod tests {
         ("cisco_iosxe", "show version", &["cisco_ios_show_version"]),
         ("cisco", "show version", &[]),
         ("unknown_platform", "show version", &[]),
-        ("hp_procurve", "show interfaces brief", &["hp_procurve_show_interfaces_brief"]),
-        ("aruba_procurve", "show interfaces brief", &["hp_procurve_show_interfaces_brief"]),
-        ("vyatta_vyos", "show interfaces", &["vyatta_vyos_show_interfaces"]),
+        (
+            "hp_procurve",
+            "show interfaces brief",
+            &["hp_procurve_show_interfaces_brief"],
+        ),
+        (
+            "aruba_procurve",
+            "show interfaces brief",
+            &["hp_procurve_show_interfaces_brief"],
+        ),
+        (
+            "vyatta_vyos",
+            "show interfaces",
+            &["vyatta_vyos_show_interfaces"],
+        ),
         ("vyos", "show interfaces", &["vyatta_vyos_show_interfaces"]),
-        ("my_vyos_box", "show interfaces", &["vyatta_vyos_show_interfaces"]),
+        (
+            "my_vyos_box",
+            "show interfaces",
+            &["vyatta_vyos_show_interfaces"],
+        ),
         ("cisco_asa", "show interface", &["cisco_asa_show_interface"]),
         ("cisco_ftd", "show interface", &[]),
         // One platform each.
         ("cisco_nxos", "show version", &["cisco_nxos_show_version"]),
         ("cisco_xr", "show version", &["cisco_xr_show_version"]),
-        ("arista_eos", "show interfaces status", &["arista_eos_show_interfaces_status"]),
-        ("juniper_junos", "show interfaces", &["juniper_junos_show_interfaces"]),
-        ("huawei_vrp", "display interface", &["huawei_vrp_display_interface"]),
-        ("hp_comware", "display interface", &["hp_comware_display_interface"]),
-        ("aruba_aoscx", "show interface", &["aruba_aoscx_show_interface"]),
-        ("fortinet", "get system status", &["fortinet_get_system_status"]),
-        ("paloalto_panos", "show system info", &["paloalto_panos_show_system_info"]),
+        (
+            "arista_eos",
+            "show interfaces status",
+            &["arista_eos_show_interfaces_status"],
+        ),
+        (
+            "juniper_junos",
+            "show interfaces",
+            &["juniper_junos_show_interfaces"],
+        ),
+        (
+            "huawei_vrp",
+            "display interface",
+            &["huawei_vrp_display_interface"],
+        ),
+        (
+            "hp_comware",
+            "display interface",
+            &["hp_comware_display_interface"],
+        ),
+        (
+            "aruba_aoscx",
+            "show interface",
+            &["aruba_aoscx_show_interface"],
+        ),
+        (
+            "fortinet",
+            "get system status",
+            &["fortinet_get_system_status"],
+        ),
+        (
+            "paloalto_panos",
+            "show system info",
+            &["paloalto_panos_show_system_info"],
+        ),
         ("linux", "ip address show", &["linux_ip_address_show"]),
-        ("mikrotik_routeros", "interface print detail", &["mikrotik_routeros_interface_print_detail"]),
-        ("mikrotik_routeros", "/interface print detail", &["mikrotik_routeros_interface_print_detail"]),
-        ("mikrotik_routeros", "ip address print", &["mikrotik_routeros_ip_address_print"]),
-        ("mikrotik_routeros", "ip route print detail", &["mikrotik_routeros_ip_route_print_detail"]),
-        ("mikrotik_routeros", "ip neighbor print detail", &["mikrotik_routeros_ip_neighbor_print_detail"]),
-        ("mikrotik_routeros", "ip arp print", &["mikrotik_routeros_ip_arp_print"]),
+        (
+            "mikrotik_routeros",
+            "interface print detail",
+            &["mikrotik_routeros_interface_print_detail"],
+        ),
+        (
+            "mikrotik_routeros",
+            "/interface print detail",
+            &["mikrotik_routeros_interface_print_detail"],
+        ),
+        (
+            "mikrotik_routeros",
+            "ip address print",
+            &["mikrotik_routeros_ip_address_print"],
+        ),
+        (
+            "mikrotik_routeros",
+            "ip route print detail",
+            &["mikrotik_routeros_ip_route_print_detail"],
+        ),
+        (
+            "mikrotik_routeros",
+            "ip neighbor print detail",
+            &["mikrotik_routeros_ip_neighbor_print_detail"],
+        ),
+        (
+            "mikrotik_routeros",
+            "ip arp print",
+            &["mikrotik_routeros_ip_arp_print"],
+        ),
         // Entries that combine several templates.
         (
             "cisco_ios",
             "show switch",
-            &["cisco_ios_show_switch_detail", "cisco_ios_show_switch_detail_stack_ports"],
+            &[
+                "cisco_ios_show_switch_detail",
+                "cisco_ios_show_switch_detail_stack_ports",
+            ],
         ),
         (
             "cisco_ios",
             "show switch detail",
-            &["cisco_ios_show_switch_detail", "cisco_ios_show_switch_detail_stack_ports"],
+            &[
+                "cisco_ios_show_switch_detail",
+                "cisco_ios_show_switch_detail_stack_ports",
+            ],
         ),
         (
             "cisco_ios",
@@ -201,11 +327,18 @@ mod tests {
                 "cisco_ios_show_module_online_diag",
             ],
         ),
-        ("huawei_vrp", "display vlan", &["huawei_vrp_display_vlan", "huawei_vrp_display_vlan_brief"]),
+        (
+            "huawei_vrp",
+            "display vlan",
+            &["huawei_vrp_display_vlan", "huawei_vrp_display_vlan_brief"],
+        ),
         (
             "huawei_smartax",
             "display ont info 0 1 2 all",
-            &["huawei_smartax_display_ont_info_0_1_2", "huawei_smartax_display_ont_info_description"],
+            &[
+                "huawei_smartax_display_ont_info_0_1_2",
+                "huawei_smartax_display_ont_info_description",
+            ],
         ),
     ];
 
@@ -213,8 +346,16 @@ mod tests {
     fn resolves_commands_like_upstream() {
         for &(platform, command, templates) in RESOLUTIONS {
             let context = format!("{platform}: {command:?}");
-            assert_eq!(find_all(platform, command).unwrap_or_default(), templates, "{context}");
-            assert_eq!(find(platform, command), templates.first().copied(), "{context}");
+            assert_eq!(
+                find_all(platform, command).unwrap_or_default(),
+                templates,
+                "{context}"
+            );
+            assert_eq!(
+                find(platform, command),
+                templates.first().copied(),
+                "{context}"
+            );
         }
     }
 
@@ -232,8 +373,14 @@ mod tests {
         assert_eq!(rows[0]["IP_ADDRESS"], Value::from("10.0.0.1"));
         assert_eq!(rows[1]["STATUS"].as_str(), "administratively down");
 
-        assert_eq!(parse("cisco_ios", "show running-config", output).unwrap(), None);
-        assert_eq!(parse("no_such_platform", "show version", output).unwrap(), None);
+        assert_eq!(
+            parse("cisco_ios", "show running-config", output).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse("no_such_platform", "show version", output).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -256,9 +403,13 @@ Switch#  Port 1     Port 2           Port 1   Port 2
 --------------------------------------------------------
   1       DOWN       DOWN             None     None 
 ";
-        let rows = parse("cisco_ios", "show switch detail", output).unwrap().unwrap();
+        let rows = parse("cisco_ios", "show switch detail", output)
+            .unwrap()
+            .unwrap();
         let cells = |row: &crate::Record| {
-            row.iter().map(|(name, value)| format!("{name}={}", value.as_str())).collect::<Vec<_>>()
+            row.iter()
+                .map(|(name, value)| format!("{name}={}", value.as_str()))
+                .collect::<Vec<_>>()
         };
         assert_eq!(
             cells(&rows[0]),
@@ -303,14 +454,18 @@ Switch#  Port 1     Port 2           Port 1   Port 2
         assert!(template("no_such_template").unwrap().is_none());
 
         let template = template("cisco_ios_show_clock").unwrap().unwrap();
-        assert_eq!(template.header(), ["TIME", "TIMEZONE", "DAYWEEK", "MONTH", "DAY", "YEAR"]);
+        assert_eq!(
+            template.header(),
+            ["TIME", "TIMEZONE", "DAYWEEK", "MONTH", "DAY", "YEAR"]
+        );
 
         assert_eq!(upstream_revision().len(), 40);
         assert!(upstream_revision().bytes().all(|b| b.is_ascii_hexdigit()));
         assert!(platforms().iter().any(|platform| platform == "cisco_ios"));
     }
 
-    /// Also exercises the lazy cache from several threads at once.
+    /// Every template, in both flavours of its patterns. Also exercises the
+    /// lazy cache from several threads at once.
     #[test]
     fn every_bundled_template_compiles() {
         let names: Vec<&str> = template_names().collect();
@@ -319,7 +474,11 @@ Switch#  Port 1     Port 2           Port 1   Port 2
             for chunk in names.chunks(names.len().div_ceil(threads)) {
                 scope.spawn(move || {
                     for name in chunk {
-                        if let Err(error) = template(name) {
+                        let template = match template(name) {
+                            Ok(template) => template.expect("listed, hence bundled"),
+                            Err(error) => panic!("{name}: {error}"),
+                        };
+                        if let Err(error) = template.compile_unicode_flavours() {
                             panic!("{name}: {error}");
                         }
                     }

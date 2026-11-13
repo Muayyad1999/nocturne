@@ -32,7 +32,11 @@ impl Transport {
     /// The socket is deliberately left unconnected: multi-homed agents (and virtual IPs) are
     /// known to answer from another address than the one polled, and a connected socket would
     /// silently drop those replies. Replies are matched by their ids instead, as net-snmp does.
-    pub async fn bind(target: SocketAddr, timeout: Duration, retries: u32) -> Result<Transport, SnmpError> {
+    pub async fn bind(
+        target: SocketAddr,
+        timeout: Duration,
+        retries: u32,
+    ) -> Result<Transport, SnmpError> {
         let local: SocketAddr = match target {
             SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
             SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),

@@ -97,7 +97,9 @@ impl Agent {
             let servable = oid.len() >= 2
                 && ber::check_oid(oid).is_ok()
                 && !value.is_exception()
-                && value.as_oid().is_none_or(|inner| ber::check_oid(inner).is_ok());
+                && value
+                    .as_oid()
+                    .is_none_or(|inner| ber::check_oid(inner).is_ok());
             if !servable {
                 warn!(%oid, "dropping an entry that cannot be served over SNMP");
             }
@@ -260,7 +262,9 @@ impl Responder<'_> {
         let max_repetitions = request.error_index;
         let (singles, repeaters) = request.varbinds.split_at(non_repeaters);
 
-        let budget = self.max_size.saturating_sub(self.empty_reply_len(request) + FRAMING_SLACK);
+        let budget = self
+            .max_size
+            .saturating_sub(self.empty_reply_len(request) + FRAMING_SLACK);
         let mut used = 0usize;
         let mut binds = Vec::new();
         // Adds a binding unless the message is full.
@@ -434,7 +438,10 @@ mod tests {
             PduKind::Set => responder.refuse_set(&request),
             other => panic!("not a request: {other:?}"),
         };
-        assert!(encoded.len() <= max_size.max(64), "response exceeds the size limit");
+        assert!(
+            encoded.len() <= max_size.max(64),
+            "response exceeds the size limit"
+        );
         let message = CommunityMessage::decode(&encoded).unwrap();
         assert_eq!(message.version, version);
         assert_eq!(message.community, b"public");
@@ -447,7 +454,10 @@ mod tests {
     }
 
     fn names(pdu: &Pdu) -> Vec<String> {
-        pdu.varbinds.iter().map(|bind| bind.oid.to_string()).collect()
+        pdu.varbinds
+            .iter()
+            .map(|bind| bind.oid.to_string())
+            .collect()
     }
 
     const V1: CommunityVersion = CommunityVersion::V1;
@@ -501,14 +511,27 @@ mod tests {
             PduKind::Get,
             0,
             0,
-            &["1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.99.0", "1.3.6.1.2.1.1.1.0"],
+            &[
+                "1.3.6.1.2.1.1.5.0",
+                "1.3.6.1.2.1.1.99.0",
+                "1.3.6.1.2.1.1.1.0",
+            ],
         );
         assert_eq!((response.error_status, response.error_index), (2, 2));
         assert_eq!(
             names(&response),
-            ["1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.99.0", "1.3.6.1.2.1.1.1.0"]
+            [
+                "1.3.6.1.2.1.1.5.0",
+                "1.3.6.1.2.1.1.99.0",
+                "1.3.6.1.2.1.1.1.0"
+            ]
         );
-        assert!(response.varbinds.iter().all(|bind| bind.value == Value::Null));
+        assert!(
+            response
+                .varbinds
+                .iter()
+                .all(|bind| bind.value == Value::Null)
+        );
 
         let ok = exchange(&view, V1, BIG, PduKind::Get, 0, 0, &["1.3.6.1.2.1.1.5.0"]);
         assert_eq!(ok.error_status, 0);
@@ -525,7 +548,13 @@ mod tests {
             PduKind::GetNext,
             0,
             0,
-            &["1.3.6.1.2.1.1", "1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.2.2.1.2.2", "1.3.6.1.2.1.31.1.1.1.18.1", "2.5"],
+            &[
+                "1.3.6.1.2.1.1",
+                "1.3.6.1.2.1.1.1.0",
+                "1.3.6.1.2.1.2.2.1.2.2",
+                "1.3.6.1.2.1.31.1.1.1.18.1",
+                "2.5",
+            ],
         );
         assert_eq!(
             names(&response),
@@ -557,13 +586,37 @@ mod tests {
     fn v1_never_sees_counter64() {
         let view = view();
         // GET of a Counter64 object: no such name.
-        let get = exchange(&view, V1, BIG, PduKind::Get, 0, 0, &["1.3.6.1.2.1.31.1.1.1.6.1"]);
+        let get = exchange(
+            &view,
+            V1,
+            BIG,
+            PduKind::Get,
+            0,
+            0,
+            &["1.3.6.1.2.1.31.1.1.1.6.1"],
+        );
         assert_eq!((get.error_status, get.error_index), (2, 1));
         // GETNEXT skips over the Counter64 column to the next visible object.
-        let next = exchange(&view, V1, BIG, PduKind::GetNext, 0, 0, &["1.3.6.1.2.1.2.2.1.10.2"]);
+        let next = exchange(
+            &view,
+            V1,
+            BIG,
+            PduKind::GetNext,
+            0,
+            0,
+            &["1.3.6.1.2.1.2.2.1.10.2"],
+        );
         assert_eq!(names(&next), ["1.3.6.1.2.1.31.1.1.1.18.1"]);
         // SNMPv2c sees it.
-        let next = exchange(&view, V2C, BIG, PduKind::GetNext, 0, 0, &["1.3.6.1.2.1.2.2.1.10.2"]);
+        let next = exchange(
+            &view,
+            V2C,
+            BIG,
+            PduKind::GetNext,
+            0,
+            0,
+            &["1.3.6.1.2.1.2.2.1.10.2"],
+        );
         assert_eq!(names(&next), ["1.3.6.1.2.1.31.1.1.1.6.1"]);
     }
 
@@ -577,7 +630,11 @@ mod tests {
             PduKind::GetBulk,
             1,
             2,
-            &["1.3.6.1.2.1.1.3", "1.3.6.1.2.1.2.2.1.2", "1.3.6.1.2.1.2.2.1.10"],
+            &[
+                "1.3.6.1.2.1.1.3",
+                "1.3.6.1.2.1.2.2.1.2",
+                "1.3.6.1.2.1.2.2.1.10",
+            ],
         );
         assert_eq!(
             names(&response),
@@ -595,10 +652,29 @@ mod tests {
 
         // max-repetitions 0 serves the non-repeaters only; more non-repeaters than bindings
         // is fine too.
-        let only_singles = exchange(&view, V2C, BIG, PduKind::GetBulk, 1, 0, &["1.3.6.1.2.1.1.3", "1.3.6.1.2.1.2"]);
+        let only_singles = exchange(
+            &view,
+            V2C,
+            BIG,
+            PduKind::GetBulk,
+            1,
+            0,
+            &["1.3.6.1.2.1.1.3", "1.3.6.1.2.1.2"],
+        );
         assert_eq!(names(&only_singles), ["1.3.6.1.2.1.1.3.0"]);
-        let all_singles = exchange(&view, V2C, BIG, PduKind::GetBulk, 9, 5, &["1.3.6.1.2.1.1.3", "1.3.6.1.2.1.2"]);
-        assert_eq!(names(&all_singles), ["1.3.6.1.2.1.1.3.0", "1.3.6.1.2.1.2.2.1.2.1"]);
+        let all_singles = exchange(
+            &view,
+            V2C,
+            BIG,
+            PduKind::GetBulk,
+            9,
+            5,
+            &["1.3.6.1.2.1.1.3", "1.3.6.1.2.1.2"],
+        );
+        assert_eq!(
+            names(&all_singles),
+            ["1.3.6.1.2.1.1.3.0", "1.3.6.1.2.1.2.2.1.2.1"]
+        );
     }
 
     #[test]
@@ -636,7 +712,12 @@ mod tests {
     #[test]
     fn responses_respect_the_message_size_limit() {
         let view: View = (1..=200u32)
-            .map(|i| (oid("1.3.6.1.4.1.99999.1").child(i), Value::from("x".repeat(40))))
+            .map(|i| {
+                (
+                    oid("1.3.6.1.4.1.99999.1").child(i),
+                    Value::from("x".repeat(40)),
+                )
+            })
             .collect();
         let root = "1.3.6.1.4.1.99999.1";
 
@@ -644,7 +725,11 @@ mod tests {
         for (limit, at_least) in [(1472usize, 20usize), (484, 5), (120, 1), (60, 0)] {
             let response = exchange(&view, V2C, limit, PduKind::GetBulk, 0, 100, &[root]);
             assert_eq!(response.error_status, 0, "limit {limit}");
-            assert!(response.varbinds.len() >= at_least, "limit {limit}: {}", response.varbinds.len());
+            assert!(
+                response.varbinds.len() >= at_least,
+                "limit {limit}: {}",
+                response.varbinds.len()
+            );
             assert!(response.varbinds.len() < 100, "limit {limit}");
             // What is there is a correct prefix of the walk.
             for (i, bind) in response.varbinds.iter().enumerate() {
@@ -693,20 +778,58 @@ mod tests {
         };
         assert!(agent.respond(&get(V2C, b"public", PduKind::Get)).is_some());
         assert!(agent.respond(&get(V1, b"public", PduKind::Get)).is_some());
-        assert!(agent.respond(&get(V2C, b"public", PduKind::GetBulk)).is_some());
+        assert!(
+            agent
+                .respond(&get(V2C, b"public", PduKind::GetBulk))
+                .is_some()
+        );
         assert!(agent.respond(&get(V2C, b"public", PduKind::Set)).is_some());
         // Wrong community: silence, as RFC 3584 demands.
         assert!(agent.respond(&get(V2C, b"private", PduKind::Get)).is_none());
         assert!(agent.respond(&get(V2C, b"", PduKind::Get)).is_none());
         // SNMPv1 has no GETBULK; responses, reports and notifications are not requests.
-        assert!(agent.respond(&get(V1, b"public", PduKind::GetBulk)).is_none());
-        for kind in [PduKind::Response, PduKind::Report, PduKind::Inform, PduKind::TrapV2] {
+        assert!(
+            agent
+                .respond(&get(V1, b"public", PduKind::GetBulk))
+                .is_none()
+        );
+        for kind in [
+            PduKind::Response,
+            PduKind::Report,
+            PduKind::Inform,
+            PduKind::TrapV2,
+        ] {
             assert!(agent.respond(&get(V2C, b"public", kind)).is_none());
         }
         // Garbage and SNMPv3.
         assert!(agent.respond(&[]).is_none());
         assert!(agent.respond(b"\x30\x03\x02\x01\x03").is_none());
         assert!(agent.respond(&[0xff; 64]).is_none());
+    }
+
+    #[tokio::test]
+    async fn hostile_datagrams_get_a_proper_answer_or_none() {
+        let agent = agent_with(view()).await;
+        let inputs = crate::robustness::hostile_inputs();
+        for limit in [MAX_UDP_PAYLOAD, 484, 40, 0] {
+            agent.set_max_message_size(limit);
+            let mut answered = 0;
+            for input in &inputs {
+                let Some(response) = agent.inner.respond(input) else {
+                    continue;
+                };
+                answered += 1;
+                // Whatever the request looked like, the answer is a well-formed Response.
+                let message = CommunityMessage::decode(&response).expect("a well-formed response");
+                assert_eq!(message.community, b"public");
+                let AnyPdu::Standard(pdu) = message.pdu else {
+                    panic!("the agent answered with a trap");
+                };
+                assert_eq!(pdu.kind, PduKind::Response);
+            }
+            // Corrupted copies of real requests still reach the request handlers.
+            assert!(answered > 500, "limit {limit}: {answered} answers");
+        }
     }
 
     #[tokio::test]

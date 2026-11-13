@@ -84,7 +84,11 @@ impl ShutdownSignal {
 
 /// Accepts connections on `listener`, running `serve` for each in its own
 /// task, until the returned handle says stop.
-pub(crate) fn spawn_server<F, Fut>(listener: TcpListener, local_addr: SocketAddr, serve: F) -> ServerHandle
+pub(crate) fn spawn_server<F, Fut>(
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    serve: F,
+) -> ServerHandle
 where
     F: Fn(TcpStream, SocketAddr, ShutdownSignal) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,

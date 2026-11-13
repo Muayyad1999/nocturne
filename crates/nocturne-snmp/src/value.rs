@@ -281,10 +281,19 @@ mod tests {
 
     #[test]
     fn text_detection() {
-        assert_eq!(octets(b"Linux router 6.1").as_text().as_deref(), Some("Linux router 6.1"));
+        assert_eq!(
+            octets(b"Linux router 6.1").as_text().as_deref(),
+            Some("Linux router 6.1")
+        );
         assert_eq!(octets(b"").as_text().as_deref(), Some(""));
-        assert_eq!(octets(b"two\r\nlines\t!").as_text().as_deref(), Some("two\r\nlines\t!"));
-        assert_eq!(octets("Zürich — core".as_bytes()).as_text().as_deref(), Some("Zürich — core"));
+        assert_eq!(
+            octets(b"two\r\nlines\t!").as_text().as_deref(),
+            Some("two\r\nlines\t!")
+        );
+        assert_eq!(
+            octets("Zürich — core".as_bytes()).as_text().as_deref(),
+            Some("Zürich — core")
+        );
         // NUL-terminated strings are still strings.
         assert_eq!(octets(b"eth0\0\0").as_text().as_deref(), Some("eth0"));
         // A lone Latin-1 letter is tolerated (lossy), binary data is not.
@@ -292,8 +301,14 @@ mod tests {
             octets(b"B\xfcro 2. Stock").as_text().as_deref(),
             Some("B\u{fffd}ro 2. Stock")
         );
-        assert_eq!(octets(&[0x00, 0x1b, 0x21, 0x3c, 0x9d, 0xf8]).as_text(), None);
-        assert_eq!(octets(&[0xa4, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5]).as_text(), None);
+        assert_eq!(
+            octets(&[0x00, 0x1b, 0x21, 0x3c, 0x9d, 0xf8]).as_text(),
+            None
+        );
+        assert_eq!(
+            octets(&[0xa4, 0xb1, 0xc2, 0xd3, 0xe4, 0xf5]).as_text(),
+            None
+        );
         assert_eq!(octets(&[0xc0, 0xa8, 0x80, 0xfe]).as_text(), None);
         assert_eq!(octets(&[0, 0, 0, 0, 0, 0]).as_text(), None);
         assert_eq!(octets(b"bell\x07").as_text(), None);
@@ -346,7 +361,9 @@ mod tests {
         let float = Value::Opaque(vec![0x9f, 0x78, 0x04, 0x3f, 0x00, 0x00, 0x00]);
         assert_eq!(float.as_f64(), Some(0.5));
         assert_eq!(float.display(), "0.5");
-        let double = Value::Opaque(vec![0x9f, 0x79, 0x08, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18]);
+        let double = Value::Opaque(vec![
+            0x9f, 0x79, 0x08, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18,
+        ]);
         assert_eq!(double.as_f64(), Some(std::f64::consts::PI));
         assert_eq!(Value::Opaque(vec![0x9f, 0x78, 0x04, 0x3f]).as_f64(), None);
     }
@@ -379,7 +396,10 @@ mod tests {
     fn serde_representation_is_tagged() {
         let cases = [
             (Value::Integer(-3), r#"{"type":"integer","value":-3}"#),
-            (octets(b"hi"), r#"{"type":"octet_string","value":[104,105]}"#),
+            (
+                octets(b"hi"),
+                r#"{"type":"octet_string","value":[104,105]}"#,
+            ),
             (Value::Null, r#"{"type":"null"}"#),
             (
                 Value::Oid("1.3.6.1".parse().unwrap()),

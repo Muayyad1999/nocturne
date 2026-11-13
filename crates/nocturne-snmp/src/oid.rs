@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn orders_like_getnext() {
-        let mut oids = vec![
+        let mut oids = [
             oid("1.3.6.1.2.1.2.2.1.10.10"),
             oid("1.3.6.1.2.1.2.2.1.10.2"),
             oid("1.3.6.1.2.1.2.2.1.10"),

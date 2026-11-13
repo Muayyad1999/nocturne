@@ -16,6 +16,10 @@ use super::{IdSequence, random_u64};
 
 /// The three USM security levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "these are the names RFC 3411 gives the levels"
+)]
 enum Level {
     NoAuthNoPriv,
     AuthNoPriv,
@@ -110,7 +114,8 @@ impl ReportKind {
         let message = match self {
             ReportKind::UnsupportedSecLevel => "unsupported security level".to_owned(),
             ReportKind::NotInTimeWindow => {
-                "not in time window (the agent keeps rejecting its own engine boots/time)".to_owned()
+                "not in time window (the agent keeps rejecting its own engine boots/time)"
+                    .to_owned()
             }
             ReportKind::UnknownUserName => "unknown user name".to_owned(),
             ReportKind::UnknownEngineId => "unknown engine ID".to_owned(),
@@ -174,8 +179,12 @@ impl UsmSession {
                 "SNMPv3 privacy requires authentication (there is no noAuthPriv level)".to_owned(),
             ));
         }
-        if auth.as_ref().is_some_and(|(_, passphrase)| passphrase.is_empty())
-            || privacy.as_ref().is_some_and(|(_, passphrase)| passphrase.is_empty())
+        if auth
+            .as_ref()
+            .is_some_and(|(_, passphrase)| passphrase.is_empty())
+            || privacy
+                .as_ref()
+                .is_some_and(|(_, passphrase)| passphrase.is_empty())
         {
             return Err(SnmpError::Auth(
                 "an SNMPv3 passphrase must not be empty".to_owned(),
@@ -204,8 +213,14 @@ impl UsmSession {
     }
 
     /// Sends a request PDU and returns the Response PDU, whatever its error-status.
-    pub async fn request(&mut self, transport: &mut Transport, pdu: &Pdu) -> Result<Pdu, SnmpError> {
+    pub async fn request(
+        &mut self,
+        transport: &mut Transport,
+        pdu: &Pdu,
+    ) -> Result<Pdu, SnmpError> {
         let level = self.level();
+        // Until an encrypted exchange has worked, the privacy settings are on trial.
+        let privacy_untested = level == Level::AuthPriv && !self.privacy_proven;
         match self.send(transport, pdu, level, transport.attempts()).await {
             Ok(Answer::Response(response)) => {
                 if level == Level::AuthPriv {
@@ -213,61 +228,110 @@ impl UsmSession {
                 }
                 Ok(response)
             }
+            // The agent cannot decrypt what we send. Before blaming the passphrase, try the
+            // other AES-192/256 key extension.
+            Ok(Answer::Report(ReportKind::DecryptionError)) if privacy_untested => {
+                match self.retry_with_other_key_extension(transport, pdu).await {
+                    Some(result) => result,
+                    None => Err(ReportKind::DecryptionError.into_error()),
+                }
+            }
             Ok(Answer::Report(kind)) => Err(kind.into_error()),
             // The engine answered discovery, yet the encrypted request met silence.
-            Err(SnmpError::Timeout)
-                if level == Level::AuthPriv && !self.privacy_proven && self.engine.is_some() =>
-            {
+            Err(SnmpError::Timeout) if privacy_untested && self.engine.is_some() => {
                 self.explain_silence(transport, pdu).await
             }
             Err(e) => Err(e),
         }
     }
 
-    /// Called when the very first encrypted request of a session went unanswered.
+    /// Called when the first encrypted request of a session went unanswered although the
+    /// engine had answered discovery.
     ///
     /// Agents are supposed to report decryption failures, but many — net-snmp among them —
     /// just drop a message whose decrypted content makes no sense, which leaves the user
-    /// staring at a timeout. One authenticated but unencrypted probe tells the two cases
-    /// apart: an agent that answers it is alive and accepts our authentication, so only the
-    /// privacy settings can be wrong.
-    async fn explain_silence(&mut self, transport: &mut Transport, pdu: &Pdu) -> Result<Pdu, SnmpError> {
-        let probe = Pdu::request(PduKind::Get, self.msg_ids.next(), &[]);
-        match self.send(transport, &probe, Level::AuthNoPriv, 1).await {
-            // Nobody there after all (or the socket failed).
+    /// staring at a timeout. Two cheap probes (empty GETs) tell the cases apart:
+    ///
+    /// 1. authenticated but not encrypted — no answer: the agent is gone, a plain timeout;
+    /// 2. encrypted — an answer: privacy works and it was the request itself that got lost
+    ///    or took too long, again a plain timeout; no answer: the privacy key is wrong.
+    async fn explain_silence(
+        &mut self,
+        transport: &mut Transport,
+        pdu: &Pdu,
+    ) -> Result<Pdu, SnmpError> {
+        // Any answer to the unencrypted probe — a response, authorizationError, even
+        // "unsupported security level" — comes from an agent that is alive and knows this
+        // user. Unless it says our authentication is wrong; then that is the news.
+        if let Answer::Report(kind @ (ReportKind::WrongDigest | ReportKind::UnknownUserName)) =
+            self.probe(transport, Level::AuthNoPriv).await?
+        {
+            return Err(kind.into_error());
+        }
+        match self.probe(transport, Level::AuthPriv).await {
+            Ok(Answer::Response(_)) => {
+                self.privacy_proven = true;
+                return Err(SnmpError::Timeout);
+            }
+            Ok(Answer::Report(ReportKind::DecryptionError)) | Err(SnmpError::Timeout) => {}
+            Ok(Answer::Report(kind)) => return Err(kind.into_error()),
             Err(e) => return Err(e),
-            // The agent does not accept our authentication either; say that instead.
-            Ok(Answer::Report(kind @ (ReportKind::WrongDigest | ReportKind::UnknownUserName))) => {
-                return Err(kind.into_error());
-            }
-            // Any other answer — a response, authorizationError, even "unsupported security
-            // level" — comes from an agent that is alive and knows this user.
-            Ok(_) => {}
         }
-
-        // AES-192/256 exist in two key-extension flavours; try the other one before giving up.
-        if let (Some((auth, _)), Some((configured, _))) = (&self.auth, &self.privacy) {
-            let (auth, configured) = (*auth, *configured);
-            if let Some(alternative) = configured.alternative_key_extension(auth) {
-                self.use_priv_protocol(alternative);
-                if let Ok(Answer::Response(response)) = self.send(transport, pdu, Level::AuthPriv, 1).await {
-                    warn!(
-                        agent = %transport.target(),
-                        "agent uses the {alternative:?} key extension rather than the configured \
-                         {configured:?}; configure it to avoid the detection delay"
-                    );
-                    self.privacy_proven = true;
-                    return Ok(response);
-                }
-                self.use_priv_protocol(configured);
-            }
+        if let Some(result) = self.retry_with_other_key_extension(transport, pdu).await {
+            return result;
         }
-
         Err(SnmpError::Auth(
             "decryption error (privacy passphrase or protocol mismatch): the agent accepts this \
              user's authentication but does not answer encrypted requests"
                 .to_owned(),
         ))
+    }
+
+    /// AES-192/256 exist in two key-extension flavours that nobody can tell apart from a
+    /// device's configuration. If the configured one does not work and the other one does,
+    /// switches to it for the rest of the session and repeats `pdu`; otherwise `None`.
+    async fn retry_with_other_key_extension(
+        &mut self,
+        transport: &mut Transport,
+        pdu: &Pdu,
+    ) -> Option<Result<Pdu, SnmpError>> {
+        let (auth, configured) = match (&self.auth, &self.privacy) {
+            (Some((auth, _)), Some((configured, _))) => (*auth, *configured),
+            _ => return None,
+        };
+        let alternative = configured.alternative_key_extension(auth)?;
+        self.use_priv_protocol(alternative);
+        if !matches!(
+            self.probe(transport, Level::AuthPriv).await,
+            Ok(Answer::Response(_))
+        ) {
+            self.use_priv_protocol(configured);
+            return None;
+        }
+        warn!(
+            agent = %transport.target(),
+            "agent uses the {alternative:?} key extension rather than the configured \
+             {configured:?}; configure it to avoid the detection delay"
+        );
+        self.privacy_proven = true;
+        // The request that started all this, now with keys that work.
+        let outcome = self
+            .send(transport, pdu, Level::AuthPriv, transport.attempts())
+            .await;
+        Some(outcome.and_then(|answer| match answer {
+            Answer::Response(response) => Ok(response),
+            Answer::Report(kind) => Err(kind.into_error()),
+        }))
+    }
+
+    /// One empty GET at `level`, sent once.
+    async fn probe(
+        &mut self,
+        transport: &mut Transport,
+        level: Level,
+    ) -> Result<Answer, SnmpError> {
+        let probe = Pdu::request(PduKind::Get, self.msg_ids.next(), &[]);
+        self.send(transport, &probe, level, 1).await
     }
 
     fn use_priv_protocol(&mut self, protocol: PrivProtocol) {
@@ -375,7 +439,8 @@ impl UsmSession {
 
     /// Makes sure the localised keys for the current engine are in the cache.
     fn derive_keys(&mut self) -> Result<(), SnmpError> {
-        let (Some((auth_protocol, auth_passphrase)), Some(engine)) = (&self.auth, &self.engine) else {
+        let (Some((auth_protocol, auth_passphrase)), Some(engine)) = (&self.auth, &self.engine)
+        else {
             return Ok(());
         };
         if self.localized.contains_key(&engine.id) {
@@ -408,6 +473,12 @@ impl UsmSession {
         };
         self.localized.insert(engine.id.clone(), keys);
         Ok(())
+    }
+
+    /// How many engines' keys are in the cache.
+    #[cfg(test)]
+    pub fn cached_key_sets(&self) -> usize {
+        self.localized.len()
     }
 
     /// The keys for the current engine, if this user authenticates at all.

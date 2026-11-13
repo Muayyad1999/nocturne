@@ -50,6 +50,7 @@ impl World {
                 break;
             }
         }
+        self.refresh_dns();
     }
 
     fn reconcile_node(&mut self, id: NodeId) {

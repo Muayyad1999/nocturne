@@ -16,7 +16,8 @@ const FIXTURE: &str = "tests/fixtures/cisco_ios/show_interfaces/cisco_ios_show_i
 const LINES: usize = 5_000;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sample = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE))?;
+    let sample =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE))?;
     let repeats = LINES.div_ceil(sample.lines().count());
     let output = sample.repeat(repeats);
 
@@ -39,7 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("bundle unpack (first use):     {unpack:?}");
     println!("compile {TEMPLATE}: {compile:?}");
-    println!("parse {} lines -> {} rows:   {run:?} (second run {rerun:?})", output.lines().count(), rows.len());
+    println!(
+        "parse {} lines -> {} rows:   {run:?} (second run {rerun:?})",
+        output.lines().count(),
+        rows.len()
+    );
     println!("compile + parse:               {:?}", compile + run);
     Ok(())
 }

@@ -29,7 +29,11 @@ fn language(node: &Node, limit: usize) -> Option<Vec<String>> {
                 let suffixes = language(node, limit)?;
                 prefixes = prefixes
                     .iter()
-                    .flat_map(|prefix| suffixes.iter().map(move |suffix| format!("{prefix}{suffix}")))
+                    .flat_map(|prefix| {
+                        suffixes
+                            .iter()
+                            .map(move |suffix| format!("{prefix}{suffix}"))
+                    })
                     .collect();
                 if prefixes.len() > limit {
                     return None;
@@ -44,10 +48,16 @@ fn language(node: &Node, limit: usize) -> Option<Vec<String>> {
             }
             strings
         }
-        Node::Group { kind: GroupKind::Capture(_) | GroupKind::NonCapture, node } => {
-            language(node, limit)?
-        }
-        Node::Repeat { node, min: 0, max: Some(1), .. } => {
+        Node::Group {
+            kind: GroupKind::Capture(_) | GroupKind::NonCapture,
+            node,
+        } => language(node, limit)?,
+        Node::Repeat {
+            node,
+            min: 0,
+            max: Some(1),
+            ..
+        } => {
             let mut strings = language(node, limit)?;
             strings.push(String::new());
             strings
@@ -63,7 +73,10 @@ mod tests {
 
     #[test]
     fn enumerates_simple_patterns() {
-        assert_eq!(finite_language("cisco_ios", 8), Some(vec!["cisco_ios".to_owned()]));
+        assert_eq!(
+            finite_language("cisco_ios", 8),
+            Some(vec!["cisco_ios".to_owned()])
+        );
         assert_eq!(
             finite_language("(hp|aruba)_procurve", 8),
             Some(vec!["aruba_procurve".to_owned(), "hp_procurve".to_owned()])

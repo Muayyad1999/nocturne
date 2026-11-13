@@ -24,16 +24,53 @@
 //! of the text in Rust, while Python also accepts the position before a final
 //! `\n`. The two agree on text without line breaks, which is all this crate
 //! ever matches against (input lines and commands).
+//!
+//! A pattern can be rendered in two flavours, see [`Charset`].
 
 use super::ast::{
     Assertion, Ast, Category, Class, ClassItem, Flags, GroupKind, LookKind, Node, RepeatMode,
 };
 use super::loops::final_empty_iteration_groups;
 
-/// Python's `\s`: Unicode white space plus the separators FS, GS, RS and US.
-const SPACE: &str = r"\s\x1c-\x1f";
-/// Python's `\w`: every letter and number, and the underscore.
-const WORD: &str = r"\p{L}\p{N}_";
+/// The flavour of a translated pattern.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Charset {
+    /// For any text. The classes are Unicode aware, as in Python.
+    Unicode,
+    /// For ASCII text only, to be compiled without Unicode support. On ASCII
+    /// text it matches exactly what the Unicode flavour matches, provided
+    /// [`has_ascii_flavour`] holds; the compiled pattern is far smaller and
+    /// faster because `\w`, `\d`, `.` and negated classes shrink from tables
+    /// of Unicode ranges to a few bytes.
+    Ascii,
+}
+
+/// The members of the three character categories, to be put inside brackets.
+struct Categories {
+    digit: &'static str,
+    space: &'static str,
+    word: &'static str,
+}
+
+impl Charset {
+    fn categories(self) -> Categories {
+        match self {
+            Charset::Unicode => Categories {
+                digit: r"\d",
+                // Python's `\s`: Unicode white space plus the separators FS, GS, RS and US.
+                space: r"\s\x1c-\x1f",
+                // Python's `\w`: every letter and number, and the underscore.
+                word: r"\p{L}\p{N}_",
+            },
+            // The ASCII characters of the above.
+            Charset::Ascii => Categories {
+                digit: "0-9",
+                space: r"\t\n\x0b\x0c\r \x1c-\x1f",
+                word: "A-Za-z0-9_",
+            },
+        }
+    }
+}
 
 /// Characters that need a backslash outside a character class.
 const SPECIAL: &str = r"\.+*?()|[]{}^$";
@@ -47,6 +84,7 @@ pub(crate) struct Translation {
     /// back-references, atomic groups, possessive quantifiers, conditionals).
     pub needs_backtracking: bool,
     /// Where to find each Python capture group (index = group number - 1).
+    /// The same for both flavours.
     pub groups: Vec<GroupSlot>,
 }
 
@@ -61,16 +99,66 @@ pub(crate) struct GroupSlot {
     pub empty_iteration: Option<usize>,
 }
 
-pub(crate) fn translate(ast: &Ast) -> Translation {
+pub(crate) fn translate(ast: &Ast, charset: Charset) -> Translation {
     let mut groups = vec![GroupSlot::default(); ast.group_count()];
     number_groups(&ast.root, &mut groups, &mut 0);
-    let mut emitter = Emitter { out: String::new(), needs_backtracking: false, groups: &groups };
+    let mut emitter = Emitter {
+        out: String::new(),
+        needs_backtracking: false,
+        groups: &groups,
+        charset,
+        categories: charset.categories(),
+    };
     emitter.out.push_str(r"\A");
     emitter.open_flag_group(ast.flags, Flags::default());
     emitter.alternation(&ast.root);
     emitter.out.push(')');
-    let Emitter { out, needs_backtracking, .. } = emitter;
-    Translation { pattern: out, needs_backtracking, groups }
+    let Emitter {
+        out,
+        needs_backtracking,
+        ..
+    } = emitter;
+    Translation {
+        pattern: out,
+        needs_backtracking,
+        groups,
+    }
+}
+
+/// Whether the [`Charset::Ascii`] flavour of the pattern is equivalent to the
+/// Unicode flavour on ASCII text.
+///
+/// It is, unless the pattern ignores case and mentions a character outside
+/// ASCII: a few of those, such as the Kelvin sign, are case variants of ASCII
+/// letters, which only Unicode-aware matching knows about.
+pub(crate) fn has_ascii_flavour(ast: &Ast) -> bool {
+    fn ignores_case(node: &Node) -> bool {
+        match node {
+            Node::Group { kind, node } => {
+                matches!(kind, GroupKind::Flags { on, .. } if on.ignore_case) || ignores_case(node)
+            }
+            Node::Concat(nodes) | Node::Alternation(nodes) => nodes.iter().any(ignores_case),
+            Node::Repeat { node, .. } | Node::Look { node, .. } => ignores_case(node),
+            Node::Conditional { yes, no, .. } => ignores_case(yes) || ignores_case(no),
+            _ => false,
+        }
+    }
+    fn mentions_non_ascii(node: &Node) -> bool {
+        match node {
+            Node::Literal(c) => !c.is_ascii(),
+            Node::Class(class) => class.items.iter().any(|item| match item {
+                ClassItem::Char(c) | ClassItem::Range(_, c) => !c.is_ascii(),
+                ClassItem::Category(_) => false,
+            }),
+            Node::Concat(nodes) | Node::Alternation(nodes) => nodes.iter().any(mentions_non_ascii),
+            Node::Group { node, .. } | Node::Repeat { node, .. } | Node::Look { node, .. } => {
+                mentions_non_ascii(node)
+            }
+            Node::Conditional { yes, no, .. } => mentions_non_ascii(yes) || mentions_non_ascii(no),
+            _ => false,
+        }
+    }
+    !((ast.flags.ignore_case || ignores_case(&ast.root)) && mentions_non_ascii(&ast.root))
 }
 
 /// Assigns the number each group gets in the emitted pattern, walking the tree
@@ -78,7 +166,9 @@ pub(crate) fn translate(ast: &Ast) -> Translation {
 fn number_groups(node: &Node, groups: &mut [GroupSlot], emitted: &mut usize) {
     match node {
         Node::Concat(nodes) | Node::Alternation(nodes) => {
-            nodes.iter().for_each(|node| number_groups(node, groups, emitted));
+            nodes
+                .iter()
+                .for_each(|node| number_groups(node, groups, emitted));
         }
         Node::Group { kind, node } => {
             if let GroupKind::Capture(number) = kind {
@@ -114,9 +204,10 @@ fn number_groups(node: &Node, groups: &mut [GroupSlot], emitted: &mut usize) {
 fn is_look_around(node: &Node) -> bool {
     match node {
         Node::Look { .. } => true,
-        Node::Group { kind: GroupKind::NonCapture | GroupKind::Flags { .. }, node } => {
-            is_look_around(node)
-        }
+        Node::Group {
+            kind: GroupKind::NonCapture | GroupKind::Flags { .. },
+            node,
+        } => is_look_around(node),
         _ => false,
     }
 }
@@ -125,6 +216,8 @@ struct Emitter<'a> {
     out: String,
     needs_backtracking: bool,
     groups: &'a [GroupSlot],
+    charset: Charset,
+    categories: Categories,
 }
 
 impl Emitter<'_> {
@@ -166,7 +259,12 @@ impl Emitter<'_> {
                 Assertion::NotWordBoundary => r"\B",
             }),
             Node::Concat(_) | Node::Alternation(_) => self.non_capturing(node),
-            Node::Repeat { node: body, min, max, mode } => {
+            Node::Repeat {
+                node: body,
+                min,
+                max,
+                mode,
+            } => {
                 self.repeat(body, *min, *max, *mode);
                 if final_empty_iteration_groups(node).is_some() {
                     self.out.push_str("()");
@@ -199,11 +297,13 @@ impl Emitter<'_> {
             Node::Backref(group) => {
                 self.needs_backtracking = true;
                 // The group keeps a following digit from being read as part of the number.
-                self.out.push_str(&format!(r"(?:\{})", self.emitted_number(*group)));
+                self.out
+                    .push_str(&format!(r"(?:\{})", self.emitted_number(*group)));
             }
             Node::Conditional { group, yes, no } => {
                 self.needs_backtracking = true;
-                self.out.push_str(&format!("(?({})", self.emitted_number(*group)));
+                self.out
+                    .push_str(&format!("(?({})", self.emitted_number(*group)));
                 self.conditional_branch(yes);
                 if **no != Node::Empty {
                     self.out.push('|');
@@ -235,10 +335,14 @@ impl Emitter<'_> {
     /// verbose mode is resolved by the parser.
     fn open_flag_group(&mut self, on: Flags, off: Flags) {
         let letters = |flags: Flags| {
-            [(flags.ignore_case, 'i'), (flags.multi_line, 'm'), (flags.dot_all, 's')]
-                .into_iter()
-                .filter_map(|(set, letter)| set.then_some(letter))
-                .collect::<String>()
+            [
+                (flags.ignore_case, 'i'),
+                (flags.multi_line, 'm'),
+                (flags.dot_all, 's'),
+            ]
+            .into_iter()
+            .filter_map(|(set, letter)| set.then_some(letter))
+            .collect::<String>()
         };
         let (on, off) = (letters(on), letters(off));
         self.out.push_str("(?");
@@ -296,44 +400,64 @@ impl Emitter<'_> {
 
     fn class(&mut self, class: &Class) {
         if let (false, [ClassItem::Category(category)]) = (class.negated, class.items.as_slice()) {
-            // A bare `\d`, `\s`, ... outside brackets.
-            match category {
-                Category::Digit => self.out.push_str(r"\d"),
-                Category::NotDigit => self.out.push_str(r"\D"),
-                Category::Space => self.bracketed(false, SPACE),
-                Category::NotSpace => self.bracketed(true, SPACE),
-                Category::Word => self.bracketed(false, WORD),
-                Category::NotWord => self.bracketed(true, WORD),
-            }
+            // A bare `\d`, `\S`, ... outside brackets.
+            self.category(*category);
             return;
         }
-        self.out.push('[');
-        if class.negated {
-            self.out.push('^');
-        }
+        let start = self.out.len();
+        self.out.push_str(if class.negated { "[^" } else { "[" });
+        let members = self.out.len();
         for item in &class.items {
             match *item {
-                ClassItem::Char(c) => self.literal(c, SPECIAL_IN_CLASS),
-                ClassItem::Range(low, high) => {
-                    self.literal(low, SPECIAL_IN_CLASS);
-                    self.out.push('-');
-                    self.literal(high, SPECIAL_IN_CLASS);
-                }
-                ClassItem::Category(Category::Digit) => self.out.push_str(r"\d"),
-                ClassItem::Category(Category::NotDigit) => self.out.push_str(r"\D"),
-                ClassItem::Category(Category::Space) => self.out.push_str(SPACE),
-                ClassItem::Category(Category::NotSpace) => self.bracketed(true, SPACE),
-                ClassItem::Category(Category::Word) => self.out.push_str(WORD),
-                ClassItem::Category(Category::NotWord) => self.bracketed(true, WORD),
+                ClassItem::Char(c) => self.class_range(c, c),
+                ClassItem::Range(low, high) => self.class_range(low, high),
+                ClassItem::Category(Category::Digit) => self.out.push_str(self.categories.digit),
+                ClassItem::Category(Category::Space) => self.out.push_str(self.categories.space),
+                ClassItem::Category(Category::Word) => self.out.push_str(self.categories.word),
+                // A nested class.
+                ClassItem::Category(negated) => self.category(negated),
             }
         }
-        self.out.push(']');
+        if self.out.len() == members {
+            // The ASCII flavour of a class without ASCII members.
+            self.out.truncate(start);
+            self.out.push_str(if class.negated {
+                r"[\x00-\x7f]"
+            } else {
+                r"[^\x00-\x7f]"
+            });
+        } else {
+            self.out.push(']');
+        }
     }
 
-    fn bracketed(&mut self, negated: bool, members: &str) {
+    /// A category as a class of its own.
+    fn category(&mut self, category: Category) {
+        let (negated, members) = match category {
+            Category::Digit => (false, self.categories.digit),
+            Category::NotDigit => (true, self.categories.digit),
+            Category::Space => (false, self.categories.space),
+            Category::NotSpace => (true, self.categories.space),
+            Category::Word => (false, self.categories.word),
+            Category::NotWord => (true, self.categories.word),
+        };
         self.out.push_str(if negated { "[^" } else { "[" });
         self.out.push_str(members);
         self.out.push(']');
+    }
+
+    /// A class member. The ASCII flavour keeps the ASCII part of it.
+    fn class_range(&mut self, low: char, high: char) {
+        let high = match self.charset {
+            Charset::Unicode => high,
+            Charset::Ascii if low.is_ascii() => high.min('\x7f'),
+            Charset::Ascii => return,
+        };
+        self.literal(low, SPECIAL_IN_CLASS);
+        if high != low {
+            self.out.push('-');
+            self.literal(high, SPECIAL_IN_CLASS);
+        }
     }
 
     fn literal(&mut self, c: char, special: &str) {

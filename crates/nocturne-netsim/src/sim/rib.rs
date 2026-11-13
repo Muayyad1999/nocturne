@@ -75,8 +75,9 @@ pub(crate) struct Rib {
     /// Candidates offered by OSPF and RIP.
     pub(crate) ospf: Vec<Route>,
     pub(crate) rip: Vec<Route>,
-    /// Default router learned by DHCP on an interface.
+    /// Default router and DNS servers learned by DHCP.
     pub(crate) dhcp_gateway: Option<Ipv4Addr>,
+    pub(crate) dhcp_dns: Vec<Ipv4Addr>,
 }
 
 impl Rib {

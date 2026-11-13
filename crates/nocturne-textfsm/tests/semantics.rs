@@ -48,9 +48,10 @@ fn check(case: &Case) -> Result<(), String> {
         (Err(error), None) => return Err(format!("unexpected error: {error}")),
         (Err(error), Some(expected)) => {
             return match expected.line {
-                Some(line) if line != error.line() => {
-                    Err(format!("rejected on line {} instead of {line}: {error}", error.line()))
-                }
+                Some(line) if line != error.line() => Err(format!(
+                    "rejected on line {} instead of {line}: {error}",
+                    error.line()
+                )),
                 _ => Ok(()),
             };
         }
@@ -58,34 +59,70 @@ fn check(case: &Case) -> Result<(), String> {
     if let Some(header) = &case.header
         && template.header() != header
     {
-        return Err(format!("header {:?}, expected {header:?}", template.header()));
+        return Err(format!(
+            "header {:?}, expected {header:?}",
+            template.header()
+        ));
     }
     match (template.run(&case.input), &case.run_error) {
         (Ok(rows), None) => {
-            let rows: Vec<Vec<Value>> =
-                rows.into_iter().map(|row| row.into_values().collect()).collect();
+            let rows: Vec<Vec<Value>> = rows
+                .into_iter()
+                .map(|row| row.into_values().collect())
+                .collect();
             let expected = case.rows.as_ref().ok_or("the case states no outcome")?;
-            if &rows == expected { Ok(()) } else { Err(format!("rows {rows:?}, expected {expected:?}")) }
+            if &rows == expected {
+                Ok(())
+            } else {
+                Err(format!("rows {rows:?}, expected {expected:?}"))
+            }
         }
         (Ok(rows), Some(expected)) => Err(format!("rows {rows:?}, expected {expected:?}")),
-        (Err(RunError::ErrorAction { message, rule_line, input_line }), Some(expected)) => {
-            let error = RunErrorCase { message, rule_line, input_line };
-            if &error == expected { Ok(()) } else { Err(format!("{error:?}, expected {expected:?}")) }
+        (
+            Err(RunError::ErrorAction {
+                message,
+                rule_line,
+                input_line,
+            }),
+            Some(expected),
+        ) => {
+            let error = RunErrorCase {
+                message,
+                rule_line,
+                input_line,
+            };
+            if &error == expected {
+                Ok(())
+            } else {
+                Err(format!("{error:?}, expected {expected:?}"))
+            }
         }
         (Err(error), _) => Err(format!("unexpected error: {error}")),
     }
 }
 
 fn check_file(name: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/semantics").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/semantics")
+        .join(name);
     let text = std::fs::read_to_string(&path).unwrap();
     let cases: Vec<Case> = serde_yaml_ng::from_str(&text).unwrap();
     assert!(!cases.is_empty());
     let failures: Vec<String> = cases
         .iter()
-        .filter_map(|case| check(case).err().map(|reason| format!("{}: {reason}", case.name)))
+        .filter_map(|case| {
+            check(case)
+                .err()
+                .map(|reason| format!("{}: {reason}", case.name))
+        })
         .collect();
-    assert!(failures.is_empty(), "{name}: {} of {} cases fail:\n{}", failures.len(), cases.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{name}: {} of {} cases fail:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
 }
 
 #[test]

@@ -24,6 +24,8 @@
 mod error;
 mod ip;
 
+pub mod mac;
+pub mod secrets;
 pub mod subnet;
 pub mod vlsm;
 pub mod wildcard;

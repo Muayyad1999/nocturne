@@ -469,7 +469,7 @@ impl Node {
         let Some(line) = self.cfg.vty.first().cloned() else { return false };
         let transport = line.transport_input.is_none_or(|t| if ssh { t.ssh } else { t.telnet });
         // SSH additionally needs host keys.
-        let keys = !ssh || self.cfg.rsa_bits.is_some();
+        let keys = !ssh || self.rsa_bits.is_some();
         let allowed = match &line.access_class_in {
             Some(acl) => self.acl_permits_source(acl, from),
             None => true,

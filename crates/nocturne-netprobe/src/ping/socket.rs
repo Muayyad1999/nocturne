@@ -59,7 +59,8 @@ pub(crate) fn open(kind: SocketKind, family: Family) -> io::Result<Socket> {
     Ok(socket)
 }
 
-fn open_for_echo(kind: SocketKind, family: Family) -> Result<UdpSocket, EchoError> {
+/// Opens an ICMP socket for sending echoes, classifying why it cannot be opened.
+fn open_for_echo(kind: SocketKind, family: Family) -> Result<Socket, EchoError> {
     let socket = open(kind, family).map_err(|error| {
         if os_error_is(&error, FAMILY_MISSING) {
             EchoError::Probe(ProbeError::unsupported(match family {
@@ -82,8 +83,12 @@ fn open_for_echo(kind: SocketKind, family: Family) -> Result<UdpSocket, EchoErro
             let _ = crate::sys::linux::enable_error_queue(&socket, family.is_v6());
         }
     }
-    // The ICMP socket is only ever used through sendto / recvfrom, which is all a UDP socket
-    // wrapper does with its descriptor.
+    Ok(socket)
+}
+
+/// Hands the socket to tokio. An ICMP socket is only ever used through sendto / recvfrom,
+/// which is all a UDP socket wrapper does with its descriptor.
+fn into_async(socket: Socket) -> Result<UdpSocket, EchoError> {
     let socket: std::net::UdpSocket = socket.into();
     UdpSocket::from_std(socket).map_err(|error| EchoError::Probe(ProbeError::Io(error)))
 }
@@ -158,7 +163,7 @@ pub(crate) async fn echo_datagram(
     payload_len: usize,
 ) -> Result<PingReply, EchoError> {
     let family = Family::of(target);
-    let socket = open_for_echo(SocketKind::Datagram, family)?;
+    let socket = into_async(open_for_echo(SocketKind::Datagram, family)?)?;
     let random = util::random_u64();
     let (id, seq) = ((random >> 16) as u16, random as u16);
     let payload = icmp::echo_payload(util::random_u64(), payload_len);
@@ -299,6 +304,10 @@ struct Waiter {
 
 type Waiters = Arc<Mutex<HashMap<u16, Waiter>>>;
 
+/// Receive buffer requested for the shared raw socket: room for a few thousand queued replies.
+#[cfg(target_os = "linux")]
+const RAW_RECEIVE_BUFFER: usize = 4 * 1024 * 1024;
+
 /// A raw ICMP socket shared by every echo of one address family.
 pub(crate) struct RawEndpoint {
     family: Family,
@@ -313,8 +322,17 @@ pub(crate) struct RawEndpoint {
 impl RawEndpoint {
     /// Opens the socket and starts the reader. Must be called from within a tokio runtime.
     pub(crate) fn open(family: Family) -> Result<Self, EchoError> {
-        let socket = Arc::new(open_for_echo(SocketKind::Raw, family)?);
+        let socket = open_for_echo(SocketKind::Raw, family)?;
         let id = util::random_u64() as u16;
+        #[cfg(target_os = "linux")]
+        {
+            crate::sys::linux::grow_receive_buffer(&socket, RAW_RECEIVE_BUFFER);
+            if family == Family::V4 {
+                // Without the filter the socket still works; it just queues unrelated ICMP too.
+                let _ = crate::sys::linux::filter_raw_icmpv4(&socket, id);
+            }
+        }
+        let socket = Arc::new(into_async(socket)?);
         let waiters: Waiters = Arc::default();
         let reader = tokio::spawn(read_loop(socket.clone(), family, id, waiters.clone()));
         Ok(RawEndpoint {

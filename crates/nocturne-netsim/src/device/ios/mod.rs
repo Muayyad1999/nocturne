@@ -13,7 +13,7 @@ mod config_sub;
 mod exec;
 mod help;
 pub(crate) mod runcfg;
-mod show;
+pub(crate) mod show;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;

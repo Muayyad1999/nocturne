@@ -137,7 +137,12 @@ async fn run(stream: TcpStream, backend: Backend, terminal: Terminal) {
 
     let outcome = drive(
         read_socket(&mut socket_rx, &mut relay, &output, answers_tx, &terminal),
-        write_socket(&mut input, &mut answers_rx, &mut socket_tx, &terminal.window),
+        write_socket(
+            &mut input,
+            &mut answers_rx,
+            &mut socket_tx,
+            &terminal.window,
+        ),
         CLOSE_GRACE,
     )
     .await;
@@ -241,9 +246,10 @@ fn answer_to(event: Event, options: &mut Negotiator, terminal: &Terminal) -> Vec
             }
             _ => {}
         },
-        Event::Subnegotiation { option: OPT_TTYPE, data }
-            if data.first() == Some(&TTYPE_SEND) && options.local_on(OPT_TTYPE) =>
-        {
+        Event::Subnegotiation {
+            option: OPT_TTYPE,
+            data,
+        } if data.first() == Some(&TTYPE_SEND) && options.local_on(OPT_TTYPE) => {
             encode_terminal_type(&terminal.name, &mut raw);
         }
         // Other sub-negotiations and commands (NOP, GA, …) need no answer.

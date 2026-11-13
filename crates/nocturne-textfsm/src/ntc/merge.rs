@@ -30,8 +30,10 @@ pub(crate) fn extend(
     if let Some(key) = keys.iter().find(|key| !header.contains(key)) {
         return Err(missing(key));
     }
-    let added: Vec<&String> =
-        other_header.iter().filter(|column| !header.contains(column)).collect();
+    let added: Vec<&String> = other_header
+        .iter()
+        .filter(|column| !header.contains(column))
+        .collect();
     if added.is_empty() {
         return Ok(());
     }
@@ -62,7 +64,9 @@ pub(crate) fn extend(
         return Err(missing(key));
     }
     for row in table.iter_mut() {
-        let partner = other.iter().find(|source| keys.iter().all(|key| row.get(key) == source.get(key)));
+        let partner = other
+            .iter()
+            .find(|source| keys.iter().all(|key| row.get(key) == source.get(key)));
         if let Some(source) = partner {
             copy(row, source);
         }
@@ -78,28 +82,51 @@ mod tests {
         let header: Vec<String> = header.iter().map(|name| (*name).to_owned()).collect();
         let rows = rows
             .iter()
-            .map(|row| header.iter().cloned().zip(row.iter().map(|cell| Value::from(*cell))).collect())
+            .map(|row| {
+                header
+                    .iter()
+                    .cloned()
+                    .zip(row.iter().map(|cell| Value::from(*cell)))
+                    .collect()
+            })
             .collect();
         (header, rows)
     }
 
     fn cells(rows: &[Record]) -> Vec<Vec<&str>> {
-        rows.iter().map(|row| row.values().map(Value::as_str).collect()).collect()
+        rows.iter()
+            .map(|row| row.values().map(Value::as_str).collect())
+            .collect()
     }
 
     // The expected tables below are what textfsm.texttable.TextTable.extend produces.
 
     #[test]
     fn merges_on_keys() {
-        let (mut header, mut rows) =
-            table(&["SWITCH", "ROLE"], &[&["1", "Active"], &["2", "Member"], &["3", "Member"]]);
-        let (other_header, other) =
-            table(&["SWITCH", "PORT", "ROLE"], &[&["3", "Gi3", "x"], &["1", "Gi1", "y"], &["1", "Gi9", "z"]]);
-        extend(&mut rows, &mut header, &other, &other_header, &["SWITCH".to_owned()]).unwrap();
+        let (mut header, mut rows) = table(
+            &["SWITCH", "ROLE"],
+            &[&["1", "Active"], &["2", "Member"], &["3", "Member"]],
+        );
+        let (other_header, other) = table(
+            &["SWITCH", "PORT", "ROLE"],
+            &[&["3", "Gi3", "x"], &["1", "Gi1", "y"], &["1", "Gi9", "z"]],
+        );
+        extend(
+            &mut rows,
+            &mut header,
+            &other,
+            &other_header,
+            &["SWITCH".to_owned()],
+        )
+        .unwrap();
         assert_eq!(header, ["SWITCH", "ROLE", "PORT"]);
         assert_eq!(
             cells(&rows),
-            [["1", "Active", "Gi1"], ["2", "Member", ""], ["3", "Member", "Gi3"]]
+            [
+                ["1", "Active", "Gi1"],
+                ["2", "Member", ""],
+                ["3", "Member", "Gi3"]
+            ]
         );
     }
 
@@ -116,7 +143,14 @@ mod tests {
     fn nothing_to_add() {
         let (mut header, mut rows) = table(&["A", "B"], &[&["1", "2"]]);
         let (other_header, other) = table(&["B", "A"], &[&["9", "9"]]);
-        extend(&mut rows, &mut header, &other, &other_header, &["A".to_owned()]).unwrap();
+        extend(
+            &mut rows,
+            &mut header,
+            &other,
+            &other_header,
+            &["A".to_owned()],
+        )
+        .unwrap();
         assert_eq!(header, ["A", "B"]);
         assert_eq!(cells(&rows), [["1", "2"]]);
     }
@@ -125,8 +159,19 @@ mod tests {
     fn keys_must_exist() {
         let (mut header, mut rows) = table(&["A"], &[&["1"]]);
         let (other_header, other) = table(&["K", "B"], &[&["1", "x"]]);
-        let error = extend(&mut rows, &mut header, &other, &other_header, &["K".to_owned()]);
-        assert_eq!(error, Err(MergeError { key: "K".to_owned() }));
+        let error = extend(
+            &mut rows,
+            &mut header,
+            &other,
+            &other_header,
+            &["K".to_owned()],
+        );
+        assert_eq!(
+            error,
+            Err(MergeError {
+                key: "K".to_owned()
+            })
+        );
 
         // A key the second table lacks only matters once rows are compared.
         let (mut header, mut rows) = table(&["K", "A"], &[&["1", "a"]]);

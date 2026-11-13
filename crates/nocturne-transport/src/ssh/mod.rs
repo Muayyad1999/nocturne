@@ -90,7 +90,9 @@ impl Default for SshHop {
 pub enum SshAuth {
     /// Also used to answer keyboard-interactive prompts when the server does
     /// not offer plain password authentication.
-    Password { password: String },
+    Password {
+        password: String,
+    },
     /// OpenSSH / PEM private key text (RSA, ECDSA, Ed25519), optionally encrypted.
     PrivateKey {
         key: String,
@@ -101,7 +103,9 @@ pub enum SshAuth {
         passphrase: Option<String>,
     },
     /// Answers every keyboard-interactive prompt with `response`.
-    KeyboardInteractive { response: String },
+    KeyboardInteractive {
+        response: String,
+    },
     /// Keys offered by the running ssh-agent (`SSH_AUTH_SOCK` / Pageant pipe).
     Agent,
     None,
@@ -172,7 +176,13 @@ mod tests {
         assert_eq!(params.jump[0].port, 22);
         assert!(matches!(params.auth[0], SshAuth::Password { .. }));
         assert!(matches!(params.auth[1], SshAuth::Agent));
-        assert!(matches!(&params.auth[2], SshAuth::KeyFile { passphrase: None, .. }));
+        assert!(matches!(
+            &params.auth[2],
+            SshAuth::KeyFile {
+                passphrase: None,
+                ..
+            }
+        ));
 
         let legacy: LegacyCrypto = serde_json::from_str(r#""always""#).unwrap();
         assert_eq!(legacy, LegacyCrypto::Always);

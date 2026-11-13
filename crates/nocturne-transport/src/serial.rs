@@ -187,15 +187,23 @@ impl TryFrom<&SerialParams> for Settings {
         Ok(Self {
             path: params.port.clone(),
             baud: params.baud,
-            data_bits: serialport::DataBits::try_from(params.data_bits)
-                .map_err(|_| invalid(format!("{} data bits (5 to 8 are possible)", params.data_bits)))?,
+            data_bits: serialport::DataBits::try_from(params.data_bits).map_err(|_| {
+                invalid(format!(
+                    "{} data bits (5 to 8 are possible)",
+                    params.data_bits
+                ))
+            })?,
             parity: match params.parity {
                 Parity::None => serialport::Parity::None,
                 Parity::Odd => serialport::Parity::Odd,
                 Parity::Even => serialport::Parity::Even,
             },
-            stop_bits: serialport::StopBits::try_from(params.stop_bits)
-                .map_err(|_| invalid(format!("{} stop bits (1 or 2 are possible)", params.stop_bits)))?,
+            stop_bits: serialport::StopBits::try_from(params.stop_bits).map_err(|_| {
+                invalid(format!(
+                    "{} stop bits (1 or 2 are possible)",
+                    params.stop_bits
+                ))
+            })?,
             flow: match params.flow {
                 FlowControl::None => serialport::FlowControl::None,
                 FlowControl::Software => serialport::FlowControl::Software,
@@ -247,7 +255,8 @@ async fn run(port: Port, backend: Backend) {
     let mut relay = Relay::for_output(output.clone(), OUTPUT_HIGH_WATER);
     let stop = Arc::new(AtomicBool::new(false));
     // Data read from the port, or the error that ended a port thread.
-    let (received_tx, mut received) = mpsc::channel::<io::Result<Bytes>>(Connection::DEFAULT_BUFFER);
+    let (received_tx, mut received) =
+        mpsc::channel::<io::Result<Bytes>>(Connection::DEFAULT_BUFFER);
     let (commands, commands_rx) = mpsc::channel::<Command>(Connection::DEFAULT_BUFFER);
 
     let threads = {
@@ -439,7 +448,10 @@ mod tests {
                 ..SerialParams::default()
             }
         );
-        assert_eq!((params.baud, params.data_bits, params.stop_bits), (9600, 8, 1));
+        assert_eq!(
+            (params.baud, params.data_bits, params.stop_bits),
+            (9600, 8, 1)
+        );
         assert_eq!(params.parity, Parity::None);
         assert_eq!(params.flow, FlowControl::None);
 
@@ -473,16 +485,31 @@ mod tests {
             }),
             Some("unsupported")
         );
-        assert_eq!(reject(SerialParams { baud: 0, ..base }), Some("unsupported"));
+        assert_eq!(
+            reject(SerialParams { baud: 0, ..base }),
+            Some("unsupported")
+        );
     }
 
     #[test]
     fn ports_sort_naturally() {
-        let mut names = vec!["COM10", "COM2", "/dev/ttyUSB11", "/dev/ttyUSB9", "/dev/ttyS0"];
+        let mut names = vec![
+            "COM10",
+            "COM2",
+            "/dev/ttyUSB11",
+            "/dev/ttyUSB9",
+            "/dev/ttyS0",
+        ];
         names.sort_by_key(|name| natural_key(name));
         assert_eq!(
             names,
-            ["/dev/ttyS0", "/dev/ttyUSB9", "/dev/ttyUSB11", "COM2", "COM10"]
+            [
+                "/dev/ttyS0",
+                "/dev/ttyUSB9",
+                "/dev/ttyUSB11",
+                "COM2",
+                "COM10"
+            ]
         );
     }
 

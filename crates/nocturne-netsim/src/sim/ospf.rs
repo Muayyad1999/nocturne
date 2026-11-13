@@ -13,8 +13,19 @@ pub(crate) struct Ospf {}
 
 pub(crate) fn recompute(_world: &mut World) {}
 
+pub(crate) fn show_protocols(_node: &Node, _now: u64) -> String {
+    String::new()
+}
+
 impl Node {
+    pub(crate) fn ospf_converging(&self) -> bool {
+        false
+    }
+    pub(crate) fn ospf_neighbor_rows(&self, _now: u64) -> Vec<crate::api::OspfNeighborRow> {
+        Vec::new()
+    }
     pub(crate) fn ospf_sync(&mut self, _fx: &mut Fx) {}
+    pub(crate) fn ospf_restart(&mut self, _fx: &mut Fx) {}
     pub(crate) fn ospf_rx(&mut self, _fx: &mut Fx, _iface: IfId, _src: Ipv4Addr, _hello: &OspfHello) {}
     pub(crate) fn ospf_hello_timer(&mut self, _fx: &mut Fx, _iface: IfId, _token: u32) {}
     pub(crate) fn ospf_neighbor_timer(&mut self, _fx: &mut Fx, _iface: IfId, _router_id: Ipv4Addr, _token: u32) {}

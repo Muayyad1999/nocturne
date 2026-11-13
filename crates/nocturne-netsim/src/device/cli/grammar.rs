@@ -126,7 +126,8 @@ pub(crate) struct Cmd<H> {
 
 #[derive(Debug)]
 enum Pat {
-    Kw(&'static str, &'static str),
+    /// Keyword, description, and whether the description is the command's own.
+    Kw(&'static str, &'static str, bool),
     Arg { name: &'static str, kind: ArgKind, desc: &'static str },
     Seq(Vec<Pat>),
     Opt(Box<Pat>),
@@ -137,7 +138,7 @@ enum Pat {
 
 #[derive(Debug)]
 enum State {
-    Kw { word: &'static str, help: &'static str, next: usize },
+    Kw { word: &'static str, help: &'static str, primary: bool, next: usize },
     Arg { name: &'static str, kind: ArgKind, desc: &'static str, next: usize },
     Split(Vec<usize>),
     /// In the `no` form the command may end here.
@@ -248,12 +249,9 @@ impl PatternParser<'_> {
                 _ => {
                     self.pos += 1;
                     path.push(token);
-                    let help = if leading_run && path.len() == self.leading {
-                        self.command_help
-                    } else {
-                        self.lookup(&path)
-                    };
-                    items.push(Pat::Kw(token, help));
+                    let primary = leading_run && path.len() == self.leading;
+                    let help = if primary { self.command_help } else { self.lookup(&path) };
+                    items.push(Pat::Kw(token, help, primary));
                 }
             }
         }
@@ -282,8 +280,8 @@ fn parse_arg(token: &'static str) -> Pat {
 
 fn compile(pat: &Pat, next: usize, states: &mut Vec<State>) -> usize {
     match pat {
-        Pat::Kw(word, help) => {
-            states.push(State::Kw { word, help, next });
+        Pat::Kw(word, help, primary) => {
+            states.push(State::Kw { word, help, primary: *primary, next });
             states.len() - 1
         }
         Pat::Arg { name, kind, desc } => {
@@ -530,7 +528,7 @@ impl<H: Copy> Grammar<H> {
         for index in 0..tokens.len() {
             threads = self.step(&threads, &tokens, index, line, negate).ok()?;
         }
-        let mut keywords: Vec<HelpEntry> = Vec::new();
+        let mut keywords: Vec<(String, String, bool)> = Vec::new();
         let mut arguments: Vec<HelpEntry> = Vec::new();
         let mut accept = false;
         for thread in threads.iter().filter(|t| t.skip == 0) {
@@ -538,14 +536,20 @@ impl<H: Copy> Grammar<H> {
             accept |= ends;
             for s in states {
                 match &self.commands[thread.command].states[s] {
-                    State::Kw { word, help, .. } => {
-                        if partial.as_deref().is_some_and(|p| !is_abbrev(p, word)) {
+                    State::Kw { word, help, primary, .. } => {
+                        // A command declared without a description is accepted but not advertised.
+                        let hidden = *primary && help.is_empty();
+                        if hidden || partial.as_deref().is_some_and(|p| !is_abbrev(p, word)) {
                             continue;
                         }
-                        match keywords.iter_mut().find(|(w, _)| w == word) {
-                            Some(entry) if entry.1.is_empty() => entry.1 = (*help).to_string(),
+                        // A command's own description beats a dictionary one.
+                        match keywords.iter_mut().find(|(w, _, _)| w == word) {
+                            Some(entry) if (*primary && !entry.2) || entry.1.is_empty() => {
+                                entry.1 = (*help).to_string();
+                                entry.2 |= *primary;
+                            }
                             Some(_) => {}
-                            None => keywords.push(((*word).to_string(), (*help).to_string())),
+                            None => keywords.push(((*word).to_string(), (*help).to_string(), *primary)),
                         }
                     }
                     State::Arg { kind, desc, .. } => {
@@ -560,6 +564,7 @@ impl<H: Copy> Grammar<H> {
             }
         }
         keywords.sort();
+        let keywords = keywords.into_iter().map(|(word, help, _)| (word, help)).collect();
         Some((arguments, keywords, accept, partial))
     }
 
@@ -733,7 +738,7 @@ mod tests {
         assert_eq!(run("ip address 10.0.0.1 255.255.255.0", true), "address Some(10.0.0.1) Some(255.255.255.0) sec=false no=true");
         assert_eq!(run("description", true), "desc None");
         // Not negatable: the command does not exist after `no`.
-        assert_eq!(run("show inventory", true), "invalid@0");
+        assert_eq!(run("show inventory", true), "invalid@1");
         assert_eq!(run("ip address", false), "incomplete");
     }
 

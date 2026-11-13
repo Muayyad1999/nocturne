@@ -106,10 +106,9 @@ pub(crate) async fn serve_ssh_with(
     let host_key = match &config.host_key {
         Some(text) => decode_private_key(text, None)
             .map_err(|reason| TransportError::Protocol(format!("invalid host key: {reason}")))?,
-        None => PrivateKey::random(&mut russh::keys::key::safe_rng(), Algorithm::Ed25519)
-            .map_err(|error| {
-                TransportError::Protocol(format!("cannot generate a host key: {error}"))
-            })?,
+        None => PrivateKey::random(&mut russh::keys::key::safe_rng(), Algorithm::Ed25519).map_err(
+            |error| TransportError::Protocol(format!("cannot generate a host key: {error}")),
+        )?,
     };
     let open_house = config.users.is_empty();
     let methods = options.methods.unwrap_or_else(|| {
@@ -152,15 +151,19 @@ pub(crate) async fn serve_ssh_with(
 
     let listener = TcpListener::bind(config.bind).await?;
     let local_addr = listener.local_addr()?;
-    Ok(spawn_server(listener, local_addr, move |stream, peer, shutdown| {
-        serve_connection(
-            stream,
-            peer,
-            Arc::clone(&russh_config),
-            Arc::clone(&shared),
-            shutdown,
-        )
-    }))
+    Ok(spawn_server(
+        listener,
+        local_addr,
+        move |stream, peer, shutdown| {
+            serve_connection(
+                stream,
+                peer,
+                Arc::clone(&russh_config),
+                Arc::clone(&shared),
+                shutdown,
+            )
+        },
+    ))
 }
 
 /// What every connection of one server shares.
@@ -235,7 +238,11 @@ async fn serve_connection(
             }
         }
     };
-    let farewell = handle.disconnect(Disconnect::ByApplication, goodbye.to_owned(), "en".to_owned());
+    let farewell = handle.disconnect(
+        Disconnect::ByApplication,
+        goodbye.to_owned(),
+        "en".to_owned(),
+    );
     if let Ok(Ok(())) = tokio::time::timeout(GOODBYE_TIMEOUT, farewell).await {
         let _ = tokio::time::timeout(GOODBYE_TIMEOUT, &mut session).await;
     }

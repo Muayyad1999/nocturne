@@ -25,10 +25,17 @@ pub(crate) fn parse(pattern: &str) -> Result<Ast, SyntaxError> {
     }
     for &(group, position) in &parser.conditional_groups {
         if group as usize > parser.group_names.len() {
-            return Err(SyntaxError::new(format!("invalid group reference {group}"), position));
+            return Err(SyntaxError::new(
+                format!("invalid group reference {group}"),
+                position,
+            ));
         }
     }
-    Ok(Ast { root, flags: parser.global_flags, group_names: parser.group_names })
+    Ok(Ast {
+        root,
+        flags: parser.global_flags,
+        group_names: parser.group_names,
+    })
 }
 
 /// One lexical token: a character, or a backslash together with the character after it.
@@ -196,7 +203,11 @@ impl Parser {
                 verbose = self.global_flags.verbose;
             }
         }
-        Ok(if branches.len() == 1 { branches.swap_remove(0) } else { Node::Alternation(branches) })
+        Ok(if branches.len() == 1 {
+            branches.swap_remove(0)
+        } else {
+            Node::Alternation(branches)
+        })
     }
 
     /// A sequence of quantified atoms (CPython: `_parse`).
@@ -288,7 +299,12 @@ impl Parser {
         } else {
             RepeatMode::Greedy
         };
-        items.push(Node::Repeat { node, min, max, mode });
+        items.push(Node::Repeat {
+            node,
+            min,
+            max,
+            mode,
+        });
         Ok(())
     }
 
@@ -319,13 +335,19 @@ impl Parser {
             }
             match digits.parse::<u64>() {
                 Ok(value) if value < MAX_REPEAT => Ok(Some(value as u32)),
-                _ => Err(SyntaxError::new("the repetition number is too large", start + 1)),
+                _ => Err(SyntaxError::new(
+                    "the repetition number is too large",
+                    start + 1,
+                )),
             }
         };
         let min = bound(&low)?.unwrap_or(0);
         let max = bound(&high)?;
         if max.is_some_and(|max| max < min) {
-            return Err(SyntaxError::new("min repeat greater than max repeat", start + 1));
+            return Err(SyntaxError::new(
+                "min repeat greater than max repeat",
+                start + 1,
+            ));
         }
         Ok(Some((min, max)))
     }
@@ -448,7 +470,10 @@ impl Parser {
         let hex = |parser: &mut Parser, digits: usize| -> Result<char, SyntaxError> {
             let value = parser.take_while(digits, |c| c.is_ascii_hexdigit());
             if value.len() != digits {
-                return Err(SyntaxError::new(format!("incomplete escape \\{escaped}{value}"), start));
+                return Err(SyntaxError::new(
+                    format!("incomplete escape \\{escaped}{value}"),
+                    start,
+                ));
             }
             u32::from_str_radix(&value, 16)
                 .ok()
@@ -465,9 +490,10 @@ impl Parser {
             'x' => hex(self, 2),
             'u' => hex(self, 4),
             'U' => hex(self, 8),
-            'N' => {
-                Err(SyntaxError::new("named Unicode escapes (\\N{...}) are not supported", start))
-            }
+            'N' => Err(SyntaxError::new(
+                "named Unicode escapes (\\N{...}) are not supported",
+                start,
+            )),
             c if c.is_ascii_alphanumeric() => {
                 Err(SyntaxError::new(format!("bad escape \\{c}"), start))
             }
@@ -492,7 +518,9 @@ impl Parser {
         let mut body_verbose = verbose;
         if self.eat('?') {
             capture = None;
-            let token = self.advance().ok_or_else(|| self.error_here("unexpected end of pattern"))?;
+            let token = self
+                .advance()
+                .ok_or_else(|| self.error_here("unexpected end of pattern"))?;
             let Token::Char(c) = token else {
                 return Err(unknown_extension(token.text()));
             };
@@ -588,7 +616,10 @@ impl Parser {
         if let Some(number) = group {
             self.group_widths[number as usize - 1] = Some(width(&body, &self.group_widths));
         }
-        Ok(Group::Node(Node::Group { kind, node: Box::new(body) }))
+        Ok(Group::Node(Node::Group {
+            kind,
+            node: Box::new(body),
+        }))
     }
 
     /// The body of a look-around; the introducer has already been consumed.
@@ -610,9 +641,15 @@ impl Parser {
         self.expect_close(start)?;
         let (shortest, longest) = width(&body, &self.group_widths);
         if kind.is_behind() && shortest != longest {
-            return Err(SyntaxError::new("look-behind requires fixed-width pattern", start));
+            return Err(SyntaxError::new(
+                "look-behind requires fixed-width pattern",
+                start,
+            ));
         }
-        Ok(Group::Node(Node::Look { kind, node: Box::new(body) }))
+        Ok(Group::Node(Node::Look {
+            kind,
+            node: Box::new(body),
+        }))
     }
 
     /// `(?(group)yes|no)`; everything up to and including `(?(` has been consumed.
@@ -650,7 +687,11 @@ impl Parser {
             Node::Empty
         };
         self.expect_close(start)?;
-        Ok(Group::Node(Node::Conditional { group, yes: Box::new(yes), no: Box::new(no) }))
+        Ok(Group::Node(Node::Conditional {
+            group,
+            yes: Box::new(yes),
+            no: Box::new(no),
+        }))
     }
 
     /// Inline flags after `(?`. `first` is the first flag character (or `-`),
@@ -668,8 +709,11 @@ impl Parser {
                     break;
                 }
                 if !is_flag(c) {
-                    let message =
-                        if c.is_alphabetic() { "unknown flag" } else { "missing -, : or )" };
+                    let message = if c.is_alphabetic() {
+                        "unknown flag"
+                    } else {
+                        "missing -, : or )"
+                    };
                     return Err(self.error_back(message, 1));
                 }
             }
@@ -681,14 +725,18 @@ impl Parser {
         if c == '-' {
             c = self.next_flag_char("missing flag")?;
             if !is_flag(c) {
-                let message = if c.is_alphabetic() { "unknown flag" } else { "missing flag" };
+                let message = if c.is_alphabetic() {
+                    "unknown flag"
+                } else {
+                    "missing flag"
+                };
                 return Err(self.error_back(message, 1));
             }
             loop {
                 if matches!(c, 'a' | 'u' | 'L') {
-                    return Err(self.error_here(
-                        "bad inline flags: cannot turn off flags 'a', 'u' and 'L'",
-                    ));
+                    return Err(
+                        self.error_here("bad inline flags: cannot turn off flags 'a', 'u' and 'L'")
+                    );
                 }
                 set_flag(&mut off, c).map_err(|message| self.error_here(message))?;
                 c = self.next_flag_char("missing :")?;
@@ -696,7 +744,11 @@ impl Parser {
                     break;
                 }
                 if !is_flag(c) {
-                    let message = if c.is_alphabetic() { "unknown flag" } else { "missing :" };
+                    let message = if c.is_alphabetic() {
+                        "unknown flag"
+                    } else {
+                        "missing :"
+                    };
                     return Err(self.error_back(message, 1));
                 }
             }
@@ -721,7 +773,10 @@ impl Parser {
         if self.eat(')') {
             Ok(())
         } else {
-            Err(SyntaxError::new("missing ), unterminated subpattern", group_start))
+            Err(SyntaxError::new(
+                "missing ), unterminated subpattern",
+                group_start,
+            ))
         }
     }
 
@@ -744,10 +799,13 @@ impl Parser {
         if !closed {
             return Err(SyntaxError::new("cannot refer to an open group", position));
         }
-        if self.lookbehind_first_group.is_some_and(|first| group >= first) {
-            return Err(self.error_here(
-                "cannot refer to group defined in the same lookbehind subpattern",
-            ));
+        if self
+            .lookbehind_first_group
+            .is_some_and(|first| group >= first)
+        {
+            return Err(
+                self.error_here("cannot refer to group defined in the same lookbehind subpattern")
+            );
         }
         Ok(())
     }
@@ -814,7 +872,10 @@ fn check_group_name(name: &str, position: usize) -> Result<(), SyntaxError> {
     if valid {
         Ok(())
     } else {
-        Err(SyntaxError::new(format!("bad character in group name '{name}'"), position))
+        Err(SyntaxError::new(
+            format!("bad character in group name '{name}'"),
+            position,
+        ))
     }
 }
 
@@ -844,9 +905,10 @@ fn width(node: &Node, group_widths: &[Option<(u64, u64)>]) -> (u64, u64) {
             };
             (low.saturating_mul(u64::from(*min)), high)
         }
-        Node::Group { kind: GroupKind::Capture(number), node } => {
-            group_width(*number).unwrap_or_else(|| width(node, group_widths))
-        }
+        Node::Group {
+            kind: GroupKind::Capture(number),
+            node,
+        } => group_width(*number).unwrap_or_else(|| width(node, group_widths)),
         Node::Group { node, .. } => width(node, group_widths),
         // A group is always closed before it can be referenced.
         Node::Backref(number) => group_width(*number).unwrap_or((0, MAX_WIDTH)),

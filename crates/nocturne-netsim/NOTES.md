@@ -71,10 +71,12 @@ Build: `CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/netsim cargo test -p 
 
 ## In progress / next
 
-Writing the IOS command tables (exec/config/config_if/config_sub/show/runcfg/boot), then
-host shell, then lab.rs; then first compile of everything written so far.
+Tier-1 code compiles; tests green so far: tests/tier1_l2.rs (5), tier1_l3.rs (5),
+tier1_cli.rs (7), unit tests (36). `examples/console.rs` = scratch console driver
+(`cargo run --example console -- "en" "show vlan" ...`, NODE=R1|PC1 selects device).
 
-Handler conventions (device/ios): `fn(&mut Cx, &Args)`; `cx.n` node, `cx.fx` effects,
-`cx.sh` shell state, `cx.say()/cx.fail()`, `cx.cfg()` marks config touched, `cx.next` for
-follow-ups (Job/Connect/Ask/Key/Close/Reload). Tables: `c(pattern, help, handler)` and
-`n(...)` (negatable). Grammars are cached per (mode kind, role).
+Next: tests/tier1_lab.rs (config round trip, power cycle, spec round trip, flows, faults,
+traces, determinism, host shell, API errors). Then replace placeholders: neighbors
+(CDP/LLDP), dhcp, nat, ospf, rip, hsrp + show/protocols.rs (table entries were removed
+from show/mod.rs until then), demo.rs; fuzz test; ntc_validate.py + examples/dump.rs;
+clippy + fmt (-p nocturne-netsim only!).

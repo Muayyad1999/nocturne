@@ -178,9 +178,10 @@ impl client::Handler for ClientHandler {
                 },
                 Ok(()),
             ),
-            DisconnectReason::Error(error) => {
-                (DisconnectCause::Local(describe_session_end(&error)), Err(error))
-            }
+            DisconnectReason::Error(error) => (
+                DisconnectCause::Local(describe_session_end(&error)),
+                Err(error),
+            ),
         };
         self.shared.state().disconnect.get_or_insert(cause);
         self.shared.ended.send_replace(true);
@@ -256,7 +257,6 @@ impl SessionInner {
             Ok(Err(error)) => Err(channel_error(error)),
         }
     }
-
 }
 
 /// Maps an error from a channel operation on an established session.
@@ -528,10 +528,7 @@ impl SshSession {
             if !request_accepted(&mut channel, &mut early).await? {
                 tracing::warn!(peer = %self.info.peer, "the server refused to allocate a terminal");
             }
-            channel
-                .request_shell(true)
-                .await
-                .map_err(channel_error)?;
+            channel.request_shell(true).await.map_err(channel_error)?;
             if !request_accepted(&mut channel, &mut early).await? {
                 let _ = channel.close().await;
                 return Err(TransportError::Protocol(
@@ -571,10 +568,7 @@ impl SshSession {
             return Err(TransportError::Timeout);
         };
         let mut channel = channel?;
-        channel
-            .exec(true, command)
-            .await
-            .map_err(channel_error)?;
+        channel.exec(true, command).await.map_err(channel_error)?;
         let result = match tokio::time::timeout_at(deadline, collect_exec(&mut channel)).await {
             Ok(result) => result,
             Err(_) => Err(TransportError::Timeout),
@@ -860,10 +854,17 @@ mod tests {
             Some("SSH-2.0-Cisco-1.25")
         );
         assert_eq!(
-            server_banner(Some("SSH-2.0-Cisco-1.25"), Some("Authorized users only\r\n")).as_deref(),
+            server_banner(
+                Some("SSH-2.0-Cisco-1.25"),
+                Some("Authorized users only\r\n")
+            )
+            .as_deref(),
             Some("SSH-2.0-Cisco-1.25\nAuthorized users only")
         );
-        assert_eq!(server_banner(Some("SSH-2.0-x"), Some("  \n")).as_deref(), Some("SSH-2.0-x"));
+        assert_eq!(
+            server_banner(Some("SSH-2.0-x"), Some("  \n")).as_deref(),
+            Some("SSH-2.0-x")
+        );
         assert_eq!(server_banner(None, None), None);
     }
 

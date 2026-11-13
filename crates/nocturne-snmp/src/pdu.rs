@@ -349,7 +349,7 @@ mod tests {
 
     pub(crate) fn hex(s: &str) -> Vec<u8> {
         let digits: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-        assert!(digits.len() % 2 == 0, "odd number of hex digits");
+        assert!(digits.len().is_multiple_of(2), "odd number of hex digits");
         digits
             .chunks(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
@@ -367,7 +367,10 @@ mod tests {
         let vectors: Vec<(Value, Vec<u8>)> = vec![
             (Value::Integer(3), hex("02 01 03")),
             (Value::Integer(-129), hex("02 02 ff 7f")),
-            (Value::OctetString(b"eth3".to_vec()), hex("04 04 65 74 68 33")),
+            (
+                Value::OctetString(b"eth3".to_vec()),
+                hex("04 04 65 74 68 33"),
+            ),
             (Value::OctetString(vec![]), hex("04 00")),
             (Value::Null, hex("05 00")),
             (
@@ -378,7 +381,10 @@ mod tests {
             (Value::Counter32(4_294_967_295), hex("41 05 00 ff ff ff ff")),
             (Value::Gauge32(1_000_000_000), hex("42 04 3b 9a ca 00")),
             (Value::TimeTicks(54_321), hex("43 03 00 d4 31")),
-            (Value::Opaque(vec![0x9f, 0x78, 0x04, 0x3f, 0, 0, 0]), hex("44 07 9f 78 04 3f 00 00 00")),
+            (
+                Value::Opaque(vec![0x9f, 0x78, 0x04, 0x3f, 0, 0, 0]),
+                hex("44 07 9f 78 04 3f 00 00 00"),
+            ),
             (Value::Counter64(8_519_442), hex("46 04 00 81 ff 12")),
             (
                 Value::Counter64(u64::MAX),
@@ -391,7 +397,11 @@ mod tests {
         for (value, bytes) in vectors {
             assert_eq!(value_bytes(&value), bytes, "encoding {value:?}");
             let mut reader = Reader::new(&bytes);
-            assert_eq!(read_value(&mut reader).unwrap(), value, "decoding {value:?}");
+            assert_eq!(
+                read_value(&mut reader).unwrap(),
+                value,
+                "decoding {value:?}"
+            );
             assert!(reader.is_empty());
         }
     }
@@ -409,7 +419,10 @@ mod tests {
         assert_eq!(decode("47 01 2a").unwrap(), Value::Gauge32(42));
         assert_eq!(decode("45 02 01 02").unwrap(), Value::Opaque(vec![1, 2]));
         // Counter32 without the mandatory leading zero, zero-length integers.
-        assert_eq!(decode("41 04 ff ff ff ff").unwrap(), Value::Counter32(u32::MAX));
+        assert_eq!(
+            decode("41 04 ff ff ff ff").unwrap(),
+            Value::Counter32(u32::MAX)
+        );
         assert_eq!(decode("02 00").unwrap(), Value::Integer(0));
         assert_eq!(decode("43 00").unwrap(), Value::TimeTicks(0));
         // Unknown tags and oversized numbers are errors, never panics.
@@ -488,9 +501,16 @@ mod tests {
         let bulk = hex("30 2b 02 01 01 04 06 70 75 62 6c 69 63 a5 1e 02
                         04 60 bb 6a fa 02 01 00 02 01 03 30 10 30 0e 06
                         0a 2b 06 01 02 01 1f 01 01 01 06 05 00");
-        let mut request = Pdu::request(PduKind::GetBulk, 0x60bb_6afa, &[oid("1.3.6.1.2.1.31.1.1.1.6")]);
+        let mut request = Pdu::request(
+            PduKind::GetBulk,
+            0x60bb_6afa,
+            &[oid("1.3.6.1.2.1.31.1.1.1.6")],
+        );
         request.error_index = 3; // max-repetitions
-        assert_eq!(encode_community_message(CommunityVersion::V2c, b"public", &request), bulk);
+        assert_eq!(
+            encode_community_message(CommunityVersion::V2c, b"public", &request),
+            bulk
+        );
 
         let response = hex("30 54 02 01 01 04 06 70 75 62 6c 69 63 a2 47 02
                             04 60 bb 6a fa 02 01 00 02 01 00 30 39 30 13 06
@@ -533,7 +553,10 @@ mod tests {
         // ...but every truncation is an error.
         for len in 0..good.len() {
             assert!(
-                matches!(CommunityMessage::decode(&good[..len]), Err(SnmpError::Decode(_))),
+                matches!(
+                    CommunityMessage::decode(&good[..len]),
+                    Err(SnmpError::Decode(_))
+                ),
                 "truncation to {len} bytes"
             );
         }
@@ -553,11 +576,20 @@ mod tests {
 
     #[test]
     fn unencodable_varbinds_are_caught_before_encoding() {
-        let fine = [VarBind::new(oid("1.3.6.1.2.1.1.5.0"), Value::Oid(oid("0.0")))];
+        let fine = [VarBind::new(
+            oid("1.3.6.1.2.1.1.5.0"),
+            Value::Oid(oid("0.0")),
+        )];
         assert!(check_varbinds(&fine).is_ok());
         let bad_name = [VarBind::new(oid("9.9"), Value::Null)];
-        assert!(matches!(check_varbinds(&bad_name), Err(SnmpError::Unsupported(_))));
+        assert!(matches!(
+            check_varbinds(&bad_name),
+            Err(SnmpError::Unsupported(_))
+        ));
         let bad_value = [VarBind::new(oid("1.3"), Value::Oid(oid("1.99")))];
-        assert!(matches!(check_varbinds(&bad_value), Err(SnmpError::Unsupported(_))));
+        assert!(matches!(
+            check_varbinds(&bad_value),
+            Err(SnmpError::Unsupported(_))
+        ));
     }
 }

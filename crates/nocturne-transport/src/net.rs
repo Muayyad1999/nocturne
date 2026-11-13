@@ -42,17 +42,20 @@ pub(crate) async fn connect(
         // Split what is left between the addresses still to try, so that one
         // black-holed address cannot eat the whole budget.
         let share = (remaining / (addresses.len() - index) as u32).max(MIN_ATTEMPT);
-        let error = match tokio::time::timeout(share.min(remaining), TcpStream::connect(address)).await
-        {
-            Ok(Ok(stream)) => {
-                tune(&stream);
-                return Ok(stream);
-            }
-            Ok(Err(error)) => TransportError::from_connect(error),
-            Err(_) => TransportError::ConnectTimeout,
-        };
+        let error =
+            match tokio::time::timeout(share.min(remaining), TcpStream::connect(address)).await {
+                Ok(Ok(stream)) => {
+                    tune(&stream);
+                    return Ok(stream);
+                }
+                Ok(Err(error)) => TransportError::from_connect(error),
+                Err(_) => TransportError::ConnectTimeout,
+            };
         tracing::debug!(%address, %error, "connection attempt failed");
-        if failure.as_ref().is_none_or(|kept| rank(&error) >= rank(kept)) {
+        if failure
+            .as_ref()
+            .is_none_or(|kept| rank(&error) >= rank(kept))
+        {
             failure = Some(error);
         }
     }

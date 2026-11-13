@@ -194,10 +194,7 @@ fn from_notification(
 
 /// `oid` is the scalar `object` — with its `.0`, or (from sloppy senders) without.
 fn is_instance_of(oid: &Oid, object: &[u32]) -> bool {
-    match oid.parts().strip_prefix(object) {
-        Some([]) | Some([0]) => true,
-        _ => false,
-    }
+    matches!(oid.parts().strip_prefix(object), Some([] | [0]))
 }
 
 #[cfg(test)]
@@ -278,7 +275,10 @@ mod tests {
                 is_inform: false,
             }
         );
-        assert_eq!(names::trap_name(trap.trap_oid.as_ref().unwrap()), Some("linkDown"));
+        assert_eq!(
+            names::trap_name(trap.trap_oid.as_ref().unwrap()),
+            Some("linkDown")
+        );
     }
 
     #[test]
@@ -314,7 +314,10 @@ mod tests {
             assert_eq!(mapped, oid("1.3.6.1.6.3.1.1.5").child(generic + 1));
             assert_eq!(names::trap_name(&mapped), Some(name));
         }
-        assert_eq!(v2_trap_oid(&enterprise, 6, 42), oid("1.3.6.1.4.1.99999.0.42"));
+        assert_eq!(
+            v2_trap_oid(&enterprise, 6, 42),
+            oid("1.3.6.1.4.1.99999.0.42")
+        );
     }
 
     #[test]
@@ -341,7 +344,10 @@ mod tests {
                 is_inform: false,
             }
         );
-        assert_eq!(names::trap_name(trap.trap_oid.as_ref().unwrap()), Some("linkUp"));
+        assert_eq!(
+            names::trap_name(trap.trap_oid.as_ref().unwrap()),
+            Some("linkUp")
+        );
     }
 
     #[test]
@@ -352,7 +358,10 @@ mod tests {
         assert_eq!(trap.trap_oid, Some(oid("1.3.6.1.6.3.1.1.5.1")));
         assert!(trap.varbinds.is_empty());
         assert!(!trap.is_inform);
-        assert_eq!(names::trap_name(trap.trap_oid.as_ref().unwrap()), Some("coldStart"));
+        assert_eq!(
+            names::trap_name(trap.trap_oid.as_ref().unwrap()),
+            Some("coldStart")
+        );
     }
 
     #[test]
@@ -365,7 +374,10 @@ mod tests {
         assert_eq!(trap.trap_oid, Some(oid("1.3.6.1.6.3.1.1.5.4")));
         assert_eq!(
             trap.varbinds,
-            vec![VarBind::new(oid("1.3.6.1.2.1.2.2.1.1.5"), Value::Integer(5))]
+            vec![VarBind::new(
+                oid("1.3.6.1.2.1.2.2.1.1.5"),
+                Value::Integer(5)
+            )]
         );
 
         // The acknowledgement is the same message with the PDU tag changed to Response.
@@ -399,7 +411,10 @@ mod tests {
         assert_eq!(trap.trap_oid, Some(oid("1.3.6.1.6.3.1.1.5.3")));
         assert_eq!(
             trap.varbinds,
-            vec![VarBind::new(oid("1.3.6.1.2.1.2.2.1.1.2"), Value::Integer(2))]
+            vec![VarBind::new(
+                oid("1.3.6.1.2.1.2.2.1.1.2"),
+                Value::Integer(2)
+            )]
         );
         assert!(!trap.is_inform);
     }
@@ -422,7 +437,8 @@ mod tests {
                 varbinds: vec![],
             },
         };
-        let keys = crate::v3::tests::test_keys(AuthProtocol::Sha1, Some(PrivProtocol::Aes128), engine_id);
+        let keys =
+            crate::v3::tests::test_keys(AuthProtocol::Sha1, Some(PrivProtocol::Aes128), engine_id);
         for flags in [FLAG_AUTH, FLAG_AUTH | FLAG_PRIV] {
             let datagram = OutgoingMessage {
                 msg_id: 5,
@@ -445,10 +461,18 @@ mod tests {
     #[test]
     fn non_notifications_are_rejected() {
         // A GET request and a Response are not traps.
-        let get = hex("30290201010406 7075626c6963 a01c 0204 4205f751 020100 020100 300e 300c 0608 2b06010201010500 0500");
-        assert!(matches!(decode_trap(&get, source()), Err(SnmpError::Decode(_))));
+        let get = hex(
+            "30290201010406 7075626c6963 a01c 0204 4205f751 020100 020100 300e 300c 0608 2b06010201010500 0500",
+        );
+        assert!(matches!(
+            decode_trap(&get, source()),
+            Err(SnmpError::Decode(_))
+        ));
         let response = inform_response(&hex(V2C_INFORM)).unwrap();
-        assert!(matches!(decode_trap(&response, source()), Err(SnmpError::Decode(_))));
+        assert!(matches!(
+            decode_trap(&response, source()),
+            Err(SnmpError::Decode(_))
+        ));
         // Unknown version, garbage, nothing.
         assert!(decode_trap(&hex("3003020102"), source()).is_err());
         assert!(decode_trap(&[0x42; 40], source()).is_err());
@@ -500,7 +524,10 @@ mod tests {
         assert!(trap.varbinds.is_empty());
 
         // Nothing recognisable: everything stays in the bindings.
-        let odd = vec![payload.clone(), VarBind::new(oid("1.3.6.1.2.1.1.3.0"), Value::TimeTicks(5))];
+        let odd = vec![
+            payload.clone(),
+            VarBind::new(oid("1.3.6.1.2.1.1.3.0"), Value::TimeTicks(5)),
+        ];
         let trap = decode_trap(&encode(odd.clone()), source()).unwrap();
         assert_eq!((trap.uptime_ticks, trap.trap_oid.clone()), (None, None));
         assert_eq!(trap.varbinds, odd);
@@ -514,7 +541,10 @@ mod tests {
     fn traps_serialize() {
         let trap = decode_trap(&hex(V1_LINK_DOWN), source()).unwrap();
         let json = serde_json::to_string(&trap).unwrap();
-        assert!(json.contains(r#""trap_oid":"1.3.6.1.6.3.1.1.5.3""#), "{json}");
+        assert!(
+            json.contains(r#""trap_oid":"1.3.6.1.6.3.1.1.5.3""#),
+            "{json}"
+        );
         assert!(json.contains(r#""source":"192.0.2.77:50123""#), "{json}");
         assert_eq!(serde_json::from_str::<Trap>(&json).unwrap(), trap);
     }

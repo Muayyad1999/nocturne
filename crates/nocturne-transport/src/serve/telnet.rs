@@ -46,9 +46,13 @@ pub async fn serve_telnet(
 ) -> Result<ServerHandle, TransportError> {
     let listener = TcpListener::bind(bind).await?;
     let local_addr = listener.local_addr()?;
-    Ok(spawn_server(listener, local_addr, move |stream, peer, shutdown| {
-        serve_connection(stream, peer, Arc::clone(&handler), shutdown)
-    }))
+    Ok(spawn_server(
+        listener,
+        local_addr,
+        move |stream, peer, shutdown| {
+            serve_connection(stream, peer, Arc::clone(&handler), shutdown)
+        },
+    ))
 }
 
 /// Options the server performs.

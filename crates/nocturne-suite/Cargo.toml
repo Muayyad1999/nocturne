@@ -1,0 +1,19 @@
+[package]
+name = "nocturne-suite"
+description = "The whole Nocturne backend assembled: the application core plus every feature module."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Feature crates are added here as they land; each exposes `init(&mut AppBuilder)`.
+nocturne-app.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

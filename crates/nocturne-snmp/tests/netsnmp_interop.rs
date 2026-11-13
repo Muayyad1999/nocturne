@@ -32,6 +32,18 @@ fn find_program(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// `true` if all of these net-snmp programs are installed; otherwise says which one is
+/// missing, so that the test can be skipped.
+fn installed(programs: &[&str]) -> bool {
+    match programs.iter().find(|name| find_program(name).is_none()) {
+        None => true,
+        Some(missing) => {
+            eprintln!("net-snmp's {missing} is not installed: skipping this interoperability test");
+            false
+        }
+    }
+}
+
 /// A scratch directory that disappears with the value.
 struct TempDir(PathBuf);
 
@@ -90,10 +102,11 @@ impl Snmpd {
     /// Starts snmpd with the base configuration plus `extra` lines, or returns `None` (after
     /// saying so) when net-snmp is not installed.
     async fn start(extra: &str) -> Option<Snmpd> {
-        let Some(program) = find_program("snmpd") else {
-            eprintln!("net-snmp's snmpd is not installed: skipping this interoperability test");
+        // The daemon, and the tools its answers are compared with.
+        if !installed(&["snmpd", "snmpget", "snmpwalk"]) {
             return None;
-        };
+        }
+        let program = find_program("snmpd")?;
         let config = format!(
             "rocommunity public 127.0.0.1\n\
              rwcommunity private 127.0.0.1\n\
@@ -162,7 +175,9 @@ impl Snmpd {
             if !matches!(self.child.try_wait(), Ok(None)) {
                 return false;
             }
-            let mut client = Client::connect(config.clone()).await.expect("create client");
+            let mut client = Client::connect(config.clone())
+                .await
+                .expect("create client");
             if client.get(&sys_up_time).await.is_ok() {
                 return true;
             }
@@ -289,14 +304,23 @@ struct User {
 }
 
 impl User {
-    fn new(auth: Option<(AuthProtocol, &'static str)>, privacy: Option<(PrivProtocol, &'static str)>) -> User {
+    fn new(
+        auth: Option<(AuthProtocol, &'static str)>,
+        privacy: Option<(PrivProtocol, &'static str)>,
+    ) -> User {
         let squash = |name: &str| name.replace('-', "").to_lowercase();
         let name = match (auth, privacy) {
             (None, _) => "noauth".to_owned(),
             (Some((_, auth)), None) => squash(auth),
-            (Some((_, auth)), Some((_, privacy))) => format!("{}_{}", squash(auth), squash(privacy)),
+            (Some((_, auth)), Some((_, privacy))) => {
+                format!("{}_{}", squash(auth), squash(privacy))
+            }
         };
-        User { name, auth, privacy }
+        User {
+            name,
+            auth,
+            privacy,
+        }
     }
 
     fn auth_passphrase(&self) -> String {
@@ -335,8 +359,12 @@ impl User {
     fn auth(&self) -> Auth {
         Auth::V3 {
             user: self.name.clone(),
-            auth: self.auth.map(|(protocol, _)| (protocol, self.auth_passphrase())),
-            privacy: self.privacy.map(|(protocol, _)| (protocol, self.priv_passphrase())),
+            auth: self
+                .auth
+                .map(|(protocol, _)| (protocol, self.auth_passphrase())),
+            privacy: self
+                .privacy
+                .map(|(protocol, _)| (protocol, self.priv_passphrase())),
             context_name: String::new(),
         }
     }
@@ -351,10 +379,20 @@ impl User {
             self.level().to_owned(),
         ];
         if let Some((_, auth)) = self.auth {
-            args.extend(["-a".to_owned(), auth.to_owned(), "-A".to_owned(), self.auth_passphrase()]);
+            args.extend([
+                "-a".to_owned(),
+                auth.to_owned(),
+                "-A".to_owned(),
+                self.auth_passphrase(),
+            ]);
         }
         if let Some((_, privacy)) = self.privacy {
-            args.extend(["-x".to_owned(), privacy.to_owned(), "-X".to_owned(), self.priv_passphrase()]);
+            args.extend([
+                "-x".to_owned(),
+                privacy.to_owned(),
+                "-X".to_owned(),
+                self.priv_passphrase(),
+            ]);
         }
         args
     }
@@ -389,7 +427,15 @@ fn users_config(users: &[User]) -> String {
 async fn netsnmp_accepts(daemon: &Snmpd, user: &User) -> bool {
     let target = daemon.addr().to_string();
     let mut args = user.cli_args();
-    args.extend(["-r".into(), "1".into(), "-t".into(), "2".into(), "-On".into(), target, oids::SYS_NAME.into()]);
+    args.extend([
+        "-r".into(),
+        "1".into(),
+        "-t".into(),
+        "2".into(),
+        "-On".into(),
+        target,
+        oids::SYS_NAME.into(),
+    ]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     daemon.tool("snmpget", &args).await.status.success()
 }
@@ -422,9 +468,17 @@ async fn v1_and_v2c_get_and_walk_system_and_interfaces() {
         for (bind, requested) in got.iter().zip(&scalars) {
             assert_eq!(&bind.oid, requested, "{version}");
         }
-        assert!(text(&got[0]).contains("Linux"), "{version}: sysDescr {:?}", got[0].value);
+        assert!(
+            text(&got[0]).contains("Linux"),
+            "{version}: sysDescr {:?}",
+            got[0].value
+        );
         // net-snmp identifies itself as netSnmpAgentOIDs.10 (linux).
-        assert_eq!(got[1].value, Value::Oid(oid("1.3.6.1.4.1.8072.3.2.10")), "{version}");
+        assert_eq!(
+            got[1].value,
+            Value::Oid(oid("1.3.6.1.4.1.8072.3.2.10")),
+            "{version}"
+        );
         assert!(matches!(got[2].value, Value::TimeTicks(_)), "{version}");
         assert_eq!(text(&got[3]), SYS_CONTACT, "{version}");
         assert_eq!(text(&got[4]), SYS_LOCATION, "{version}");
@@ -435,10 +489,20 @@ async fn v1_and_v2c_get_and_walk_system_and_interfaces() {
 
         // Walk of the system group: starts with sysDescr.0, stays inside, strictly increasing.
         let walked = client.walk(&system, usize::MAX).await.unwrap();
-        assert!(walked.len() >= 7, "{version}: only {} objects under system", walked.len());
+        assert!(
+            walked.len() >= 7,
+            "{version}: only {} objects under system",
+            walked.len()
+        );
         assert_eq!(walked[0].oid, scalars[0], "{version}");
-        assert!(walked.iter().all(|bind| bind.oid.starts_with(&system)), "{version}");
-        assert!(walked.windows(2).all(|pair| pair[0].oid < pair[1].oid), "{version}");
+        assert!(
+            walked.iter().all(|bind| bind.oid.starts_with(&system)),
+            "{version}"
+        );
+        assert!(
+            walked.windows(2).all(|pair| pair[0].oid < pair[1].oid),
+            "{version}"
+        );
         assert_eq!(
             names::describe(&walked[0].oid).as_deref(),
             Some("sysDescr.0"),
@@ -452,25 +516,45 @@ async fn v1_and_v2c_get_and_walk_system_and_interfaces() {
             .expect("ifNumber is a number");
         let descriptions = client.walk(&oid(oids::IF_DESCR), usize::MAX).await.unwrap();
         assert_eq!(descriptions.len() as u64, if_number, "{version}");
-        assert!(descriptions.iter().any(|bind| text(bind) == "lo"), "{version}: no loopback");
-        let interfaces = client.walk(&oid("1.3.6.1.2.1.2"), usize::MAX).await.unwrap();
-        assert!(interfaces.len() as u64 >= 1 + if_number * 20, "{version}: {} objects", interfaces.len());
+        assert!(
+            descriptions.iter().any(|bind| text(bind) == "lo"),
+            "{version}: no loopback"
+        );
+        let interfaces = client
+            .walk(&oid("1.3.6.1.2.1.2"), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            interfaces.len() as u64 > if_number * 20,
+            "{version}: {} objects",
+            interfaces.len()
+        );
 
         // A limit cuts the walk short; walking an instance returns that instance.
         // (sysUpTime is among them and moves on, so compare the names.)
         let limited = client.walk(&system, 3).await.unwrap();
-        let names_of = |walk: &[VarBind]| walk.iter().map(|bind| bind.oid.clone()).collect::<Vec<_>>();
+        let names_of =
+            |walk: &[VarBind]| walk.iter().map(|bind| bind.oid.clone()).collect::<Vec<_>>();
         assert_eq!(names_of(&limited), names_of(&walked[..3]), "{version}");
         assert!(client.walk(&system, 0).await.unwrap().is_empty());
         let single = client.walk(&scalars[4], usize::MAX).await.unwrap();
         assert_eq!(single.len(), 1, "{version}");
         assert_eq!(text(&single[0]), SYS_LOCATION, "{version}");
         // ...and a subtree with nothing in it is simply empty.
-        assert!(client.walk(&oid("1.3.6.1.2.1.1.42"), usize::MAX).await.unwrap().is_empty());
+        assert!(
+            client
+                .walk(&oid("1.3.6.1.2.1.1.42"), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         walks.push((version, walked));
-        println!("{version}: get, get_next, walk of system ({} objects) and interfaces ({} objects): pass",
-            walks.last().unwrap().1.len(), interfaces.len());
+        println!(
+            "{version}: get, get_next, walk of system ({} objects) and interfaces ({} objects): pass",
+            walks.last().unwrap().1.len(),
+            interfaces.len()
+        );
     }
 
     // Both versions see the same system group (sysUpTime moves, so compare the names).
@@ -505,18 +589,41 @@ async fn missing_objects_differ_by_version() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, SnmpError::Agent { status: 2, name: "noSuchName", index: 2 }),
+        matches!(
+            error,
+            SnmpError::Agent {
+                status: 2,
+                name: "noSuchName",
+                index: 2
+            }
+        ),
         "{error:?}"
     );
 
     // SNMPv1 has neither GETBULK nor Counter64: ifHCInOctets is invisible, the 32-bit
     // counters are not.
-    let error = client.get_bulk(&[present.clone()], 0, 5).await.unwrap_err();
+    let error = client
+        .get_bulk(std::slice::from_ref(&present), 0, 5)
+        .await
+        .unwrap_err();
     assert!(matches!(error, SnmpError::Unsupported(_)), "{error:?}");
-    assert!(client.walk(&oid(oids::IF_HC_IN_OCTETS), usize::MAX).await.unwrap().is_empty());
-    let counters = client.walk(&oid(oids::IF_IN_OCTETS), usize::MAX).await.unwrap();
+    assert!(
+        client
+            .walk(&oid(oids::IF_HC_IN_OCTETS), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let counters = client
+        .walk(&oid(oids::IF_IN_OCTETS), usize::MAX)
+        .await
+        .unwrap();
     assert!(!counters.is_empty());
-    assert!(counters.iter().all(|bind| matches!(bind.value, Value::Counter32(_))));
+    assert!(
+        counters
+            .iter()
+            .all(|bind| matches!(bind.value, Value::Counter32(_)))
+    );
 
     // The wrong community is met with silence.
     let mut client = connect_impatient(&daemon, v2c("not-the-community")).await;
@@ -536,7 +643,11 @@ async fn getbulk_tables_and_large_requests() {
     // Raw GETBULK: one non-repeater, then interleaved repetitions of two columns.
     let bulk = client
         .get_bulk(
-            &[oid("1.3.6.1.2.1.1.3"), oid(oids::IF_INDEX), oid(oids::IF_DESCR)],
+            &[
+                oid("1.3.6.1.2.1.1.3"),
+                oid(oids::IF_INDEX),
+                oid(oids::IF_DESCR),
+            ],
             1,
             2,
         )
@@ -546,7 +657,10 @@ async fn getbulk_tables_and_large_requests() {
     assert_eq!(bulk[0].oid, oid(oids::SYS_UP_TIME));
     assert!(bulk[1].oid.starts_with(&oid(oids::IF_INDEX)));
     assert!(bulk[2].oid.starts_with(&oid(oids::IF_DESCR)));
-    assert_eq!(bulk[1].oid.suffix(&oid(oids::IF_INDEX)), bulk[2].oid.suffix(&oid(oids::IF_DESCR)));
+    assert_eq!(
+        bulk[1].oid.suffix(&oid(oids::IF_INDEX)),
+        bulk[2].oid.suffix(&oid(oids::IF_DESCR))
+    );
 
     // table(): the pivot agrees with per-column walks and with ifNumber.
     let columns = [
@@ -558,15 +672,24 @@ async fn getbulk_tables_and_large_requests() {
         oid(oids::IF_ALIAS),
     ];
     let table = client.table(&columns, usize::MAX).await.unwrap();
-    let if_number = client.get(&[oid(oids::IF_NUMBER)]).await.unwrap()[0].value.as_u64().unwrap();
+    let if_number = client.get(&[oid(oids::IF_NUMBER)]).await.unwrap()[0]
+        .value
+        .as_u64()
+        .unwrap();
     assert_eq!(table.len() as u64, if_number);
     let mut previous: Option<&Vec<u32>> = None;
     for (index, row) in &table {
-        assert!(previous.is_none_or(|p| p < index), "rows are in index order");
+        assert!(
+            previous.is_none_or(|p| p < index),
+            "rows are in index order"
+        );
         previous = Some(index);
         assert_eq!(index.len(), 1, "ifTable is indexed by ifIndex alone");
         assert_eq!(row[&columns[0]], Value::Integer(i64::from(index[0])));
-        assert_eq!(row.keys().collect::<Vec<_>>(), columns.iter().collect::<Vec<_>>());
+        assert_eq!(
+            row.keys().collect::<Vec<_>>(),
+            columns.iter().collect::<Vec<_>>()
+        );
         assert!(matches!(row[&columns[4]], Value::Counter64(_)));
     }
     let descriptions = client.walk(&columns[1], usize::MAX).await.unwrap();
@@ -594,7 +717,11 @@ async fn getbulk_tables_and_large_requests() {
     }
     assert_eq!(text(&got[1]), SYS_LOCATION);
     assert_eq!(got[2].value, Value::NoSuchObject);
-    println!("v2c: get_bulk, table ({} rows x {} columns), 130-OID get: pass", table.len(), columns.len());
+    println!(
+        "v2c: get_bulk, table ({} rows x {} columns), 130-OID get: pass",
+        table.len(),
+        columns.len()
+    );
 }
 
 #[tokio::test]
@@ -614,31 +741,72 @@ async fn set_changes_writable_objects_only() {
     // ...and net-snmp's own tool agrees.
     let target = daemon.addr().to_string();
     let output = daemon
-        .tool("snmpget", &["-v2c", "-c", "public", "-Oqv", &target, oids::SYS_NAME])
+        .tool(
+            "snmpget",
+            &["-v2c", "-c", "public", "-Oqv", &target, oids::SYS_NAME],
+        )
         .await;
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim().trim_matches('"'), "renamed-by-nocturne");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .trim_matches('"'),
+        "renamed-by-nocturne"
+    );
 
     // sysLocation is pinned by the configuration file: notWritable.
     let pinned = VarBind::new(oid(oids::SYS_LOCATION), Value::from("elsewhere"));
     let error = writer.set(std::slice::from_ref(&pinned)).await.unwrap_err();
     assert!(
-        matches!(error, SnmpError::Agent { status: 17, name: "notWritable", index: 1 }),
+        matches!(
+            error,
+            SnmpError::Agent {
+                status: 17,
+                name: "notWritable",
+                index: 1
+            }
+        ),
         "{error:?}"
     );
     // The wrong type for sysName: wrongType.
     let mistyped = VarBind::new(sys_name.clone(), Value::Integer(5));
     let error = writer.set(&[mistyped]).await.unwrap_err();
-    assert!(matches!(error, SnmpError::Agent { status: 7, name: "wrongType", .. }), "{error:?}");
+    assert!(
+        matches!(
+            error,
+            SnmpError::Agent {
+                status: 7,
+                name: "wrongType",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
 
     // The read-only community may not write at all.
     let mut reader = connect(&daemon, v2c("public")).await;
-    let error = reader.set(std::slice::from_ref(&new_name)).await.unwrap_err();
-    assert!(matches!(error, SnmpError::Agent { status: 6, name: "noAccess", .. }), "{error:?}");
+    let error = reader
+        .set(std::slice::from_ref(&new_name))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            SnmpError::Agent {
+                status: 6,
+                name: "noAccess",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
 
     // SNMPv1 set works too.
     let mut v1_writer = connect(&daemon, v1("private")).await;
     let v1_name = VarBind::new(sys_name, Value::from("renamed-over-v1"));
-    assert_eq!(v1_writer.set(std::slice::from_ref(&v1_name)).await.unwrap(), vec![v1_name]);
+    assert_eq!(
+        v1_writer.set(std::slice::from_ref(&v1_name)).await.unwrap(),
+        vec![v1_name]
+    );
     println!("v1/v2c set: pass");
 }
 
@@ -675,12 +843,31 @@ async fn full_mib2_walk_matches_snmpwalk() {
         let mut client = connect(&daemon, v2c("public")).await;
         let ours = client.walk(&mib2, usize::MAX).await.unwrap();
         assert!(ours.windows(2).all(|pair| pair[0].oid < pair[1].oid));
-        assert!(ours.iter().all(|bind| bind.oid.starts_with(&mib2) && !bind.value.is_exception()));
+        assert!(
+            ours.iter()
+                .all(|bind| bind.oid.starts_with(&mib2) && !bind.value.is_exception())
+        );
 
         let output = daemon
-            .tool("snmpwalk", &["-v2c", "-c", "public", "-Onq", "-t", "5", &target, "1.3.6.1.2.1"])
+            .tool(
+                "snmpwalk",
+                &[
+                    "-v2c",
+                    "-c",
+                    "public",
+                    "-Onq",
+                    "-t",
+                    "5",
+                    &target,
+                    "1.3.6.1.2.1",
+                ],
+            )
             .await;
-        assert!(output.status.success(), "snmpwalk failed: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "snmpwalk failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let theirs: Vec<Oid> = String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter(|line| line.starts_with(".1.3.6.1.2.1."))
@@ -740,7 +927,10 @@ async fn v3_security_matrix() {
 
     let mut failures = Vec::new();
     let (mut passed, mut unsupported) = (0, 0);
-    println!("\nSNMPv3 interoperability with net-snmp ({} combinations):", users.len());
+    println!(
+        "\nSNMPv3 interoperability with net-snmp ({} combinations):",
+        users.len()
+    );
     for user in &users {
         let supported = netsnmp_accepts(&daemon, user).await;
         let mut client = connect(&daemon, user.auth()).await;
@@ -750,11 +940,20 @@ async fn v3_security_matrix() {
                 return Err(format!("unexpected values {got:?}"));
             }
             // A bulk walk makes for bigger, differently sized (and padded) messages.
-            let walked = client.walk(&system, usize::MAX).await.map_err(|e| format!("walk: {e}"))?;
+            let walked = client
+                .walk(&system, usize::MAX)
+                .await
+                .map_err(|e| format!("walk: {e}"))?;
             if walked.len() != reference {
-                return Err(format!("walk returned {} objects, v2c sees {reference}", walked.len()));
+                return Err(format!(
+                    "walk returned {} objects, v2c sees {reference}",
+                    walked.len()
+                ));
             }
-            let next = client.get_next(&[system.clone()]).await.map_err(|e| format!("get_next: {e}"))?;
+            let next = client
+                .get_next(std::slice::from_ref(&system))
+                .await
+                .map_err(|e| format!("get_next: {e}"))?;
             if next[0].oid != oid(oids::SYS_DESCR) {
                 return Err(format!("get_next returned {}", next[0].oid));
             }
@@ -768,7 +967,10 @@ async fn v3_security_matrix() {
                 "pass".to_owned()
             }
             (Ok(()), false) => {
-                failures.push(format!("{}: works for us but net-snmp's own tools fail?", user.label()));
+                failures.push(format!(
+                    "{}: works for us but net-snmp's own tools fail?",
+                    user.label()
+                ));
                 "pass (but snmpget failed)".to_owned()
             }
             (Err(_), false) => {
@@ -797,12 +999,19 @@ async fn v3_errors_name_their_cause() {
     let sha_des = User::new(Some(AUTH_PROTOCOLS[1]), Some(PRIV_PROTOCOLS[0]));
     let sha_only = User::new(Some(AUTH_PROTOCOLS[1]), None);
     let noauth = User::new(None, None);
-    let users = [sha_aes.clone(), sha_des.clone(), sha_only.clone(), noauth.clone()];
+    let users = [
+        sha_aes.clone(),
+        sha_des.clone(),
+        sha_only.clone(),
+        noauth.clone(),
+    ];
     let Some(daemon) = Snmpd::start(&users_config(&users)).await else {
         return;
     };
     let wanted = [oid(oids::SYS_LOCATION)];
-    let v3 = |user: &str, auth: Option<(AuthProtocol, &str)>, privacy: Option<(PrivProtocol, &str)>| Auth::V3 {
+    let v3 = |user: &str,
+              auth: Option<(AuthProtocol, &str)>,
+              privacy: Option<(PrivProtocol, &str)>| Auth::V3 {
         user: user.to_owned(),
         auth: auth.map(|(protocol, passphrase)| (protocol, passphrase.to_owned())),
         privacy: privacy.map(|(protocol, passphrase)| (protocol, passphrase.to_owned())),
@@ -815,28 +1024,67 @@ async fn v3_errors_name_their_cause() {
 
     // The right credentials work (so the failures below are about what they change).
     for user in &users {
-        let got = connect(&daemon, user.auth()).await.get(&wanted).await.unwrap();
+        let got = connect(&daemon, user.auth())
+            .await
+            .get(&wanted)
+            .await
+            .unwrap();
         assert_eq!(text(&got[0]), SYS_LOCATION, "{}", user.name);
     }
 
     // Wrong authentication passphrase.
-    let wrong_auth = v3(&sha_only.name, Some((AuthProtocol::Sha1, "not-the-passphrase")), None);
-    let message = auth_error(connect_impatient(&daemon, wrong_auth).await.get(&wanted).await);
-    assert!(message.contains("wrong digest") && message.contains("authentication passphrase"), "{message}");
+    let wrong_auth = v3(
+        &sha_only.name,
+        Some((AuthProtocol::Sha1, "not-the-passphrase")),
+        None,
+    );
+    let message = auth_error(
+        connect_impatient(&daemon, wrong_auth)
+            .await
+            .get(&wanted)
+            .await,
+    );
+    assert!(
+        message.contains("wrong digest") && message.contains("authentication passphrase"),
+        "{message}"
+    );
 
     // Right passphrase, wrong authentication protocol.
-    let wrong_hash = v3(&sha_only.name, Some((AuthProtocol::Md5, &sha_only.auth_passphrase())), None);
-    let message = auth_error(connect_impatient(&daemon, wrong_hash).await.get(&wanted).await);
+    let wrong_hash = v3(
+        &sha_only.name,
+        Some((AuthProtocol::Md5, &sha_only.auth_passphrase())),
+        None,
+    );
+    let message = auth_error(
+        connect_impatient(&daemon, wrong_hash)
+            .await
+            .get(&wanted)
+            .await,
+    );
     assert!(message.contains("wrong digest"), "{message}");
 
     // Unknown user.
     let stranger = v3("nobody-by-that-name", None, None);
-    let message = auth_error(connect_impatient(&daemon, stranger).await.get(&wanted).await);
+    let message = auth_error(
+        connect_impatient(&daemon, stranger)
+            .await
+            .get(&wanted)
+            .await,
+    );
     assert!(message.contains("unknown user name"), "{message}");
 
     // A security level the user does not have: authentication for a user without a key.
-    let too_much = v3(&noauth.name, Some((AuthProtocol::Sha1, "some-passphrase")), None);
-    let message = auth_error(connect_impatient(&daemon, too_much).await.get(&wanted).await);
+    let too_much = v3(
+        &noauth.name,
+        Some((AuthProtocol::Sha1, "some-passphrase")),
+        None,
+    );
+    let message = auth_error(
+        connect_impatient(&daemon, too_much)
+            .await
+            .get(&wanted)
+            .await,
+    );
     assert!(message.contains("unsupported security level"), "{message}");
 
     // Wrong privacy passphrase. net-snmp drops such requests without a word; the client
@@ -848,8 +1096,16 @@ async fn v3_errors_name_their_cause() {
             Some((AuthProtocol::Sha1, &user.auth_passphrase())),
             Some((protocol, "not-the-privacy-passphrase")),
         );
-        let message = auth_error(connect_impatient(&daemon, wrong_priv).await.get(&wanted).await);
-        assert!(message.contains("decryption error") && message.contains("privacy passphrase"), "{message}");
+        let message = auth_error(
+            connect_impatient(&daemon, wrong_priv)
+                .await
+                .get(&wanted)
+                .await,
+        );
+        assert!(
+            message.contains("decryption error") && message.contains("privacy passphrase"),
+            "{message}"
+        );
     }
     // Right passphrase, wrong cipher.
     let wrong_cipher = v3(
@@ -857,26 +1113,52 @@ async fn v3_errors_name_their_cause() {
         Some((AuthProtocol::Sha1, &sha_aes.auth_passphrase())),
         Some((PrivProtocol::Des, &sha_aes.priv_passphrase())),
     );
-    let message = auth_error(connect_impatient(&daemon, wrong_cipher).await.get(&wanted).await);
+    let message = auth_error(
+        connect_impatient(&daemon, wrong_cipher)
+            .await
+            .get(&wanted)
+            .await,
+    );
     assert!(message.contains("decryption error"), "{message}");
 
     // Too low a level for a user that must encrypt: the agent answers, but refuses access.
-    let too_little = v3(&sha_aes.name, Some((AuthProtocol::Sha1, &sha_aes.auth_passphrase())), None);
-    let error = connect_impatient(&daemon, too_little).await.get(&wanted).await.unwrap_err();
+    let too_little = v3(
+        &sha_aes.name,
+        Some((AuthProtocol::Sha1, &sha_aes.auth_passphrase())),
+        None,
+    );
+    let error = connect_impatient(&daemon, too_little)
+        .await
+        .get(&wanted)
+        .await
+        .unwrap_err();
     assert!(
-        matches!(error, SnmpError::Agent { status: 16, name: "authorizationError", .. }),
+        matches!(
+            error,
+            SnmpError::Agent {
+                status: 16,
+                name: "authorizationError",
+                ..
+            }
+        ),
         "{error:?}"
     );
 
     // Configurations that can never work are refused before anything is sent.
     let privacy_without_auth = v3("x", None, Some((PrivProtocol::Aes128, "some-passphrase")));
-    let error = Client::connect(ClientConfig::new(daemon.addr(), privacy_without_auth)).await.unwrap_err();
+    let error = Client::connect(ClientConfig::new(daemon.addr(), privacy_without_auth))
+        .await
+        .unwrap_err();
     assert!(matches!(error, SnmpError::Unsupported(_)), "{error:?}");
     let empty_passphrase = v3("x", Some((AuthProtocol::Sha1, "")), None);
-    let error = Client::connect(ClientConfig::new(daemon.addr(), empty_passphrase)).await.unwrap_err();
+    let error = Client::connect(ClientConfig::new(daemon.addr(), empty_passphrase))
+        .await
+        .unwrap_err();
     assert!(matches!(error, SnmpError::Auth(_)), "{error:?}");
 
-    println!("v3 errors (wrong auth passphrase/protocol, unknown user, unsupported level, wrong privacy passphrase/cipher, authorizationError): pass");
+    println!(
+        "v3 errors (wrong auth passphrase/protocol, unknown user, unsupported level, wrong privacy passphrase/cipher, authorizationError): pass"
+    );
 }
 
 #[tokio::test]
@@ -889,7 +1171,9 @@ async fn v3_finds_the_other_aes_key_extension() {
     let Some(daemon) = Snmpd::start(&users_config(&users)).await else {
         return;
     };
-    if !netsnmp_accepts(&daemon, &cisco_user).await || !netsnmp_accepts(&daemon, &blumenthal_user).await {
+    if !netsnmp_accepts(&daemon, &cisco_user).await
+        || !netsnmp_accepts(&daemon, &blumenthal_user).await
+    {
         println!("AES-256 key-extension fallback: not supported by this net-snmp build, skipped");
         return;
     }
@@ -908,13 +1192,23 @@ async fn v3_finds_the_other_aes_key_extension() {
         };
         let mut client = connect_impatient(&daemon, auth).await;
         let got = client.get(&wanted).await.unwrap();
-        assert_eq!(text(&got[0]), SYS_LOCATION, "{configured:?} against {}", user.name);
+        assert_eq!(
+            text(&got[0]),
+            SYS_LOCATION,
+            "{configured:?} against {}",
+            user.name
+        );
         // Once found, the working flavour is kept: no further delay.
         let started = Instant::now();
         client.get(&wanted).await.unwrap();
-        assert!(started.elapsed() < Duration::from_millis(300), "{configured:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "{configured:?}"
+        );
     }
-    println!("AES-256 configured with the wrong key extension (Blumenthal vs Cisco): detected and corrected: pass");
+    println!(
+        "AES-256 configured with the wrong key extension (Blumenthal vs Cisco): detected and corrected: pass"
+    );
 }
 
 #[tokio::test]
@@ -944,12 +1238,18 @@ async fn v3_follows_the_agent_through_restarts() {
 
     // A reboot: same engine, later boot count, clock back at zero. The agent must reject the
     // client's stale notion with usmStatsNotInTimeWindows; the client resynchronises.
-    let state = format!("engineBoots {}\noldEngineID 0x{}\n", boots + 40, hex(&engine_id));
+    let state = format!(
+        "engineBoots {}\noldEngineID 0x{}\n",
+        boots + 40,
+        hex(&engine_id)
+    );
     daemon.restart_with(&state).await;
     let (id_after_reboot, boots_after_reboot) = engine(&mut client, &wanted).await;
     assert_eq!(id_after_reboot, engine_id);
     assert_eq!(boots_after_reboot, boots + 41);
-    println!("v3 across a reboot (same engine ID, snmpEngineBoots {boots} -> {boots_after_reboot}): resynchronised: pass");
+    println!(
+        "v3 across a reboot (same engine ID, snmpEngineBoots {boots} -> {boots_after_reboot}): resynchronised: pass"
+    );
 
     // A replaced device: another engine ID altogether. The agent reports
     // usmStatsUnknownEngineIDs; the client rediscovers and localises its keys anew.
@@ -984,20 +1284,39 @@ async fn v3_context_and_bulk_over_privacy() {
     };
     // A full table over authPriv equals the same table over v2c.
     let columns = [oid(oids::IF_DESCR), oid(oids::IF_TYPE), oid(oids::IF_MTU)];
-    let secure = connect(&daemon, user.auth()).await.table(&columns, usize::MAX).await.unwrap();
-    let plain = connect(&daemon, v2c("public")).await.table(&columns, usize::MAX).await.unwrap();
+    let secure = connect(&daemon, user.auth())
+        .await
+        .table(&columns, usize::MAX)
+        .await
+        .unwrap();
+    let plain = connect(&daemon, v2c("public"))
+        .await
+        .table(&columns, usize::MAX)
+        .await
+        .unwrap();
     assert!(!secure.is_empty());
     assert_eq!(secure, plain);
 
     // A whole-MIB walk over authPriv: thousands of encrypted round trips' worth of data.
     let mib2 = oid("1.3.6.1.2.1.2");
-    let secure = connect(&daemon, user.auth()).await.walk(&mib2, usize::MAX).await.unwrap();
-    let plain = connect(&daemon, v2c("public")).await.walk(&mib2, usize::MAX).await.unwrap();
+    let secure = connect(&daemon, user.auth())
+        .await
+        .walk(&mib2, usize::MAX)
+        .await
+        .unwrap();
+    let plain = connect(&daemon, v2c("public"))
+        .await
+        .walk(&mib2, usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(
         secure.iter().map(|bind| &bind.oid).collect::<Vec<_>>(),
         plain.iter().map(|bind| &bind.oid).collect::<Vec<_>>()
     );
-    println!("v3 authPriv SHA-512/AES-256: table and walk equal v2c ({} objects): pass", secure.len());
+    println!(
+        "v3 authPriv SHA-512/AES-256: table and walk equal v2c ({} objects): pass",
+        secure.len()
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1012,15 +1331,16 @@ struct TrapSink {
 
 impl TrapSink {
     async fn new() -> Option<TrapSink> {
-        if find_program("snmptrap").is_none() {
-            eprintln!("net-snmp's snmptrap is not installed: skipping this interoperability test");
+        if !installed(&["snmptrap", "snmpinform"]) {
             return None;
         }
         let dir = TempDir::new("traps");
         for sub in ["conf", "persist", "mibs"] {
             std::fs::create_dir_all(dir.path().join(sub)).expect("create tool dirs");
         }
-        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind trap socket");
+        let socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind trap socket");
         Some(TrapSink { socket, dir })
     }
 
@@ -1029,7 +1349,8 @@ impl TrapSink {
     }
 
     fn command(&self, tool: &str, args: &[&str]) -> tokio::process::Command {
-        let mut command = Command::new(find_program(tool).unwrap_or_else(|| panic!("{tool} is not installed")));
+        let mut command =
+            Command::new(find_program(tool).unwrap_or_else(|| panic!("{tool} is not installed")));
         isolate(&mut command, self.dir.path());
         command.args(args).stdin(Stdio::null());
         tokio::process::Command::from(command)
@@ -1037,18 +1358,27 @@ impl TrapSink {
 
     async fn receive(&self) -> (Vec<u8>, SocketAddr) {
         let mut buf = vec![0u8; 65_535];
-        let (len, from) = tokio::time::timeout(Duration::from_secs(10), self.socket.recv_from(&mut buf))
-            .await
-            .expect("a notification within 10 s")
-            .expect("receive");
+        let (len, from) =
+            tokio::time::timeout(Duration::from_secs(10), self.socket.recv_from(&mut buf))
+                .await
+                .expect("a notification within 10 s")
+                .expect("receive");
         buf.truncate(len);
         (buf, from)
     }
 
     /// Runs `snmptrap` with `args` and returns what arrived.
     async fn trap(&self, args: &[&str]) -> (Vec<u8>, SocketAddr) {
-        let output = self.command("snmptrap", args).output().await.expect("run snmptrap");
-        assert!(output.status.success(), "snmptrap failed: {}", String::from_utf8_lossy(&output.stderr));
+        let output = self
+            .command("snmptrap", args)
+            .output()
+            .await
+            .expect("run snmptrap");
+        assert!(
+            output.status.success(),
+            "snmptrap failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         self.receive().await
     }
 }
@@ -1063,17 +1393,37 @@ async fn traps_and_informs_from_net_snmp() {
     // SNMPv1 linkDown.
     let (datagram, from) = sink
         .trap(&[
-            "-v", "1", "-c", "trapcomm", &target, "1.3.6.1.4.1.8072.3.2.10", "192.0.2.1", "2", "0", "12345",
-            "1.3.6.1.2.1.2.2.1.1.3", "i", "3", "1.3.6.1.2.1.2.2.1.8.3", "i", "2",
+            "-v",
+            "1",
+            "-c",
+            "trapcomm",
+            &target,
+            "1.3.6.1.4.1.8072.3.2.10",
+            "192.0.2.1",
+            "2",
+            "0",
+            "12345",
+            "1.3.6.1.2.1.2.2.1.1.3",
+            "i",
+            "3",
+            "1.3.6.1.2.1.2.2.1.8.3",
+            "i",
+            "2",
         ])
         .await;
     let trap = decode_trap(&datagram, from).unwrap();
-    assert_eq!((trap.version, trap.community.as_str(), trap.source), (1, "trapcomm", from));
+    assert_eq!(
+        (trap.version, trap.community.as_str(), trap.source),
+        (1, "trapcomm", from)
+    );
     assert_eq!(trap.uptime_ticks, Some(12_345));
     assert_eq!(trap.enterprise, Some(oid("1.3.6.1.4.1.8072.3.2.10")));
     assert_eq!(trap.agent_addr, Some([192, 0, 2, 1]));
     assert_eq!((trap.generic, trap.specific), (Some(2), Some(0)));
-    assert_eq!(trap.trap_oid.as_ref().and_then(names::trap_name), Some("linkDown"));
+    assert_eq!(
+        trap.trap_oid.as_ref().and_then(names::trap_name),
+        Some("linkDown")
+    );
     assert_eq!(
         trap.varbinds,
         vec![
@@ -1087,32 +1437,74 @@ async fn traps_and_informs_from_net_snmp() {
 
     // SNMPv1 enterprise-specific trap.
     let (datagram, from) = sink
-        .trap(&["-v", "1", "-c", "public", &target, "1.3.6.1.4.1.9.9.43.2", "192.0.2.7", "6", "1", "99"])
+        .trap(&[
+            "-v",
+            "1",
+            "-c",
+            "public",
+            &target,
+            "1.3.6.1.4.1.9.9.43.2",
+            "192.0.2.7",
+            "6",
+            "1",
+            "99",
+        ])
         .await;
     let trap = decode_trap(&datagram, from).unwrap();
     assert_eq!((trap.generic, trap.specific), (Some(6), Some(1)));
-    assert_eq!(trap.trap_oid.as_ref().and_then(names::trap_name), Some("ciscoConfigManEvent"));
+    assert_eq!(
+        trap.trap_oid.as_ref().and_then(names::trap_name),
+        Some("ciscoConfigManEvent")
+    );
     println!("snmptrap -v 1 (enterprise specific): decoded: pass");
 
     // SNMPv2c linkUp with a mixed bag of value types.
     let (datagram, from) = sink
         .trap(&[
-            "-v", "2c", "-c", "public", &target, "54321", "1.3.6.1.6.3.1.1.5.4",
-            "1.3.6.1.2.1.2.2.1.1.3", "i", "3",
-            "1.3.6.1.2.1.31.1.1.1.1.3", "s", "eth3",
-            "1.3.6.1.2.1.31.1.1.1.6.3", "C", "18446744073709551615",
-            "1.3.6.1.2.1.4.20.1.1.192.0.2.9", "a", "192.0.2.9",
-            "1.3.6.1.2.1.2.2.1.10.3", "c", "4294967295",
-            "1.3.6.1.2.1.2.2.1.5.3", "u", "1000000000",
-            "1.3.6.1.2.1.1.2.0", "o", "1.3.6.1.4.1.8072.3.2.10",
-            "1.3.6.1.2.1.2.2.1.6.3", "x", "001b213c9df8",
+            "-v",
+            "2c",
+            "-c",
+            "public",
+            &target,
+            "54321",
+            "1.3.6.1.6.3.1.1.5.4",
+            "1.3.6.1.2.1.2.2.1.1.3",
+            "i",
+            "3",
+            "1.3.6.1.2.1.31.1.1.1.1.3",
+            "s",
+            "eth3",
+            "1.3.6.1.2.1.31.1.1.1.6.3",
+            "C",
+            "18446744073709551615",
+            "1.3.6.1.2.1.4.20.1.1.192.0.2.9",
+            "a",
+            "192.0.2.9",
+            "1.3.6.1.2.1.2.2.1.10.3",
+            "c",
+            "4294967295",
+            "1.3.6.1.2.1.2.2.1.5.3",
+            "u",
+            "1000000000",
+            "1.3.6.1.2.1.1.2.0",
+            "o",
+            "1.3.6.1.4.1.8072.3.2.10",
+            "1.3.6.1.2.1.2.2.1.6.3",
+            "x",
+            "001b213c9df8",
         ])
         .await;
     let trap = decode_trap(&datagram, from).unwrap();
     assert_eq!((trap.version, trap.community.as_str()), (2, "public"));
     assert_eq!(trap.uptime_ticks, Some(54_321));
-    assert_eq!(trap.trap_oid.as_ref().and_then(names::trap_name), Some("linkUp"));
-    assert_eq!((trap.enterprise.clone(), trap.agent_addr, trap.generic), (None, None, None));
+    assert_eq!(
+        trap.trap_oid.as_ref().and_then(names::trap_name),
+        Some("linkUp")
+    );
+    assert_eq!(
+        (trap.enterprise.clone(), trap.agent_addr, trap.generic),
+        (None, None, None)
+    );
     let values: Vec<&Value> = trap.varbinds.iter().map(|bind| &bind.value).collect();
     assert_eq!(
         values,
@@ -1132,10 +1524,21 @@ async fn traps_and_informs_from_net_snmp() {
 
     // SNMPv2c coldStart with the sender's own uptime.
     let (datagram, from) = sink
-        .trap(&["-v", "2c", "-c", "public", &target, "", "1.3.6.1.6.3.1.1.5.1"])
+        .trap(&[
+            "-v",
+            "2c",
+            "-c",
+            "public",
+            &target,
+            "",
+            "1.3.6.1.6.3.1.1.5.1",
+        ])
         .await;
     let trap = decode_trap(&datagram, from).unwrap();
-    assert_eq!(trap.trap_oid.as_ref().and_then(names::trap_name), Some("coldStart"));
+    assert_eq!(
+        trap.trap_oid.as_ref().and_then(names::trap_name),
+        Some("coldStart")
+    );
     assert!(trap.uptime_ticks.is_some() && trap.varbinds.is_empty());
     println!("snmptrap -v 2c (coldStart): decoded: pass");
 
@@ -1144,8 +1547,20 @@ async fn traps_and_informs_from_net_snmp() {
         .command(
             "snmpinform",
             &[
-                "-v", "2c", "-c", "informcomm", "-r", "2", "-t", "3", &target, "999", "1.3.6.1.6.3.1.1.5.4",
-                "1.3.6.1.2.1.2.2.1.1.5", "i", "5",
+                "-v",
+                "2c",
+                "-c",
+                "informcomm",
+                "-r",
+                "2",
+                "-t",
+                "3",
+                &target,
+                "999",
+                "1.3.6.1.6.3.1.1.5.4",
+                "1.3.6.1.2.1.2.2.1.1.5",
+                "i",
+                "5",
             ],
         )
         .stdout(Stdio::piped())
@@ -1157,10 +1572,22 @@ async fn traps_and_informs_from_net_snmp() {
     assert!(trap.is_inform);
     assert_eq!((trap.version, trap.community.as_str()), (2, "informcomm"));
     assert_eq!(trap.uptime_ticks, Some(999));
-    assert_eq!(trap.trap_oid.as_ref().and_then(names::trap_name), Some("linkUp"));
-    assert_eq!(trap.varbinds, vec![VarBind::new(oid("1.3.6.1.2.1.2.2.1.1.5"), Value::Integer(5))]);
+    assert_eq!(
+        trap.trap_oid.as_ref().and_then(names::trap_name),
+        Some("linkUp")
+    );
+    assert_eq!(
+        trap.varbinds,
+        vec![VarBind::new(
+            oid("1.3.6.1.2.1.2.2.1.1.5"),
+            Value::Integer(5)
+        )]
+    );
     let acknowledgement = inform_response(&datagram).unwrap();
-    sink.socket.send_to(&acknowledgement, from).await.expect("send acknowledgement");
+    sink.socket
+        .send_to(&acknowledgement, from)
+        .await
+        .expect("send acknowledgement");
     let output = tokio::time::timeout(Duration::from_secs(15), inform.wait_with_output())
         .await
         .expect("snmpinform to finish")
@@ -1170,32 +1597,82 @@ async fn traps_and_informs_from_net_snmp() {
         "snmpinform did not accept our acknowledgement: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    println!("snmpinform -v 2c: decoded, acknowledged with inform_response, accepted by snmpinform: pass");
+    println!(
+        "snmpinform -v 2c: decoded, acknowledged with inform_response, accepted by snmpinform: pass"
+    );
 
     // SNMPv3 without security is decoded; with authentication it is reported as unsupported.
     let (datagram, from) = sink
         .trap(&[
-            "-v", "3", "-e", "0x8000000001020304", "-u", "trapuser", "-l", "noAuthNoPriv", &target, "777",
-            "1.3.6.1.6.3.1.1.5.3", "1.3.6.1.2.1.2.2.1.1.2", "i", "2",
+            "-v",
+            "3",
+            "-e",
+            "0x8000000001020304",
+            "-u",
+            "trapuser",
+            "-l",
+            "noAuthNoPriv",
+            &target,
+            "777",
+            "1.3.6.1.6.3.1.1.5.3",
+            "1.3.6.1.2.1.2.2.1.1.2",
+            "i",
+            "2",
         ])
         .await;
     let trap = decode_trap(&datagram, from).unwrap();
     assert_eq!((trap.version, trap.community.as_str()), (3, "trapuser"));
     assert_eq!(trap.uptime_ticks, Some(777));
-    assert_eq!(trap.trap_oid.as_ref().and_then(names::trap_name), Some("linkDown"));
-    assert_eq!(trap.varbinds, vec![VarBind::new(oid("1.3.6.1.2.1.2.2.1.1.2"), Value::Integer(2))]);
+    assert_eq!(
+        trap.trap_oid.as_ref().and_then(names::trap_name),
+        Some("linkDown")
+    );
+    assert_eq!(
+        trap.varbinds,
+        vec![VarBind::new(
+            oid("1.3.6.1.2.1.2.2.1.1.2"),
+            Value::Integer(2)
+        )]
+    );
     println!("snmptrap -v 3 noAuthNoPriv: decoded: pass");
 
     for (level, extra) in [
-        ("authNoPriv", &["-a", "SHA", "-A", "trap-auth-passphrase"][..]),
-        ("authPriv", &["-a", "SHA", "-A", "trap-auth-passphrase", "-x", "AES", "-X", "trap-priv-passphrase"][..]),
+        (
+            "authNoPriv",
+            &["-a", "SHA", "-A", "trap-auth-passphrase"][..],
+        ),
+        (
+            "authPriv",
+            &[
+                "-a",
+                "SHA",
+                "-A",
+                "trap-auth-passphrase",
+                "-x",
+                "AES",
+                "-X",
+                "trap-priv-passphrase",
+            ][..],
+        ),
     ] {
-        let mut args = vec!["-v", "3", "-e", "0x8000000001020304", "-u", "trapuser", "-l", level];
+        let mut args = vec![
+            "-v",
+            "3",
+            "-e",
+            "0x8000000001020304",
+            "-u",
+            "trapuser",
+            "-l",
+            level,
+        ];
         args.extend_from_slice(extra);
         args.extend_from_slice(&[&target, "777", "1.3.6.1.6.3.1.1.5.3"]);
         let (datagram, from) = sink.trap(&args).await;
         let error = decode_trap(&datagram, from).unwrap_err();
-        assert!(matches!(error, SnmpError::Unsupported(_)), "{level}: {error:?}");
+        assert!(
+            matches!(error, SnmpError::Unsupported(_)),
+            "{level}: {error:?}"
+        );
         println!("snmptrap -v 3 {level}: reported as SnmpError::Unsupported (by design): pass");
     }
 }

@@ -46,7 +46,7 @@ impl World {
             Fault::InterfaceErrors { .. } => {
                 self.fault_clock.insert(id, self.now);
             }
-            Fault::HighCpu { .. } => {}
+            Fault::HighCpu { node, .. } => self.refresh_cpu_fault(node),
         }
         self.touch();
         self.reconcile();
@@ -68,10 +68,27 @@ impl World {
                     self.set_power(node, true);
                 }
             }
-            Fault::InterfaceErrors { .. } | Fault::HighCpu { .. } => {}
+            Fault::HighCpu { node, .. } => self.refresh_cpu_fault(node),
+            Fault::InterfaceErrors { .. } => {}
         }
         self.touch();
         self.reconcile();
+    }
+
+    /// The strongest active `HighCpu` fault on a node decides its extra load.
+    fn refresh_cpu_fault(&mut self, node: NodeId) {
+        let percent = self
+            .faults
+            .values()
+            .filter_map(|f| match f {
+                Fault::HighCpu { node: n, percent } if *n == node => Some((*percent).min(100)),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        if let Some(n) = self.nodes.get_mut(&node) {
+            n.cpu_fault = percent;
+        }
     }
 
     /// Recompute a link's fault flags from the faults that are still active.

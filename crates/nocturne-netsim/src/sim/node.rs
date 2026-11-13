@@ -169,6 +169,16 @@ pub(crate) struct Node {
     pub(crate) next_ident: u16,
     /// Name → address records served by the `dns` service (kept by the world).
     pub(crate) dns_zone: Vec<(String, Ipv4Addr)>,
+    /// Sessions currently open on the device's lines (for `show users`).
+    pub(crate) sessions: Vec<crate::device::cli::SessionInfo>,
+    /// The running configuration differs from what was last saved.
+    pub(crate) unsaved: bool,
+    /// Startup-configuration lines the device rejected at boot, with its reply.
+    pub(crate) boot_errors: Vec<(String, String)>,
+    /// RSA host key size, once generated (kept in private NVRAM across reloads).
+    pub(crate) rsa_bits: Option<u16>,
+    /// Extra CPU load from `HighCpu` faults, in percent.
+    pub(crate) cpu_fault: u8,
 }
 
 impl Node {
@@ -210,6 +220,11 @@ impl Node {
             forwarded: 0,
             next_ident: 0,
             dns_zone: Vec::new(),
+            sessions: Vec::new(),
+            unsaved: false,
+            boot_errors: Vec::new(),
+            rsa_bits: None,
+            cpu_fault: 0,
         };
         for (index, port) in model.ports.iter().enumerate() {
             let mac = base_mac.offset(index as u32 + 1);

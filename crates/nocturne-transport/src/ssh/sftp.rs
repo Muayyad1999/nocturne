@@ -126,7 +126,10 @@ impl Sftp {
     ) -> Result<u64, TransportError> {
         let partial = partial_path(local)?;
         let mut source = self.sftp.open(remote).await.map_err(sftp_error)?;
-        let total = source.metadata().await.map_or(0, |attributes| attributes.len());
+        let total = source
+            .metadata()
+            .await
+            .map_or(0, |attributes| attributes.len());
 
         let transfer = async {
             let mut target = tokio::fs::File::create(&partial).await?;
@@ -405,7 +408,10 @@ mod tests {
             panic!("expected an I/O error");
         };
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(sftp_error(status(StatusCode::ConnectionLost)).code(), "closed");
+        assert_eq!(
+            sftp_error(status(StatusCode::ConnectionLost)).code(),
+            "closed"
+        );
         assert_eq!(sftp_error(SftpError::Timeout).code(), "timeout");
     }
 

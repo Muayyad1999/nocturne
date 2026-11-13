@@ -884,8 +884,6 @@ pub(crate) struct DeviceConfig {
     pub(crate) vty: Vec<LineConfig>,
     pub(crate) cdp_run: bool,
     pub(crate) lldp_run: bool,
-    /// RSA modulus once `crypto key generate rsa` has run (needed for SSH).
-    pub(crate) rsa_bits: Option<u16>,
     pub(crate) ssh_version: Option<u8>,
     /// Accepted-and-stored global lines, verbatim, by position in the output.
     pub(crate) stored: Vec<(Slot, String)>,
@@ -955,7 +953,6 @@ impl DeviceConfig {
             vty: vec![LineConfig::vty(); vty_lines],
             cdp_run: model.is_network_os(),
             lldp_run: false,
-            rsa_bits: None,
             ssh_version: None,
             stored: Vec::new(),
         }

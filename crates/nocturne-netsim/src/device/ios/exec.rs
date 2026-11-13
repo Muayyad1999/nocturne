@@ -332,7 +332,7 @@ pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Ta
             if !name.is_empty() && name != "startup-config" {
                 return Reply { out: "%Error opening destination (only startup-config is supported)\n".to_string(), error: true, ..Reply::default() };
             }
-            let mut cx = Cx { n: node, fx, sh: shell, out: String::new(), error: false, touched: false, next: Next::Prompt };
+            let mut cx = Cx { n: node, fx, sh: shell, out: String::new(), error: false, touched: false, next: Next::Prompt, invalid: false };
             save(&mut cx);
             Reply::text(cx.out)
         }
@@ -348,7 +348,7 @@ pub(crate) fn answer(shell: &mut IosShell, node: &mut Node, fx: &mut Fx, tag: Ta
             let answer = text.trim().to_ascii_lowercase();
             let mut out = String::new();
             if !answer.is_empty() && "yes".starts_with(&answer) {
-                let mut cx = Cx { n: node, fx, sh: shell, out: String::new(), error: false, touched: false, next: Next::Prompt };
+                let mut cx = Cx { n: node, fx, sh: shell, out: String::new(), error: false, touched: false, next: Next::Prompt, invalid: false };
                 save(&mut cx);
                 out = cx.out;
             } else if answer.is_empty() || !"no".starts_with(&answer) {

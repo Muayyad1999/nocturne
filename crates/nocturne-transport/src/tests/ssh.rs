@@ -43,9 +43,7 @@ async fn server_with(
     options: SshServerOptions,
 ) -> (ServerHandle, Arc<Lab>) {
     let lab = Lab::new();
-    let handle = serve_ssh_with(config, lab.clone(), options)
-        .await
-        .unwrap();
+    let handle = serve_ssh_with(config, lab.clone(), options).await.unwrap();
     (handle, lab)
 }
 
@@ -134,7 +132,10 @@ async fn password_login_opens_a_shell() {
         info.server_banner
     );
     assert_eq!(info.kex.as_deref(), Some("mlkem768x25519-sha256"));
-    assert_eq!(info.cipher.as_deref(), Some("chacha20-poly1305@openssh.com"));
+    assert_eq!(
+        info.cipher.as_deref(),
+        Some("chacha20-poly1305@openssh.com")
+    );
     assert_eq!(info.mac, None, "AEAD ciphers have no separate MAC");
     assert_eq!(info.host_key_algorithm.as_deref(), Some("ssh-ed25519"));
     assert!(
@@ -390,7 +391,7 @@ async fn remote_exit_is_reported_with_its_status() {
     let mut conn = guest(&server).await;
     conn.until(b"lab> ").await;
     conn.send("exit\r").await.unwrap();
-    let (rest, reason) = conn.to_close().await;
+    let (rest, reason) = conn.until_closed().await;
     assert!(contains(&rest, b"bye"));
     assert_eq!(reason.as_deref(), Some("exit status 0"));
     assert!(conn.is_closed());
@@ -406,7 +407,7 @@ async fn output_right_before_exit_is_not_lost() {
     let commands = "flood 200000 500\rexit\r";
     conn.send(commands).await.unwrap();
     conn.until(commands.as_bytes()).await;
-    let (seen, reason) = conn.to_close().await;
+    let (seen, reason) = conn.until_closed().await;
     assert_eq!(reason.as_deref(), Some("exit status 0"));
     assert_eq!(seen.len(), 200_000 + b"\r\nlab> \r\nbye\r\n".len());
     assert!(seen.ends_with(b"bye\r\n"));
@@ -419,7 +420,7 @@ async fn local_close_has_no_reason_and_ends_the_remote_session() {
     let mut reader = tap(reader);
     reader.until(b"lab> ").await;
     writer.close().await;
-    let (_, reason) = reader.to_close().await;
+    let (_, reason) = reader.until_closed().await;
     assert_eq!(reason, None);
     lab.wait_idle().await;
 }
@@ -455,7 +456,7 @@ async fn server_shutdown_is_reported_as_a_disconnect() {
     let mut conn = guest(&server).await;
     conn.until(b"lab> ").await;
     soon(server.shutdown()).await;
-    let (_, reason) = conn.to_close().await;
+    let (_, reason) = conn.until_closed().await;
     let reason = reason.unwrap();
     assert!(reason.contains("disconnected by the server"), "{reason}");
     assert!(reason.contains("shutting down"), "{reason}");
@@ -510,7 +511,7 @@ async fn a_lost_connection_is_reported() {
     let mut conn = login(&params_for(wire.address, "op", vec![])).await;
     conn.until(b"lab> ").await;
     wire.fault.send_replace(Fault::Cut);
-    let (_, reason) = conn.to_close().await;
+    let (_, reason) = conn.until_closed().await;
     assert_eq!(reason.as_deref(), Some("connection closed by remote host"));
     lab.wait_idle().await;
 }
@@ -526,7 +527,7 @@ async fn a_silent_peer_is_detected_by_keepalives() {
     let mut conn = login(&params).await;
     conn.until(b"lab> ").await;
     wire.fault.send_replace(Fault::Freeze);
-    let (_, reason) = conn.to_close().await;
+    let (_, reason) = conn.until_closed().await;
     let reason = reason.unwrap();
     assert!(reason.contains("keep-alives"), "{reason}");
     wire.fault.send_replace(Fault::Cut);
@@ -535,9 +536,12 @@ async fn a_silent_peer_is_detected_by_keepalives() {
 #[tokio::test]
 async fn one_session_carries_several_shells() {
     let (server, lab) = server(&[]).await;
-    let session = soon(SshSession::connect(&params(&server, "op", vec![]), any_host_key()))
-        .await
-        .unwrap();
+    let session = soon(SshSession::connect(
+        &params(&server, "op", vec![]),
+        any_host_key(),
+    ))
+    .await
+    .unwrap();
     let mut first = tap(soon(session.shell()).await.unwrap());
     let mut second = tap(soon(session.shell()).await.unwrap());
     first.until(b"lab> ").await;
@@ -545,7 +549,7 @@ async fn one_session_carries_several_shells() {
     assert_eq!(lab.active.load(Ordering::Acquire), 2);
 
     first.send("exit\r").await.unwrap();
-    let (_, reason) = first.to_close().await;
+    let (_, reason) = first.until_closed().await;
     assert_eq!(reason.as_deref(), Some("exit status 0"));
 
     // The other shell is unaffected…
@@ -553,7 +557,7 @@ async fn one_session_carries_several_shells() {
     second.until(b"120x40").await;
     // …until the session is closed under it.
     soon(session.close()).await;
-    let (_, reason) = second.to_close().await;
+    let (_, reason) = second.until_closed().await;
     assert_eq!(reason.as_deref(), Some("the SSH session was closed"));
     lab.wait_idle().await;
 }
@@ -561,9 +565,12 @@ async fn one_session_carries_several_shells() {
 #[tokio::test]
 async fn a_shell_keeps_its_session_alive() {
     let (server, lab) = server(&[]).await;
-    let session = soon(SshSession::connect(&params(&server, "op", vec![]), any_host_key()))
-        .await
-        .unwrap();
+    let session = soon(SshSession::connect(
+        &params(&server, "op", vec![]),
+        any_host_key(),
+    ))
+    .await
+    .unwrap();
     let mut shell = tap(soon(session.shell()).await.unwrap());
     drop(session);
     shell.until(b"lab> ").await;
@@ -704,9 +711,7 @@ async fn trust_on_first_use_rejects_a_changed_key() {
         ..keyed(&second_key)
     };
     let (server, lab) = server_with(config, SshServerOptions::default()).await;
-    let error = soon(connect_ssh(&params, known.clone()))
-        .await
-        .unwrap_err();
+    let error = soon(connect_ssh(&params, known.clone())).await.unwrap_err();
     assert_eq!(error.code(), "host_key");
     assert!(error.to_string().contains("has changed"), "{error}");
     assert_eq!(lab.opened.load(Ordering::Acquire), 0);

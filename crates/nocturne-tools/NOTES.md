@@ -13,16 +13,22 @@ cargo fmt -p nocturne-tools
 
 ## Done
 
-- (nothing yet)
+- `error.rs` — `ToolError` (`Invalid { what, input, reason }`, `TooLarge`, `DoesNotFit`), input echo truncated.
+- `ip.rs` — hand-written strict IPv4/IPv6 parsers (fuzz-compared with `std::net`), RFC 5952 formatting,
+  `Net`/`Interface`, range merge + range→CIDR.
+- `subnet.rs` — info / split / summarize / supernet / contains / overlaps / range_to_cidrs / next_free / free_space.
+- `vlsm.rs` — plan (largest first; /32 for 1 host, /30 or /31 for 2).
+- `wildcard.rs` — convert / matches / explain.
+- `mac.rs` + `data/oui.tsv.gz` (59,032 prefixes: MA-L + MA-M + MA-S + IAB, downloaded 2026-11-13,
+  built by `data/build_oui.py`; raw CSVs are in the scratch dir, not in the repo).
 
 ## In progress
 
-- Foundation: `error.rs`, `ip.rs` (strict IPv4/IPv6 parsing, RFC 5952 formatting, prefix maths).
+- `secrets/` (cisco7, junos9, identify, password)
 
 ## Next
 
-- `subnet`, `vlsm`, `wildcard`
-- `mac` + OUI registry (`data/oui.tsv.gz`, IEEE CSVs downloaded 2026-11-13 into the scratch dir)
-- `secrets`, `convert`, `reference`, `text`
+- `convert/`, `reference/`, `text.rs`
 - Python `ipaddress` cross-check (generator under `tests/`, vendored JSON), robustness tests, interop tests
+  (passlib for type 7, Crypt::Juniper for `$9$`, coreutils for hashes/base64)
 - clippy / fmt / report

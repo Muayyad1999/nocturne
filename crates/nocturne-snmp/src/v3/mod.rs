@@ -220,7 +220,9 @@ impl OutgoingMessage<'_> {
     ///
     /// `salt` feeds the privacy IV and must be unique per message for a given key.
     pub fn encode(&self, keys: Option<&LocalizedKeys>, salt: u64) -> Result<Vec<u8>> {
-        let missing_keys = || SnmpError::Auth("internal error: message needs keys that are not available".to_owned());
+        let missing_keys = || {
+            SnmpError::Auth("internal error: message needs keys that are not available".to_owned())
+        };
         let authenticated = self.flags & FLAG_AUTH != 0;
         let encrypted = self.flags & FLAG_PRIV != 0;
 
@@ -306,7 +308,11 @@ pub(crate) mod tests {
             .collect()
     }
 
-    pub(crate) fn test_keys(auth: AuthProtocol, privacy: Option<PrivProtocol>, engine_id: &[u8]) -> LocalizedKeys {
+    pub(crate) fn test_keys(
+        auth: AuthProtocol,
+        privacy: Option<PrivProtocol>,
+        engine_id: &[u8],
+    ) -> LocalizedKeys {
         let auth_master = auth.master_key(b"authentication-pass").unwrap();
         LocalizedKeys {
             auth_protocol: auth,
@@ -371,7 +377,10 @@ pub(crate) mod tests {
         assert_eq!(message.user, b"trapuser");
         assert!(message.auth_params.is_empty());
         let scoped = message.scoped_pdu(None).unwrap();
-        assert_eq!(scoped.context_engine_id, hex("80001f888094142f10fd62f66a00000000"));
+        assert_eq!(
+            scoped.context_engine_id,
+            hex("80001f888094142f10fd62f66a00000000")
+        );
         assert_eq!(scoped.pdu.kind, PduKind::TrapV2);
         assert_eq!(scoped.pdu.varbinds.len(), 3);
         assert_eq!(scoped.pdu.varbinds[0].value, Value::TimeTicks(777));
@@ -437,9 +446,16 @@ pub(crate) mod tests {
                 assert_eq!((decoded.engine_boots, decoded.engine_time), (3, 4567));
                 assert_eq!(decoded.user, b"operator");
                 assert_eq!(decoded.auth_params.len(), auth.mac_len());
-                assert_eq!(decoded.priv_params.len(), if privacy.is_some() { 8 } else { 0 });
+                assert_eq!(
+                    decoded.priv_params.len(),
+                    if privacy.is_some() { 8 } else { 0 }
+                );
                 assert!(decoded.verify(&bytes, &keys), "{auth:?}/{privacy:?}");
-                assert_eq!(decoded.scoped_pdu(Some(&keys)).unwrap(), scoped, "{auth:?}/{privacy:?}");
+                assert_eq!(
+                    decoded.scoped_pdu(Some(&keys)).unwrap(),
+                    scoped,
+                    "{auth:?}/{privacy:?}"
+                );
 
                 // Trailing bytes after the message are not part of the digest.
                 let mut padded = bytes.clone();
@@ -452,13 +468,20 @@ pub(crate) mod tests {
                 let mut tampered = bytes.clone();
                 let last = tampered.len() - 1;
                 tampered[last] ^= 0x40;
-                assert!(!V3Message::decode(&tampered).unwrap().verify(&tampered, &keys));
+                assert!(
+                    !V3Message::decode(&tampered)
+                        .unwrap()
+                        .verify(&tampered, &keys)
+                );
 
                 // The plaintext of an encrypted message is not visible on the wire.
                 if privacy.is_some() {
                     assert!(!bytes.windows(10).any(|w| w == b"core-rtr-1"));
                     assert!(decoded.scoped_pdu(None).is_err());
-                    assert!(decoded.scoped_pdu(Some(&other)).is_err() || decoded.scoped_pdu(Some(&other)).unwrap() != scoped);
+                    assert!(
+                        decoded.scoped_pdu(Some(&other)).is_err()
+                            || decoded.scoped_pdu(Some(&other)).unwrap() != scoped
+                    );
                 } else {
                     assert!(bytes.windows(10).any(|w| w == b"core-rtr-1"));
                 }
@@ -481,7 +504,11 @@ pub(crate) mod tests {
         assert!(message(FLAG_AUTH).encode(None, 0).is_err());
         let auth_only = test_keys(AuthProtocol::Sha1, None, b"engine");
         assert!(message(FLAG_AUTH).encode(Some(&auth_only), 0).is_ok());
-        assert!(message(FLAG_AUTH | FLAG_PRIV).encode(Some(&auth_only), 0).is_err());
+        assert!(
+            message(FLAG_AUTH | FLAG_PRIV)
+                .encode(Some(&auth_only), 0)
+                .is_err()
+        );
         assert!(message(FLAG_REPORTABLE).encode(None, 0).is_ok());
     }
 

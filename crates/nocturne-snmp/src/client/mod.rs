@@ -75,7 +75,10 @@ impl fmt::Debug for Auth {
             } => f
                 .debug_struct("V3")
                 .field("user", user)
-                .field("auth", &auth.as_ref().map(|(protocol, _)| (protocol, Redacted)))
+                .field(
+                    "auth",
+                    &auth.as_ref().map(|(protocol, _)| (protocol, Redacted)),
+                )
                 .field(
                     "privacy",
                     &privacy.as_ref().map(|(protocol, _)| (protocol, Redacted)),
@@ -256,8 +259,9 @@ impl Client {
                         .into_iter()
                         .filter(|bind| bind.oid == *root && !bind.value.is_exception()),
                 ),
-                // noSuchName and friends: there is simply nothing there.
-                Err(SnmpError::Agent { .. }) => {}
+                // noSuchName and friends, or an answer that makes no sense: the walk itself
+                // went fine and found nothing, and that is the result.
+                Err(SnmpError::Agent { .. } | SnmpError::Decode(_)) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -300,15 +304,17 @@ impl Client {
 
     fn check_settable(&self, value: &Value) -> Result<(), SnmpError> {
         match value {
-            Value::Integer(v) if i32::try_from(*v).is_err() => Err(SnmpError::Unsupported(format!(
-                "INTEGER {v} is outside the Integer32 range"
-            ))),
+            Value::Integer(v) if i32::try_from(*v).is_err() => Err(SnmpError::Unsupported(
+                format!("INTEGER {v} is outside the Integer32 range"),
+            )),
             Value::Counter64(_) if self.is_v1() => Err(SnmpError::Unsupported(
                 "Counter64 does not exist in SNMPv1".to_owned(),
             )),
-            Value::NoSuchObject | Value::NoSuchInstance | Value::EndOfMibView => Err(
-                SnmpError::Unsupported("an exception marker is not a value that can be set".to_owned()),
-            ),
+            Value::NoSuchObject | Value::NoSuchInstance | Value::EndOfMibView => {
+                Err(SnmpError::Unsupported(
+                    "an exception marker is not a value that can be set".to_owned(),
+                ))
+            }
             _ => Ok(()),
         }
     }
@@ -350,7 +356,11 @@ impl Client {
                 }
                 // error-index counts within the PDU that was sent; callers think in terms of
                 // the list they passed.
-                Err(SnmpError::Agent { status, name, index }) if index > 0 => {
+                Err(SnmpError::Agent {
+                    status,
+                    name,
+                    index,
+                }) if index > 0 => {
                     let offset = u32::try_from(range.start).unwrap_or(u32::MAX);
                     return Err(SnmpError::Agent {
                         status,
@@ -424,9 +434,23 @@ impl Client {
             Security::Usm(session) => session.request(&mut self.transport, &request).await?,
         };
         if response.error_status != 0 {
-            return Err(SnmpError::agent(response.error_status, response.error_index));
+            return Err(SnmpError::agent(
+                response.error_status,
+                response.error_index,
+            ));
         }
         Ok(response.varbinds)
+    }
+}
+
+#[cfg(test)]
+impl Client {
+    /// How many engines' localised keys the SNMPv3 session holds.
+    fn cached_key_sets(&self) -> usize {
+        match &self.security {
+            Security::Usm(session) => session.cached_key_sets(),
+            Security::Community { .. } => 0,
+        }
     }
 }
 

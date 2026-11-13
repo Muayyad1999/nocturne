@@ -15,7 +15,7 @@
 //!   empty, but not for `Required`.
 
 use crate::error::RunError;
-use crate::template::{LineOp, RecordOp, Rule, Template, Transition, ValueOption, ValueSpec};
+use crate::template::{LineOp, RecordOp, Template, Transition, ValueOption, ValueSpec};
 use crate::text;
 use crate::value::{Record, Value};
 
@@ -24,10 +24,13 @@ pub(crate) fn run(template: &Template, input: &str) -> Result<Vec<Record>, RunEr
     let mut state = &template.states[template.start];
     'lines: for line in text::split_lines(input) {
         for rule in &state.rules {
-            let captures = rule.regex.match_start(line).map_err(|error| RunError::Regex {
-                rule_line: rule.line,
-                message: error.to_string(),
-            })?;
+            let captures = rule
+                .regex
+                .match_start(line)
+                .map_err(|error| RunError::Regex {
+                    rule_line: rule.line,
+                    message: error.to_string(),
+                })?;
             let Some(captures) = captures else { continue };
             for &(group, value) in &rule.assignments {
                 table.assign(value, captures.get(group));
@@ -40,7 +43,13 @@ pub(crate) fn run(template: &Template, input: &str) -> Result<Vec<Record>, RunEr
             }
             match &rule.line_op {
                 LineOp::Continue => continue,
-                LineOp::Error(message) => return Err(error_action(rule, message, line)),
+                LineOp::Error(message) => {
+                    return Err(RunError::ErrorAction {
+                        message: message.clone(),
+                        rule_line: rule.line,
+                        input_line: line.to_owned(),
+                    });
+                }
                 LineOp::Next => {}
             }
             match rule.transition {
@@ -56,14 +65,6 @@ pub(crate) fn run(template: &Template, input: &str) -> Result<Vec<Record>, RunEr
         table.record();
     }
     Ok(table.into_records())
-}
-
-fn error_action(rule: &Rule, message: &Option<String>, line: &str) -> RunError {
-    RunError::ErrorAction {
-        message: message.clone(),
-        rule_line: rule.line,
-        input_line: line.to_owned(),
-    }
 }
 
 /// The rows recorded so far and the row being built.
@@ -140,7 +141,10 @@ impl<'t> Table<'t> {
                 items: Vec::new(),
             })
             .collect();
-        Table { slots, rows: Vec::new() }
+        Table {
+            slots,
+            rows: Vec::new(),
+        }
     }
 
     /// A rule matched: `matched` is what the value's group captured, `None` if
@@ -154,7 +158,9 @@ impl<'t> Table<'t> {
                 ValueOption::List => slot.items.push(matched.map(str::to_owned)),
                 ValueOption::Fillup => {
                     // Copy the match up the table until a row already has this value.
-                    let Some(text) = matched.filter(|text| !text.is_empty()) else { continue };
+                    let Some(text) = matched.filter(|text| !text.is_empty()) else {
+                        continue;
+                    };
                     for row in self.rows.iter_mut().rev() {
                         if row[value].is_set() {
                             break;
@@ -171,11 +177,13 @@ impl<'t> Table<'t> {
     /// dropped, except that `Filldown` restores its last match.
     fn clear(&mut self) {
         for slot in &mut self.slots {
-            slot.pending = Pending::Nothing;
-            let filldown = slot.spec.options.contains(&ValueOption::Filldown);
-            if filldown {
-                slot.pending = slot.remembered.clone().map_or(Pending::Nothing, Pending::Text);
+            if slot.spec.options.contains(&ValueOption::Filldown) {
+                slot.pending = slot
+                    .remembered
+                    .clone()
+                    .map_or(Pending::Nothing, Pending::Text);
             } else {
+                slot.pending = Pending::Nothing;
                 slot.items.clear();
             }
         }
@@ -226,7 +234,11 @@ impl<'t> Table<'t> {
     }
 
     fn into_records(self) -> Vec<Record> {
-        let names: Vec<&str> = self.slots.iter().map(|slot| slot.spec.name.as_str()).collect();
+        let names: Vec<&str> = self
+            .slots
+            .iter()
+            .map(|slot| slot.spec.name.as_str())
+            .collect();
         self.rows
             .into_iter()
             .map(|row| {
@@ -247,8 +259,70 @@ impl From<Cell> for Value {
             // The reference hands such items to the caller as Python's `None`;
             // ntc-templates turns them into the string "None".
             Cell::List(items) => Value::List(
-                items.into_iter().map(|item| item.unwrap_or_else(|| "None".to_owned())).collect(),
+                items
+                    .into_iter()
+                    .map(|item| item.unwrap_or_else(|| "None".to_owned()))
+                    .collect(),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use crate::{RunError, Template, Value};
+
+    const TEMPLATE: &str = "\
+Value Filldown,Required GROUP (\\S+)
+Value List MEMBER (\\S+)
+
+Start
+  ^group ${GROUP}
+  ^member ${MEMBER}
+  ^end -> Record
+  ^unsupported -> Error \"cannot parse this\"
+  ^. -> Error
+";
+
+    #[test]
+    fn records_rows_keyed_by_value_name() {
+        let template = Template::parse(TEMPLATE).unwrap();
+        let rows = template
+            .run("group a\nmember x\nmember y\nend\nend\n")
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].keys().collect::<Vec<_>>(), ["GROUP", "MEMBER"]);
+        assert_eq!(rows[0]["GROUP"], Value::from("a"));
+        assert_eq!(rows[0]["MEMBER"].as_list(), ["x", "y"]);
+        assert_eq!(rows[1]["MEMBER"], Value::List(Vec::new()));
+        // The Filldown value produces the row recorded at the end of the input.
+        assert_eq!(rows[2], rows[1]);
+        // A run does not leave anything behind.
+        assert!(template.run("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn error_rules_stop_the_run() {
+        let template = Template::parse(TEMPLATE).unwrap();
+        let error = template.run("group a\nunsupported\n").unwrap_err();
+        assert_eq!(
+            error,
+            RunError::ErrorAction {
+                message: Some("cannot parse this".to_owned()),
+                rule_line: 8,
+                input_line: "unsupported".to_owned(),
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "Error: cannot parse this. Rule Line: 8. Input Line: unsupported."
+        );
+        let error = template.run("group a\n?\n").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "State Error raised. Rule Line: 9. Input Line: ?"
+        );
     }
 }

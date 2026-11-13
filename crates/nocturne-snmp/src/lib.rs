@@ -38,6 +38,8 @@
 //! # }
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod agent;
 mod ber;
 mod client;
@@ -46,6 +48,8 @@ pub mod names;
 mod oid;
 pub mod oids;
 mod pdu;
+#[cfg(test)]
+mod robustness;
 mod trap;
 mod v3;
 mod value;

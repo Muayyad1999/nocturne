@@ -74,11 +74,14 @@ impl Dictionary {
                 .by_qualified_name
                 .insert((module, name), oid.clone());
             dictionary.longest = dictionary.longest.max(oid.len());
-            dictionary.objects.entry(oid.parts().to_vec()).or_insert(Object {
-                module,
-                name,
-                shadowed,
-            });
+            dictionary
+                .objects
+                .entry(oid.parts().to_vec())
+                .or_insert(Object {
+                    module,
+                    name,
+                    shadowed,
+                });
         }
         for &(_module, name, oid) in extra::TRAPS {
             let Ok(oid) = oid.parse::<Oid>() else {
@@ -185,7 +188,10 @@ mod tests {
             Some("ifInOctets.3")
         );
         assert_eq!(resolve("ifInOctets"), Some(oid("1.3.6.1.2.1.2.2.1.10")));
-        assert_eq!(resolve("IF-MIB::ifInOctets"), Some(oid("1.3.6.1.2.1.2.2.1.10")));
+        assert_eq!(
+            resolve("IF-MIB::ifInOctets"),
+            Some(oid("1.3.6.1.2.1.2.2.1.10"))
+        );
         assert_eq!(resolve("sysName.0"), Some(oid("1.3.6.1.2.1.1.5.0")));
         assert_eq!(trap_name(&oid("1.3.6.1.6.3.1.1.5.3")), Some("linkDown"));
         assert_eq!(trap_name(&oid("1.3.6.1.6.3.1.1.5.1")), Some("coldStart"));
@@ -206,12 +212,18 @@ mod tests {
             ("1.3.6.1.2.1.2.2.1.2.10001", "ifDescr.10001"),
             ("1.3.6.1.2.1.31.1.1.1.6.3", "ifHCInOctets.3"),
             ("1.3.6.1.2.1.31.1.1.1.18.7", "ifAlias.7"),
-            ("1.3.6.1.2.1.4.22.1.2.2.10.0.0.1", "ipNetToMediaPhysAddress.2.10.0.0.1"),
+            (
+                "1.3.6.1.2.1.4.22.1.2.2.10.0.0.1",
+                "ipNetToMediaPhysAddress.2.10.0.0.1",
+            ),
             ("1.3.6.1.2.1.25.3.3.1.2.196608", "hrProcessorLoad.196608"),
             ("1.3.6.1.2.1.25.2.1.2", "hrStorageRam"),
             ("1.3.6.1.2.1.47.1.1.1.1.11.1", "entPhysicalSerialNum.1"),
             ("1.3.6.1.2.1.99.1.1.1.4.1005", "entPhySensorValue.1005"),
-            ("1.3.6.1.2.1.17.4.3.1.2.0.27.33.60.157.248", "dot1dTpFdbPort.0.27.33.60.157.248"),
+            (
+                "1.3.6.1.2.1.17.4.3.1.2.0.27.33.60.157.248",
+                "dot1dTpFdbPort.0.27.33.60.157.248",
+            ),
             ("1.3.6.1.2.1.17.7.1.4.3.1.1.100", "dot1qVlanStaticName.100"),
             ("1.0.8802.1.1.2.1.4.1.1.9.0.5.1", "lldpRemSysName.0.5.1"),
             ("1.3.6.1.2.1.15.3.1.2.192.0.2.1", "bgpPeerState.192.0.2.1"),
@@ -219,16 +231,28 @@ mod tests {
             ("1.3.6.1.4.1.2021.4.5.0", "memTotalReal.0"),
             ("1.3.6.1.4.1.9.9.109.1.1.1.1.8.1", "cpmCPUTotal5minRev.1"),
             ("1.3.6.1.4.1.9.9.48.1.1.1.5.1", "ciscoMemoryPoolUsed.1"),
-            ("1.3.6.1.4.1.9.9.13.1.3.1.3.1", "ciscoEnvMonTemperatureStatusValue.1"),
+            (
+                "1.3.6.1.4.1.9.9.13.1.3.1.3.1",
+                "ciscoEnvMonTemperatureStatusValue.1",
+            ),
             ("1.3.6.1.4.1.14988.1.1.3.10.0", "mtxrHlTemperature.0"),
-            ("1.3.6.1.4.1.2636.3.1.13.1.8.9.1.0.0", "jnxOperatingCPU.9.1.0.0"),
+            (
+                "1.3.6.1.4.1.2636.3.1.13.1.8.9.1.0.0",
+                "jnxOperatingCPU.9.1.0.0",
+            ),
             ("1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5.9", "hwEntityCpuUsage.9"),
             ("1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0", "hpSwitchCpuStat.0"),
-            ("1.3.6.1.4.1.25506.2.6.1.1.1.1.6.212", "hh3cEntityExtCpuUsage.212"),
+            (
+                "1.3.6.1.4.1.25506.2.6.1.1.1.1.6.212",
+                "hh3cEntityExtCpuUsage.212",
+            ),
             ("1.3.6.1.4.1.12356.101.4.1.3.0", "fgSysCpuUsage.0"),
             ("1.3.6.1.4.1.25461.2.1.2.3.3.0", "panSessionActive.0"),
             ("1.3.6.1.4.1.10002.1.1.1.1.1.0", "memTotal.0"),
-            ("1.3.6.1.4.1.30065.3.12.1.1.1.1.100", "aristaEntSensorThresholdLowWarning.100"),
+            (
+                "1.3.6.1.4.1.30065.3.12.1.1.1.1.100",
+                "aristaEntSensorThresholdLowWarning.100",
+            ),
             ("1.3.6.1.6.3.15.1.1.5.0", "usmStatsWrongDigests.0"),
             ("1.3.6.1.6.3.1.1.4.1.0", "snmpTrapOID.0"),
             // Notification OIDs, as found in the value of snmpTrapOID.0.
@@ -259,7 +283,11 @@ mod tests {
             "1.3.6.1.2.1.2.2.1.10.3",
             ".1.3.6.1.2.1.2.2.1.10.3",
         ] {
-            assert_eq!(resolve(spelling), Some(if_in_octets_3.clone()), "{spelling:?}");
+            assert_eq!(
+                resolve(spelling),
+                Some(if_in_octets_3.clone()),
+                "{spelling:?}"
+            );
         }
         assert_eq!(
             resolve("ipNetToMediaPhysAddress.2.10.0.0.1"),
@@ -300,16 +328,28 @@ mod tests {
         let pan = oid("1.3.6.1.4.1.25461.2.1.2.3.11.1.2");
         assert_eq!(resolve("PAN-COMMON-MIB::ifDescr"), Some(pan.clone()));
         assert_eq!(pan.to_string(), oids::PAN_IF_DESCR);
-        assert_eq!(resolve("PAN-COMMON-MIB::ifIndex"), Some(oid(oids::PAN_IF_INDEX)));
+        assert_eq!(
+            resolve("PAN-COMMON-MIB::ifIndex"),
+            Some(oid(oids::PAN_IF_INDEX))
+        );
         let frogfoot = oid(oids::FROGFOOT_MEM_BUFFER);
-        assert_eq!(resolve("FROGFOOT-RESOURCES-MIB::memBuffer.0"), Some(frogfoot.clone()));
+        assert_eq!(
+            resolve("FROGFOOT-RESOURCES-MIB::memBuffer.0"),
+            Some(frogfoot.clone())
+        );
         // ...and described with it, so that the two cannot be confused.
-        assert_eq!(describe(&pan.child(4)).as_deref(), Some("PAN-COMMON-MIB::ifDescr.4"));
+        assert_eq!(
+            describe(&pan.child(4)).as_deref(),
+            Some("PAN-COMMON-MIB::ifDescr.4")
+        );
         assert_eq!(
             describe(&frogfoot).as_deref(),
             Some("FROGFOOT-RESOURCES-MIB::memBuffer.0")
         );
-        assert_eq!(describe(&oid("1.3.6.1.2.1.2.2.1.2.4")).as_deref(), Some("ifDescr.4"));
+        assert_eq!(
+            describe(&oid("1.3.6.1.2.1.2.2.1.2.4")).as_deref(),
+            Some("ifDescr.4")
+        );
     }
 
     #[test]
@@ -322,7 +362,10 @@ mod tests {
                 .parse()
                 .unwrap_or_else(|e| panic!("{module}::{name}: {e}"));
             assert!(crate::ber::check_oid(&object).is_ok(), "{module}::{name}");
-            assert!(seen_oids.insert(numeric), "duplicate OID {numeric} ({module}::{name})");
+            assert!(
+                seen_oids.insert(numeric),
+                "duplicate OID {numeric} ({module}::{name})"
+            );
             assert!(
                 name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
                     && name.starts_with(|c: char| c.is_ascii_lowercase()),
@@ -339,7 +382,8 @@ mod tests {
             );
 
             // describe() gives a name that resolves back to the same OID.
-            let described = describe(&object).unwrap_or_else(|| panic!("{qualified} is not described"));
+            let described =
+                describe(&object).unwrap_or_else(|| panic!("{qualified} is not described"));
             assert!(
                 described == name || described == qualified,
                 "{numeric} is described as {described:?}, expected {name:?}"
@@ -437,8 +481,14 @@ mod tests {
         assert_eq!(oids::CISCO_MEMORY_POOL_USED, "1.3.6.1.4.1.9.9.48.1.1.1.5");
         assert_eq!(oids::MTXR_HL_TEMPERATURE, "1.3.6.1.4.1.14988.1.1.3.10.0");
         assert_eq!(oids::JNX_OPERATING_CPU, "1.3.6.1.4.1.2636.3.1.13.1.8");
-        assert_eq!(oids::HW_ENTITY_CPU_USAGE, "1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5");
-        assert_eq!(oids::HP_SWITCH_CPU_STAT, "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0");
+        assert_eq!(
+            oids::HW_ENTITY_CPU_USAGE,
+            "1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5"
+        );
+        assert_eq!(
+            oids::HP_SWITCH_CPU_STAT,
+            "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0"
+        );
         assert_eq!(oids::FG_SYS_CPU_USAGE, "1.3.6.1.4.1.12356.101.4.1.3.0");
         assert_eq!(oids::PAN_SESSION_ACTIVE, "1.3.6.1.4.1.25461.2.1.2.3.3.0");
 

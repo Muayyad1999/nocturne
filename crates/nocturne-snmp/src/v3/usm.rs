@@ -162,7 +162,12 @@ impl AuthProtocol {
     }
 
     /// Checks the authentication parameters found at `auth_params` inside `message`.
-    pub(crate) fn verify(self, key: &[u8], message: &[u8], auth_params: std::ops::Range<usize>) -> bool {
+    pub(crate) fn verify(
+        self,
+        key: &[u8],
+        message: &[u8],
+        auth_params: std::ops::Range<usize>,
+    ) -> bool {
         let Some(received) = message.get(auth_params.clone()) else {
             return false;
         };
@@ -230,7 +235,12 @@ impl PrivProtocol {
 
     /// Derives the localised privacy key from the privacy passphrase's master key (computed
     /// with the *authentication* protocol's hash, as USM prescribes).
-    pub(crate) fn localized_key(self, auth: AuthProtocol, master_key: &[u8], engine_id: &[u8]) -> Vec<u8> {
+    pub(crate) fn localized_key(
+        self,
+        auth: AuthProtocol,
+        master_key: &[u8],
+        engine_id: &[u8],
+    ) -> Vec<u8> {
         let needed = self.key_material_len();
         let mut key = auth.localize(master_key, engine_id);
         match self.key_extension() {
@@ -307,7 +317,7 @@ impl PrivProtocol {
         let mut data = ciphertext.to_vec();
         match self {
             PrivProtocol::Des => {
-                if data.len() % DES_BLOCK != 0 {
+                if !data.len().is_multiple_of(DES_BLOCK) {
                     return Err(SnmpError::decode(
                         "DES ciphertext is not a multiple of 8 octets",
                     ));
@@ -326,7 +336,13 @@ impl PrivProtocol {
         Ok(data)
     }
 
-    fn aes_cfb(self, key: &[u8], iv: &[u8; 16], data: &mut [u8], direction: Direction) -> Result<(), SnmpError> {
+    fn aes_cfb(
+        self,
+        key: &[u8],
+        iv: &[u8; 16],
+        data: &mut [u8],
+        direction: Direction,
+    ) -> Result<(), SnmpError> {
         let key = key.get(..self.key_material_len()).ok_or_else(bad_key)?;
         macro_rules! run {
             ($cipher:ty) => {
@@ -361,11 +377,11 @@ fn bad_key() -> SnmpError {
 }
 
 /// Splits the 16 octets of DES key material into the key and the IV (pre-IV XOR salt).
-fn des_key_and_iv<'k>(key: &'k [u8], salt: &[u8; SALT_LEN]) -> Result<(&'k [u8], [u8; DES_BLOCK]), SnmpError> {
-    let (des_key, pre_iv) = key
-        .get(..16)
-        .ok_or_else(bad_key)?
-        .split_at(DES_BLOCK);
+fn des_key_and_iv<'k>(
+    key: &'k [u8],
+    salt: &[u8; SALT_LEN],
+) -> Result<(&'k [u8], [u8; DES_BLOCK]), SnmpError> {
+    let (des_key, pre_iv) = key.get(..16).ok_or_else(bad_key)?.split_at(DES_BLOCK);
     let mut iv = [0u8; DES_BLOCK];
     for (out, (a, b)) in iv.iter_mut().zip(pre_iv.iter().zip(salt)) {
         *out = a ^ b;
@@ -395,7 +411,10 @@ impl fmt::Debug for LocalizedKeys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocalizedKeys")
             .field("auth_protocol", &self.auth_protocol)
-            .field("priv_protocol", &self.privacy.as_ref().map(|(protocol, _)| protocol))
+            .field(
+                "priv_protocol",
+                &self.privacy.as_ref().map(|(protocol, _)| protocol),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -450,7 +469,11 @@ mod tests {
     #[test]
     fn auth_keys_match_netsnmp_for_every_hash() {
         let vectors = [
-            (AuthProtocol::Md5, "authpass-md5-1234", "87aff15466e5d3afd74bec3e9c9d1b8e"),
+            (
+                AuthProtocol::Md5,
+                "authpass-md5-1234",
+                "87aff15466e5d3afd74bec3e9c9d1b8e",
+            ),
             (
                 AuthProtocol::Sha1,
                 "authpass-sha1-1234",
@@ -498,8 +521,18 @@ mod tests {
         use AuthProtocol::{Md5, Sha1, Sha256, Sha512};
         use PrivProtocol::{Aes128, Aes192, Aes256, Des};
         let vectors = [
-            (Md5, Des, "privpass-des-1234", "0e397c56643380405cc0b4040a2bc01c"),
-            (Md5, Aes128, "privpass-aes-1234", "b927968ee67ef261193e0d81d1127b80"),
+            (
+                Md5,
+                Des,
+                "privpass-des-1234",
+                "0e397c56643380405cc0b4040a2bc01c",
+            ),
+            (
+                Md5,
+                Aes128,
+                "privpass-aes-1234",
+                "b927968ee67ef261193e0d81d1127b80",
+            ),
             // 16-octet MD5 keys stretched to 24 and 32 octets.
             (
                 Md5,
@@ -513,9 +546,19 @@ mod tests {
                 "privpass-aes256-1234",
                 "e7bc12aff30c50347e3930e7df7312de693fa3278cd5adab5971b83540ada226",
             ),
-            (Sha1, Des, "privpass-des-1234", "46f925c6b111653513b6f554d05efc43"),
+            (
+                Sha1,
+                Des,
+                "privpass-des-1234",
+                "46f925c6b111653513b6f554d05efc43",
+            ),
             // A 20-octet SHA-1 key truncated to 16...
-            (Sha1, Aes128, "privpass-aes-1234", "c3191b655685736c83fa80f91b299738"),
+            (
+                Sha1,
+                Aes128,
+                "privpass-aes-1234",
+                "c3191b655685736c83fa80f91b299738",
+            ),
             // ...and stretched to 24 and 32.
             (
                 Sha1,
@@ -542,7 +585,12 @@ mod tests {
                 "privpass-aes256-1234",
                 "4af2db56fd47f424feee981a9ee15d8db45f2c4dff0f194c3b514419cf1f529a",
             ),
-            (Sha512, Des, "privpass-des-1234", "c49eae099719aacb14e6316061d443cf"),
+            (
+                Sha512,
+                Des,
+                "privpass-des-1234",
+                "c49eae099719aacb14e6316061d443cf",
+            ),
         ];
         for (auth, protocol, passphrase, expected) in vectors {
             assert_eq!(
@@ -573,20 +621,36 @@ mod tests {
             assert_eq!(Aes192Cisco.alternative_key_extension(auth), Some(Aes192));
         }
         // SHA-224 yields 28 octets: enough for AES-192, short for AES-256.
-        assert_eq!(key(AuthProtocol::Sha224, Aes192), key(AuthProtocol::Sha224, Aes192Cisco));
-        assert_ne!(key(AuthProtocol::Sha224, Aes256), key(AuthProtocol::Sha224, Aes256Cisco));
+        assert_eq!(
+            key(AuthProtocol::Sha224, Aes192),
+            key(AuthProtocol::Sha224, Aes192Cisco)
+        );
+        assert_ne!(
+            key(AuthProtocol::Sha224, Aes256),
+            key(AuthProtocol::Sha224, Aes256Cisco)
+        );
         assert_eq!(Aes192.alternative_key_extension(AuthProtocol::Sha224), None);
         assert_eq!(
             Aes256Cisco.alternative_key_extension(AuthProtocol::Sha224),
             Some(Aes256)
         );
-        for auth in [AuthProtocol::Sha256, AuthProtocol::Sha384, AuthProtocol::Sha512] {
+        for auth in [
+            AuthProtocol::Sha256,
+            AuthProtocol::Sha384,
+            AuthProtocol::Sha512,
+        ] {
             assert_eq!(key(auth, Aes256), key(auth, Aes256Cisco), "{auth:?}");
             assert_eq!(key(auth, Aes192), key(auth, Aes192Cisco), "{auth:?}");
             assert_eq!(Aes256.alternative_key_extension(auth), None);
         }
-        assert_eq!(PrivProtocol::Des.alternative_key_extension(AuthProtocol::Md5), None);
-        assert_eq!(PrivProtocol::Aes128.alternative_key_extension(AuthProtocol::Md5), None);
+        assert_eq!(
+            PrivProtocol::Des.alternative_key_extension(AuthProtocol::Md5),
+            None
+        );
+        assert_eq!(
+            PrivProtocol::Aes128.alternative_key_extension(AuthProtocol::Md5),
+            None
+        );
     }
 
     #[test]
@@ -643,7 +707,10 @@ mod tests {
         let data = b"what do ya want for nothing?";
         let vectors = [
             (AuthProtocol::Md5, "750c783e6ab0b503eaa86e310a5db738"),
-            (AuthProtocol::Sha1, "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"),
+            (
+                AuthProtocol::Sha1,
+                "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+            ),
             (
                 AuthProtocol::Sha224,
                 "a30e01098bc6dbbf45690f3a7e9e6d0f8bbea2a39e6148008fd05e44",
@@ -674,7 +741,12 @@ mod tests {
 
     #[test]
     fn verify_accepts_only_the_right_digest_in_the_right_place() {
-        for protocol in [AuthProtocol::Md5, AuthProtocol::Sha1, AuthProtocol::Sha256, AuthProtocol::Sha512] {
+        for protocol in [
+            AuthProtocol::Md5,
+            AuthProtocol::Sha1,
+            AuthProtocol::Sha256,
+            AuthProtocol::Sha512,
+        ] {
             let key = b"0123456789abcdef";
             let len = protocol.mac_len();
             let mut message = Vec::from(&b"header-"[..]);
@@ -691,7 +763,10 @@ mod tests {
             for index in 0..message.len() {
                 let mut tampered = message.clone();
                 tampered[index] ^= 0x01;
-                assert!(!protocol.verify(key, &tampered, range.clone()), "byte {index}");
+                assert!(
+                    !protocol.verify(key, &tampered, range.clone()),
+                    "byte {index}"
+                );
             }
             // A field of the wrong size or outside the message is never valid.
             assert!(!protocol.verify(key, &message, start..start + len - 1));
@@ -721,7 +796,9 @@ mod tests {
                 if len > 0 {
                     assert_ne!(ciphertext[..len.min(ciphertext.len())], plaintext[..]);
                 }
-                let decrypted = protocol.decrypt(&key, 5, 1234, &params, &ciphertext).unwrap();
+                let decrypted = protocol
+                    .decrypt(&key, 5, 1234, &params, &ciphertext)
+                    .unwrap();
                 if protocol == PrivProtocol::Des {
                     // Padded up to the block size, padding after the data.
                     assert_eq!(ciphertext.len(), len.next_multiple_of(8), "{protocol:?}");
@@ -735,14 +812,20 @@ mod tests {
                     // (Not the lowest bit: DES ignores it as parity.)
                     let mut other_key = key.clone();
                     other_key[0] ^= 0x80;
-                    let garbage = protocol.decrypt(&other_key, 5, 1234, &params, &ciphertext).unwrap();
+                    let garbage = protocol
+                        .decrypt(&other_key, 5, 1234, &params, &ciphertext)
+                        .unwrap();
                     assert_ne!(garbage[..len], plaintext[..]);
                     let mut other_salt = params;
                     other_salt[7] ^= 1;
-                    let garbage = protocol.decrypt(&key, 5, 1234, &other_salt, &ciphertext).unwrap();
+                    let garbage = protocol
+                        .decrypt(&key, 5, 1234, &other_salt, &ciphertext)
+                        .unwrap();
                     assert_ne!(garbage[..len], plaintext[..]);
                     if protocol != PrivProtocol::Des {
-                        let garbage = protocol.decrypt(&key, 5, 1235, &params, &ciphertext).unwrap();
+                        let garbage = protocol
+                            .decrypt(&key, 5, 1235, &params, &ciphertext)
+                            .unwrap();
                         assert_ne!(garbage[..len], plaintext[..]);
                     }
                 }
@@ -776,14 +859,21 @@ mod tests {
     fn aes_iv_follows_rfc_3826() {
         let key: Vec<u8> = (0x20..0x40).collect();
         let (ciphertext, params) = PrivProtocol::Aes128
-            .encrypt(&key, 0x0102_0304, 0x0a0b_0c0d, 0x1122_3344_5566_7788, b"sixteen byte msg")
+            .encrypt(
+                &key,
+                0x0102_0304,
+                0x0a0b_0c0d,
+                0x1122_3344_5566_7788,
+                b"sixteen byte msg",
+            )
             .unwrap();
         assert_eq!(params, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
 
         // CFB-128, first block: C1 = P1 xor E(key, IV), IV = boots || time || salt.
         use aes::cipher::{BlockCipherEncrypt, KeyInit as _};
         let iv = [
-            0x01, 0x02, 0x03, 0x04, 0x0a, 0x0b, 0x0c, 0x0d, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+            0x01, 0x02, 0x03, 0x04, 0x0a, 0x0b, 0x0c, 0x0d, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
         ];
         let cipher = aes::Aes128::new_from_slice(&key[..16]).unwrap();
         let mut keystream = iv.into();
@@ -808,7 +898,11 @@ mod tests {
                 ));
             }
             // Key material that is too short is an error, not a panic.
-            assert!(protocol.decrypt(&key[..4], 1, 1, &[0; 8], &[0; 16]).is_err());
+            assert!(
+                protocol
+                    .decrypt(&key[..4], 1, 1, &[0; 8], &[0; 16])
+                    .is_err()
+            );
             assert!(protocol.encrypt(&key[..4], 1, 1, 0, &[0; 16]).is_err());
         }
         // DES needs whole blocks.
@@ -819,7 +913,12 @@ mod tests {
             ));
         }
         // AES-CFB is a stream mode: any length, including none, is fine.
-        assert_eq!(PrivProtocol::Aes128.decrypt(&key, 1, 1, &[0; 8], &[]).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            PrivProtocol::Aes128
+                .decrypt(&key, 1, 1, &[0; 8], &[])
+                .unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
@@ -837,9 +936,19 @@ mod tests {
         .collect();
         assert_eq!(
             auth,
-            ["\"md5\"", "\"sha1\"", "\"sha224\"", "\"sha256\"", "\"sha384\"", "\"sha512\""]
+            [
+                "\"md5\"",
+                "\"sha1\"",
+                "\"sha224\"",
+                "\"sha256\"",
+                "\"sha384\"",
+                "\"sha512\""
+            ]
         );
-        let privacy: Vec<String> = ALL_PRIV.iter().map(|p| serde_json::to_string(p).unwrap()).collect();
+        let privacy: Vec<String> = ALL_PRIV
+            .iter()
+            .map(|p| serde_json::to_string(p).unwrap())
+            .collect();
         assert_eq!(
             privacy,
             [

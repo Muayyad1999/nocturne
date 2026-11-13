@@ -10,6 +10,10 @@ use crate::sim::node::Node;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Rip {}
 
+pub(crate) fn show_protocols(_node: &Node, _now: u64) -> String {
+    String::new()
+}
+
 impl Node {
     pub(crate) fn rip_sync(&mut self, _fx: &mut Fx) {}
     pub(crate) fn rip_rx(&mut self, _fx: &mut Fx, _iface: IfId, _src: Ipv4Addr, _msg: &RipMsg) {}

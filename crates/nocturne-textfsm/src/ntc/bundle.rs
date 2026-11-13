@@ -35,7 +35,9 @@ struct Entry {
 impl Bundle {
     pub fn get() -> &'static Bundle {
         static BUNDLE: OnceLock<Bundle> = OnceLock::new();
-        BUNDLE.get_or_init(|| Bundle::unpack().expect("the bundle written by build.rs is well formed"))
+        BUNDLE.get_or_init(|| {
+            Bundle::unpack().expect("the bundle written by build.rs is well formed")
+        })
     }
 
     fn unpack() -> Option<Bundle> {
@@ -57,9 +59,18 @@ impl Bundle {
         }
         let mut files = files.into_iter();
         let (_, index) = files.next()?;
-        let templates =
-            files.map(|(name, source)| Entry { name, source, compiled: OnceLock::new() }).collect();
-        Some(Bundle { text, index, templates })
+        let templates = files
+            .map(|(name, source)| Entry {
+                name,
+                source,
+                compiled: OnceLock::new(),
+            })
+            .collect();
+        Some(Bundle {
+            text,
+            index,
+            templates,
+        })
     }
 
     /// The contents of the `index` file.
@@ -69,11 +80,14 @@ impl Bundle {
 
     /// Template names (file stems) in sorted order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.templates.iter().map(|entry| &self.text[entry.name.clone()])
+        self.templates
+            .iter()
+            .map(|entry| &self.text[entry.name.clone()])
     }
 
     pub fn source(&self, name: &str) -> Option<&str> {
-        self.entry(name).map(|entry| &self.text[entry.source.clone()])
+        self.entry(name)
+            .map(|entry| &self.text[entry.source.clone()])
     }
 
     /// The compiled template, compiled on first use.
@@ -105,7 +119,11 @@ mod tests {
         let bundle = Bundle::get();
         assert_eq!(bundle.names().count(), 979);
         assert!(bundle.names().is_sorted());
-        assert!(bundle.index().contains("Template, Hostname, Platform, Command"));
+        assert!(
+            bundle
+                .index()
+                .contains("Template, Hostname, Platform, Command")
+        );
         let source = bundle.source("cisco_ios_show_version").unwrap();
         assert!(source.starts_with("Value "));
         assert_eq!(bundle.source("index"), None);
@@ -116,9 +134,13 @@ mod tests {
     fn bundle_matches_the_files_on_disk() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
         let bundle = Bundle::get();
-        assert_eq!(bundle.index(), std::fs::read_to_string(directory.join("index")).unwrap());
+        assert_eq!(
+            bundle.index(),
+            std::fs::read_to_string(directory.join("index")).unwrap()
+        );
         for name in bundle.names() {
-            let on_disk = std::fs::read_to_string(directory.join(format!("{name}.textfsm"))).unwrap();
+            let on_disk =
+                std::fs::read_to_string(directory.join(format!("{name}.textfsm"))).unwrap();
             assert_eq!(bundle.source(name), Some(on_disk.as_str()), "{name}");
         }
     }

@@ -72,11 +72,6 @@ impl<'a> Reader<'a> {
         self.offset
     }
 
-    /// The tag of the next element, if there is one.
-    pub fn peek_tag(&self) -> Option<u8> {
-        self.buf.first().copied()
-    }
-
     /// Reads one element and returns its tag and a reader over its contents.
     pub fn read_tlv(&mut self) -> Result<(u8, Reader<'a>)> {
         let (&tag, rest) = self
@@ -166,9 +161,7 @@ impl<'a> Reader<'a> {
     }
 
     pub fn octet_string(&mut self) -> Result<&'a [u8]> {
-        Ok(self
-            .expect(tag::OCTET_STRING, "OCTET STRING")?
-            .remaining())
+        Ok(self.expect(tag::OCTET_STRING, "OCTET STRING")?.remaining())
     }
 
     pub fn oid(&mut self) -> Result<Oid> {
@@ -196,7 +189,8 @@ impl<'a> Reader<'a> {
 fn decode_wide(content: &[u8]) -> Result<i128> {
     let mut bytes = content;
     while let [first, second, ..] = bytes {
-        let redundant = (*first == 0x00 && second & 0x80 == 0) || (*first == 0xff && second & 0x80 != 0);
+        let redundant =
+            (*first == 0x00 && second & 0x80 == 0) || (*first == 0xff && second & 0x80 != 0);
         if !redundant {
             break;
         }
@@ -313,7 +307,8 @@ pub(crate) fn decode_oid(content: &[u8]) -> Result<Oid> {
 /// Checks that an OID can be represented in BER: the first arc is 0, 1 or 2 and, below arc 2,
 /// the second arc is at most 39.
 pub(crate) fn check_oid(oid: &Oid) -> Result<()> {
-    let unencodable = |why: &str| SnmpError::Unsupported(format!("OID {oid} cannot be encoded: {why}"));
+    let unencodable =
+        |why: &str| SnmpError::Unsupported(format!("OID {oid} cannot be encoded: {why}"));
     match *oid.parts() {
         [first, ..] if first > 2 => Err(unencodable("the first arc must be 0, 1 or 2")),
         [first, second, ..] if first < 2 && second > 39 => {
@@ -418,7 +413,8 @@ impl Writer {
         let start = self.buf.len();
         fill(self);
         let (octets, count) = length_octets(self.buf.len() - start);
-        self.buf.splice(start..start, octets[..count].iter().copied());
+        self.buf
+            .splice(start..start, octets[..count].iter().copied());
     }
 
     pub fn sequence(&mut self, fill: impl FnOnce(&mut Writer)) {
@@ -439,7 +435,10 @@ fn length_octets(length: usize) -> ([u8; 9], usize) {
         return (out, 1);
     }
     let bytes = (length as u64).to_be_bytes();
-    let skip = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len() - 1);
+    let skip = bytes
+        .iter()
+        .position(|&b| b != 0)
+        .unwrap_or(bytes.len() - 1);
     let count = bytes.len() - skip;
     out[0] = 0x80 | count as u8;
     out[1..=count].copy_from_slice(&bytes[skip..]);
@@ -519,7 +518,11 @@ mod tests {
         ];
         for &(value, bytes) in vectors {
             assert_eq!(integer_bytes(value), bytes, "encoding {value}");
-            assert_eq!(Reader::new(bytes).integer().unwrap(), value, "decoding {value}");
+            assert_eq!(
+                Reader::new(bytes).integer().unwrap(),
+                value,
+                "decoding {value}"
+            );
         }
     }
 
@@ -537,29 +540,53 @@ mod tests {
             i64::MAX
         );
         // Too large for 64 bits.
-        assert!(is_decode_error(decode_integer(&[0x00, 0x80, 0, 0, 0, 0, 0, 0, 0])));
-        assert!(is_decode_error(decode_integer(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0])));
+        assert!(is_decode_error(decode_integer(&[
+            0x00, 0x80, 0, 0, 0, 0, 0, 0, 0
+        ])));
+        assert!(is_decode_error(decode_integer(&[
+            0x01, 0, 0, 0, 0, 0, 0, 0, 0
+        ])));
         assert!(is_decode_error(decode_integer(&[0x7f; 17])));
     }
 
     #[test]
     fn integer32_accepts_unsigned_request_ids() {
-        assert_eq!(decode_integer32(&[0x7f, 0xff, 0xff, 0xff]).unwrap(), i32::MAX);
-        assert_eq!(decode_integer32(&[0x80, 0x00, 0x00, 0x00]).unwrap(), i32::MIN);
+        assert_eq!(
+            decode_integer32(&[0x7f, 0xff, 0xff, 0xff]).unwrap(),
+            i32::MAX
+        );
+        assert_eq!(
+            decode_integer32(&[0x80, 0x00, 0x00, 0x00]).unwrap(),
+            i32::MIN
+        );
         // 0xFFFFFFFE sent as an unsigned value wraps to -2.
-        assert_eq!(decode_integer32(&[0x00, 0xff, 0xff, 0xff, 0xfe]).unwrap(), -2);
-        assert!(is_decode_error(decode_integer32(&[0x01, 0x00, 0x00, 0x00, 0x00])));
-        assert!(is_decode_error(decode_integer32(&[0xff, 0x7f, 0xff, 0xff, 0xff])));
+        assert_eq!(
+            decode_integer32(&[0x00, 0xff, 0xff, 0xff, 0xfe]).unwrap(),
+            -2
+        );
+        assert!(is_decode_error(decode_integer32(&[
+            0x01, 0x00, 0x00, 0x00, 0x00
+        ])));
+        assert!(is_decode_error(decode_integer32(&[
+            0xff, 0x7f, 0xff, 0xff, 0xff
+        ])));
     }
 
     #[test]
     fn non_negative_rejects_out_of_range() {
-        assert_eq!(Reader::new(&[0x02, 0x01, 0x05]).non_negative("x").unwrap(), 5);
         assert_eq!(
-            Reader::new(&[0x02, 0x04, 0x7f, 0xff, 0xff, 0xff]).non_negative("x").unwrap(),
+            Reader::new(&[0x02, 0x01, 0x05]).non_negative("x").unwrap(),
+            5
+        );
+        assert_eq!(
+            Reader::new(&[0x02, 0x04, 0x7f, 0xff, 0xff, 0xff])
+                .non_negative("x")
+                .unwrap(),
             i32::MAX as u32
         );
-        assert!(is_decode_error(Reader::new(&[0x02, 0x01, 0xff]).non_negative("x")));
+        assert!(is_decode_error(
+            Reader::new(&[0x02, 0x01, 0xff]).non_negative("x")
+        ));
         assert!(is_decode_error(
             Reader::new(&[0x02, 0x05, 0x00, 0x80, 0x00, 0x00, 0x00]).non_negative("x")
         ));
@@ -578,7 +605,11 @@ mod tests {
             (tag::GAUGE32, 65_535, &[0x42, 0x03, 0x00, 0xff, 0xff]),
             (tag::TIME_TICKS, 12_345, &[0x43, 0x02, 0x30, 0x39]),
             (tag::TIME_TICKS, 87_109, &[0x43, 0x03, 0x01, 0x54, 0x45]),
-            (tag::COUNTER32, 2_147_483_647, &[0x41, 0x04, 0x7f, 0xff, 0xff, 0xff]),
+            (
+                tag::COUNTER32,
+                2_147_483_647,
+                &[0x41, 0x04, 0x7f, 0xff, 0xff, 0xff],
+            ),
             (
                 tag::COUNTER32,
                 2_147_483_648,
@@ -590,7 +621,11 @@ mod tests {
                 &[0x41, 0x05, 0x00, 0xff, 0xff, 0xff, 0xff],
             ),
             (tag::COUNTER64, 0, &[0x46, 0x01, 0x00]),
-            (tag::COUNTER64, 8_519_442, &[0x46, 0x04, 0x00, 0x81, 0xff, 0x12]),
+            (
+                tag::COUNTER64,
+                8_519_442,
+                &[0x46, 0x04, 0x00, 0x81, 0xff, 0x12],
+            ),
             (
                 tag::COUNTER64,
                 4_294_967_296,
@@ -604,13 +639,19 @@ mod tests {
             (
                 tag::COUNTER64,
                 u64::MAX,
-                &[0x46, 0x09, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+                &[
+                    0x46, 0x09, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                ],
             ),
         ];
         for &(tag, value, bytes) in vectors {
             assert_eq!(unsigned_bytes(tag, value), bytes, "encoding {value}");
             let content = &bytes[2..];
-            assert_eq!(decode_unsigned64(content).unwrap(), value, "decoding {value}");
+            assert_eq!(
+                decode_unsigned64(content).unwrap(),
+                value,
+                "decoding {value}"
+            );
             if tag != tag::COUNTER64 {
                 assert_eq!(u64::from(decode_unsigned32(content).unwrap()), value);
             }
@@ -620,8 +661,14 @@ mod tests {
     #[test]
     fn unsigned_decoding_tolerates_field_quirks() {
         // Missing leading zero: an agent that used a signed encoder for 4294967295 / 3000000000.
-        assert_eq!(decode_unsigned32(&[0xff, 0xff, 0xff, 0xff]).unwrap(), u32::MAX);
-        assert_eq!(decode_unsigned32(&[0xb2, 0xd0, 0x5e, 0x00]).unwrap(), 3_000_000_000);
+        assert_eq!(
+            decode_unsigned32(&[0xff, 0xff, 0xff, 0xff]).unwrap(),
+            u32::MAX
+        );
+        assert_eq!(
+            decode_unsigned32(&[0xb2, 0xd0, 0x5e, 0x00]).unwrap(),
+            3_000_000_000
+        );
         // ... which, shortened by that encoder, is sign-extended like net-snmp does.
         assert_eq!(decode_unsigned32(&[0xff]).unwrap(), u32::MAX);
         assert_eq!(decode_unsigned32(&[0x80]).unwrap(), 0xffff_ff80);
@@ -629,12 +676,18 @@ mod tests {
         assert_eq!(decode_unsigned32(&[]).unwrap(), 0);
         assert_eq!(decode_unsigned32(&[0, 0, 0, 0, 0, 0, 0x2a]).unwrap(), 42);
         // Out of range for 32 bits.
-        assert!(is_decode_error(decode_unsigned32(&[0x01, 0x00, 0x00, 0x00, 0x00])));
-        assert!(is_decode_error(decode_unsigned32(&[0xfe, 0xff, 0xff, 0xff, 0xff])));
+        assert!(is_decode_error(decode_unsigned32(&[
+            0x01, 0x00, 0x00, 0x00, 0x00
+        ])));
+        assert!(is_decode_error(decode_unsigned32(&[
+            0xfe, 0xff, 0xff, 0xff, 0xff
+        ])));
 
         assert_eq!(decode_unsigned64(&[0xff; 8]).unwrap(), u64::MAX);
         assert_eq!(decode_unsigned64(&[0xff]).unwrap(), u64::MAX);
-        assert!(is_decode_error(decode_unsigned64(&[0x01, 0, 0, 0, 0, 0, 0, 0, 0])));
+        assert!(is_decode_error(decode_unsigned64(&[
+            0x01, 0, 0, 0, 0, 0, 0, 0, 0
+        ])));
         assert!(is_decode_error(decode_unsigned64(&[0x7f; 10])));
     }
 
@@ -651,10 +704,15 @@ mod tests {
             // 8072 = 0xbf 0x08 in base 128
             (
                 "1.3.6.1.4.1.8072.3.2.10",
-                &[0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xbf, 0x08, 0x03, 0x02, 0x0a],
+                &[
+                    0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xbf, 0x08, 0x03, 0x02, 0x0a,
+                ],
             ),
             // LLDP-MIB lives under 1.0.8802: 40 * 1 + 0 = 0x28, 8802 = 0xc4 0x62
-            ("1.0.8802.1.1.2", &[0x06, 0x06, 0x28, 0xc4, 0x62, 0x01, 0x01, 0x02]),
+            (
+                "1.0.8802.1.1.2",
+                &[0x06, 0x06, 0x28, 0xc4, 0x62, 0x01, 0x01, 0x02],
+            ),
             ("0.0", &[0x06, 0x01, 0x00]),
             ("0.39", &[0x06, 0x01, 0x27]),
             ("1.0", &[0x06, 0x01, 0x28]),
@@ -671,14 +729,15 @@ mod tests {
                 &[0x06, 0x06, 0x2b, 0x8f, 0xff, 0xff, 0xff, 0x7f],
             ),
             // 2.4294967295: 80 + 2^32 - 1 needs 33 bits.
-            (
-                "2.4294967295",
-                &[0x06, 0x05, 0x90, 0x80, 0x80, 0x80, 0x4f],
-            ),
+            ("2.4294967295", &[0x06, 0x05, 0x90, 0x80, 0x80, 0x80, 0x4f]),
         ];
         for &(text, bytes) in vectors {
             assert_eq!(oid_bytes(text), bytes, "encoding {text}");
-            assert_eq!(Reader::new(bytes).oid().unwrap(), oid(text), "decoding {text}");
+            assert_eq!(
+                Reader::new(bytes).oid().unwrap(),
+                oid(text),
+                "decoding {text}"
+            );
         }
     }
 
@@ -699,8 +758,12 @@ mod tests {
         assert!(is_decode_error(decode_oid(&[0x2b, 0x86])));
         assert!(is_decode_error(decode_oid(&[0x80])));
         // Sub-identifier beyond 32 bits.
-        assert!(is_decode_error(decode_oid(&[0x2b, 0x90, 0x80, 0x80, 0x80, 0x00])));
-        assert!(is_decode_error(decode_oid(&[0x2b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f])));
+        assert!(is_decode_error(decode_oid(&[
+            0x2b, 0x90, 0x80, 0x80, 0x80, 0x00
+        ])));
+        assert!(is_decode_error(decode_oid(&[
+            0x2b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f
+        ])));
         // First group beyond 2.(2^32-1).
         assert!(is_decode_error(decode_oid(&[0x90, 0x80, 0x80, 0x80, 0x50])));
     }
@@ -735,7 +798,10 @@ mod tests {
         assert_eq!(&octet_string_of(255)[..3], [0x04, 0x81, 0xff]);
         assert_eq!(&octet_string_of(256)[..4], [0x04, 0x82, 0x01, 0x00]);
         assert_eq!(&octet_string_of(65_535)[..4], [0x04, 0x82, 0xff, 0xff]);
-        assert_eq!(&octet_string_of(65_536)[..5], [0x04, 0x83, 0x01, 0x00, 0x00]);
+        assert_eq!(
+            &octet_string_of(65_536)[..5],
+            [0x04, 0x83, 0x01, 0x00, 0x00]
+        );
 
         for len in [0, 1, 127, 128, 255, 256, 1000, 65_535, 65_536] {
             let bytes = octet_string_of(len);
@@ -768,7 +834,9 @@ mod tests {
         });
         assert_eq!(
             &nested[..12],
-            [0x30, 0x82, 0x01, 0x37, 0x02, 0x01, 0x01, 0xa0, 0x82, 0x01, 0x30, 0x04]
+            [
+                0x30, 0x82, 0x01, 0x37, 0x02, 0x01, 0x01, 0xa0, 0x82, 0x01, 0x30, 0x04
+            ]
         );
         let mut outer = Reader::new(&nested).sequence().unwrap();
         assert_eq!(outer.integer().unwrap(), 1);
@@ -812,7 +880,6 @@ mod tests {
     fn reader_tracks_offsets_and_tags() {
         let bytes = [0x30, 0x06, 0x02, 0x01, 0x07, 0x04, 0x01, 0x41, 0xff];
         let mut top = Reader::new(&bytes);
-        assert_eq!(top.peek_tag(), Some(0x30));
         let mut seq = top.sequence().unwrap();
         assert_eq!(top.offset(), 8);
         assert_eq!(top.remaining(), [0xff]);
@@ -826,11 +893,13 @@ mod tests {
         assert_eq!(content.offset(), 7);
         assert_eq!(content.remaining(), b"A");
         assert!(seq.finish("sequence").is_ok());
-        assert_eq!(seq.peek_tag(), None);
+        assert!(seq.is_empty());
 
         // A wrong tag is reported, not misread.
         assert!(is_decode_error(Reader::new(&bytes).integer()));
-        assert!(is_decode_error(Reader::new(&[0x02, 0x01, 0x00]).octet_string()));
+        assert!(is_decode_error(
+            Reader::new(&[0x02, 0x01, 0x00]).octet_string()
+        ));
         assert!(is_decode_error(Reader::new(&[0x04, 0x01, 0x00]).oid()));
     }
 }

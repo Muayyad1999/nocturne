@@ -48,9 +48,15 @@ impl Verb {
 /// Something other than data found in the incoming stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
-    Negotiation { verb: Verb, option: u8 },
+    Negotiation {
+        verb: Verb,
+        option: u8,
+    },
     /// `IAC SB <option> <data> IAC SE`, with `data` unescaped.
-    Subnegotiation { option: u8, data: Vec<u8> },
+    Subnegotiation {
+        option: u8,
+        data: Vec<u8>,
+    },
     /// A two-byte command such as `IAC BRK` or `IAC NOP`.
     Command(u8),
 }
@@ -191,12 +197,12 @@ impl Parser {
     }
 }
 
-/// RFC 1143 option state.
+/// RFC 1143 option state. (The `WANTNO` state of the RFC never arises here:
+/// neither end of this crate asks to turn an option off on its own.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Q {
     No,
     Yes,
-    WantNo,
     WantYes,
 }
 
@@ -273,16 +279,33 @@ impl Negotiator {
                     step(self.remote[index], wanted, acceptable, Verb::Do, Verb::Dont);
                 self.remote[index] = state;
                 reply(answer, option, out);
-                changed.map(|on| if on { Change::RemoteOn(option) } else { Change::RemoteOff(option) })
+                changed.map(|on| {
+                    if on {
+                        Change::RemoteOn(option)
+                    } else {
+                        Change::RemoteOff(option)
+                    }
+                })
             }
             Verb::Do | Verb::Dont => {
                 let wanted = verb == Verb::Do;
                 let acceptable = (self.accept_local)(option);
-                let (state, answer, changed) =
-                    step(self.local[index], wanted, acceptable, Verb::Will, Verb::Wont);
+                let (state, answer, changed) = step(
+                    self.local[index],
+                    wanted,
+                    acceptable,
+                    Verb::Will,
+                    Verb::Wont,
+                );
                 self.local[index] = state;
                 reply(answer, option, out);
-                changed.map(|on| if on { Change::LocalOn(option) } else { Change::LocalOff(option) })
+                changed.map(|on| {
+                    if on {
+                        Change::LocalOn(option)
+                    } else {
+                        Change::LocalOff(option)
+                    }
+                })
             }
         }
     }
@@ -303,13 +326,12 @@ fn step(
         (Q::No, true) if acceptable => (Q::Yes, Some(agree), Some(true)),
         (Q::No, true) => (Q::No, Some(refuse), None),
         (Q::Yes, true) => (Q::Yes, None, None),
+        // The peer agreed to what we asked for.
         (Q::WantYes, true) => (Q::Yes, None, Some(true)),
-        // We asked to disable and the peer answered the opposite: stay off.
-        (Q::WantNo, true) => (Q::No, None, None),
-        // A request (or a refusal of ours) to disable.
+        // A request to disable, or the refusal of what we asked for.
         (Q::No, false) => (Q::No, None, None),
         (Q::Yes, false) => (Q::No, Some(refuse), Some(false)),
-        (Q::WantYes | Q::WantNo, false) => (Q::No, None, None),
+        (Q::WantYes, false) => (Q::No, None, None),
     }
 }
 
@@ -449,7 +471,10 @@ mod tests {
             IAC, b'!', IAC, BRK, b'\r', b'\n', IAC, DONT, 200, b'.',
         ];
         let (expected_data, expected_events) = parse(&mut client_parser(), &input);
-        assert_eq!(expected_data, [b'h', b'i', b'\r', IAC, b'!', b'\r', b'\n', b'.']);
+        assert_eq!(
+            expected_data,
+            [b'h', b'i', b'\r', IAC, b'!', b'\r', b'\n', b'.']
+        );
         assert_eq!(expected_events.len(), 4);
 
         for first in 0..=input.len() {
@@ -719,7 +744,9 @@ mod tests {
 
     #[test]
     fn encoded_data_survives_a_round_trip() {
-        let original: Vec<u8> = (0..=255u8).chain([b'\r', b'x', b'\r', b'\n', IAC, IAC]).collect();
+        let original: Vec<u8> = (0..=255u8)
+            .chain([b'\r', b'x', b'\r', b'\n', IAC, IAC])
+            .collect();
         let mut wire = Vec::new();
         encode_data(&original, &mut wire);
         let (data, events) = parse(&mut client_parser(), &wire);
@@ -735,7 +762,10 @@ mod tests {
 
         out.clear();
         encode_window_size(255, 0xFFFF, &mut out);
-        assert_eq!(out, [IAC, SB, OPT_NAWS, 0, IAC, IAC, IAC, IAC, IAC, IAC, IAC, SE]);
+        assert_eq!(
+            out,
+            [IAC, SB, OPT_NAWS, 0, IAC, IAC, IAC, IAC, IAC, IAC, IAC, SE]
+        );
         let (_, events) = parse(&mut client_parser(), &out);
         let [Event::Subnegotiation { data, .. }] = &events[..] else {
             panic!("unexpected events: {events:?}");

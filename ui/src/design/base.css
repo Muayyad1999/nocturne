@@ -1,0 +1,255 @@
+/*
+ * Base styles: reset, document defaults, focus, scrollbars and four helper
+ * classes. Everything else lives in a component's CSS module.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--font-ui);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol,
+dl,
+dd,
+figure,
+pre {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+button,
+input,
+select,
+textarea {
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+svg {
+  flex-shrink: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+/* Focus is always visible on keyboard focus. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Scrollbars: thin and quiet. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-full);
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: content-box;
+}
+
+/* Helpers */
+
+/* Anything a device said or will be told: commands, config, addresses. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Numbers that must align in columns. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*
+ * Tones. Any element with `data-tone` exposes that tone's colour to its
+ * subtree, so components style once against three variables:
+ *   --tone       the colour itself: icons, dots, bars, borders
+ *   --tone-soft  the quiet fill behind it
+ *   --tone-ink   text on that fill (differs from --tone where AA requires it)
+ */
+[data-tone='neutral'] {
+  --tone: var(--text-2);
+  --tone-soft: var(--bg-3);
+  --tone-ink: var(--text-2);
+}
+
+[data-tone='accent'] {
+  --tone: var(--accent);
+  --tone-soft: var(--accent-soft);
+  --tone-ink: var(--accent-strong);
+}
+
+[data-tone='ai'] {
+  --tone: var(--ai);
+  --tone-soft: var(--ai-soft);
+  --tone-ink: var(--ai);
+}
+
+[data-tone='ok'] {
+  --tone: var(--ok);
+  --tone-soft: var(--ok-soft);
+  --tone-ink: var(--ok);
+}
+
+[data-tone='warn'] {
+  --tone: var(--warn);
+  --tone-soft: var(--warn-soft);
+  --tone-ink: var(--warn);
+}
+
+[data-tone='crit'] {
+  --tone: var(--crit);
+  --tone-soft: var(--crit-soft);
+  --tone-ink: var(--crit);
+}
+
+[data-tone='info'] {
+  --tone: var(--info);
+  --tone-soft: var(--info-soft);
+  --tone-ink: var(--info);
+}
+
+[data-tone='idle'] {
+  --tone: var(--idle);
+  --tone-soft: var(--idle-soft);
+  --tone-ink: var(--idle);
+}
+
+[data-tone='maint'] {
+  --tone: var(--maint);
+  --tone-soft: var(--maint-soft);
+  --tone-ink: var(--maint);
+}

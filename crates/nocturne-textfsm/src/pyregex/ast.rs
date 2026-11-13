@@ -113,7 +113,10 @@ pub(crate) struct Class {
 
 impl Class {
     pub fn category(category: Category) -> Class {
-        Class { negated: false, items: vec![ClassItem::Category(category)] }
+        Class {
+            negated: false,
+            items: vec![ClassItem::Category(category)],
+        }
     }
 }
 

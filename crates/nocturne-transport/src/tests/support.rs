@@ -8,9 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use crate::serve::SessionHandler;
-use crate::{
-    Backend, Connection, ConnectionInfo, ConnectionReader, Input, Output, TransportKind,
-};
+use crate::{Backend, Connection, ConnectionInfo, ConnectionReader, Input, Output, TransportKind};
 
 /// Generous bound for anything a test waits for.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(20);
@@ -254,7 +252,8 @@ impl<S: Receive> Tap<S> {
             if let Some(start) = find(&self.pending, needle) {
                 return self.pending.drain(..start + needle.len()).collect();
             }
-            self.more(&format!("{:?}", String::from_utf8_lossy(needle))).await;
+            self.more(&format!("{:?}", String::from_utf8_lossy(needle)))
+                .await;
         }
     }
 
@@ -268,13 +267,16 @@ impl<S: Receive> Tap<S> {
 
     /// Consumes the rest of the session: its output and the close reason.
     /// Checks that nothing follows `Closed`.
-    pub async fn to_close(&mut self) -> (Vec<u8>, Option<String>) {
+    pub async fn until_closed(&mut self) -> (Vec<u8>, Option<String>) {
         loop {
             match tokio::time::timeout(PATIENCE, self.inner.next()).await {
                 Ok(Some(Output::Data(data))) => self.pending.extend_from_slice(&data),
                 Ok(Some(Output::Closed { reason })) => {
                     let after = tokio::time::timeout(PATIENCE, self.inner.next()).await;
-                    assert!(matches!(after, Ok(None)), "nothing may follow Closed: {after:?}");
+                    assert!(
+                        matches!(after, Ok(None)),
+                        "nothing may follow Closed: {after:?}"
+                    );
                     return (std::mem::take(&mut self.pending), reason);
                 }
                 Ok(None) => panic!("the stream ended without Closed"),

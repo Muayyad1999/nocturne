@@ -12,7 +12,10 @@ pub struct TemplateError {
 
 impl TemplateError {
     pub(crate) fn new(line: usize, message: impl Into<String>) -> TemplateError {
-        TemplateError { line, message: message.into() }
+        TemplateError {
+            line,
+            message: message.into(),
+        }
     }
 
     /// The 1-based line of the template the error refers to. Errors about the
@@ -53,7 +56,7 @@ pub enum RunError {
     },
 }
 
-/// Worded like the reference implementation.
+/// Follows the wording of the reference implementation.
 fn error_action(message: Option<&str>, rule_line: usize, input_line: &str) -> String {
     match message {
         Some(message) => {

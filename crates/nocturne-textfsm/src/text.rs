@@ -41,7 +41,11 @@ impl<'a> Iterator for SplitLines<'a> {
             return None;
         }
         let is_boundary = |c: char| {
-            matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}')
+            matches!(
+                c,
+                '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'
+                    ..='\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}'
+            )
         };
         let Some((end, boundary)) = self.rest.char_indices().find(|&(_, c)| is_boundary(c)) else {
             return Some(std::mem::take(&mut self.rest));

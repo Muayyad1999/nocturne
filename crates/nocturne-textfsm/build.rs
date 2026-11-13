@@ -24,21 +24,32 @@ fn main() {
     let mut names: Vec<String> = fs::read_dir(&templates)
         .unwrap_or_else(|error| panic!("cannot list {}: {error}", templates.display()))
         .map(|entry| entry.expect("readable directory entry").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "textfsm"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "textfsm")
+        })
         .map(|path| {
             let stem = path.file_stem().and_then(|stem| stem.to_str());
-            stem.unwrap_or_else(|| panic!("{} is not valid UTF-8", path.display())).to_owned()
+            stem.unwrap_or_else(|| panic!("{} is not valid UTF-8", path.display()))
+                .to_owned()
         })
         .collect();
     names.sort();
-    assert!(!names.is_empty(), "no *.textfsm files in {}", templates.display());
+    assert!(
+        !names.is_empty(),
+        "no *.textfsm files in {}",
+        templates.display()
+    );
 
     let mut manifest = String::new();
     let mut contents = String::new();
     let mut add = |name: &str, path: &Path| {
         let text = fs::read_to_string(path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-        assert!(!name.contains(['\t', '\n']), "unsupported file name {name:?}");
+        assert!(
+            !name.contains(['\t', '\n']),
+            "unsupported file name {name:?}"
+        );
         manifest.push_str(&format!("{name}\t{}\n", text.len()));
         contents.push_str(&text);
     };

@@ -334,6 +334,25 @@ impl Node {
             Icmp::TimeExceeded { orig } => (orig, true, None),
             _ => return,
         };
+        let verdict = match code {
+            _ if expired => format!("{from} reports that the packet's TTL expired on the way."),
+            Some(Unreach::AdminProhibited) => format!("{from} reports that the packet was administratively prohibited (an access list)."),
+            Some(Unreach::Port) => format!("{from} reports that nothing listens on that port."),
+            _ => format!("{from} reports that the destination is unreachable."),
+        };
+        let traced: Vec<TraceId> = self
+            .procs
+            .list
+            .values()
+            .filter(|p| !p.done)
+            .filter(|p| match (&p.kind, orig.flow) {
+                (Kind::Ping(ping), Flow::Icmp { id, seq }) => ping.ident == id && ping.seq == seq,
+                (Kind::Connect(c), Flow::Tcp { sport, dport }) => c.sport == sport && c.port == dport,
+                _ => false,
+            })
+            .filter_map(|p| p.trace)
+            .collect();
+        fx.trace_verdict.extend(traced.into_iter().map(|t| (t, verdict.clone())));
         match orig.flow {
             Flow::Icmp { id: ident, seq } => {
                 let hit = self.procs.list.iter().find_map(|(id, proc)| match &proc.kind {
@@ -453,6 +472,9 @@ impl Node {
             }
             self.connect_finish(id, Some(rtt), if style == Style::Ios { "Open" } else { "" });
         } else {
+            if let Some(trace) = trace {
+                fx.trace_verdict.push((trace, format!("{from} refused the connection with a TCP RST: nothing accepts connections on port {sport}.")));
+            }
             self.connect_finish(
                 id,
                 None,

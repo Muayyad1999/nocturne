@@ -52,7 +52,8 @@ impl World {
         (1..).map(|n| format!("{prefix}{n}")).find(|name| self.node_by_name(name).is_none()).unwrap_or_default()
     }
 
-    pub(crate) fn add_node(&mut self, model_id: &str, name: Option<&str>, x: f32, y: f32) -> Result<NodeId, LabError> {
+    /// Create a node without booting it (callers fill in saved state first).
+    pub(crate) fn insert_node(&mut self, model_id: &str, name: Option<&str>, x: f32, y: f32) -> Result<NodeId, LabError> {
         let model = catalog::model(model_id).ok_or_else(|| LabError::UnknownModel(model_id.to_string()))?;
         let name = match name {
             Some(name) if !valid_name(name) => return Err(LabError::InvalidName(name.to_string())),
@@ -69,10 +70,20 @@ impl World {
             node.host = Some(crate::api::HostConfig::default());
         }
         self.nodes.insert(id, node);
+        Ok(id)
+    }
+
+    pub(crate) fn add_node(&mut self, model_id: &str, name: Option<&str>, x: f32, y: f32) -> Result<NodeId, LabError> {
+        let id = self.insert_node(model_id, name, x, y)?;
         self.boot(id);
         self.touch();
         self.reconcile();
         Ok(id)
+    }
+
+    /// Is any control-plane process still working towards a stable state?
+    pub(crate) fn converging(&self) -> bool {
+        self.nodes.values().any(|n| n.powered && (n.stp.converging() || n.ospf_converging() || n.dhcp_converging()))
     }
 
     pub(crate) fn remove_node(&mut self, id: NodeId) -> Result<(), LabError> {
@@ -253,6 +264,11 @@ impl World {
         if node.model.is_network_os() {
             if let Some(vlans) = node.vlan_dat.clone() {
                 node.cfg.vlans = vlans;
+            }
+            // "shutdown" is only the default of a device without a saved
+            // configuration; a saved one says `shutdown` where it means it.
+            if node.startup.is_some() {
+                node.cfg.interfaces.values_mut().for_each(|iface| iface.shutdown = false);
             }
             crate::device::ios::boot::apply_startup(self, id);
         } else {

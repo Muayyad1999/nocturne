@@ -33,7 +33,10 @@ fn upstream_corpus() {
 
     println!("{}", report.summary());
     println!("skipped: {} ({SKIPPED:?})", SKIPPED.len());
-    println!("resolved by directory name instead of the index: {:?}", report.fallbacks);
+    println!(
+        "resolved by directory name instead of the index: {:?}",
+        report.fallbacks
+    );
     println!(
         "{} of {} cases pass ({:.2} %)",
         report.passed(),

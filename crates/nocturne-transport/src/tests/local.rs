@@ -49,7 +49,7 @@ mod unix {
         let mut conn = run(&sh("printf 'hello %s\\n' world; exit 3")).await;
         assert_eq!(conn.info().kind, Some(TransportKind::Local));
         assert_eq!(conn.info().peer, "/bin/sh");
-        let (output, reason) = conn.to_close().await;
+        let (output, reason) = conn.until_closed().await;
         // The terminal turns the line feed into CR LF.
         assert_eq!(output, b"hello world\r\n");
         assert_eq!(reason.as_deref(), Some("exit status 3"));
@@ -62,7 +62,7 @@ mod unix {
             args: vec!["one".to_owned(), "two".to_owned()],
             ..LocalParams::default()
         };
-        let (output, reason) = run(&params).await.to_close().await;
+        let (output, reason) = run(&params).await.until_closed().await;
         assert_eq!(output, b"one two\r\n");
         assert_eq!(reason.as_deref(), Some("exit status 0"));
     }
@@ -82,7 +82,7 @@ mod unix {
         conn.until(b"42\r\n").await;
         conn.until(b"nocturne$ ").await;
         conn.send("exit 7\n").await.unwrap();
-        let (_, reason) = conn.to_close().await;
+        let (_, reason) = conn.until_closed().await;
         assert_eq!(reason.as_deref(), Some("exit status 7"));
     }
 
@@ -98,7 +98,7 @@ mod unix {
         conn.resize(100, 30).await.unwrap();
         conn.send("\n").await.unwrap();
         conn.until(b"30 100\r\n").await;
-        let (_, reason) = conn.to_close().await;
+        let (_, reason) = conn.until_closed().await;
         assert_eq!(reason.as_deref(), Some("exit status 0"));
     }
 
@@ -111,7 +111,7 @@ mod unix {
             env: vec![("NOCTURNE_TEST".to_owned(), "from the test".to_owned())],
             ..sh("echo \"$NOCTURNE_TEST|$TERM|$(pwd -P)\"")
         };
-        let (output, _) = run(&params).await.to_close().await;
+        let (output, _) = run(&params).await.until_closed().await;
         let expected = format!("from the test|xterm-256color|{}\r\n", cwd.display());
         assert_eq!(String::from_utf8_lossy(&output), expected);
     }
@@ -120,7 +120,7 @@ mod unix {
     async fn large_output_arrives_complete() {
         const TOTAL: usize = 3_000_000;
         let script = format!("head -c {TOTAL} /dev/zero | tr '\\0' 'x'; echo; echo done");
-        let (output, reason) = run(&sh(&script)).await.to_close().await;
+        let (output, reason) = run(&sh(&script)).await.until_closed().await;
         assert_eq!(reason.as_deref(), Some("exit status 0"));
         assert_eq!(output.len(), TOTAL + "\r\ndone\r\n".len());
         assert!(output[..TOTAL].iter().all(|&byte| byte == b'x'));
@@ -192,7 +192,7 @@ mod unix {
         let mut reader = tap(reader);
         reader.until(b"ready").await;
         writer.close().await;
-        let (_, reason) = reader.to_close().await;
+        let (_, reason) = reader.until_closed().await;
         assert_eq!(reason, None);
     }
 
@@ -218,7 +218,7 @@ mod unix {
     #[tokio::test]
     async fn killed_programs_are_reported() {
         let mut conn = run(&sh("echo ready; kill -TERM $$; sleep 5")).await;
-        let (_, reason) = conn.to_close().await;
+        let (_, reason) = conn.until_closed().await;
         let reason = reason.unwrap();
         assert!(reason.contains("terminated by signal"), "{reason}");
     }

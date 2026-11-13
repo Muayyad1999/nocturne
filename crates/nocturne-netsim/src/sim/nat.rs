@@ -24,5 +24,9 @@ impl Node {
         false
     }
 
+    pub(crate) fn nat_rows(&self, _now: u64) -> Vec<crate::api::NatRow> {
+        Vec::new()
+    }
     pub(crate) fn nat_sync(&mut self) {}
+    pub(crate) fn nat_clear(&mut self) {}
 }

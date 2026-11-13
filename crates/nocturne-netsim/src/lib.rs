@@ -7,6 +7,16 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod catalog;
+pub mod demo;
+mod device;
+mod ifname;
+mod lab;
+mod sim;
 mod util;
+mod views;
 
 pub use api::*;
+pub use catalog::catalog;
+pub use demo::{demo_campus, examples};
+pub use lab::Lab;

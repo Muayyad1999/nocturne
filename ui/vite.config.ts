@@ -49,7 +49,9 @@ export default defineConfig({
     sourcemap: false,
   },
   test: {
-    environment: 'happy-dom',
+    // Pure logic runs in Node; tests that need a DOM start with
+    // `// @vitest-environment happy-dom`.
+    environment: 'node',
     include: ['src/**/*.test.{ts,tsx}'],
     restoreMocks: true,
     unstubGlobals: true,

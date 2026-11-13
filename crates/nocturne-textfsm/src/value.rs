@@ -73,11 +73,17 @@ mod tests {
     #[test]
     fn accessors() {
         let text = Value::from("up");
-        assert_eq!((text.as_str(), text.as_list().len(), text.is_empty()), ("up", 0, false));
+        assert_eq!(
+            (text.as_str(), text.as_list().len(), text.is_empty()),
+            ("up", 0, false)
+        );
         assert!(Value::from("").is_empty());
 
         let list = Value::from(vec!["a".to_owned(), "b".to_owned()]);
-        assert_eq!((list.as_str(), list.as_list(), list.is_empty()), ("", &["a".to_owned(), "b".to_owned()][..], false));
+        assert_eq!(
+            (list.as_str(), list.as_list(), list.is_empty()),
+            ("", &["a".to_owned(), "b".to_owned()][..], false)
+        );
         assert!(Value::List(Vec::new()).is_empty());
         assert!(!Value::List(vec![String::new()]).is_empty());
     }
@@ -86,7 +92,10 @@ mod tests {
     fn serializes_untagged() {
         let record: Record = [
             ("NAME".to_owned(), Value::from("eth0")),
-            ("ADDRESSES".to_owned(), Value::from(vec!["10.0.0.1".to_owned()])),
+            (
+                "ADDRESSES".to_owned(),
+                Value::from(vec!["10.0.0.1".to_owned()]),
+            ),
         ]
         .into_iter()
         .collect();

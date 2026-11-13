@@ -53,7 +53,9 @@ impl Client {
                     Ok(binds) => binds,
                     // SNMPv1 has no endOfMibView: running off the end fails the request with
                     // noSuchName, and error-index names the stream that fell off.
-                    Err(SnmpError::Agent { status, index, .. }) if status == status::NO_SUCH_NAME => {
+                    Err(SnmpError::Agent { status, index, .. })
+                        if status == status::NO_SUCH_NAME =>
+                    {
                         match (index as usize).checked_sub(1) {
                             Some(slot) if slot < streams.len() => {
                                 streams.remove(slot);
@@ -177,7 +179,10 @@ mod tests {
         // Sparse rows only hold the cells that exist.
         assert_eq!(table[&vec![3u32]].len(), 1);
         assert_eq!(table[&vec![3u32]][&columns[1]], Value::Integer(803));
-        assert_eq!(table[&vec![10u32]].keys().collect::<Vec<_>>(), [&columns[0]]);
+        assert_eq!(
+            table[&vec![10u32]].keys().collect::<Vec<_>>(),
+            [&columns[0]]
+        );
 
         // The limit keeps the first rows in index order, complete.
         let limited = pivot(&columns, walked, 2);

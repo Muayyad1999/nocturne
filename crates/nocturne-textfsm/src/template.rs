@@ -18,15 +18,21 @@ const MAX_NAME_LEN: usize = 48;
 /// A compiled template is immutable and can be shared between threads; each
 /// [`run`](Template::run) starts from a clean state.
 ///
-/// The engine follows the Python reference implementation (`google/textfsm`).
-/// Two things are specific to this implementation:
+/// The language is implemented the way the Python reference implementation
+/// (`google/textfsm`) behaves, down to its quirks. What differs:
 ///
+/// * Where Python puts `None` into a list (a `List` value in an optional part
+///   of a rule that took no part in the match), the item is the string
+///   `"None"`, which is what ntc-templates' `parse_output` returns for it.
 /// * A `List` value whose regex contains nested *named* groups records the
-///   matched text like any other `List` value (Python records a dictionary of
-///   the nested groups).
-/// * A `List` value that sits in an optional part of a rule which did not take
-///   part in the match contributes the item `"None"`, which is what
-///   ntc-templates' `parse_output` returns for it.
+///   matched text like any other `List` value; Python records a dictionary of
+///   the nested groups.
+/// * Regular expressions are translated from Python's syntax and run on the
+///   `regex` crate, or on `fancy-regex` when they use look-around or
+///   back-references. The classes `\d`, `\w` and `\s` are Unicode aware as in
+///   Python. A loop whose body can match the empty string other than as its
+///   last alternative, such as `(a*|b)*` or `(a*?)*`, may match differently.
+///   The `(?a)` flag and `\N{...}` escapes are not supported.
 #[derive(Debug)]
 pub struct Template {
     header: Vec<String>,
@@ -41,6 +47,8 @@ pub struct Template {
 
 impl Template {
     /// Compiles a template.
+    ///
+    /// The error names the offending line of `source`.
     pub fn parse(source: &str) -> Result<Template, TemplateError> {
         let mut lines = Lines::new(source);
         let values = parse_values(&mut lines)?;
@@ -48,7 +56,7 @@ impl Template {
         while let Some(state) = parse_state(&mut lines, &values, &states)? {
             states.push(state);
         }
-        link(values, states, lines.count())
+        link(values, states, lines.count().max(1))
     }
 
     /// Value names in declaration order (the table header).
@@ -70,6 +78,18 @@ impl Template {
             .iter()
             .filter(|value| value.options.contains(&ValueOption::Key))
             .map(|value| value.name.as_str())
+    }
+
+    /// Compiles the Unicode-aware flavour of every rule, which otherwise
+    /// happens when a rule first meets a line that is not plain ASCII.
+    #[cfg(test)]
+    pub(crate) fn compile_unicode_flavours(&self) -> Result<(), String> {
+        for rule in self.states.iter().flat_map(|state| &state.rules) {
+            rule.regex
+                .match_start_unicode("")
+                .map_err(|error| format!("line {}: {error}", rule.line))?;
+        }
+        Ok(())
     }
 }
 
@@ -152,7 +172,10 @@ struct Lines<'a> {
 
 impl<'a> Lines<'a> {
     fn new(source: &'a str) -> Lines<'a> {
-        Lines { lines: text::template_lines(source).map(text::rstrip).collect(), next: 0 }
+        Lines {
+            lines: text::template_lines(source).map(text::rstrip).collect(),
+            next: 0,
+        }
     }
 
     /// The next line and its 1-based number.
@@ -197,7 +220,10 @@ fn parse_values(lines: &mut Lines<'_>) -> Result<Vec<Declaration>, TemplateError
             return Err(TemplateError::new(number, message));
         }
         let value = parse_value(line).map_err(|message| TemplateError::new(number, message))?;
-        if values.iter().any(|existing| existing.spec.name == value.spec.name) {
+        if values
+            .iter()
+            .any(|existing| existing.spec.name == value.spec.name)
+        {
             return Err(TemplateError::new(
                 number,
                 format!("duplicate declaration of Value '{}'", value.spec.name),
@@ -221,17 +247,26 @@ fn parse_value(line: &str) -> Result<Declaration, String> {
         (parse_options(tokens[1])?, tokens[2], tokens[3..].join(" "))
     };
     if name.chars().count() > MAX_NAME_LEN {
-        return Err(format!("Value name '{name}' is longer than {MAX_NAME_LEN} characters"));
+        return Err(format!(
+            "Value name '{name}' is longer than {MAX_NAME_LEN} characters"
+        ));
     }
-    let Some(inner) = regex.strip_prefix('(').filter(|_| regex.ends_with(')') && !regex.ends_with("\\)"))
+    let Some(inner) = regex
+        .strip_prefix('(')
+        .filter(|_| regex.ends_with(')') && !regex.ends_with("\\)"))
     else {
-        return Err(format!("the regex of Value '{name}' must be enclosed in '(' and ')': {regex}"));
+        return Err(format!(
+            "the regex of Value '{name}' must be enclosed in '(' and ')': {regex}"
+        ));
     };
     Regex::new(&regex)
         .map_err(|error| format!("invalid regular expression in Value '{name}': {error}"))?;
     Ok(Declaration {
         capture: format!("(?P<{name}>{inner}"),
-        spec: ValueSpec { name: name.to_owned(), options },
+        spec: ValueSpec {
+            name: name.to_owned(),
+            options,
+        },
     })
 }
 
@@ -280,15 +315,23 @@ fn parse_state(
             Some(found) => break found,
         }
     };
-    let reserved = ["Continue", "Next", "Error", "Clear", "Clearall", "Record", "NoRecord"];
+    let reserved = [
+        "Continue", "Next", "Error", "Clear", "Clearall", "Record", "NoRecord",
+    ];
     if !name.chars().all(text::is_word)
         || name.chars().count() > MAX_NAME_LEN
         || reserved.contains(&name)
     {
-        return Err(TemplateError::new(line, format!("invalid state name '{name}'")));
+        return Err(TemplateError::new(
+            line,
+            format!("invalid state name '{name}'"),
+        ));
     }
     if earlier.iter().any(|state| state.name == name) {
-        return Err(TemplateError::new(line, format!("duplicate state name '{name}'")));
+        return Err(TemplateError::new(
+            line,
+            format!("duplicate state name '{name}'"),
+        ));
     }
     let mut rules = Vec::new();
     while let Some((number, text)) = lines.next() {
@@ -298,7 +341,10 @@ fn parse_state(
         if is_comment(text) {
             continue;
         }
-        if ![" ^", "  ^", "\t^"].iter().any(|indent| text.starts_with(indent)) {
+        if ![" ^", "  ^", "\t^"]
+            .iter()
+            .any(|indent| text.starts_with(indent))
+        {
             return Err(TemplateError::new(
                 number,
                 "a rule must start with one or two spaces or a tab, followed by '^'",
@@ -306,7 +352,11 @@ fn parse_state(
         }
         rules.push(parse_rule(text, number, values)?);
     }
-    Ok(Some(StateSource { name: name.to_owned(), line, rules }))
+    Ok(Some(StateSource {
+        name: name.to_owned(),
+        line,
+        rules,
+    }))
 }
 
 /// `^regex [-> action]`
@@ -339,28 +389,45 @@ fn parse_rule(
     let (line_op, target) = match (action.line_op, action.target) {
         (LineOp::Error(_), target) => {
             let unquoted = |text: &str| {
-                text.strip_prefix('"').and_then(|text| text.strip_suffix('"')).unwrap_or(text).to_owned()
+                text.strip_prefix('"')
+                    .and_then(|text| text.strip_suffix('"'))
+                    .unwrap_or(text)
+                    .to_owned()
             };
             let message = target.map(unquoted);
             (LineOp::Error(message), None)
         }
         (LineOp::Continue, Some(target)) => {
-            return Err(error(format!("'Continue' cannot change the state (to '{target}')")));
+            return Err(error(format!(
+                "'Continue' cannot change the state (to '{target}')"
+            )));
         }
         (_, Some(_)) if quoted => {
-            return Err(error("a state name may only contain letters, digits and '_'".to_owned()));
+            return Err(error(
+                "a state name may only contain letters, digits and '_'".to_owned(),
+            ));
         }
         (line_op, target) => (line_op, target.map(str::to_owned)),
     };
-    let rule =
-        Rule { line: number, regex, assignments, line_op, record_op: action.record_op, transition: None };
+    let rule = Rule {
+        line: number,
+        regex,
+        assignments,
+        line_op,
+        record_op: action.record_op,
+        transition: None,
+    };
     Ok(RuleSource { rule, target })
 }
 
 /// Splits a rule at its last ` ->` into the regex and the action text.
 fn split_action(line: &str) -> (&str, Option<&str>) {
     for (arrow, _) in line.rmatch_indices("->") {
-        if let Some(space) = line[..arrow].chars().next_back().filter(|&c| text::is_space(c)) {
+        if let Some(space) = line[..arrow]
+            .chars()
+            .next_back()
+            .filter(|&c| text::is_space(c))
+        {
             return (&line[..arrow - space.len_utf8()], Some(&line[arrow + 2..]));
         }
     }
@@ -383,7 +450,9 @@ fn substitute(pattern: &str, values: &[Declaration]) -> Result<String, String> {
             continue;
         } else if after.starts_with(is_name_start) {
             after.split_at(after.find(|c| !is_name_char(c)).unwrap_or(after.len()))
-        } else if let Some((name, remainder)) = after.strip_prefix('{').and_then(|braced| braced.split_once('}'))
+        } else if let Some((name, remainder)) = after
+            .strip_prefix('{')
+            .and_then(|braced| braced.split_once('}'))
             && name.starts_with(is_name_start)
             && name.chars().all(is_name_char)
         {
@@ -420,7 +489,9 @@ fn parse_action(action: &str) -> Option<Action<'_>> {
         return Some(Action::default());
     }
     // White space is required after the arrow.
-    let rest = action.strip_prefix(text::is_space)?.trim_start_matches(text::is_space);
+    let rest = action
+        .strip_prefix(text::is_space)?
+        .trim_start_matches(text::is_space);
     let is_target = |text: &str| {
         (!text.is_empty() && text.chars().all(text::is_word))
             || (text.len() >= 2 && text.starts_with('"') && text.ends_with('"'))
@@ -432,11 +503,18 @@ fn parse_action(action: &str) -> Option<Action<'_>> {
     if let Some((line_op, record_op)) = parse_operators(operators) {
         return match target {
             Some(target) if !is_target(target) => None,
-            target => Some(Action { line_op, record_op, target }),
+            target => Some(Action {
+                line_op,
+                record_op,
+                target,
+            }),
         };
     }
     // No operators: the whole text is the new state.
-    is_target(rest).then(|| Action { target: Some(rest), ..Action::default() })
+    is_target(rest).then(|| Action {
+        target: Some(rest),
+        ..Action::default()
+    })
 }
 
 /// `LineOp`, `LineOp.RecordOp` or `RecordOp`.
@@ -478,11 +556,15 @@ fn link(
     let Some(start) = names.iter().position(|name| name == "Start") else {
         return Err(TemplateError::new(last_line, "missing state 'Start'"));
     };
-    if let Some(state) = states.iter().find(|state| is_terminal(&state.name) && !state.rules.is_empty()) {
-        return Err(TemplateError::new(
-            state.line,
-            format!("the '{}' state must be empty", state.name),
-        ));
+    for terminal in ["End", "EOF"] {
+        if let Some(state) = states.iter().find(|state| state.name == terminal)
+            && !state.rules.is_empty()
+        {
+            return Err(TemplateError::new(
+                state.line,
+                format!("the '{terminal}' state must be empty"),
+            ));
+        }
     }
     let records_at_end = !states.iter().any(|state| state.name == "EOF");
     let mut linked = Vec::with_capacity(names.len());
@@ -494,15 +576,18 @@ fn link(
                 Some("End") => Some(Transition::End),
                 Some("EOF") => Some(Transition::Eof),
                 Some(target) => {
-                    let index = names.iter().position(|name| name == target).ok_or_else(|| {
-                        TemplateError::new(
-                            rule.line,
-                            format!(
-                                "state '{target}' not found, referenced in state '{}'",
-                                state.name
-                            ),
-                        )
-                    })?;
+                    let index = names
+                        .iter()
+                        .position(|name| name == target)
+                        .ok_or_else(|| {
+                            TemplateError::new(
+                                rule.line,
+                                format!(
+                                    "state '{target}' not found, referenced in state '{}'",
+                                    state.name
+                                ),
+                            )
+                        })?;
                     Some(Transition::State(index))
                 }
             };
@@ -518,4 +603,211 @@ fn link(
         start,
         records_at_end,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn error(source: &str) -> (usize, String) {
+        let error = Template::parse(source).expect_err("the template must be rejected");
+        (error.line(), error.message().to_owned())
+    }
+
+    #[test]
+    fn compiled_templates_can_be_shared_between_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Template>();
+    }
+
+    #[test]
+    fn header_lists_the_values_in_declaration_order() {
+        let template = Template::parse("Value B (b)\nValue Key,List A (a)\n\nStart\n").unwrap();
+        assert_eq!(template.header(), ["B", "A"]);
+        assert_eq!(template.keys().collect::<Vec<_>>(), ["A"]);
+    }
+
+    #[test]
+    fn accepts_any_line_ending() {
+        for ending in ["\n", "\r\n", "\r"] {
+            let source = ["Value A (\\S+)", "", "Start", "  ^${A} -> Record", ""].join(ending);
+            let rows = Template::parse(&source).unwrap().run("x\ny").unwrap();
+            assert_eq!(rows.len(), 2, "{ending:?}");
+        }
+    }
+
+    /// Expected values: what the reference's `MATCH_ACTION` regex yields.
+    #[test]
+    fn splits_rules_at_the_last_arrow() {
+        assert_eq!(split_action("^a -> Record"), ("^a", Some(" Record")));
+        assert_eq!(split_action("^a -> b -> Next"), ("^a -> b", Some(" Next")));
+        assert_eq!(split_action("^a->b"), ("^a->b", None));
+        assert_eq!(split_action("^a  ->"), ("^a ", Some("")));
+        assert_eq!(split_action("^a\t-> x"), ("^a", Some(" x")));
+        assert_eq!(split_action("^a"), ("^a", None));
+        assert_eq!(split_action("^a ->b -> "), ("^a ->b", Some(" ")));
+        assert_eq!(split_action("-> x"), ("-> x", None));
+        assert_eq!(split_action(" -> x"), ("", Some(" x")));
+        assert_eq!(split_action("^a\u{a0}-> x"), ("^a", Some(" x")));
+        assert_eq!(split_action("^a -> -> "), ("^a ->", Some(" ")));
+    }
+
+    /// Expected values: what the reference's `ACTION_RE`, `ACTION2_RE` and
+    /// `ACTION3_RE` yield, tried in that order.
+    #[test]
+    fn parses_actions() {
+        use LineOp::{Continue, Error, Next};
+        use RecordOp::{Clear, Clearall, NoRecord, Record};
+        let cases: &[(&str, LineOp, RecordOp, Option<&str>)] = &[
+            ("", Next, NoRecord, None),
+            (" Next", Next, NoRecord, None),
+            (" Continue", Continue, NoRecord, None),
+            (" Error", Error(None), NoRecord, None),
+            (" Record", Next, Record, None),
+            (" NoRecord", Next, NoRecord, None),
+            (" Clear", Next, Clear, None),
+            (" Clearall", Next, Clearall, None),
+            (" Next.Record", Next, Record, None),
+            (" Continue.Clearall", Continue, Clearall, None),
+            (" Error.Clear", Error(None), Clear, None),
+            (" Next.NoRecord Start", Next, NoRecord, Some("Start")),
+            (" Record Start", Next, Record, Some("Start")),
+            (" Start", Next, NoRecord, Some("Start")),
+            (" NextState", Next, NoRecord, Some("NextState")),
+            (" Recorder", Next, NoRecord, Some("Recorder")),
+            (" Clearall2", Next, NoRecord, Some("Clearall2")),
+            (" Error \"a b\"", Error(None), NoRecord, Some("\"a b\"")),
+            (" Error word", Error(None), NoRecord, Some("word")),
+            (" Error.Record \"x\"", Error(None), Record, Some("\"x\"")),
+            (
+                " Error \"a\" \"b\"",
+                Error(None),
+                NoRecord,
+                Some("\"a\" \"b\""),
+            ),
+            ("   Next.Clear   Start", Next, Clear, Some("Start")),
+            ("\tRecord\tStart", Next, Record, Some("Start")),
+            (" Next\u{a0}Start", Next, NoRecord, Some("Start")),
+            (" \u{e9}tat", Next, NoRecord, Some("\u{e9}tat")),
+            (" \"a b\"", Next, NoRecord, Some("\"a b\"")),
+            (" Record \"a b\"", Next, Record, Some("\"a b\"")),
+            (" Next \"\"", Next, NoRecord, Some("\"\"")),
+            (" Continue Start", Continue, NoRecord, Some("Start")),
+        ];
+        for (text, line_op, record_op, target) in cases {
+            let expected = Action {
+                line_op: line_op.clone(),
+                record_op: *record_op,
+                target: *target,
+            };
+            assert_eq!(parse_action(text), Some(expected), "{text:?}");
+        }
+        for text in [
+            "Record",
+            " Next.Save",
+            " Record.Next",
+            " Next.",
+            " .Record",
+            " Next Start Start",
+            " Clear.Record",
+            " \"a",
+            " \"",
+            " a-b",
+            " Next \"a\" b",
+            " Error a b",
+            " Next.Record.Clear",
+            "  ",
+        ] {
+            assert_eq!(parse_action(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn substitutes_values_like_string_template() {
+        let values = [
+            Declaration {
+                spec: ValueSpec {
+                    name: "A".to_owned(),
+                    options: Vec::new(),
+                },
+                capture: "(?P<A>a)".to_owned(),
+            },
+            Declaration {
+                spec: ValueSpec {
+                    name: "A_1".to_owned(),
+                    options: Vec::new(),
+                },
+                capture: "(?P<A_1>b)".to_owned(),
+            },
+        ];
+        let substitute = |pattern| substitute(pattern, &values);
+        assert_eq!(
+            substitute("^${A} $A$$").as_deref(),
+            Ok("^(?P<A>a) (?P<A>a)$")
+        );
+        assert_eq!(
+            substitute("$A_1-${A_1}x").as_deref(),
+            Ok("(?P<A_1>b)-(?P<A_1>b)x")
+        );
+        assert_eq!(substitute("\\$$ $$$$").as_deref(), Ok("\\$ $$"));
+        assert_eq!(substitute("plain").as_deref(), Ok("plain"));
+        // The name runs as far as it can.
+        assert!(
+            substitute("$A_12")
+                .unwrap_err()
+                .contains("unknown value 'A_12'")
+        );
+        assert!(
+            substitute("${B}")
+                .unwrap_err()
+                .contains("unknown value 'B'")
+        );
+        for invalid in ["a$", "$ ", "${A", "${}", "${A-1}", "$1", "$(", "$\u{e9}"] {
+            assert!(
+                substitute(invalid).unwrap_err().starts_with("invalid '$'"),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reports_the_line_of_an_error() {
+        let (line, message) = error("Value A (\\S+)\nValue B (\\d+\n\nStart\n");
+        assert_eq!(line, 2);
+        assert!(message.contains("must be enclosed"), "{message}");
+
+        let (line, message) = error("Value A (\\S+)\n\nStart\n  ^${A}\n  ^(${A} -> Record\n");
+        assert_eq!(line, 5);
+        assert!(
+            message.starts_with("invalid regular expression '^((?P<A>\\S+)': missing ), unterminated subpattern at position 1"),
+            "{message}"
+        );
+
+        let (line, message) = error("Value A (\\S+)\n\nStart\n  ^${A} -> Record Other\n");
+        assert_eq!(
+            (line, message.as_str()),
+            (4, "state 'Other' not found, referenced in state 'Start'")
+        );
+
+        let (line, message) = error("Value A (\\S+)\n\nStart\n  ^a -> Next.Save\n");
+        assert_eq!(
+            (line, message.as_str()),
+            (4, "badly formatted rule '^a -> Next.Save'")
+        );
+
+        // Errors about the template as a whole point at its last line.
+        assert_eq!(
+            error("Value A (\\S+)\n\nBegin\n  ^a\n"),
+            (4, "missing state 'Start'".to_owned())
+        );
+        assert_eq!(error(""), (1, "missing state 'Start'".to_owned()));
+        assert_eq!(
+            error("Value A (a)\n\nEOF\n  ^a\n\nStart\n\nEnd\n  ^b\n"),
+            (8, "the 'End' state must be empty".to_owned())
+        );
+        let displayed = Template::parse("Start\n").unwrap_err().to_string();
+        assert_eq!(displayed, "template line 1: no Value definitions found");
+    }
 }

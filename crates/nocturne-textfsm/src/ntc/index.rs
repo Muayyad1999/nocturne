@@ -29,6 +29,20 @@ struct Row<'a> {
     command: Matcher<'a>,
 }
 
+impl Row<'_> {
+    /// The shortest `_`-separated prefix of the template name that the
+    /// platform regex accepts: template files are named `<platform>_<command>`.
+    fn platform_of_template(&self) -> Option<String> {
+        let template = self.templates.first()?;
+        template
+            .match_indices('_')
+            .map(|(end, _)| &template[..end])
+            .chain([*template])
+            .find(|prefix| self.platform.matches(prefix))
+            .map(str::to_owned)
+    }
+}
+
 /// A cell that is matched against an attribute of the request.
 enum Matcher<'a> {
     /// An empty cell matches everything.
@@ -36,7 +50,10 @@ enum Matcher<'a> {
     /// A cell without regex syntax: a plain prefix test.
     Prefix(&'a str),
     /// Compiled on first use; `None` if the cell is not a valid regex.
-    Pattern { source: String, compiled: OnceLock<Option<Regex>> },
+    Pattern {
+        source: String,
+        compiled: OnceLock<Option<Regex>>,
+    },
 }
 
 impl<'a> Matcher<'a> {
@@ -46,9 +63,15 @@ impl<'a> Matcher<'a> {
         } else if cell.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             Matcher::Prefix(cell)
         } else {
-            let source =
-                if expand_completion { expand_completions(cell) } else { cell.to_owned() };
-            Matcher::Pattern { source, compiled: OnceLock::new() }
+            let source = if expand_completion {
+                expand_completions(cell)
+            } else {
+                cell.to_owned()
+            };
+            Matcher::Pattern {
+                source,
+                compiled: OnceLock::new(),
+            }
         }
     }
 
@@ -66,9 +89,9 @@ impl<'a> Matcher<'a> {
             Matcher::Any => true,
             Matcher::Prefix(prefix) => text.starts_with(prefix),
             // A row whose regex cannot be evaluated matches nothing.
-            Matcher::Pattern { .. } => {
-                self.regex().is_some_and(|regex| matches!(regex.match_start(text), Ok(Some(_))))
-            }
+            Matcher::Pattern { .. } => self
+                .regex()
+                .is_some_and(|regex| matches!(regex.match_start(text), Ok(Some(_)))),
         }
     }
 }
@@ -96,7 +119,9 @@ impl<'a> Index<'a> {
             if cells.len() != header.len() {
                 continue;
             }
-            let Some(template) = template.map(|column| cells[column]) else { continue };
+            let Some(template) = template.map(|column| cells[column]) else {
+                continue;
+            };
             let cell = |column: Option<usize>| column.map_or("", |column| cells[column]);
             rows.push(Row {
                 templates: template
@@ -133,7 +158,7 @@ impl<'a> Index<'a> {
                 Matcher::Pattern { source, .. } => {
                     match pyregex::finite_language(source, MAX_PLATFORMS_PER_ROW) {
                         Some(names) => platforms.extend(names),
-                        None => platforms.extend(self.platform_of_template(row)),
+                        None => platforms.extend(row.platform_of_template()),
                     }
                 }
             }
@@ -141,18 +166,6 @@ impl<'a> Index<'a> {
         platforms.sort();
         platforms.dedup();
         platforms
-    }
-
-    /// The shortest `_`-separated prefix of the row's template name that the
-    /// row's platform regex accepts.
-    fn platform_of_template(&self, row: &Row<'_>) -> Option<String> {
-        let template = row.templates.first()?;
-        template
-            .match_indices('_')
-            .map(|(end, _)| &template[..end])
-            .chain([*template])
-            .find(|prefix| row.platform.matches(prefix))
-            .map(str::to_owned)
     }
 
     #[cfg(test)]
@@ -199,9 +212,15 @@ mod tests {
     #[test]
     fn expands_completions_like_clitable() {
         // Expected values produced by textfsm.clitable.CliTable._PreParse.
-        assert_eq!(expand_completions("sh[[ow]] ver[[sion]]"), "sh(o(w)?)? ver(s(i(o(n)?)?)?)?");
+        assert_eq!(
+            expand_completions("sh[[ow]] ver[[sion]]"),
+            "sh(o(w)?)? ver(s(i(o(n)?)?)?)?"
+        );
         assert_eq!(expand_completions("show vlan"), "show vlan");
-        assert_eq!(expand_completions("sh[[ow]] port-[[security]]"), "sh(o(w)?)? port-(s(e(c(u(r(i(t(y)?)?)?)?)?)?)?)?");
+        assert_eq!(
+            expand_completions("sh[[ow]] port-[[security]]"),
+            "sh(o(w)?)? port-(s(e(c(u(r(i(t(y)?)?)?)?)?)?)?)?"
+        );
         assert_eq!(expand_completions("a[[b]]]c"), "a(b)?]c");
         assert_eq!(expand_completions("a[[]]]]"), "a(])?]");
         assert_eq!(expand_completions("a[[]]"), "a[[]]");
@@ -229,9 +248,15 @@ mod tests {
         // `re.match` semantics: a prefix of the platform is enough.
         assert_eq!(index.find("a_variant", "show x"), Some(&["a_show_x"][..]));
         assert_eq!(index.find("a", "s x"), None);
-        assert_eq!(index.find("c_os", "show two"), Some(&["b_one", "b_two"][..]));
+        assert_eq!(
+            index.find("c_os", "show two"),
+            Some(&["b_one", "b_two"][..])
+        );
         assert_eq!(index.find("c_os", "show twofold"), None);
-        assert_eq!(index.find("anything", "ping 10.0.0.1"), Some(&["any_platform"][..]));
+        assert_eq!(
+            index.find("anything", "ping 10.0.0.1"),
+            Some(&["any_platform"][..])
+        );
         assert_eq!(index.platforms(), ["a", "b_os", "c_os"]);
     }
 
@@ -247,7 +272,10 @@ mod tests {
                 }
             }
             for template in &row.templates {
-                assert!(bundle.source(template).is_some(), "{template} is not in the bundle");
+                assert!(
+                    bundle.source(template).is_some(),
+                    "{template} is not in the bundle"
+                );
             }
         }
     }
@@ -274,9 +302,16 @@ mod tests {
             "paloalto_panos",
             "vyatta_vyos",
         ] {
-            assert!(platforms.iter().any(|platform| platform == expected), "{expected} is missing");
+            assert!(
+                platforms.iter().any(|platform| platform == expected),
+                "{expected} is missing"
+            );
         }
-        assert!(platforms.iter().all(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')));
+        assert!(
+            platforms
+                .iter()
+                .all(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        );
         assert!(platforms.is_sorted());
     }
 }

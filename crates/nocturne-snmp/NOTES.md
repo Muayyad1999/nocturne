@@ -33,23 +33,21 @@ Only touch files in this crate. No git. `cargo fmt -p nocturne-snmp` only (never
 - Agent is `Clone` (Arc inside) so `set_view` works while `run()` is serving; `set_max_message_size` added.
 
 ## Status
-### Done (last run: 88 unit tests + 4 doctests green; interop 10/11 (11th was a flaky assertion, fixed))
-- All source modules: error, oid, value, ber, pdu, v3/{mod,usm}, client/{mod,transport,session,walk},
-  agent, trap, names (+names/extra.rs), oids, lib.rs.
-- Dictionary: 3857 objects (1000 consts), 1261 traps; generated from MIB modules (LibreNMS collection),
-  verified 5117/5118 with snmptranslate + completeness checked against `snmptranslate -Tz`
-  (scraper bug that dropped IF-MIB::ifIndex found by the live test and fixed).
-- `tests/netsnmp_interop.rs` written and run live: v1/v2c get/walk/set/table, 43/43 v3 combinations pass
-  (6 auth x {none, DES, AES, AES-192, AES-256, AES-192-C, AES-256-C} + noAuth), error mapping, privacy
-  mismatch diagnosis, AES key-extension auto-detect, restart resync/rediscovery/failover, full mib-2 walk
-  == snmpwalk, traps v1/v2c/v3-noauth + inform ack accepted by snmpinform.
+### Done (all green at last full run)
+- All source modules + tests written: 125 unit tests (incl. 33 scripted-responder client tests and the
+  in-crate hostile-input tests in `src/robustness.rs`), `tests/loopback.rs` (12 + 1 ignored timing report),
+  `tests/robustness.rs` (4), `tests/netsnmp_interop.rs` (11), 4 doctests.
+- clippy clean: `cargo clippy -p nocturne-snmp -- -D warnings` AND `--all-targets`; `#![forbid(unsafe_code)]`;
+  `cargo doc` clean; `cargo fmt -p nocturne-snmp` applied.
+- Privacy-mismatch diagnosis reworked: after an authPriv timeout (privacy never proven) -> authNoPriv probe,
+  then encrypted empty-GET probe; only if the latter is also unanswered -> try other AES key extension ->
+  else `Auth("decryption error ...")`. A slow/lost first request stays `Timeout`.
+- Timing (debug build, loopback, in-crate agent): v2c walk 50k objects 0.34 s; v1 walk 40k 1.0 s;
+  table 10k rows x 5 cols 0.40 s.
 
 ### In progress
-- `client/tests.rs`: scripted responders (tooBig halving, reports mapping, NotInTimeWindows resync,
-  UnknownEngineID rediscovery, stray/late datagrams, privacy-mismatch diagnosis, retries same request id)
+- final full rerun (unit + loopback + robustness + interop with --nocapture for the matrix)
 
 ### Next
-- `tests/loopback.rs` (Agent: get/get_next/bulk walk of several hundred OIDs/table pivot/tooBig/timeout+retry)
-- `tests/robustness.rs` + in-crate fuzz of private decoders
-- remove dead code (`peek_tag`, `is_no_such_name`...), clippy `-D warnings`, `cargo fmt -p nocturne-snmp`
-- final report with matrix (logs in scratchpad work/interop*.log are NOT durable - rerun with --nocapture)
+- final self-review of public docs; final report (matrix; walk/table performance; concurrency; error mapping;
+  example). NOTES.md may be deleted by the lead afterwards.

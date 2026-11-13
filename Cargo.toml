@@ -25,6 +25,7 @@ nocturne-netprobe = { path = "crates/nocturne-netprobe" }
 nocturne-drivers = { path = "crates/nocturne-drivers" }
 nocturne-ai = { path = "crates/nocturne-ai" }
 nocturne-app = { path = "crates/nocturne-app" }
+nocturne-suite = { path = "crates/nocturne-suite" }
 nocturne-server = { path = "crates/nocturne-server" }
 
 # --- async / runtime -------------------------------------------------------

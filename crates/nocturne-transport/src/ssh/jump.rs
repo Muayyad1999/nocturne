@@ -64,20 +64,18 @@ async fn connect(
     let result = match options.legacy {
         LegacyCrypto::Never => attempt(hop(), endpoint, CryptoPolicy::Modern, options).await,
         LegacyCrypto::Always => attempt(hop(), endpoint, CryptoPolicy::Legacy, options).await,
-        LegacyCrypto::Auto => {
-            match attempt(hop(), endpoint, CryptoPolicy::Modern, options).await {
-                Err(TransportError::NoCommonAlgorithm(reason)) => {
-                    tracing::info!(
-                        host = endpoint.host,
-                        port = endpoint.port,
-                        %reason,
-                        "retrying with legacy algorithms"
-                    );
-                    attempt(hop(), endpoint, CryptoPolicy::Legacy, options).await
-                }
-                other => other,
+        LegacyCrypto::Auto => match attempt(hop(), endpoint, CryptoPolicy::Modern, options).await {
+            Err(TransportError::NoCommonAlgorithm(reason)) => {
+                tracing::info!(
+                    host = endpoint.host,
+                    port = endpoint.port,
+                    %reason,
+                    "retrying with legacy algorithms"
+                );
+                attempt(hop(), endpoint, CryptoPolicy::Legacy, options).await
             }
-        }
+            other => other,
+        },
     };
     if result.is_err()
         && let Some(hop) = previous

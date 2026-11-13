@@ -6,7 +6,6 @@ use std::fmt::Write as _;
 use crate::api::SimTime;
 use crate::catalog::Role;
 use crate::device::cli::LineId;
-use crate::device::config::Timestamps;
 use crate::device::ios::{Cx, Mode, runcfg};
 use crate::ifname::{IfId, IfKind};
 use crate::sim::fx::Fx;
@@ -228,8 +227,7 @@ pub(crate) fn ntp_associations(node: &Node) -> String {
     }
     let mut out = String::from("\n  address         ref clock       st   when   poll reach  delay  offset   disp\n");
     for server in &node.cfg.ntp_servers {
-        let _ = writeln!(out, " ~{:<15} .INIT.          16      -     64     0  0.000   0.000 15937.");
-        out = out.replace("{:<15}", &format!("{:<15}", server.to_string()));
+        let _ = writeln!(out, " ~{:<15} .INIT.          16      -     64     0  0.000   0.000 15937.", server.to_string());
     }
     out.push_str(" * sys.peer, # selected, + candidate, - outlyer, x falseticker, ~ configured\n");
     out
@@ -437,10 +435,4 @@ pub(crate) fn tech_support(cx: &mut Cx) -> String {
     }
     section("show logging", logging(cx.n));
     out
-}
-
-/// The timestamp format in effect, for callers that describe it.
-#[allow(dead_code)]
-pub(crate) fn timestamp_mode(node: &Node) -> Timestamps {
-    node.cfg.services.timestamps_log
 }

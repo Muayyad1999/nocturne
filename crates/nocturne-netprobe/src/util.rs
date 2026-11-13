@@ -84,6 +84,20 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+/// `true` when an operation failed because this process (or the system) ran out of sockets,
+/// file descriptors or buffers — a condition that passes when in-flight probes finish.
+pub(crate) fn is_out_of_resources(error: &std::io::Error) -> bool {
+    // EMFILE, ENFILE, ENOBUFS (and their Winsock equivalents) have no portable `ErrorKind`.
+    const CODES: &[i32] = if cfg!(windows) {
+        &[10024, 10055]
+    } else if cfg!(target_os = "linux") {
+        &[24, 23, 105]
+    } else {
+        &[24, 23, 55]
+    };
+    error.raw_os_error().is_some_and(|code| CODES.contains(&code))
+}
+
 /// Checks that `host` can be a host name or an address at all.
 pub(crate) fn validate_host(host: &str) -> Result<&str, ProbeError> {
     let host = host.trim();

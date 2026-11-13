@@ -30,7 +30,10 @@ impl Report {
     }
 
     pub fn total(&self) -> usize {
-        self.platforms.values().map(|(passed, failed)| passed + failed).sum()
+        self.platforms
+            .values()
+            .map(|(passed, failed)| passed + failed)
+            .sum()
     }
 
     /// The per-platform table and the list of failures.
@@ -40,7 +43,11 @@ impl Report {
             text.push_str(&format!("{platform:<28} {passed:>6} {failed:>6}\n"));
         }
         let failed = self.total() - self.passed();
-        text.push_str(&format!("{:<28} {:>6} {failed:>6}\n", "total", self.passed()));
+        text.push_str(&format!(
+            "{:<28} {:>6} {failed:>6}\n",
+            "total",
+            self.passed()
+        ));
         for (case, reason) in &self.failures {
             text.push_str(&format!("FAILED {case}: {reason}\n"));
         }
@@ -80,7 +87,8 @@ fn check_case(
     raw: &Path,
     fallbacks: &mut Vec<String>,
 ) -> Result<(), String> {
-    let output = fs::read_to_string(raw).map_err(|error| format!("cannot read the output: {error}"))?;
+    let output =
+        fs::read_to_string(raw).map_err(|error| format!("cannot read the output: {error}"))?;
     let expected = expected_rows(&raw.with_extension("yml"))?;
 
     // Upstream derives the command from the directory name.
@@ -107,7 +115,8 @@ fn expected_rows(yml: &Path) -> Result<Vec<Record>, String> {
     struct Reference {
         parsed_sample: Vec<Record>,
     }
-    let text = fs::read_to_string(yml).map_err(|error| format!("cannot read the reference: {error}"))?;
+    let text =
+        fs::read_to_string(yml).map_err(|error| format!("cannot read the reference: {error}"))?;
     serde_yaml_ng::from_str::<Reference>(&text)
         .map(|reference| reference.parsed_sample)
         .map_err(|error| format!("cannot parse the reference: {error}"))
@@ -120,19 +129,25 @@ fn compare(rows: &[Record], expected: &[Record]) -> Result<(), String> {
     }
     for (number, (row, expected)) in rows.iter().zip(expected).enumerate() {
         // ntc-templates reports the value names in lower case.
-        let row: BTreeMap<String, &Value> =
-            row.iter().map(|(name, value)| (name.to_lowercase(), value)).collect();
+        let row: BTreeMap<String, &Value> = row
+            .iter()
+            .map(|(name, value)| (name.to_lowercase(), value))
+            .collect();
         let mut names: Vec<&str> = row.keys().map(String::as_str).collect();
         let mut expected_names: Vec<&str> = expected.keys().map(String::as_str).collect();
         expected_names.sort_unstable();
         names.sort_unstable();
         if names != expected_names {
-            return Err(format!("row {number}: keys {names:?}, expected {expected_names:?}"));
+            return Err(format!(
+                "row {number}: keys {names:?}, expected {expected_names:?}"
+            ));
         }
         for (name, expected) in expected {
             let value = row[name.as_str()];
             if value != expected {
-                return Err(format!("row {number}, {name}: {value:?}, expected {expected:?}"));
+                return Err(format!(
+                    "row {number}, {name}: {value:?}, expected {expected:?}"
+                ));
             }
         }
     }
@@ -140,7 +155,10 @@ fn compare(rows: &[Record], expected: &[Record]) -> Result<(), String> {
 }
 
 fn subdirectories(directory: &Path) -> Vec<PathBuf> {
-    entries(directory).into_iter().filter(|path| path.is_dir()).collect()
+    entries(directory)
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
 }
 
 fn files_with_extension(directory: &Path, extension: &str) -> Vec<PathBuf> {
@@ -161,5 +179,7 @@ fn entries(directory: &Path) -> Vec<PathBuf> {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }

@@ -13,6 +13,7 @@ pub(crate) mod faults;
 pub(crate) mod flows;
 pub(crate) mod frame;
 pub(crate) mod fx;
+pub(crate) mod health;
 pub(crate) mod hsrp;
 pub(crate) mod ip;
 pub(crate) mod nat;
@@ -136,6 +137,8 @@ pub(crate) struct TraceState {
     pub(crate) delivered: Option<u32>,
     /// The most telling drop so far: significance, sequence, node, explanation.
     pub(crate) worst: Option<(Why, u32, NodeId, String)>,
+    /// A negative answer the origin received (refused, unreachable).
+    pub(crate) verdict: Option<String>,
     pub(crate) what: String,
 }
 
@@ -179,6 +182,10 @@ pub(crate) struct World {
     pub(crate) flow_tick_armed: bool,
     /// This world is a scratch copy used by an instant probe.
     pub(crate) scratch: bool,
+    /// Ignore random frame loss (path resolution for flows).
+    pub(crate) lossless: bool,
+    /// Source of unique keys for CLI sessions.
+    pub(crate) session_keys: u64,
 }
 
 impl World {
@@ -216,6 +223,8 @@ impl World {
             next_flow: 1,
             flow_tick_armed: false,
             scratch: false,
+            lossless: false,
+            session_keys: 0,
         }
     }
 
@@ -245,6 +254,11 @@ impl World {
             {
                 state.ok = true;
                 state.finished_at = Some(self.now);
+            }
+        }
+        for (trace, text) in fx.trace_verdict {
+            if let Some(state) = self.traces.get_mut(&trace) {
+                state.verdict.get_or_insert(text);
             }
         }
         if !self.scratch {
@@ -323,11 +337,13 @@ impl World {
             return;
         }
         let dice = rng::hash(&[self.seed, u64::from(link_id), frame.meta.pdu, now]);
-        let lost = link.loss_percent > 0 && dice % 100 < u64::from(link.loss_percent);
+        let lost = !self.lossless && link.loss_percent > 0 && dice % 100 < u64::from(link.loss_percent);
         let latency = link.latency_micros();
+        let loaded = link.bps_ab + link.bps_ba > 0;
         let receiver_full = self.nodes.get(&peer).and_then(|n| n.ifs.get(&peer_port)).is_some_and(|s| s.full_duplex);
-        // A duplex mismatch corrupts a share of the frames in both directions.
-        let collided = sender_full != receiver_full && dice >> 8 & 7 == 0;
+        // A duplex mismatch only hurts under load: while flows keep the link
+        // busy, a share of the frames dies in late collisions.
+        let collided = !self.lossless && loaded && sender_full != receiver_full && dice >> 8 & 7 == 0;
         if lost || collided {
             if collided {
                 self.count_collision(node_id, port, peer, peer_port, sender_full);
@@ -474,6 +490,7 @@ impl World {
                 done: false,
                 delivered: None,
                 worst: None,
+                verdict: None,
                 what,
             },
         );
@@ -504,8 +521,13 @@ pub(crate) fn trace_summary(state: &TraceState, nodes: &BTreeMap<NodeId, Node>) 
         let micros = state.finished_at.unwrap_or(state.started).saturating_sub(state.started);
         return format!("{} succeeded in {}.{:03} ms.", state.what, micros / 1000, micros % 1000);
     }
-    match &state.worst {
-        Some((why, _, node, text)) if *why >= Why::ArpPending || state.delivered.is_none() => {
+    match (&state.worst, &state.verdict) {
+        (Some((why, _, node, text)), _) if *why >= Why::ArpPending => {
+            let name = nodes.get(node).map_or("?", |n| n.name.as_str());
+            format!("{} failed at {name}: {text}", state.what)
+        }
+        (_, Some(verdict)) => format!("{} failed: {verdict}", state.what),
+        (Some((_, _, node, text)), None) if state.delivered.is_none() => {
             let name = nodes.get(node).map_or("?", |n| n.name.as_str());
             format!("{} failed at {name}: {text}", state.what)
         }

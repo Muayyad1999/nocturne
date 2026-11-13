@@ -119,13 +119,7 @@ impl World {
         scratch.capture = false;
         scratch.flows.clear();
         scratch.events.clear();
-        if lossless {
-            for link in scratch.links.values_mut() {
-                if link.loss_percent < 100 {
-                    link.loss_percent = 0;
-                }
-            }
-        }
+        scratch.lossless = lossless;
         let mut outcome = ProbeOutcome::failed("the probe could not be sent".to_string());
         for _ in 0..MAX_ATTEMPTS {
             scratch.events.clear();

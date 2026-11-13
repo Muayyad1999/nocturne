@@ -29,12 +29,26 @@ const PLATFORMS: &[&str] = &[
 
 #[test]
 fn fixtures_parse_as_upstream_expects() {
-    let report = common::run_cases(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"), &[]);
+    let report = common::run_cases(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+        &[],
+    );
     assert!(report.failures.is_empty(), "\n{}", report.summary());
-    assert!(report.fallbacks.is_empty(), "not resolved through the index: {:?}", report.fallbacks);
+    assert!(
+        report.fallbacks.is_empty(),
+        "not resolved through the index: {:?}",
+        report.fallbacks
+    );
     for platform in PLATFORMS {
-        assert!(report.platforms.contains_key(*platform), "no fixtures for {platform}");
+        assert!(
+            report.platforms.contains_key(*platform),
+            "no fixtures for {platform}"
+        );
     }
     // Guards against the fixture directory being emptied or not checked out.
-    assert!(report.total() >= 100, "only {} fixtures found", report.total());
+    assert!(
+        report.total() >= 100,
+        "only {} fixtures found",
+        report.total()
+    );
 }

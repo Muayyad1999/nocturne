@@ -302,18 +302,17 @@ pub(crate) fn describe_no_common(
                 format!("{} are legacy algorithms", usable_with_legacy.join(", "))
             }
         ),
-        _ => "none of them is supported by this client, even with legacy crypto enabled"
-            .to_owned(),
+        _ => "none of them is supported by this client, even with legacy crypto enabled".to_owned(),
     };
     format!("no common {label} algorithm; the server offers: {offered_text}; {advice}")
 }
 
-/// The message for a server that only takes SHA-1 RSA signatures from users
-/// while legacy crypto is disabled.
+/// The message for a server that only takes SHA-1 signatures from the
+/// user's key while legacy crypto is disabled.
 pub(crate) fn describe_sha1_signature_refused() -> String {
-    "no common public key signature algorithm; the server offers: ssh-rsa; ssh-rsa (RSA with \
-     SHA-1) is a legacy algorithm only available with legacy crypto: set `legacy` to `auto` or \
-     `always` to connect"
+    "no common public key signature algorithm; the server only accepts ssh-rsa / ssh-dss \
+     signatures for this key, which are made with SHA-1: a legacy algorithm only available \
+     with legacy crypto (set `legacy` to `auto` or `always` to connect)"
         .to_owned()
 }
 
@@ -360,7 +359,10 @@ mod tests {
         let legacy = preferred(CryptoPolicy::Legacy, Role::Client);
         assert_eq!(legacy.cipher[..MODERN_CIPHERS.len()], modern.cipher[..]);
         assert_eq!(legacy.mac[..MODERN_MACS.len()], modern.mac[..]);
-        assert_eq!(legacy.kex[..MODERN_KEX.len()], modern.kex[..MODERN_KEX.len()]);
+        assert_eq!(
+            legacy.kex[..MODERN_KEX.len()],
+            modern.kex[..MODERN_KEX.len()]
+        );
         let names: Vec<&str> = legacy.kex.iter().map(AsRef::as_ref).collect();
         for expected in [
             "diffie-hellman-group1-sha1",
@@ -400,19 +402,49 @@ mod tests {
         assert_eq!(modern.mac().as_deref(), Some("hmac-sha2-256"));
 
         let cases = [
-            negotiated("diffie-hellman-group1-sha1", "ssh-ed25519", "aes256-ctr", "hmac-sha2-256"),
-            negotiated("curve25519-sha256", "ssh-rsa", "aes256-ctr", "hmac-sha2-256"),
-            negotiated("curve25519-sha256", "ssh-dss", "aes256-ctr", "hmac-sha2-256"),
-            negotiated("curve25519-sha256", "ssh-ed25519", "3des-cbc", "hmac-sha2-256"),
-            negotiated("curve25519-sha256", "ssh-ed25519", "aes256-ctr", "hmac-sha1"),
+            negotiated(
+                "diffie-hellman-group1-sha1",
+                "ssh-ed25519",
+                "aes256-ctr",
+                "hmac-sha2-256",
+            ),
+            negotiated(
+                "curve25519-sha256",
+                "ssh-rsa",
+                "aes256-ctr",
+                "hmac-sha2-256",
+            ),
+            negotiated(
+                "curve25519-sha256",
+                "ssh-dss",
+                "aes256-ctr",
+                "hmac-sha2-256",
+            ),
+            negotiated(
+                "curve25519-sha256",
+                "ssh-ed25519",
+                "3des-cbc",
+                "hmac-sha2-256",
+            ),
+            negotiated(
+                "curve25519-sha256",
+                "ssh-ed25519",
+                "aes256-ctr",
+                "hmac-sha1",
+            ),
         ];
         for case in cases {
             assert!(case.uses_legacy(), "{case:?}");
         }
         // rsa-sha2 host key signatures are modern.
         assert!(
-            !negotiated("curve25519-sha256", "rsa-sha2-512", "aes256-ctr", "hmac-sha2-256")
-                .uses_legacy()
+            !negotiated(
+                "curve25519-sha256",
+                "rsa-sha2-512",
+                "aes256-ctr",
+                "hmac-sha2-256"
+            )
+            .uses_legacy()
         );
     }
 
@@ -430,9 +462,17 @@ mod tests {
 
     #[test]
     fn differing_macs_are_both_reported() {
-        let mut names = negotiated("curve25519-sha256", "ssh-ed25519", "aes256-ctr", "hmac-sha2-256");
+        let mut names = negotiated(
+            "curve25519-sha256",
+            "ssh-ed25519",
+            "aes256-ctr",
+            "hmac-sha2-256",
+        );
         names.server_mac = "hmac-sha2-512".into();
-        assert_eq!(names.mac().as_deref(), Some("hmac-sha2-256 / hmac-sha2-512"));
+        assert_eq!(
+            names.mac().as_deref(),
+            Some("hmac-sha2-256 / hmac-sha2-512")
+        );
     }
 
     #[test]
@@ -443,7 +483,10 @@ mod tests {
             "kex-strict-s-v00@openssh.com".to_owned(),
         ];
         let message = describe_no_common(&AlgorithmKind::Kex, &theirs, CryptoPolicy::Modern);
-        assert!(message.contains("no common key exchange algorithm"), "{message}");
+        assert!(
+            message.contains("no common key exchange algorithm"),
+            "{message}"
+        );
         assert!(
             message.contains("diffie-hellman-group1-sha1, diffie-hellman-group14-sha1"),
             "{message}"

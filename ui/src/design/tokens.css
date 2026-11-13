@@ -1,0 +1,206 @@
+/*
+ * Nocturne design tokens.
+ *
+ * Every colour, space, radius, shadow and type value in the UI comes from here.
+ * Components never hard-code a colour. `:root` is the Night theme (default);
+ * `[data-theme='light']` is the Day theme with the same structure.
+ *
+ * Contrast contract (checked by tokens.test.ts, WCAG AA 4.5:1):
+ *   --text-1, --text-2            on --bg-0 … --bg-4
+ *   --text-3                      on --bg-0 … --bg-3   (use --text-2 on --bg-4)
+ *   --accent, --ai, status        on --bg-0 … --bg-3
+ *   --ai and each status colour   on its own -soft fill over --bg-0 … --bg-3
+ *   --accent-strong               on --accent-soft     (accent text on a soft fill)
+ *   --text-on-solid               on --accent, --accent-strong, --ai, --crit
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-0: #090d18; /* app background, terminal background */
+  --bg-1: #0e1422; /* panels, nav, header */
+  --bg-2: #141b2d; /* cards, inputs, table header */
+  --bg-3: #1b2439; /* hover */
+  --bg-4: #243049; /* active / selected */
+
+  /* Lines */
+  --line: #222c44; /* hairline borders */
+  --line-strong: #33405f; /* input borders, dividers that must be seen */
+
+  /* Text */
+  --text-1: #e7ebf3; /* primary */
+  --text-2: #a8b3c7; /* secondary */
+  --text-3: #818da6; /* muted, placeholders, units */
+  --text-on-solid: #0a0f1c; /* text on a solid accent / status fill */
+
+  /* Moonlight accent */
+  --accent: #7c9cff; /* primary actions, focus ring, links, selection */
+  --accent-strong: #9db4ff; /* hover of accent; accent text on a soft fill */
+  --accent-soft: rgba(124, 156, 255, 0.14); /* selected row, subtle accent fill */
+  --selection: rgba(124, 156, 255, 0.32); /* text selection */
+
+  /* Assistant: anything the AI does or proposes */
+  --ai: #c2a5ff;
+  --ai-soft: rgba(194, 165, 255, 0.14);
+
+  /* Status: colour is reserved for meaning, always paired with a shape or a word */
+  --ok: #3dd68c; /* up / healthy / success */
+  --ok-soft: rgba(61, 214, 140, 0.14);
+  --warn: #f5b94a; /* degraded / warning */
+  --warn-soft: rgba(245, 185, 74, 0.14);
+  --crit: #ff6b6b; /* down / critical / destructive */
+  --crit-soft: rgba(255, 107, 107, 0.14);
+  --info: #5ab8ff; /* informational */
+  --info-soft: rgba(90, 184, 255, 0.14);
+  --idle: #93a0b4; /* unknown / disabled / unmonitored */
+  --idle-soft: rgba(147, 160, 180, 0.14);
+  --maint: #b08cff; /* maintenance / lab */
+  --maint-soft: rgba(176, 140, 255, 0.14);
+
+  /*
+   * Chart series: identity only, never status. Fixed order, assigned in
+   * sequence, never cycled or generated. Validated on --bg-0 … --bg-2 for
+   * lightness band, chroma, colour-vision-deficiency separation and contrast.
+   */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --chart-muted: #6c7890; /* de-emphasised marks (sparkline body, context series) */
+  --chart-grid: var(--line);
+  --chart-axis: var(--line-strong);
+  --chart-label: var(--text-3);
+
+  /* Floating layers: the only place shadows are used */
+  --scrim: rgba(4, 7, 14, 0.62);
+  --shadow-float: 0 10px 30px rgba(2, 5, 12, 0.55);
+  --shadow-modal: 0 24px 70px rgba(2, 5, 12, 0.65);
+
+  /* Type */
+  --font-ui: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:
+    'JetBrains Mono Variable', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px; /* base */
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+  --fs-28: 28px;
+  --lh: 1.45;
+  --lh-tight: 1.2;
+  --fw-regular: 400; /* body */
+  --fw-medium: 500; /* labels, buttons */
+  --fw-semibold: 600; /* headings */
+
+  /* Space */
+  --sp-2: 2px;
+  --sp-4: 4px;
+  --sp-6: 6px;
+  --sp-8: 8px;
+  --sp-12: 12px;
+  --sp-16: 16px;
+  --sp-20: 20px;
+  --sp-24: 24px;
+  --sp-32: 32px;
+  --sp-48: 48px;
+
+  /* Radii */
+  --radius-badge: 4px;
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-dialog: 14px;
+  --radius-full: 999px;
+
+  /* Motion */
+  --dur-fast: 120ms; /* hover, focus */
+  --dur-panel: 180ms; /* panels, dialogs */
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Focus: always visible on keyboard focus */
+  --focus-ring: 2px solid var(--accent);
+  --focus-offset: 2px;
+
+  /* Layout */
+  --nav-width: 216px;
+  --nav-width-collapsed: 56px;
+  --header-height: 44px;
+  --statusbar-height: 24px;
+  --control-sm: 24px;
+  --control-md: 28px;
+  --row-compact: 28px;
+  --row-comfortable: 36px;
+
+  /* Stacking */
+  --z-sticky: 10;
+  --z-overlay: 1000;
+  --z-toast: 1100;
+  --z-tooltip: 1200;
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-0: #f6f7fb;
+  --bg-1: #ffffff;
+  --bg-2: #ffffff;
+  --bg-3: #eef1f7;
+  --bg-4: #e1e6f2;
+
+  --line: #e3e7f0;
+  --line-strong: #c2c9d9;
+
+  --text-1: #1a2233;
+  --text-2: #4a556b;
+  --text-3: #626c81;
+  --text-on-solid: #ffffff;
+
+  --accent: #3d5afe;
+  --accent-strong: #2a44d9;
+  --accent-soft: rgba(61, 90, 254, 0.12);
+  --selection: rgba(61, 90, 254, 0.24);
+
+  --ai: #7f2bdc;
+  --ai-soft: rgba(127, 43, 220, 0.12);
+
+  --ok: #007130;
+  --ok-soft: rgba(0, 113, 48, 0.12);
+  --warn: #8f5200;
+  --warn-soft: rgba(143, 82, 0, 0.12);
+  --crit: #b91c2c;
+  --crit-soft: rgba(185, 28, 44, 0.12);
+  --info: #0062b4;
+  --info-soft: rgba(0, 98, 180, 0.12);
+  --idle: #57637a;
+  --idle-soft: rgba(87, 99, 122, 0.12);
+  --maint: #6d42cc;
+  --maint-soft: rgba(109, 66, 204, 0.12);
+
+  /* Same eight hues stepped for the light surface. Three sit below 3:1 on
+     white, so charts always ship a legend and a table view. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --chart-muted: #858fa3;
+
+  --scrim: rgba(26, 34, 51, 0.36);
+  --shadow-float: 0 10px 30px rgba(26, 34, 51, 0.14);
+  --shadow-modal: 0 24px 70px rgba(26, 34, 51, 0.24);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-panel: 0ms;
+  }
+}

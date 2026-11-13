@@ -336,7 +336,7 @@ mod tests {
                   --- ::1 ping6 statistics ---\n\
                   1 packets transmitted, 1 packets received, 0.0% packet loss\n\
                   round-trip min/avg/max/std-dev = 0.058/0.058/0.058/0.000 ms\n";
-        assert_eq!(parse_output(v6, true), reply(0.058, Some(64), None));
+        assert_eq!(parse_output(v6, true), reply(0.058, Some(64), Some(16)));
 
         let timeout = "PING 10.255.255.1 (10.255.255.1): 56 data bytes\n\
                        \n\

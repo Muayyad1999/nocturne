@@ -55,13 +55,25 @@ Done:
 - [x] `tools/regex_oracle.py` + `tools/check_semantics.py` committed (reference-verification tooling)
 - [x] state at this point: all tests green (40 unit + conformance 1897/1897 + fixtures + 5 semantics + doctest)
 
-Next (in order):
-- [ ] unit tests for template.rs internals (split_action/substitute/parse_action) + ntc API tests
-      (find abbreviations, find_all, parse merge, platforms) + fsm tests if gaps
-- [ ] parallelise `every_bundled_template_compiles` (6.6 s debug)
-- [ ] binary size of the bundle (blob is 270,130 bytes; measure rodata delta)
-- [ ] full review pass of every source file; clippy `-D warnings`; `cargo fmt -p nocturne-textfsm`
-- [ ] final report (see brief): conformance table, regex translation, bundle, tests, API notes
+- [x] unit tests: template.rs (7), fsm.rs (2), ntc (58 index resolutions verified vs clitable, merge, bundle)
+- [x] clippy --all-targets -D warnings clean, fmt clean, rustdoc clean (state before the dual-flavour work)
+
+MEASUREMENTS (release, Unicode-only regexes, before optimisation):
+- all 979 templates compiled: 506 MiB RSS, 3.6 s; compiled AND run over the corpus: 919 MiB, 4.5 s
+- per class occurrence: \w 47.7 KB, \d 5.1 KB, \S 1.9 KB, \s 0.7 KB (ASCII: ~100 bytes)
+- experiment with ASCII bytes-mode regexes: corpus run 319 MiB, 1.6 s  => 3x less memory, 2.8x faster
+
+DONE: dual-flavour regexes in `src/pyregex/` (emit.rs `Charset`, mod.rs `Engine::Linear{ascii, unicode}`):
+- ASCII flavour (`regex::bytes::Regex`, unicode(false)) for `text.is_ascii()`; Unicode flavour lazily.
+- oracle: 543,213 evaluations = Python; 539,216 ASCII evaluations repeated with the Unicode flavour: 0 diffs.
+- results (release): compile show_interfaces ~3 ms, parse 5003 lines ~8.5 ms (quiet runs);
+  whole corpus (979 templates compiled+used, 1897 cases): 329 MiB RSS, 2.0 s (was 919 MiB, 4.5 s).
+- scratch memory example saved at scratch `textfsm/scratch_mem.rs` (not committed).
+
+Next:
+- [ ] final review pass of every file; clippy --all-targets; fmt; rustdoc; rerun everything
+- [ ] binary size of the bundle (blob 270,130 bytes)
+- [ ] final report
 
 Known deviations to report:
 - nullable-loop corner of regex translation (see `src/pyregex/emit.rs` module docs)

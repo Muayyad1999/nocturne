@@ -34,6 +34,9 @@ pub(crate) enum Tag {
     ReloadConfirm,
     EraseConfirm,
     CopyDestination,
+    ClearCounters { iface: Option<String> },
+    ClearOspf,
+    DeleteName { file: String },
     DeleteConfirm { file: String },
 }
 
@@ -106,14 +109,14 @@ impl Shell {
         }
     }
 
-    fn execute(&mut self, node: &mut Node, fx: &mut Fx, line: &str) -> Reply {
+    pub(crate) fn execute(&mut self, node: &mut Node, fx: &mut Fx, line: &str) -> Reply {
         match self {
             Shell::Ios(shell) => shell.execute(node, fx, line),
             Shell::Host(shell) => shell.execute(node, fx, line),
         }
     }
 
-    fn answer(&mut self, node: &mut Node, fx: &mut Fx, tag: Tag, text: &str) -> Reply {
+    pub(crate) fn answer(&mut self, node: &mut Node, fx: &mut Fx, tag: Tag, text: &str) -> Reply {
         match self {
             Shell::Ios(shell) => shell.answer(node, fx, tag, text),
             Shell::Host(_) => Reply::default(),

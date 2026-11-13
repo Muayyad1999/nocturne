@@ -87,8 +87,7 @@ pub async fn connect_local(params: &LocalParams) -> Result<Connection, Transport
     let features = Features {
         break_unsupported: Some("a local shell has no break signal"),
     };
-    let (connection, backend) =
-        Connection::pair_with(info, Connection::DEFAULT_BUFFER, features);
+    let (connection, backend) = Connection::pair_with(info, Connection::DEFAULT_BUFFER, features);
     tokio::spawn(run(terminal, backend));
     Ok(connection)
 }
@@ -100,7 +99,12 @@ fn default_program() -> String {
         .filter(|shell| !shell.trim().is_empty())
         .unwrap_or_else(|| {
             let bash = "/bin/bash";
-            if Path::new(bash).exists() { bash } else { "/bin/sh" }.to_owned()
+            if Path::new(bash).exists() {
+                bash
+            } else {
+                "/bin/sh"
+            }
+            .to_owned()
         })
 }
 
@@ -147,21 +151,21 @@ impl Terminal {
                 pixel_height: 0,
             })
             .map_err(|error| pty_error("cannot open a pseudo-terminal", &format!("{error:#}")))?;
-        let child = pty
-            .slave
-            .spawn_command(command)
-            .map_err(|error| pty_error(&format!("cannot start {program}"), &format!("{error:#}")))?;
+        let child = pty.slave.spawn_command(command).map_err(|error| {
+            pty_error(&format!("cannot start {program}"), &format!("{error:#}"))
+        })?;
         // Only the child may hold the other end, or its exit would never
         // show up as end-of-file.
         drop(pty.slave);
-        let reader = pty
-            .master
-            .try_clone_reader()
-            .map_err(|error| pty_error("cannot read from the pseudo-terminal", &format!("{error:#}")))?;
-        let writer = pty
-            .master
-            .take_writer()
-            .map_err(|error| pty_error("cannot write to the pseudo-terminal", &format!("{error:#}")))?;
+        let reader = pty.master.try_clone_reader().map_err(|error| {
+            pty_error(
+                "cannot read from the pseudo-terminal",
+                &format!("{error:#}"),
+            )
+        })?;
+        let writer = pty.master.take_writer().map_err(|error| {
+            pty_error("cannot write to the pseudo-terminal", &format!("{error:#}"))
+        })?;
         Ok(Self {
             master: pty.master,
             child,
@@ -203,12 +207,21 @@ async fn run(terminal: Terminal, backend: Backend) {
 
     let threads = [
         spawn_thread("nocturne-pty-rx", move || read_terminal(reader, &screen_tx)),
-        spawn_thread("nocturne-pty-tx", move || write_terminal(writer, keyboard_rx)),
+        spawn_thread("nocturne-pty-tx", move || {
+            write_terminal(writer, keyboard_rx)
+        }),
     ];
     let mut exited = false;
     let outcome = if threads.iter().all(Result::is_ok) {
         drive(
-            read_screen(&mut screen, &mut relay, &output, child.as_mut(), &master, &mut exited),
+            read_screen(
+                &mut screen,
+                &mut relay,
+                &output,
+                child.as_mut(),
+                &master,
+                &mut exited,
+            ),
             write_keyboard(&mut input, &keyboard, &master),
             Duration::ZERO,
         )
@@ -265,7 +278,11 @@ fn read_terminal(mut reader: Box<dyn Read + Send>, screen: &mpsc::Sender<Bytes>)
 /// Writing thread: pump → terminal.
 fn write_terminal(mut writer: Box<dyn Write + Send>, mut keyboard: mpsc::Receiver<Bytes>) {
     while let Some(data) = keyboard.blocking_recv() {
-        if writer.write_all(&data).and_then(|()| writer.flush()).is_err() {
+        if writer
+            .write_all(&data)
+            .and_then(|()| writer.flush())
+            .is_err()
+        {
             return;
         }
     }

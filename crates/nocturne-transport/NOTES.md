@@ -30,9 +30,22 @@ Fallback only if another crate's manifest breaks the workspace again (mention in
       6 MB integrity, close reasons, keepalive timeout, jump 1+2 hops + failures, legacy matrix vs own server,
       slow-reader/keepalive, bulk echo no-deadlock, 24 MiB stalled reader, concurrency). Verified the back-pressure
       tests FAIL when the relay high-water mark is set to 1 (naive pump) → they have teeth.
-- [ ] in-process telnet / local / serial tests (src/tests/{telnet,local,serial}.rs are stubs)
-- [ ] OpenSSH interop tests (modern + legacy matrix)
-- [ ] telnetd interop
+- [x] in-process telnet / local / serial tests written; whole lib suite = 165 tests, passes 3x in a row (~7 s)
+- [x] interop harness tests/common/mod.rs: throwaway user noctest-<pid>, scratch dir /tmp/nocturne-interop-<pid>,
+      watchdog `sh` process (own process group) that removes user/daemons/scratch (+ /run/sshd if a run created it and
+      no other run is active) once the test binary is gone. SKIPPED notices bypass libtest capture.
+- [x] tests/openssh_interop.rs: 22 tests, pass 3x back-to-back, no leftovers. Verified against real sshd 9.6p1:
+      password, kbd-int via PAM (password fallback + explicit + wrong), pubkey (ed25519, rsa-sha2-512, ecdsa-384 by
+      ssh-keygen, encrypted OpenSSH ed25519, encrypted PEM RSA, key file), banner, MaxAuthTries disconnect message,
+      exec (stdout/stderr/status/5 MB/parallel/signal/timeout), SFTP (realpath/mkdir/write/read/stat/upload+progress/
+      list+symlinks/download+progress/rename/remove/errors), jump (1 hop, 2 hops, AllowTcpForwarding no), server
+      ClientAlive keepalives with a paused reader, killed session, known_hosts; LEGACY: kex group1-sha1/group14-sha1/
+      gex-sha1, ciphers aes128/192/256-cbc + 3des-cbc, MACs hmac-sha1(+etm), host keys ssh-rsa + ssh-dss, user sig
+      ssh-rsa(SHA-1) + DSA user key; Auto/Always connect+flag, Never => NoCommonAlgorithm naming the algorithm.
+      NOT supported by russh (named in error): hmac-md5, hmac-md5-96, hmac-sha1-96, umac-64, umac-128-etm, sntrup761.
+- [x] tests/telnetd_interop.rs: 4 tests vs GNU inetutils telnetd 2.5 (test acts as inetd; real /bin/login as the
+      throwaway user): TTYPE→$TERM, NAWS + resize→stty size, IAC IAC / CR NUL from server, CR LF = one Enter,
+      100k lines volume, IAC BRK interrupts foreground cmd, wrong password "Login incorrect". Pass 3x, no leftovers.
 - [ ] remove `#![allow(dead_code)]` from lib.rs, clippy clean, fmt, windows cross-check
 - [ ] final report
 

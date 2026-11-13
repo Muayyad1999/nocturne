@@ -21,7 +21,7 @@ pub(crate) fn table(role: Role) -> Table {
         n("enable password ~ [0 | 7] <word:password;The ENABLE password>", "Assign the privileged level password", enable_password),
         n("service password-encryption", "Encrypt system passwords", service_encryption),
         n("service timestamps (debug | log) ~ [uptime | datetime [msec]]", "Timestamp debug/log messages", service_timestamps),
-        c("version <word:version>", "Version of the saved configuration", |_, _| {}),
+        c("version <word:version>", "", |_, _| {}),
         c("boot-start-marker", "", |_, _| {}),
         c("boot-end-marker", "", |_, _| {}),
         n("ip domain-lookup", "Enable IP Domain Name System hostname translation", domain_lookup),
@@ -148,7 +148,7 @@ pub(crate) fn table(role: Role) -> Table {
             n("spanning-tree portfast [edge] bpduguard default", "Enable bpdu guard by default on all portfast ports", |cx, a| {
                 cx.cfg().stp.bpduguard_default = !a.no;
             }),
-            c("spanning-tree extend system-id", "Spanning Tree 802.1t extensions", |_, _| {}),
+            c("spanning-tree extend system-id", "", |_, _| {}),
             n("ip dhcp snooping ~ [<line:rest>]", "DHCP Snooping", |cx, a| {
                 let line = match a.text("rest") {
                     Some(rest) => format!("ip dhcp snooping {rest}"),

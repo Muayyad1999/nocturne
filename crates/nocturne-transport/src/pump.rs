@@ -142,7 +142,12 @@ mod tests {
     #[tokio::test]
     async fn local_close_does_not_wait_forever_for_the_remote() {
         let started = Instant::now();
-        let outcome = drive(pending::<ReadEnd>(), async { WriteEnd::CloseRequested }, GRACE).await;
+        let outcome = drive(
+            pending::<ReadEnd>(),
+            async { WriteEnd::CloseRequested },
+            GRACE,
+        )
+        .await;
         assert!(matches!(outcome, Outcome::Closed(None)));
         assert!(started.elapsed() >= GRACE);
     }
@@ -161,7 +166,12 @@ mod tests {
             tokio::time::sleep(GRACE / 4).await;
             ReadEnd::Finished(Some("connection reset".into()))
         };
-        let outcome = drive(reader, async { WriteEnd::Failed("broken pipe".into()) }, GRACE).await;
+        let outcome = drive(
+            reader,
+            async { WriteEnd::Failed("broken pipe".into()) },
+            GRACE,
+        )
+        .await;
         assert!(matches!(outcome, Outcome::Closed(Some(r)) if r == "connection reset"));
     }
 }

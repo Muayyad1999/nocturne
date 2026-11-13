@@ -2,7 +2,6 @@
 //! public ntc-templates TextFSM library to parse them (see `tests/ntc_validate.py`).
 
 pub(crate) mod interfaces;
-pub(crate) mod protocols;
 pub(crate) mod routing;
 pub(crate) mod switching;
 pub(crate) mod system;
@@ -51,15 +50,6 @@ pub(crate) fn table(role: Role, privileged: bool) -> Table {
             let text = system::controllers(cx.n, a.iface("if"));
             cx.out.push_str(&text);
         }),
-        c("show cdp", "CDP information", emit!(|cx: &mut Cx| protocols::cdp(cx.n))),
-        c("show cdp neighbors [detail]", "CDP neighbor entries", |cx, a| {
-            let text = if a.has("detail") { protocols::cdp_detail(cx.n, cx.fx.now) } else { protocols::cdp_neighbors(cx.n, cx.fx.now) };
-            cx.out.push_str(&text);
-        }),
-        c("show lldp neighbors [detail]", "LLDP neighbor entries", |cx, a| {
-            let text = if a.has("detail") { protocols::lldp_detail(cx.n, cx.fx.now) } else { protocols::lldp_neighbors(cx.n, cx.fx.now) };
-            cx.out.push_str(&text);
-        }),
         c("show ip interface brief", "Brief summary of IP status and configuration", emit!(|cx: &mut Cx| interfaces::ip_brief(cx.n))),
         c("show ip interface [<if>]", "IP interface status and configuration", |cx, a| match interfaces::ip_interface(cx.n, a.iface("if")) {
             Some(text) => cx.out.push_str(&text),
@@ -89,9 +79,6 @@ pub(crate) fn table(role: Role, privileged: bool) -> Table {
             let text = routing::access_lists(cx.n, a.text("name"));
             cx.out.push_str(&text);
         }),
-        c("show ip dhcp binding", "DHCP address bindings", emit!(|cx: &mut Cx| protocols::dhcp_binding(cx.n, cx.fx.now))),
-        c("show ip dhcp pool", "DHCP pools information", emit!(|cx: &mut Cx| protocols::dhcp_pool(cx.n))),
-        c("show ip dhcp conflict", "DHCP address conflicts", emit!(|_cx: &mut Cx| "IP address        Detection method   Detection time          VRF\n".to_string())),
     ];
     if privileged {
         t.extend(vec![
@@ -104,27 +91,6 @@ pub(crate) fn table(role: Role, privileged: bool) -> Table {
             }),
             c("show startup-config", "Contents of startup configuration", emit!(|cx: &mut Cx| runcfg::show_startup(cx.n))),
             c("show tech-support", "Show system information for Tech-Support", emit!(|cx: &mut Cx| system::tech_support(cx))),
-        ]);
-    }
-    if role != Role::L2Switch {
-        t.extend(vec![
-            c("show ip ospf", "OSPF information", emit!(|cx: &mut Cx| protocols::ospf(cx.n, cx.fx.now))),
-            c("show ip ospf neighbor [detail]", "Neighbor list", |cx, a| {
-                let text = protocols::ospf_neighbors(cx.n, cx.fx.now, a.has("detail"));
-                cx.out.push_str(&text);
-            }),
-            c("show ip ospf interface [brief]", "Interface information", |cx, a| {
-                let text = protocols::ospf_interfaces(cx.n, cx.fx.now, a.has("brief"));
-                cx.out.push_str(&text);
-            }),
-            c("show ip ospf database", "Database summary", emit!(|cx: &mut Cx| protocols::ospf_database(cx.n, cx.fx.now))),
-            c("show ip rip database", "IPv4 RIP database", emit!(|cx: &mut Cx| protocols::rip_database(cx.n, cx.fx.now))),
-            c("show ip nat translations", "Translation entries", emit!(|cx: &mut Cx| protocols::nat_translations(cx.n, cx.fx.now))),
-            c("show ip nat statistics", "Translation statistics", emit!(|cx: &mut Cx| protocols::nat_statistics(cx.n, cx.fx.now))),
-            c("show standby [brief]", "Hot Standby Router Protocol (HSRP) information", |cx, a| {
-                let text = if a.has("brief") { protocols::standby_brief(cx.n) } else { protocols::standby(cx.n, cx.fx.now) };
-                cx.out.push_str(&text);
-            }),
         ]);
     }
     if role != Role::Router {

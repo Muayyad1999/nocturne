@@ -47,6 +47,52 @@ pub(crate) fn set_ttl(socket: &impl AsFd, ipv6: bool, ttl: u8) -> io::Result<()>
     Ok(())
 }
 
+/// Enlarges the socket's receive buffer; beyond the system-wide `rmem_max` where the process is
+/// allowed to (CAP_NET_ADMIN). A raw ICMP socket shared by many echoes needs the room when
+/// replies arrive in bursts.
+pub(crate) fn grow_receive_buffer(socket: &socket2::Socket, bytes: usize) {
+    if setsockopt(socket, sockopt::RcvBufForce, &bytes).is_err() {
+        // Capped at rmem_max by the kernel; still at least as large as the default.
+        let _ = socket.set_recv_buffer_size(bytes);
+    }
+}
+
+/// Restricts a raw ICMPv4 socket to what a pinger using the echo identifier `id` needs: its own
+/// echo replies and ICMP error messages.
+///
+/// A raw socket otherwise gets a copy of every ICMP packet the host receives (including, on
+/// loopback, the pinger's own requests), all of which would occupy its receive buffer.
+pub(crate) fn filter_raw_icmpv4(socket: &socket2::Socket, id: u16) -> io::Result<()> {
+    use socket2::SockFilter;
+
+    // Classic BPF opcodes (linux/filter.h).
+    const LDX_IP_HEADER_LEN: u16 = 0x01 | 0x10 | 0xa0; // X = 4 * (packet[k] & 0x0f)
+    const LD_BYTE_AT_X: u16 = 0x10 | 0x40; // A = packet[X + k]
+    const LD_HALF_AT_X: u16 = 0x08 | 0x40; // A = be16 at packet[X + k]
+    const JEQ: u16 = 0x05 | 0x10; // if A == k { skip jt } else { skip jf }
+    const RET: u16 = 0x06; // accept k bytes of the packet (0 = drop)
+
+    const ECHO_REPLY: u32 = 0;
+    const UNREACHABLE: u32 = 3;
+    const TIME_EXCEEDED: u32 = 11;
+    const PARAMETER_PROBLEM: u32 = 12;
+
+    // The packet starts at its IP header. Offsets after X are into the ICMP message.
+    let program = [
+        /* 0 */ SockFilter::new(LDX_IP_HEADER_LEN, 0, 0, 0),
+        /* 1 */ SockFilter::new(LD_BYTE_AT_X, 0, 0, 0), // ICMP type
+        /* 2 */ SockFilter::new(JEQ, 0, 2, ECHO_REPLY), // not a reply -> 5
+        /* 3 */ SockFilter::new(LD_HALF_AT_X, 0, 0, 4), // echo identifier
+        /* 4 */ SockFilter::new(JEQ, 4, 3, u32::from(id)), // ours -> 9, else -> 8
+        /* 5 */ SockFilter::new(JEQ, 3, 0, UNREACHABLE), // -> 9
+        /* 6 */ SockFilter::new(JEQ, 2, 0, TIME_EXCEEDED), // -> 9
+        /* 7 */ SockFilter::new(JEQ, 1, 0, PARAMETER_PROBLEM), // -> 9
+        /* 8 */ SockFilter::new(RET, 0, 0, 0),
+        /* 9 */ SockFilter::new(RET, 0, 0, u32::MAX),
+    ];
+    socket.attach_filter(&program)
+}
+
 /// A datagram read with [`recv_with_ttl`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Received {

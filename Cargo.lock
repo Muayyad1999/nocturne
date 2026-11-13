@@ -2186,6 +2186,7 @@ dependencies = [
  "indexmap",
  "nocturne-ai",
  "nocturne-drivers",
+ "nocturne-transport",
  "parking_lot",
  "pretty_assertions",
  "regex",
@@ -2268,7 +2269,7 @@ dependencies = [
  "clap",
  "futures",
  "hex",
- "nocturne-app",
+ "nocturne-suite",
  "rand 0.9.5",
  "rust-embed",
  "serde",
@@ -2299,6 +2300,15 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nocturne-suite"
+version = "0.1.0"
+dependencies = [
+ "nocturne-app",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

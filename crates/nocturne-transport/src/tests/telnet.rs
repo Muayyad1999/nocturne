@@ -76,7 +76,7 @@ async fn session_round_trip() {
     conn.until(b"[break]").await;
 
     conn.send("exit\r").await.unwrap();
-    let (rest, reason) = conn.to_close().await;
+    let (rest, reason) = conn.until_closed().await;
     assert!(contains(&rest, b"bye"));
     assert_eq!(reason.as_deref(), Some("closed by remote host"));
     lab.wait_idle().await;
@@ -90,7 +90,7 @@ async fn local_close_has_no_reason_and_ends_the_remote_session() {
     let mut reader = tap(reader);
     reader.until(b"lab> ").await;
     writer.close().await;
-    let (_, reason) = reader.to_close().await;
+    let (_, reason) = reader.until_closed().await;
     assert_eq!(reason, None);
     lab.wait_idle().await;
 
@@ -189,7 +189,7 @@ async fn server_shutdown_closes_the_sessions() {
     let mut conn = connect(&params(server.local_addr())).await;
     conn.until(b"lab> ").await;
     soon(server.shutdown()).await;
-    let (_, reason) = conn.to_close().await;
+    let (_, reason) = conn.until_closed().await;
     assert_eq!(reason.as_deref(), Some("closed by remote host"));
     lab.wait_idle().await;
 }
@@ -204,7 +204,7 @@ async fn a_refused_session_is_just_closed() {
         .await
         .unwrap();
     let mut conn = connect(&params(server.local_addr())).await;
-    let (seen, reason) = conn.to_close().await;
+    let (seen, reason) = conn.until_closed().await;
     assert!(seen.is_empty());
     assert_eq!(reason.as_deref(), Some("closed by remote host"));
 }
@@ -222,9 +222,7 @@ async fn a_client_that_does_not_negotiate_still_gets_a_session() {
         seen.extend_from_slice(&buffer[..count]);
     }
     // The server's opening bid, then the session with the default size.
-    assert!(seen.starts_with(&[
-        IAC, WILL, OPT_ECHO, IAC, WILL, OPT_SGA, IAC, DO, OPT_NAWS
-    ]));
+    assert!(seen.starts_with(&[IAC, WILL, OPT_ECHO, IAC, WILL, OPT_SGA, IAC, DO, OPT_NAWS]));
     assert!(contains(&seen, b"Welcome nobody 80x24"));
 
     raw.write_all(b"size\r\n").await.unwrap();
@@ -368,7 +366,7 @@ async fn negotiation_split_across_segments() {
     peer.expect(b"z").await;
 
     drop(peer);
-    let (rest, reason) = conn.to_close().await;
+    let (rest, reason) = conn.until_closed().await;
     assert!(rest.is_empty());
     assert_eq!(reason.as_deref(), Some("closed by remote host"));
 }
@@ -440,7 +438,7 @@ async fn a_reset_connection_is_reported() {
     conn.send("unread").await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     drop(peer);
-    let (_, reason) = conn.to_close().await;
+    let (_, reason) = conn.until_closed().await;
     let reason = reason.unwrap();
     assert!(
         reason.starts_with("connection lost") || reason == "closed by remote host",

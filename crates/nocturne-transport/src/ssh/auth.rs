@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use russh::client::{AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::{AgentClient, AgentStream};
-use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{MethodKind, MethodSet};
 
 use super::SshAuth;
@@ -25,7 +25,7 @@ const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
 /// What a successful authentication had to resort to.
 #[derive(Debug, Default)]
 pub(crate) struct AuthReport {
-    /// A SHA-1 RSA signature (`ssh-rsa`) was needed to log in.
+    /// A SHA-1 signature (`ssh-rsa`, `ssh-dss`) was needed to log in.
     pub legacy_signature: bool,
 }
 
@@ -42,7 +42,7 @@ type Step = Result<bool, Halt>;
 struct Authenticator<'a> {
     handle: &'a mut Handle<ClientHandler>,
     username: &'a str,
-    /// Whether SHA-1 RSA signatures may be used (legacy crypto allowed).
+    /// Whether SHA-1 signatures may be used (legacy crypto allowed).
     allow_sha1: bool,
     step_timeout: Duration,
     tried: Vec<String>,
@@ -190,7 +190,11 @@ impl Authenticator<'_> {
     }
 
     async fn none(&mut self) -> Step {
-        let result = bounded(self.step_timeout, self.handle.authenticate_none(self.username)).await?;
+        let result = bounded(
+            self.step_timeout,
+            self.handle.authenticate_none(self.username),
+        )
+        .await?;
         self.record("none".to_owned(), result)
     }
 
@@ -274,7 +278,10 @@ impl Authenticator<'_> {
 
     async fn private_key(&mut self, text: &str, passphrase: Option<&str>, origin: &str) -> Step {
         if !self.offers(MethodKind::PublicKey) {
-            self.skip(origin, "public key authentication is not offered by the server");
+            self.skip(
+                origin,
+                "public key authentication is not offered by the server",
+            );
             return Ok(false);
         }
         let key = match decode_private_key(text, passphrase) {
@@ -306,7 +313,10 @@ impl Authenticator<'_> {
 
     async fn agent(&mut self) -> Step {
         if !self.offers(MethodKind::PublicKey) {
-            self.skip("agent", "public key authentication is not offered by the server");
+            self.skip(
+                "agent",
+                "public key authentication is not offered by the server",
+            );
             return Ok(false);
         }
         let mut agent = match connect_agent().await {
@@ -348,7 +358,9 @@ impl Authenticator<'_> {
                 );
                 match tokio::time::timeout(self.step_timeout, attempt).await {
                     Err(_) => return Err(Halt::Timeout),
-                    Ok(Err(error)) => self.skip(&label, &format!("the agent could not sign: {error}")),
+                    Ok(Err(error)) => {
+                        self.skip(&label, &format!("the agent could not sign: {error}"))
+                    }
                     Ok(Ok(result)) => {
                         if self.record(label, result)? {
                             self.note_signature(&public, hash);
@@ -386,22 +398,36 @@ impl Authenticator<'_> {
         Ok(hashes)
     }
 
-    /// Whether this attempt needs a SHA-1 RSA signature that the policy forbids.
+    /// Whether this attempt needs a SHA-1 signature that the policy forbids.
     fn sha1_forbidden(&mut self, key: &PublicKey, hash: Option<HashAlg>, label: &str) -> bool {
-        let forbidden = key.algorithm().is_rsa() && hash.is_none() && !self.allow_sha1;
+        let forbidden = signs_with_sha1(key, hash) && !self.allow_sha1;
         if forbidden {
-            self.sha1_refused = self.rsa_hashes.as_ref().is_some_and(|h| h.len() == 1);
+            // Definitive only when SHA-1 is all the server takes for this key.
+            self.sha1_refused = !key.algorithm().is_rsa()
+                || self
+                    .rsa_hashes
+                    .as_ref()
+                    .is_some_and(|hashes| hashes.len() == 1);
             self.skip(label, "SHA-1 signatures need legacy crypto");
         }
         forbidden
     }
 
     fn note_signature(&mut self, key: &PublicKey, hash: Option<HashAlg>) {
-        if key.algorithm().is_rsa() && hash.is_none() {
+        if signs_with_sha1(key, hash) {
             self.used_sha1 = true;
         }
         // Whatever was refused before no longer matters.
         self.sha1_refused = false;
+    }
+}
+
+/// `ssh-rsa` and `ssh-dss` signatures are made over a SHA-1 digest.
+fn signs_with_sha1(key: &PublicKey, hash: Option<HashAlg>) -> bool {
+    match key.algorithm() {
+        Algorithm::Rsa { .. } => hash.is_none(),
+        Algorithm::Dsa => true,
+        _ => false,
     }
 }
 
@@ -457,12 +483,12 @@ async fn connect_agent() -> Result<DynAgent, String> {
         .ok()
         .filter(|path| path.starts_with(r"\\.\pipe\"))
         .unwrap_or_else(|| OPENSSH_PIPE.to_owned());
-    let pipe_error = match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_named_pipe(&pipe)).await
-    {
-        Ok(Ok(agent)) => return Ok(agent.dynamic()),
-        Ok(Err(error)) => error.to_string(),
-        Err(_) => "the pipe is busy".to_owned(),
-    };
+    let pipe_error =
+        match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_named_pipe(&pipe)).await {
+            Ok(Ok(agent)) => return Ok(agent.dynamic()),
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => "the pipe is busy".to_owned(),
+        };
     match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_pageant()).await {
         Ok(Ok(agent)) => Ok(agent.dynamic()),
         Ok(Err(error)) => Err(format!(

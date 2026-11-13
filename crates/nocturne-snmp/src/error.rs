@@ -48,11 +48,6 @@ impl SnmpError {
     pub(crate) fn is_too_big(&self) -> bool {
         matches!(self, SnmpError::Agent { status, .. } if *status == status::TOO_BIG)
     }
-
-    /// `true` for the error-status `noSuchName` (SNMPv1's "there is no such variable").
-    pub(crate) fn is_no_such_name(&self) -> bool {
-        matches!(self, SnmpError::Agent { status, .. } if *status == status::NO_SUCH_NAME)
-    }
 }
 
 /// error-status values used by the crate itself.
@@ -106,8 +101,8 @@ mod tests {
     #[test]
     fn agent_error_display_names_the_status() {
         let err = SnmpError::agent(2, 3);
-        assert!(err.is_no_such_name());
         assert!(!err.is_too_big());
+        assert!(SnmpError::agent(1, 0).is_too_big());
         assert_eq!(
             err.to_string(),
             "agent returned noSuchName (error-status 2, error-index 3)"

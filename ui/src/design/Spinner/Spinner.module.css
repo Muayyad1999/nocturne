@@ -1,0 +1,31 @@
+.spinner {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.spinner svg {
+  animation: spin 0.8s linear infinite;
+}
+
+.track {
+  stroke: currentColor;
+  opacity: 0.2;
+}
+
+.arc {
+  stroke: currentColor;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Activity still has to be visible: turn slowly instead of stopping. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner svg {
+    animation-duration: 2.4s;
+  }
+}

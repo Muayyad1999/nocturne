@@ -8,10 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Engine crates are added here as they land:
-#   nocturne-textfsm, nocturne-snmp, nocturne-transport, nocturne-netsim,
-#   nocturne-tools, nocturne-netprobe
 nocturne-drivers.workspace = true
+nocturne-transport.workspace = true
 nocturne-ai.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

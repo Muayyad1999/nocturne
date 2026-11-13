@@ -86,7 +86,9 @@ fn empty_match(node: &Node) -> EmptyMatch {
             }
             _ => Other,
         },
-        Node::Repeat { node, min, mode, .. } => match (empty_match(node), min, mode) {
+        Node::Repeat {
+            node, min, mode, ..
+        } => match (empty_match(node), min, mode) {
             // Greedy: zero repetitions come last.
             (Never, 0, RepeatMode::Greedy) => Last(Vec::new()),
             (Never, 0, _) => Other,

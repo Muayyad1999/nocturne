@@ -27,6 +27,17 @@ impl DhcpClient {
 pub(crate) struct DhcpServer {}
 
 impl Node {
+    pub(crate) fn dhcp_converging(&self) -> bool {
+        false
+    }
+    pub(crate) fn dhcp_rows(&self, _now: u64) -> Vec<crate::api::DhcpRow> {
+        Vec::new()
+    }
+    pub(crate) fn dhcp_release_all(&mut self, _fx: &mut Fx) {}
+    pub(crate) fn dhcp_server_of(&self, _iface: IfId) -> Option<std::net::Ipv4Addr> {
+        None
+    }
+    pub(crate) fn dhcp_clear_bindings(&mut self, _only: Option<std::net::Ipv4Addr>) {}
     pub(crate) fn dhcp_client_sync(&mut self, _fx: &mut Fx) {}
     pub(crate) fn dhcp_client_timer(&mut self, _fx: &mut Fx, _iface: IfId, _token: u32) {}
     pub(crate) fn dhcp_server_sync(&mut self) {}

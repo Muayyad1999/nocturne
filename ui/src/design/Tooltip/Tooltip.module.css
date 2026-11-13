@@ -1,0 +1,23 @@
+.tooltip {
+  z-index: var(--z-tooltip);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  max-width: min(280px, var(--available-width, 280px));
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-4);
+  box-shadow: var(--shadow-float);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  line-height: 1.35;
+  pointer-events: none;
+  animation: appear var(--dur-fast) ease-out;
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
