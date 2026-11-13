@@ -173,15 +173,22 @@ async fn metrics_queries_return_points_a_step_and_the_resolution_used() {
         tokio::time::sleep(MINUTE).await;
     }
 
+    // Every window here is a whole number of steps, and that matters. The
+    // store buckets raw samples by `span / max_points`, where `max_points`
+    // is `span / step` rounded down — so a 301 s window at a 60 s step gives
+    // five buckets of 60.2 s, *wider* than the 60 s between the samples, and
+    // two samples share a bucket for about one epoch phase in eighty. At
+    // 300 s the buckets are exactly 60 s and each sample lands in its own,
+    // whatever the wall clock happens to read.
     let answer = harness
         .rpc(
             "metrics.query",
-            json!({"device_id": id, "metric": "icmp.rtt_ms", "since": start - 1_000,
-                   "until": harness.now(), "step_s": 60}),
+            json!({"device_id": id, "metric": "icmp.rtt_ms", "since": start,
+                   "until": start + 300_000, "step_s": 60}),
         )
         .await;
     let points = answer["points"].as_array().unwrap();
-    assert_eq!(points.len(), 5);
+    assert_eq!(points.len(), 5, "one point per poll: {answer:#?}");
     assert_eq!(points[0][1], 1.0);
     assert_eq!(points[4][1], 5.0);
     assert_eq!(answer["rollup"], "raw");
@@ -197,14 +204,14 @@ async fn metrics_queries_return_points_a_step_and_the_resolution_used() {
     let answer = harness
         .rpc(
             "metrics.query",
-            json!({"device_id": id, "metric": "icmp.rtt_ms", "since": start - 1_000,
-                   "until": harness.now(), "step_s": 60}),
+            json!({"device_id": id, "metric": "icmp.rtt_ms", "since": start,
+                   "until": start + 600_000, "step_s": 60}),
         )
         .await;
     assert_eq!(
         answer["points"].as_array().unwrap().len(),
         5,
-        "three failed polls add three holes, not three zeroes"
+        "three failed polls add three holes, not three zeroes: {answer:#?}"
     );
 
     let many = harness
@@ -212,12 +219,17 @@ async fn metrics_queries_return_points_a_step_and_the_resolution_used() {
             "metrics.query_many",
             json!({"series": [{"device_id": id, "metric": "icmp.rtt_ms"},
                               {"device_id": id, "metric": "up"}],
-                   "since": start - 1_000, "step_s": 60}),
+                   "since": start, "until": start + 600_000, "step_s": 60}),
         )
         .await;
     assert_eq!(many.as_array().unwrap().len(), 2);
     assert_eq!(many[1]["metric"], "up");
-    assert_eq!(many[1]["points"].as_array().unwrap().len(), 8);
+    assert_eq!(
+        many[1]["points"].as_array().unwrap().len(),
+        8,
+        "eight polls, five up and three down: {:#?}",
+        many[1]
+    );
 
     let series = harness
         .rpc("metrics.series", json!({"device_id": id}))
@@ -252,6 +264,79 @@ async fn metrics_queries_return_points_a_step_and_the_resolution_used() {
             .code,
         "not_found"
     );
+}
+
+/// The bucket arithmetic above, pinned to the epoch phase that used to break
+/// it rather than to whatever the clock happens to read.
+///
+/// The store buckets raw samples by `span / max_points`, and `max_points` is
+/// `span / step` rounded down. A 301 s window at a 60 s step therefore asks
+/// for five buckets of 60.2 s — wider than the 60 s between the samples — and
+/// whenever the first sample falls in the opening 800 ms of a 60.2 s cycle,
+/// two samples share a bucket and a point goes missing. That is 800 phases in
+/// 60,200, about one run in eighty, which is why it survived locally and only
+/// showed up once in CI. A window that is a whole number of steps gives
+/// buckets of exactly 60 s, and then the count cannot depend on the phase.
+#[tokio::test]
+async fn a_metric_window_of_whole_steps_gives_one_point_per_sample() {
+    let harness = Harness::new().await;
+    let id = harness.device("SW1", "10.0.0.1", json!({})).await;
+    // A base whose residue mod 60 200 is 0: the worst case for the old window.
+    let now = nocturne_app::util::now_ms();
+    let base = (now / 60_200 + 1) * 60_200;
+    let series = harness
+        .app
+        .store()
+        .series_id(&id, "icmp.rtt_ms", "")
+        .unwrap();
+    let samples: Vec<(i64, i64, f64)> = (0..5)
+        .map(|k| (series, base + 60_000 * k, 1.0 + k as f64))
+        .collect();
+    harness.app.store().samples_insert(&samples).unwrap();
+
+    let count = async |instance: &str, since: i64, until: i64| {
+        harness
+            .rpc(
+                "metrics.query",
+                json!({"device_id": id, "metric": "icmp.rtt_ms", "instance": instance,
+                       "since": since, "until": until, "step_s": 60}),
+            )
+            .await["points"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+
+    // The shape this test used to use: five samples, four points.
+    assert_eq!(
+        count("", base - 1_000, base + 300_000).await,
+        4,
+        "a 301 s window at this phase really does lose a point"
+    );
+    // A whole number of steps: one point per sample, at the same phase.
+    assert_eq!(count("", base, base + 300_000).await, 5);
+
+    // And at every phase, which is the point: the bucket is the step, so
+    // consecutive samples are exactly one bucket apart wherever the epoch
+    // falls. Each phase gets its own series so they cannot interfere.
+    for residue in [0_i64, 1, 799, 800, 30_000, 60_199] {
+        let phase = base + residue;
+        let instance = format!("phase{residue}");
+        let series = harness
+            .app
+            .store()
+            .series_id(&id, "icmp.rtt_ms", &instance)
+            .unwrap();
+        let samples: Vec<(i64, i64, f64)> = (0..5)
+            .map(|k| (series, phase + 60_000 * k, 1.0 + k as f64))
+            .collect();
+        harness.app.store().samples_insert(&samples).unwrap();
+        assert_eq!(
+            count(&instance, phase, phase + 300_000).await,
+            5,
+            "samples at phase {residue} lost a point"
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

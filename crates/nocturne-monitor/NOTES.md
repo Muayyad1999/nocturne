@@ -72,6 +72,27 @@ src/
   the time for exactly this reason (its 60 s slot fell outside the 40 s
   window), which is what the pinning fixed.
 
+## Test hazards found by CI on other platforms
+
+* **A metric window must be a whole number of steps.** The store buckets raw
+  samples by `span / max_points`, and `max_points` is `span / step` rounded
+  down, so a 301 s window at a 60 s step asks for buckets of 60.2 s — wider
+  than the 60 s between samples. Two samples then share a bucket whenever the
+  first falls in the opening 800 ms of a 60.2 s cycle: 800 phases in 60,200,
+  about one run in eighty. `a_metric_window_of_whole_steps_gives_one_point_
+  per_sample` pins that exact phase and checks several others.
+* **A paused tokio runtime must not be mixed with real I/O.** It fast-forwards
+  to the next armed timer whenever nothing is ready to run, and waiting on a
+  socket is exactly that: measured here, one loopback request with a 15 s HTTP
+  timeout armed advanced a paused clock by the full 15 s when the peer was
+  300 ms slow. The back-off schedule is therefore timed with no network in the
+  path, and every test that talks to a listener runs on real time.
+* **A test must not assert the behaviour of a peer it does not control.** The
+  wrong-community test now establishes that the agent is up (by polling it
+  with the right community, which also replaces a fixed 400 ms wait that could
+  expire before `snmpd` had bound) and skips with a reason if that `snmpd`
+  answers any community, as some builds do.
+
 ## Needed from the core (worked around for now)
 
 * `metrics.top` and the retention sweep read and write the core's `series`,

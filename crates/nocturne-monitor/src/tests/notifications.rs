@@ -234,10 +234,45 @@ async fn a_webhook_channel_posts_to_the_url_in_the_vault() {
     );
 }
 
+/// The back-off schedule, measured on the virtual clock.
+///
+/// Deliberately with no network in it. A paused tokio runtime fast-forwards
+/// to the next armed timer whenever it has nothing ready to run, and waiting
+/// on a real socket is exactly that: measured here, one loopback request with
+/// an HTTP timeout armed advanced a paused clock by the whole 15 s timeout
+/// when the peer was 300 ms slow. So what is timed is only the two `sleep`s
+/// inside `deliver_with_retries`, and the channel is one whose delivery fails
+/// before it reaches the wire.
 #[tokio::test(start_paused = true)]
-async fn a_failing_channel_is_retried_three_times_with_back_off() {
+async fn the_back_off_between_attempts_is_one_second_then_five() {
     let harness = Harness::new().await;
-    let listener = listen(vec![500, 503]).await;
+    let channel = crate::model::Channel {
+        id: "no-url".into(),
+        name: "never configured".into(),
+        kind: crate::model::ChannelKind::Webhook,
+        enabled: true,
+        has_secret: false,
+        ..crate::model::Channel::default()
+    };
+
+    let started = harness.now();
+    let error = notify::deliver_with_retries(&harness.app, &channel, &alert(), Stage::Firing)
+        .await
+        .unwrap_err();
+    assert!(error.contains("no URL"), "{error}");
+    assert_eq!(
+        harness.now() - started,
+        6_000,
+        "three attempts, one second then five between them"
+    );
+}
+
+/// And the retrying really happens over the transport. On real time, because
+/// this one does talk to a socket.
+#[tokio::test]
+async fn a_failing_channel_is_retried_against_the_real_transport() {
+    let harness = Harness::new().await;
+    let listener = listen(vec![500]).await;
     let channel = harness
         .rpc(
             "notify.channels.save",
@@ -254,20 +289,21 @@ async fn a_failing_channel_is_retried_three_times_with_back_off() {
         .unwrap()
         .unwrap();
 
-    let started = harness.now();
     let attempts = notify::deliver_with_retries(&harness.app, &stored, &alert(), Stage::Firing)
         .await
         .unwrap();
-    assert_eq!(attempts, 3);
-    assert_eq!(listener.requests().len(), 3);
+    assert_eq!(attempts, 2, "the first answer was a 500, the second a 200");
+    let requests = listener.requests();
+    assert_eq!(requests.len(), 2);
     assert_eq!(
-        harness.now() - started,
-        6_000,
-        "one second, then five, between the attempts"
+        requests[1].0, "/hooks/T000/B111/verysecrettoken",
+        "the retry goes to the same place"
     );
 }
 
-#[tokio::test(start_paused = true)]
+/// Real time, not paused: it waits on a socket, so a paused clock would
+/// fast-forward over the request and could fire the HTTP timeout instead.
+#[tokio::test]
 async fn a_channel_that_never_answers_is_recorded_without_its_url() {
     let harness = Harness::new().await;
     let listener = listen(vec![403, 403, 403]).await;
