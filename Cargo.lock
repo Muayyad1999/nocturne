@@ -3798,9 +3798,7 @@ dependencies = [
  "nocturne-ai",
  "nocturne-app",
  "nocturne-drivers",
- "nocturne-tools",
  "parking_lot",
- "pretty_assertions",
  "regex",
  "rusqlite",
  "serde",
@@ -4024,9 +4022,11 @@ name = "nocturne-suite"
 version = "0.1.0"
 dependencies = [
  "nocturne-app",
+ "nocturne-assistant",
  "nocturne-changes",
  "nocturne-config",
  "nocturne-lab",
+ "nocturne-monitor",
  "nocturne-terminal",
  "serde_json",
  "tokio",
