@@ -295,7 +295,7 @@ fn apply(rule: &Regex, text: &str, table: &mut Table) -> String {
             Some(inner) if raw.len() >= 2 => (inner, true),
             _ => (raw, false),
         };
-        if value.is_empty() || already_masked(value) {
+        if value.is_empty() || already_masked(value) || is_a_marker(value) {
             continue;
         }
         out.push_str(&text[last..found.start()]);
@@ -314,6 +314,30 @@ fn apply(rule: &Regex, text: &str, table: &mut Table) -> String {
 }
 
 /// Values the device (or an earlier pass) has already hidden.
+/// A format or key number that a pattern caught by mistake, not a secret.
+///
+/// Rules come from every installed device type at once, because one chat can
+/// touch several platforms and a secret only has to look like a secret once.
+/// The cost is that a careless pattern in *any* profile acts on *every*
+/// vendor's configuration — and one did. Junos's `authentication-key (\S+)`
+/// matched the IOS line `ntp authentication-key 1 md5 N0cturneNtpKey` and
+/// captured the key *number*, `1`.
+///
+/// That is not a harmless extra entry. The table is numbered in the order
+/// entries are made, so a spurious one shifts every placeholder after it —
+/// and `<secret:1>` in a line the model wrote then restores a different
+/// secret from the one it meant. In the test that found this, that put a real
+/// NTP key into an interface description, where no pattern matches it on the
+/// way back, and the model read it.
+///
+/// So a short run of digits is never taken for a secret. Nothing is lost:
+/// a number of five digits or fewer carries almost nothing, and these markers
+/// (`secret 5`, `password 7`, `authentication-key 1`) are exactly what such a
+/// capture is in practice.
+fn is_a_marker(value: &str) -> bool {
+    value.len() < 6 && value.chars().all(|c| c.is_ascii_digit())
+}
+
 fn already_masked(value: &str) -> bool {
     value.contains("<secret:")
         || value.chars().all(|c| c == '*' || c == 'x' || c == 'X')
@@ -322,6 +346,50 @@ fn already_masked(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A careless pattern in one device type must not shift the placeholders
+    /// of another.
+    ///
+    /// The rules of every installed device type are applied to every
+    /// configuration, so a pattern that captures a key *number* instead of a
+    /// key puts a junk entry in the table. The table is numbered in the order
+    /// entries are made, so that renumbers every placeholder after it — and
+    /// `<secret:1>`, in a line the model writes, then restores a different
+    /// secret from the one it meant. That is how a real NTP key reached a
+    /// model: it was restored into an interface description, where no pattern
+    /// matches it on the way back.
+    #[test]
+    fn a_key_number_is_not_mistaken_for_a_key_whatever_the_rule_says() {
+        let config = "ntp authentication-key 1 md5 N0cturneNtpKey\n";
+        // A rule exactly like the one that caused it: Junos's unquoted
+        // `authentication-key`, applied — as rules are — to an IOS line.
+        let careless =
+            Redactor::with_rules(&["authentication-key (?P<secret>\\S+)".to_string()]).unwrap();
+        let hidden = careless.redact(config);
+        assert!(
+            !hidden.contains("N0cturneNtpKey"),
+            "the key itself is still masked by the built-in rules:\n{hidden}"
+        );
+        assert!(
+            hidden.contains("authentication-key 1 "),
+            "but the key *number* is left alone, so it takes no placeholder \
+             and shifts nothing:\n{hidden}"
+        );
+        // And the first placeholder is the key, as it would be without the
+        // careless rule at all.
+        assert_eq!(
+            Redactor::new().redact(config),
+            hidden,
+            "a careless rule should make no difference to the result"
+        );
+    }
+
+    #[test]
+    fn a_number_long_enough_to_be_a_secret_is_still_masked() {
+        let redactor = Redactor::with_rules(&["key (?P<secret>\\S+)".to_string()]).unwrap();
+        let hidden = redactor.redact("key 8675309421\n");
+        assert!(!hidden.contains("8675309421"), "{hidden}");
+    }
+
     /// Keys that sit behind their algorithm. A pattern that stops at the
     /// algorithm masks the word `md5` and leaves the key in the configuration.
     #[test]

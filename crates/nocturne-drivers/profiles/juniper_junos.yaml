@@ -168,7 +168,14 @@ config:
     - 'encrypted-password "(?P<secret>[^"]*)"'
     - 'encrypted-password (?P<secret>\S+)'
     - 'authentication-key "(?P<secret>[^"]*)"'
-    - 'authentication-key (?P<secret>\S+)'
+    # Not an unquoted `authentication-key (\S+)`: in `set` form Junos writes
+    # `set system ntp authentication-key 1 type md5 value "…"`, so that would
+    # capture the key *number*, and the rules of every installed device type
+    # are applied to every configuration — on IOS's
+    # `ntp authentication-key 1 md5 <key>` it captured the `1` and shifted
+    # every placeholder after it. The value is quoted in both of Junos's
+    # forms, so the quoted patterns are enough.
+    - 'authentication-key \d+ type \w+ value "(?P<secret>[^"]*)"'
     - '\bsecret "(?P<secret>[^"]*)"'
     - '\bsecret (?P<secret>\S+)'
     - 'community "(?P<secret>[^"]*)"'
