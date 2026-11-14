@@ -1714,11 +1714,11 @@ mod tests {
         let tls = report.tls.unwrap();
         assert_eq!(report.status, 200);
         assert!(!tls.trusted && tls.hostname_matches);
-        assert!(
-            tls.trust_error
-                .unwrap()
-                .contains("not signed by an authority")
-        );
+        // Not our wording specifically: with verification off the platform
+        // verifier is still the one asked about the chain, and on macOS a
+        // self-signed server certificate comes back in its words. See
+        // `says_untrusted`.
+        assert!(says_untrusted(&tls.trust_error.unwrap(), "localhost"));
 
         let report = check_with(&expired_url, &lenient, now(), ca.trust())
             .await

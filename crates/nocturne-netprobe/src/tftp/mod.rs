@@ -193,15 +193,40 @@ async fn serve(socket: UdpSocket, settings: Arc<Settings>) {
     let mut next_id: u64 = 1;
     // A request is small (RFC 2347 limits it to 512 bytes); anything larger is cut and refused.
     let mut buffer = [0u8; 2048];
+    // Consecutive receive errors, reset by every datagram that arrives. The
+    // only reason to count them is to tell one bad datagram from a socket
+    // that has stopped working.
+    let mut failures: u32 = 0;
     loop {
         tokio::select! {
             received = socket.recv_from(&mut buffer) => {
                 let (length, peer) = match received {
-                    Ok(received) => received,
+                    Ok(received) => {
+                        failures = 0;
+                        received
+                    }
                     Err(error) => {
-                        // An ICMP error about an earlier reply, or a full buffer: not fatal.
-                        tracing::debug!(%error, "TFTP receive failed");
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        // An ICMP error about an earlier reply, or a full
+                        // buffer. Not fatal, and — this is the part that
+                        // matters — not rare either: on Windows an ICMP
+                        // port-unreachable for a reply we sent is delivered
+                        // as a receive error on this socket, one per reply.
+                        // A flood of junk requests is answered with a refusal
+                        // each, so a flood of refusals comes back as a flood
+                        // of these. Sleeping on each one let a sender stall
+                        // the whole server: 13,000 junk datagrams bought ten
+                        // seconds of sleep and genuine requests waited behind
+                        // it. So carry straight on, and only slow down if the
+                        // errors keep coming with nothing arriving in
+                        // between, which is the one case a busy loop is a
+                        // real risk.
+                        failures = failures.saturating_add(1);
+                        tracing::debug!(%error, failures, "TFTP receive failed");
+                        if failures >= 64 {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        } else {
+                            tokio::task::yield_now().await;
+                        }
                         continue;
                     }
                 };
