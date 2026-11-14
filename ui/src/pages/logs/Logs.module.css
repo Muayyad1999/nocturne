@@ -1,0 +1,535 @@
+/**
+ * The Logs tab: the filter bar, the histogram, and the line list.
+ *
+ * Two things in here are load-bearing rather than decorative. The row is a
+ * grid of `ch` widths in the monospace face, so the columns of fifty thousand
+ * lines line up and nothing reflows as the list fills. And every severity
+ * band's colour comes from one `--band` custom property, set once per band
+ * below, so a bar, a swatch and a row's severity word can never disagree.
+ */
+
+.screen,
+.loading {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+}
+
+/* --------------------------------------------------------------- the filters */
+
+.toolbar {
+  flex-wrap: wrap;
+  row-gap: var(--sp-6);
+}
+
+.search {
+  flex: 1 1 260px;
+  min-width: 220px;
+  max-width: 460px;
+}
+
+/* A select stretches to fill a flex row unless it is told not to. */
+.filterControl {
+  flex: 0 0 auto;
+  width: 156px;
+}
+
+.tailSwitch {
+  white-space: nowrap;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.chips code {
+  font-family: var(--font-mono);
+}
+
+.chipClear {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------ the setup hint */
+
+.hint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.hint[data-tone='crit'] {
+  border-color: var(--crit);
+  background: var(--crit-soft);
+}
+
+.hintHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+}
+
+.hintHead > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.hintDetail,
+.hintFoot {
+  /* A line of prose stays readable; the code block above it may be wider. */
+  max-width: 110ch;
+  margin: var(--sp-2) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.hintFoot {
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+}
+
+.hintError {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: var(--sp-6) 0 0;
+  color: var(--crit);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.hintBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.hintRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.hintLabel {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.hintPicker {
+  width: 220px;
+}
+
+.panelNote {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+/* -------------------------------------------------------------- the severities
+ *
+ * One definition of what each band looks like, used by the chart's swatches
+ * and bars and by a row's severity word.
+ */
+
+[data-band='error'] {
+  --band: var(--crit);
+}
+
+[data-band='warning'] {
+  --band: var(--warn);
+}
+
+[data-band='notice'] {
+  --band: var(--info);
+}
+
+[data-band='debug'] {
+  --band: var(--idle);
+}
+
+[data-band='unsaid'] {
+  --band: var(--text-3);
+}
+
+/* --------------------------------------------------------------- the histogram */
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.chartHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.peak {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-12);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-2);
+  font-size: var(--fs-11);
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--band, var(--line-strong));
+}
+
+.swatch[data-band='gap'] {
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--line-strong) 0 1px,
+    transparent 1px 4px
+  );
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.plot {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 104px;
+  padding: 0;
+  border-bottom: 1px solid var(--chart-axis);
+  background-image: linear-gradient(var(--chart-grid), var(--chart-grid));
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+}
+
+.bar {
+  display: flex;
+  flex: 1 1 0;
+  align-items: flex-end;
+  min-width: 2px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 2px 2px 0 0;
+  background: none;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.bar:hover,
+.bar:focus-visible {
+  background-color: var(--bg-3);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column-reverse;
+  width: 100%;
+  min-height: 2px;
+}
+
+.segment {
+  display: flex;
+  flex-direction: column-reverse;
+  flex-basis: 0;
+  min-height: 2px;
+}
+
+/* 1px of the surface between bands: a stack of touching fills reads as one. */
+.segment + .segment {
+  margin-bottom: 1px;
+}
+
+.fill {
+  display: block;
+  flex-basis: 0;
+  min-height: 2px;
+  background: var(--band);
+}
+
+/* What the severity filter hides: the same colour, drawn as an outline, so the
+   picture never shrinks silently. */
+.fill[data-hidden] {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--band);
+  opacity: 0.6;
+}
+
+/* A bucket that really was empty: a tick on the baseline, so a measured zero
+   reads as a measurement and not as the absence of one (which is `.gap`). */
+.zero {
+  width: 100%;
+  height: 2px;
+  background: var(--line-strong);
+}
+
+.gap {
+  width: 100%;
+  height: 100%;
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--line-strong) 0 1px,
+    transparent 1px 5px
+  );
+  opacity: 0.6;
+}
+
+.gap[data-reach='future'] {
+  opacity: 0.22;
+}
+
+.axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--chart-label);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.counts {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.counts strong {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+
+.gapNote {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.behind {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  padding: var(--sp-6) var(--sp-12);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+  font-size: var(--fs-12);
+}
+
+/* ---------------------------------------------------------------- the list */
+
+.listFrame {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 260px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.listHead,
+.row {
+  display: grid;
+  grid-template-columns: 11ch 5ch 14ch 22ch minmax(0, 1fr);
+  gap: var(--sp-8);
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--sp-12);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  line-height: 22px;
+  text-align: left;
+}
+
+.listHead {
+  flex: 0 0 auto;
+  height: 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  line-height: 24px;
+}
+
+.scroller {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.rows {
+  position: relative;
+  width: 100%;
+}
+
+.rowSlot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 22px;
+}
+
+.row {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--bg-3);
+}
+
+.row[data-open] {
+  background: var(--accent-soft);
+}
+
+.row[data-band='error'] {
+  box-shadow: inset 2px 0 0 var(--crit);
+}
+
+.row[data-band='warning'] {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+
+.colTime,
+.colSeverity,
+.colDevice,
+.colTag,
+.colMessage {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.colTime {
+  color: var(--text-3);
+}
+
+.colTime[data-clock='device'] {
+  color: var(--warn);
+}
+
+.clockMark {
+  margin-left: var(--sp-2);
+  font-size: var(--fs-11);
+}
+
+.colSeverity {
+  color: var(--band, var(--text-3));
+  font-weight: var(--fw-medium);
+}
+
+.colDevice {
+  color: var(--text-2);
+}
+
+.colDevice[data-unattributed] {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.colTag {
+  color: var(--text-2);
+}
+
+.port {
+  margin-right: var(--sp-6);
+  color: var(--accent-strong);
+}
+
+.missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-6);
+  height: 22px;
+  margin: 0;
+  border-top: 1px dashed var(--line-strong);
+  border-bottom: 1px dashed var(--line-strong);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.older {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.listEmpty {
+  padding: var(--sp-24) var(--sp-16);
+}
+
+.jump {
+  position: absolute;
+  right: var(--sp-16);
+  bottom: var(--sp-12);
+  z-index: var(--z-sticky);
+}
+
+/* ---------------------------------------------------------------- the drawer */
+
+.clockNote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0 0 var(--sp-12);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}

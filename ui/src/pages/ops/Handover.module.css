@@ -1,0 +1,240 @@
+/* The handover: sections of linked items on the left, the prose on the right. */
+
+.sections,
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.summary {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  margin: 0;
+  max-width: 82ch;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4) var(--sp-8);
+  padding: var(--sp-4) var(--sp-8);
+  border-left: 2px solid var(--line-strong);
+  border-radius: 0 var(--radius-badge) var(--radius-badge) 0;
+  background: var(--bg-2);
+  font-size: var(--fs-12);
+}
+
+.item[data-tone='crit'] {
+  border-left-color: var(--crit);
+}
+
+.item[data-tone='warn'] {
+  border-left-color: var(--warn);
+}
+
+.item[data-tone='ok'] {
+  border-left-color: var(--ok);
+}
+
+.item[data-tone='info'] {
+  border-left-color: var(--info);
+}
+
+/* Every item is a link to the record it was made from. That is the contract. */
+.itemLink {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.itemLink:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.itemLink:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.itemWhen {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.itemDetail {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.warnings {
+  padding: var(--sp-6) var(--sp-12);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-control);
+  background: var(--warn-soft);
+}
+
+.warningHead {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.notesBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.notesHint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.saved {
+  margin: 0;
+  color: var(--ok);
+  font-size: var(--fs-12);
+}
+
+/* Anything the assistant proposed, until a person accepts it. */
+.proposal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-8);
+  border: 1px solid var(--ai);
+  border-radius: var(--radius-control);
+  background: var(--ai-soft);
+}
+
+.proposalNote {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-11);
+}
+
+.proposalText {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  color: var(--text-1);
+  font-family: var(--font-ui);
+  font-size: var(--fs-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.proposalError {
+  margin: 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
+}
+
+.savedList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.savedRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+}
+
+.savedRow:last-child {
+  border-bottom: 0;
+}
+
+.savedRow[data-current] {
+  background: var(--accent-soft);
+}
+
+.savedOpen {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.savedOpen:hover .savedWhen {
+  color: var(--accent-strong);
+}
+
+.savedOpen:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.savedWhen {
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.savedCounts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-8);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.savedAuthor {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* A figure the engine could not make. Never shown as a zero. */
+.unknown {
+  color: var(--idle);
+  font-style: italic;
+}
+
+/* One section, addressable by `data-section` without depending on its heading. */
+.sectionWrap {
+  min-width: 0;
+}

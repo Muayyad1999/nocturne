@@ -1,0 +1,149 @@
+/* One incident: the timeline in the main column, the facts beside it. */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+/* The title is a button, because an incident is renamed while it is running. */
+.titleEdit {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+
+.titleEdit:hover {
+  text-decoration: underline dotted var(--line-strong);
+  text-underline-offset: 4px;
+}
+
+.titleEdit:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.titleForm {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+}
+
+.titleForm > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.unacked {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
+
+.linkLabel {
+  margin: 0 0 var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-6);
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-badge);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.chip:hover {
+  border-color: var(--line-strong);
+  color: var(--accent-strong);
+}
+
+.chip:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.followUps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.followUpText[data-done] {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.followUpForm {
+  display: flex;
+  gap: var(--sp-6);
+  align-items: center;
+}
+
+.followUpForm > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.dangerous {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  align-items: flex-start;
+}
+
+.dialogError {
+  margin: var(--sp-8) 0 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
+}

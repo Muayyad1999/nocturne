@@ -1025,6 +1025,15 @@ export interface AppInfo {
   arch: string;
   /** How many RPC methods this build registers. */
   methods: number;
+  /**
+   * May this instance act on the machine it runs on?
+   *
+   * False in server mode, where the person is at the other end of a browser
+   * and the machine is not theirs: a TFTP or syslog listener bound there
+   * would be the server's, not the user's, so both are refused. A screen that
+   * offers one has to ask before it offers it.
+   */
+  local_access: boolean;
 }
 
 /** `app.info` (no params) → {@link AppInfo} */

@@ -1,0 +1,349 @@
+/* The answer half of a tool panel: facts, tables, text, and the live views. */
+
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+  min-width: 0;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.blockTitle {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* Facts: label left, value right, in as many columns as the width allows.
+   The value column is sized in `ch` of the monospace face so that a binary
+   netmask (35 characters) never wraps and a column of round-trip times lines
+   up under itself. */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--sp-2) var(--sp-24);
+  margin: 0;
+}
+
+.fact {
+  display: grid;
+  grid-template-columns: minmax(110px, 13ch) minmax(0, 1fr);
+  gap: var(--sp-12);
+  align-items: baseline;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.label {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  overflow-wrap: break-word;
+}
+
+.value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  margin: 0;
+  min-width: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mono .text {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.value[data-tone='ok'] .text {
+  color: var(--ok);
+}
+
+.value[data-tone='warn'] .text {
+  color: var(--warn);
+}
+
+.value[data-tone='crit'] .text {
+  color: var(--crit);
+}
+
+.value[data-tone='info'] .text {
+  color: var(--info);
+}
+
+.value[data-tone='idle'] .text {
+  color: var(--text-3);
+}
+
+/* The copy button sits with the value, not in a column of its own: it appears
+   on hover and on keyboard focus, and takes no space when it is not there. */
+.copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.fact:hover .copy,
+.copy:focus-visible {
+  opacity: 1;
+}
+
+.copy:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+@media (hover: none) {
+  .copy {
+    opacity: 1;
+  }
+}
+
+.note {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: var(--fs-13);
+}
+
+.note[data-tone='ok'] {
+  border-left-color: var(--ok);
+}
+
+.note[data-tone='warn'] {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-1);
+}
+
+.note[data-tone='crit'] {
+  border-left-color: var(--crit);
+  background: var(--crit-soft);
+  color: var(--text-1);
+}
+
+.note[data-tone='info'] {
+  border-left-color: var(--info);
+}
+
+.empty,
+.tableNote {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.empty {
+  padding: var(--sp-16) var(--sp-12);
+}
+
+/* ------------------------------------------------------------ live views */
+
+.live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.liveHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-16);
+  align-items: baseline;
+}
+
+.liveStat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  font-size: var(--fs-13);
+}
+
+.liveStat dt {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.liveStat dd {
+  margin: 0;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.liveStat[data-tone='ok'] dd {
+  color: var(--ok);
+}
+
+.liveStat[data-tone='warn'] dd {
+  color: var(--warn);
+}
+
+.liveStat[data-tone='crit'] dd {
+  color: var(--crit);
+}
+
+/* The round-trip chart: one column per echo, so a lost echo is a gap with a
+   mark at the baseline rather than a bar of height zero, which would read as
+   "0 ms". */
+.chart {
+  display: flex;
+  /* Newest at the right, the way a ping strip reads: a short run sits at the
+     right-hand edge and a long one fills leftwards as it goes. */
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 1px;
+  height: 96px;
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+}
+
+.bar {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  flex: 1 1 0;
+  /* The bars share the width: a twelve-echo run fills the strip with wide
+     bars, a two-hundred-echo one with narrow ones. Capping their width was
+     tried and looked worse — a dozen thin bars in the corner of an empty box
+     read as "nothing came back", which is the one thing this must not say. */
+  min-width: 2px;
+  height: 100%;
+}
+
+.bar::after {
+  display: block;
+  width: 100%;
+  border-radius: 1px 1px 0 0;
+  background: var(--accent);
+  content: '';
+  height: var(--bar-height);
+  /* An echo that answered is always a visible bar: next to one 0.9 ms spike,
+     a 0.05 ms reply is a fraction of a pixel, and an invisible bar in a
+     chart whose other mark means "lost" is the one misreading to avoid. */
+  min-height: 4px;
+}
+
+/* A lost echo: a full-height wash and a solid mark at the bottom, which is
+   what "nothing came back" looks like — never a short bar. */
+.bar[data-lost='true'] {
+  background: var(--crit-soft);
+}
+
+.bar[data-lost='true']::after {
+  height: 3px;
+  background: var(--crit);
+}
+
+.chartFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-12);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* The rolling log of a live probe: newest at the bottom, monospace, fixed
+   height so the panel does not jump as it fills. */
+.stream {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  height: 180px;
+  overflow-y: auto;
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-0);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.streamLine {
+  display: grid;
+  grid-template-columns: 4ch minmax(0, 1fr);
+  gap: var(--sp-8);
+  color: var(--text-2);
+}
+
+.streamLine[data-lost='true'] {
+  color: var(--crit);
+}
+
+.streamSeq {
+  color: var(--text-3);
+  text-align: right;
+}
+
+/* A port scan as a grid: one cell per port tried, so "closed" and "not tried"
+   can never look the same. */
+.ports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.port {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-badge);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.port[data-state='open'] {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+  color: var(--text-1);
+}
+
+.port[data-state='filtered'] {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.portService {
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: var(--fs-11);
+}

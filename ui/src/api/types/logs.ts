@@ -83,13 +83,21 @@ export interface LogPage {
 
 /**
  * The structured half of a syslog entry, as `LogEntry.body` carries it.
- * Every field but `raw` and `via` is absent when the line did not say.
+ * Every field is absent when the line did not say — including `raw` and
+ * `via`: a lab's simulated devices write their lines into the same table
+ * themselves (`crates/nocturne-lab/src/runtime.rs`, `{line, lab_id,
+ * sim_time}`), without going through this feature's ingest, so a reader must
+ * cope with a body that has neither (see `pages/logs/entry.ts`).
  */
 export interface SyslogBody {
-  /** The line as received, redacted. */
-  raw: string;
+  /** The line as received, redacted. Absent on a line a lab device wrote. */
+  raw?: string;
   /** `syslog` for a line a device sent, `pull` for one read from its buffer. */
-  via: 'syslog' | 'pull';
+  via?: 'syslog' | 'pull';
+  /** A lab device's own line, when it wrote one instead of `raw`. */
+  line?: string;
+  /** The lab a simulated device's line came from. */
+  lab_id?: string;
   facility?: number;
   /** `local7`, `daemon`, … */
   facility_name?: string;

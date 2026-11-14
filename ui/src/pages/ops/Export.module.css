@@ -1,0 +1,30 @@
+/* A rendered document, before it becomes a file. */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.file {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.error {
+  margin: 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
+}
+
+/* The HTML form is meant to print, so it is shown as it will print — with
+   scripting off, which a self-contained document does not need. */
+.frame {
+  width: 100%;
+  height: 340px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: #ffffff;
+}

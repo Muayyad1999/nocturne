@@ -1,0 +1,362 @@
+/*
+ * The timeline. Dense, because it is scanned; calm, because it is read at
+ * three in the morning.
+ *
+ * The layout is a flex column with a fixed head, a scrolling middle and the
+ * composer pinned under it, so the note box is on screen whatever the length
+ * of the timeline. That is the whole reason this is not just a list.
+ */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--fs-13);
+  font-weight: var(--fw-semibold);
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.gapWarning {
+  margin: 0;
+  padding: var(--sp-6) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.scroll {
+  /* Tall enough that the composer below it is never pushed off the fold at
+     720px, and the timeline itself scrolls instead. */
+  flex: 1 1 auto;
+  min-height: 140px;
+  /* Short enough that the composer under it stays on screen at 1280x720 with
+     the dock open, which is the smallest this screen has to work at. */
+  max-height: min(44vh, 540px);
+  padding: var(--sp-4) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.empty {
+  margin: 0;
+  padding: var(--sp-16) var(--sp-12);
+  max-width: 72ch;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: var(--sp-4) var(--sp-12);
+  background: var(--bg-2);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  border-block: 1px solid var(--line);
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: 62px 56px minmax(0, 1fr);
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.entry:last-child {
+  border-bottom: 0;
+}
+
+/* A line nobody has adopted: dashed, quiet, and obviously an offer. */
+.entry[data-offered] {
+  border-left: 2px dashed var(--line-strong);
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 7px,
+    var(--bg-2) 7px,
+    var(--bg-2) 8px
+  );
+}
+
+/* A hole in the evidence is not an event. */
+.entry[data-kind='gap'] {
+  border-left: 2px solid var(--warn);
+  background: var(--warn-soft);
+}
+
+.when {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  cursor: help;
+}
+
+.kind {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry[data-tone='crit'] .kind {
+  color: var(--crit);
+}
+
+.entry[data-tone='warn'] .kind {
+  color: var(--warn);
+}
+
+.entry[data-tone='info'] .kind {
+  color: var(--info);
+}
+
+.entry[data-tone='maint'] .kind {
+  color: var(--maint);
+}
+
+.entry[data-tone='ok'] .kind {
+  color: var(--ok);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.textLink {
+  color: var(--text-1);
+  text-decoration: none;
+}
+
+.textLink:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.textLink:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-8);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.offeredMark {
+  padding: 0 var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-badge);
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
+}
+
+.before {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
+
+.unexplained {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
+
+.gapMark {
+  color: var(--warn);
+}
+
+/* The evidence behind one line: closed until somebody doubts it. Open, it
+   takes a row of its own so the author stays on the line it belongs to. */
+.evidence[open] {
+  flex: 1 0 100%;
+}
+
+.evidence > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  border-radius: var(--radius-badge);
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.evidence > summary::-webkit-details-marker {
+  display: none;
+}
+
+.evidence > summary:hover {
+  color: var(--accent-strong);
+}
+
+.evidence > summary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.evidenceBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  padding: var(--sp-6) var(--sp-8);
+  border-left: 2px solid var(--line-strong);
+  background: var(--bg-2);
+}
+
+.evidenceBody p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.evidenceBody code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.suggestGaps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  border-top: 1px solid var(--line);
+}
+
+/* Always on screen: the point of the whole layout. */
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+  border-top: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+}
+
+.note {
+  min-height: 52px;
+  resize: vertical;
+}
+
+.composerSide {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  align-items: stretch;
+  min-width: 164px;
+}
+
+.hint {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.backdate {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: var(--fs-11);
+  text-align: left;
+  cursor: pointer;
+}
+
+.backdate:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.backdate:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+@container opsbody (max-width: 760px) {
+  /* Narrow: the time and the kind share the first row and the text gets a
+     row of its own, full width. Leaving the text in a 54px column turns a
+     sentence into one word per line, which is what happens if `.body` is not
+     made to span. */
+  .entry {
+    grid-template-columns: 56px minmax(0, 1fr);
+    row-gap: var(--sp-2);
+  }
+
+  .body {
+    grid-column: 1 / -1;
+  }
+
+  .composer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .composerSide {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--sp-12);
+    align-items: center;
+  }
+}

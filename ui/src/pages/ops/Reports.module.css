@@ -1,0 +1,161 @@
+/* Reports: the document on the left, what this build can report on at the right. */
+
+.main,
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.gaps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-8);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-control);
+  background: var(--warn-soft);
+}
+
+/* HTML output is meant to print, so it is previewed as it prints. */
+.frame {
+  width: 100%;
+  height: 520px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: #ffffff;
+}
+
+.kinds,
+.savedList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kind {
+  border-radius: var(--radius-control);
+}
+
+.kind[data-current] {
+  background: var(--accent-soft);
+}
+
+.kindButton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-6) var(--sp-8);
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kindButton:hover .kindTitle {
+  color: var(--accent-strong);
+}
+
+.kindButton:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.kindTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.kindAbout {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.savedRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+}
+
+.savedRow:last-child {
+  border-bottom: 0;
+}
+
+.savedRow[data-current] {
+  background: var(--accent-soft);
+}
+
+.savedOpen {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.savedOpen:hover .savedTitle {
+  color: var(--accent-strong);
+}
+
+.savedOpen:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.savedTitle {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.savedMeta {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.savedGap {
+  color: var(--warn);
+}
+
+.back {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.back:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}

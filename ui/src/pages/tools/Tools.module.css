@@ -1,0 +1,751 @@
+/*
+ * The Tools screen: a drawer on the left, one tool on the right.
+ *
+ * The three families are told apart by the panel's own frame and by one word,
+ * never by colour alone: `data-family` carries them, and the only thing it
+ * changes is the accent of the header and of the row's marker.
+ */
+
+/* The frame carries the container, and the screen inside it is what the
+   container queries measure: an element cannot query itself, so the drawer
+   would never have stacked without this wrapper. What changes the width here
+   is usually not the window but the assistant dock. */
+.frame {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  container: tools / inline-size;
+}
+
+.screen {
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Below this the list and a form cannot both be read; the list goes on top
+   and the panel below it, which is also what a phone-width window gets. */
+@container tools (max-width: 720px) {
+  .screen {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .list {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    /* Enough of the drawer to pick from, and the tool itself still on screen
+       under it: at this width the panel is what the person came for. */
+    max-height: 220px;
+  }
+}
+
+/* ------------------------------------------------------------- the drawer */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.listFilter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.listCount {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.listScroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-12) var(--sp-8) var(--sp-24);
+}
+
+.listSkeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.listEmpty {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: var(--sp-8);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.groupLabel {
+  margin: 0;
+  padding: 0 var(--sp-8) var(--sp-4);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.groupItems {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: var(--fs-13);
+  text-align: left;
+  cursor: pointer;
+}
+
+.row::before {
+  flex: none;
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background: var(--idle);
+  content: '';
+}
+
+.row[data-family='network']::before {
+  background: var(--info);
+}
+
+.row[data-family='standing']::before {
+  background: var(--accent);
+}
+
+.row:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.row[aria-current='true'] {
+  background: var(--bg-4);
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowBadge {
+  flex: none;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* -------------------------------------------------------------- the panel */
+
+.panelScroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-16);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+  min-width: 0;
+  /* Dense where engineers scan, calm around it: a tool is read in a column,
+     not across a wall. */
+  max-width: 1100px;
+}
+
+.panelHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: 0 0 var(--sp-12) var(--sp-12);
+  border-left: 3px solid var(--idle);
+}
+
+.panel[data-family='network'] .panelHead {
+  border-left-color: var(--info);
+}
+
+.panel[data-family='standing'] .panelHead {
+  border-left-color: var(--accent);
+}
+
+.panelTitleRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  align-items: center;
+}
+
+.panelTitle {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.panelMethod {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.panelKind {
+  padding: var(--sp-2) var(--sp-6);
+  border-radius: var(--radius-badge);
+  background: var(--idle-soft);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.panel[data-family='network'] .panelKind {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.panel[data-family='standing'] .panelKind {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.panelWhat,
+.panelPromise,
+.panelUses {
+  margin: 0;
+  max-width: 78ch;
+  font-size: var(--fs-13);
+}
+
+.panelWhat {
+  color: var(--text-2);
+}
+
+.panelPromise {
+  color: var(--text-3);
+}
+
+.panelUses {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.panelUses code {
+  font-family: var(--font-mono);
+}
+
+.panelBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+  min-width: 0;
+}
+
+.panelFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-12);
+  align-items: baseline;
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--line);
+}
+
+.clear {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.clear:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.footNote {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.unknown {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-card);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+.unknown code {
+  font-family: var(--font-mono);
+}
+
+/* --------------------------------------------------------------- the form */
+
+.formRow {
+  min-width: 0;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-12) var(--sp-16);
+  align-items: end;
+  max-width: 760px;
+}
+
+@container tools (max-width: 560px) {
+  .form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.formField[data-span='2'] {
+  grid-column: 1 / -1;
+}
+
+.formField {
+  min-width: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8) var(--sp-12);
+  align-items: center;
+}
+
+.actionHint {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.progressWord {
+  overflow: hidden;
+  max-width: 44ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progressBar {
+  width: 140px;
+}
+
+/* ------------------------------------------------------------- the answer */
+
+/* A fixed minimum height so a result area does not jump as it fills: the
+   answer appears in the space that was already there. */
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+  min-height: 120px;
+}
+
+.answer[data-stale='true'] {
+  opacity: 0.6;
+}
+
+.refusal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-height: 120px;
+  padding: var(--sp-12);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-card);
+  background: var(--warn-soft);
+}
+
+.refusalHead {
+  color: var(--warn);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.refusalWhy {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+/* "There is nothing here, and why": one shape for every absence. */
+.absence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-height: 90px;
+  padding: var(--sp-12);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.absence[data-tone='warn'] {
+  border-style: solid;
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.absenceHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.absence[data-tone='warn'] .absenceHead {
+  color: var(--warn);
+}
+
+.absenceText {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/* A probe that could not run. No figures: a measurement never happened. */
+.failure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-12);
+  border: 1px solid var(--crit);
+  border-radius: var(--radius-card);
+  background: var(--crit-soft);
+}
+
+.failure[data-about='target'] {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.failureHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--crit);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-medium);
+}
+
+.failure[data-about='target'] .failureHead {
+  color: var(--warn);
+}
+
+.failureWhy {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+.failureMeaning {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.failureCode {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.failureCode code {
+  font-family: var(--font-mono);
+}
+
+/* ------------------------------------------------------------- secrets */
+
+.secretIdle {
+  margin: 0;
+  max-width: 78ch;
+  min-height: 60px;
+  color: var(--text-3);
+  font-size: var(--fs-13);
+}
+
+.verdictHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  align-items: baseline;
+}
+
+.verdictName {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-16);
+  font-weight: var(--fw-semibold);
+}
+
+/* The two questions, side by side and the same size: neither is the answer
+   on its own. */
+.statements {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--sp-12);
+}
+
+.statement {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+}
+
+.statement[data-tone='ok'] {
+  border-left-color: var(--ok);
+}
+
+.statement[data-tone='warn'] {
+  border-left-color: var(--warn);
+}
+
+.statement[data-tone='crit'] {
+  border-left-color: var(--crit);
+}
+
+.statement[data-tone='idle'] {
+  border-left-color: var(--idle);
+}
+
+.statementTitle {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.statementHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-medium);
+}
+
+.statement[data-tone='crit'] .statementHead {
+  color: var(--crit);
+}
+
+.statement[data-tone='warn'] .statementHead {
+  color: var(--warn);
+}
+
+.statement[data-tone='ok'] .statementHead {
+  color: var(--ok);
+}
+
+.statementText {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+}
+
+.secretLabel {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.secretValue {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.secretValue code {
+  overflow-wrap: anywhere;
+  padding: var(--sp-4) var(--sp-8);
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-14);
+}
+
+/* The copy button of a secret is always there: hovering to find it would
+   mean hunting for the one control that matters here. */
+.secretValue button {
+  opacity: 1;
+}
+
+.passwords {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.secretNote,
+.secretKept {
+  margin: 0;
+  max-width: 82ch;
+}
+
+.secretNote {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.secretNote code {
+  font-family: var(--font-mono);
+}
+
+.secretKept {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* ------------------------------------------------------------- standing */
+
+.standing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.standing[data-running='true'] {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.standingHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  align-items: center;
+}
+
+.standingNote {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* One run from the history, opened under the table. */
+.openRun {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  padding: var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.openRunHead {
+  display: flex;
+  gap: var(--sp-12);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.openRunTitle {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+/* A simulated device, labelled where its answer appears. */
+.labNote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  align-items: center;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}

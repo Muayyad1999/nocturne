@@ -23,6 +23,7 @@ import { EmptyState } from '@/design/EmptyState';
 import { Skeleton } from '@/design/Skeleton';
 import { TabPanel, Tabs, type TabItem } from '@/design/Tabs';
 import { AREA as INSIGHTS, Insights } from '@/pages/insights';
+import { AREA as LOGS, Logs } from '@/pages/logs';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { formatCount } from '@/lib/format';
 import { AlertsTab } from './Alerts';
@@ -51,6 +52,9 @@ const TABS: readonly TabItem[] = [
   // offered only when the crate is in the build; `Insights` itself also says
   // so if it is mounted without one, so neither place has to trust the other.
   { id: 'insights', label: INSIGHTS.label, icon: INSIGHTS.icon },
+  // The same arrangement, and the same section of the specification, for the
+  // log store and the syslog receiver.
+  { id: 'logs', label: LOGS.label, icon: LOGS.icon },
 ];
 
 const DEFAULT_TAB = 'alerts';
@@ -92,6 +96,7 @@ function Monitoring() {
   const navigate = useNavigate();
   const current = TABS.some((entry) => entry.id === tab) ? (tab as string) : DEFAULT_TAB;
   const hasInsights = useHasMethod('insights.list');
+  const hasLogs = useHasMethod('logs.query');
   const deviceId = search.get('device');
 
   const status = useMonitorStatus();
@@ -163,7 +168,14 @@ function Monitoring() {
     );
   }
 
-  const tabs = TABS.filter((entry) => entry.id !== 'insights' || hasInsights !== false).map((entry) =>
+  // `!== false`, not `=== true`: a tab is left out only once the backend has
+  // said the feature is absent, so neither tab flickers while `app.methods`
+  // is still in flight.
+  const tabs = TABS.filter(
+    (entry) =>
+      (entry.id !== 'insights' || hasInsights !== false) &&
+      (entry.id !== 'logs' || hasLogs !== false),
+  ).map((entry) =>
     entry.id === 'alerts' && open > 0
       ? { ...entry, badge: <span className={styles.tabCount}>{formatCount(open)}</span> }
       : entry,
@@ -205,6 +217,7 @@ function Monitoring() {
         {current === 'charts' && <ChartsTab />}
         {current === 'rules' && <RulesTab />}
         {current === 'insights' && <Insights />}
+        {current === 'logs' && <Logs />}
       </TabPanel>
     </Page>
   );

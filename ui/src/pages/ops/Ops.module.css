@@ -1,0 +1,138 @@
+/* The Operations screen: six tabs, and the shapes they share. */
+
+.tabs {
+  /* Six tabs plus a count still has to fit at 1280 with the dock open, so the
+     bar scrolls sideways rather than wrapping into two rows. */
+  flex: 0 0 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+  /* The layout answers to the width it is given, not the window's: the
+     assistant dock takes 380px of it and nothing here may break. */
+  container: opsbody / inline-size;
+}
+
+/* A row of quiet figures under a toolbar: counts, periods, coverage. */
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6) var(--sp-16);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.facts b {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two columns that collapse to one when the content area gets narrow. */
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  gap: var(--sp-16);
+  align-items: start;
+  min-height: 0;
+}
+
+@container opsbody (max-width: 1040px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.sentence {
+  margin: 0;
+  max-width: 76ch;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.sentences {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  max-width: 76ch;
+  list-style: none;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* A cell that must not wrap, and says the rest on hover. */
+.clip {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.wrapRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6) var(--sp-8);
+  min-width: 0;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.formRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-12);
+}
+
+@container opsbody (max-width: 720px) {
+  .formRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/*
+ * Toolbar controls are `width: 100%` by default (design/control.css), which in
+ * a wrapping flex row makes every filter take a line of its own. A max-width
+ * clamps the flex base size, so the filters sit on one row and the primary
+ * action stays at the right — at 1280 with the dock open as well.
+ */
+.filter {
+  max-width: 260px;
+}
+
+.narrow {
+  max-width: 170px;
+}
+
+.when {
+  max-width: 200px;
+}
