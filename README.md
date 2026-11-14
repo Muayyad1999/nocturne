@@ -23,20 +23,20 @@ test counts that passed on the machine that wrote it.
 |---|---|---|
 | **Devices** | Inventory with sites, roles and tags; import from CSV, an SSH config or an Ansible inventory; credentials in an encrypted vault; jump hosts; device types as editable YAML profiles | yes |
 | **Terminal** | SSH (including the legacy crypto old gear needs), Telnet, serial console and a local shell; sessions that survive closing the window; SFTP; snippets; session logs | yes |
-| **Discovery** | Sweep ranges, identify what answers (SNMP, SSH banner), crawl through LLDP/CDP neighbours, add what you pick | being built |
-| **Monitoring** | Reachability, interface traffic and errors, CPU/memory/temperature over ICMP, SNMP or the CLI; time series; alert rules; maintenance windows; notifications | engine; screen being built |
-| **Logs** | Syslog and SNMP trap receivers, search, live tail, rules that turn log lines into signals | being built |
-| **Insights** | Issue identification with evidence: duplex and VLAN mismatches, flapping ports, duplicate addresses, unsaved configuration, hygiene and security findings | engine; screen to come |
-| **Configuration** | Versioned backups, diff, search across the whole network, compliance policies, drift against intended state | engine; screen to come |
-| **Changes** | The one way to change a device: exact commands and predicted diff, risk and protected resources, approval bound to the plan, backup → dead-man switch → apply → verify → automatic rollback | engine; screen being built |
-| **Automation** | Run a command on fifty devices and compare; configuration templates; playbooks; schedules; Ansible inventory and playbook interoperability | being built |
-| **Topology** | Built from what devices report; automatic layout; path tracing; "which port is this host on"; export to SVG, draw.io, Mermaid | engine; screen to come |
-| **IPAM** | Prefixes, addresses and VLANs synchronised from the network; free space, conflicts, VLSM | planned |
-| **Lab** | A Packet-Tracer-style simulator: drag devices, cable them, open consoles, trace packets hop by hop; every lab device works with every other feature | engine; screen being built |
-| **Design** | Requirements in ("120 users, voice, guest Wi-Fi, two uplinks"), a complete design out — topology, addressing plan, device configurations — proven by booting it in the lab | engine; screen to come |
-| **Assistant** | Claude, any OpenAI-compatible API, or a local model (Ollama, LM Studio). It reads the network through the same policy-checked paths as you do and drafts changes for your approval; secrets are redacted before a model sees anything | engine; screen being built |
-| **Toolbox** | Subnet/VLSM calculators, MAC lookup, converters, ping, traceroute, port scan, DNS, WHOIS, TLS and HTTP checks, TFTP server | engines ready; screen to come |
-| **Operations** | Overview, incidents with timelines, shift handover, reports, runbook notes, audit trail | partly written |
+| **Discovery** | Sweep ranges, identify what answers (SNMP, SSH banner), crawl through LLDP/CDP neighbours, add what you pick | yes |
+| **Monitoring** | Reachability, interface traffic and errors, CPU/memory/temperature over ICMP, SNMP or the CLI; time series; alert rules; maintenance windows; notifications | yes |
+| **Logs** | Syslog and SNMP trap receivers, search, live tail, rules that turn log lines into signals | yes |
+| **Insights** | Issue identification with evidence: duplex and VLAN mismatches, flapping ports, duplicate addresses, unsaved configuration, hygiene and security findings | yes |
+| **Configuration** | Versioned backups, diff, search across the whole network, compliance policies, drift against intended state | yes |
+| **Changes** | The one way to change a device: exact commands and predicted diff, risk and protected resources, approval bound to the plan, backup → dead-man switch → apply → verify → automatic rollback | yes |
+| **Automation** | Run a command on fifty devices and compare; configuration templates; playbooks; schedules; Ansible inventory and playbook interoperability | yes |
+| **Topology** | Built from what devices report; automatic layout; path tracing; "which port is this host on"; export to SVG, draw.io, Mermaid | yes |
+| **IPAM** | Prefixes, addresses and VLANs synchronised from the network; free space, conflicts, VLSM | yes |
+| **Lab** | A Packet-Tracer-style simulator: drag devices, cable them, open consoles, trace packets hop by hop; every lab device works with every other feature | yes |
+| **Design** | Requirements in ("120 users, voice, guest Wi-Fi, two uplinks"), a complete design out — topology, addressing plan, device configurations — proven by booting it in the lab | yes, in the Lab screen |
+| **Assistant** | Claude, any OpenAI-compatible API, or a local model (Ollama, LM Studio). It reads the network through the same policy-checked paths as you do and drafts changes for your approval; secrets are redacted before a model sees anything | yes |
+| **Toolbox** | Subnet/VLSM calculators, MAC lookup, converters, ping, traceroute, port scan, DNS, WHOIS, TLS and HTTP checks, TFTP server | yes |
+| **Operations** | Overview, incidents with timelines, shift handover, reports, runbook notes, audit trail | yes |
 
 ## Safety, in one paragraph
 
