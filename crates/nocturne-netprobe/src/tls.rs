@@ -261,12 +261,15 @@ pub(crate) async fn handshake(
     });
     let verifier: Arc<dyn ServerCertVerifier> = match mode {
         Mode::Inspect => recorder.clone(),
-        Mode::Verify => trust_verifier(trust).map_err(|reason| {
-            Failure::Other(ProbeError::unsupported(format!(
-                "certificates cannot be verified on this machine ({reason}); install the system's \
-                 CA certificates, or turn verification off to inspect the server anyway"
-            )))
-        })?,
+        Mode::Verify => Arc::new(ValidityFirst {
+            inner: trust_verifier(trust).map_err(|reason| {
+                Failure::Other(ProbeError::unsupported(format!(
+                    "certificates cannot be verified on this machine ({reason}); install the \
+                     system's CA certificates, or turn verification off to inspect the server \
+                     anyway"
+                )))
+            })?,
+        }),
     };
     let mut config = ClientConfig::builder_with_details(provider, Arc::new(FixedTime(now)))
         .with_safe_default_protocol_versions()
@@ -460,6 +463,79 @@ fn trust_verifier(trust: &Trust) -> Result<Arc<dyn ServerCertVerifier>, String> 
     match trust {
         Trust::Custom(verifier) => Ok(verifier.clone()),
         Trust::Platform => platform_verifier(),
+    }
+}
+
+/// Judges how long a certificate is valid for itself, and delegates only
+/// trust in its issuer.
+///
+/// `evaluate_trust` already does this for the inspecting path, for the reason
+/// written there: on Windows and macOS the platform verifier hands the
+/// question to the operating system, which judges a certificate against the
+/// *system* clock and cannot be told to consider another moment. Without the
+/// same treatment here, the two modes of one probe disagree — `Mode::Inspect`
+/// answers "was this valid in June?" about June and `Mode::Verify` answers it
+/// about today — and the refusal arrives in the operating system's words and
+/// its own status codes rather than in ours, differently on each platform.
+///
+/// Only the clock source changes. The comparison is the one every verifier
+/// makes, and the errors are the ones rustls would have raised, so nothing
+/// downstream can tell the difference.
+struct ValidityFirst {
+    inner: Arc<dyn ServerCertVerifier>,
+}
+
+impl std::fmt::Debug for ValidityFirst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ValidityFirst")
+    }
+}
+
+impl ServerCertVerifier for ValidityFirst {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        if let Ok((_, leaf)) = X509Certificate::from_der(end_entity.as_ref()) {
+            let asked_about = i64::try_from(now.as_secs()).unwrap_or(i64::MAX);
+            let validity = leaf.validity();
+            if asked_about < validity.not_before.timestamp() {
+                return Err(rustls::Error::InvalidCertificate(
+                    CertificateError::NotValidYet,
+                ));
+            }
+            if asked_about > validity.not_after.timestamp() {
+                return Err(rustls::Error::InvalidCertificate(CertificateError::Expired));
+            }
+        }
+        self.inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
     }
 }
 
@@ -821,6 +897,8 @@ mod tests {
         says_untrusted, self_signed, self_signed_rsa, server_config, tls_server, valid_from,
         valid_until,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use pretty_assertions::assert_eq;
     use tokio::io::AsyncWriteExt;
@@ -1108,6 +1186,174 @@ mod tests {
             .unwrap();
         assert_eq!(report.alpn, None);
         assert_eq!(report.chain.len(), 1);
+    }
+
+    /// Proof of the mechanism, on any platform: an expired certificate is
+    /// refused *without the platform verifier being consulted at all*.
+    ///
+    /// The test above cannot show this where rustls-webpki is the platform
+    /// verifier, because it would have reached the same verdict by itself.
+    /// Here the inner verifier accepts everything and counts its calls, so
+    /// the only thing that can refuse is the validity check in front of it.
+    #[tokio::test]
+    async fn validity_is_settled_before_the_platform_is_asked_anything() {
+        #[derive(Debug)]
+        struct Counting {
+            asked: Arc<AtomicUsize>,
+        }
+        impl ServerCertVerifier for Counting {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &CertificateDer<'_>,
+                _intermediates: &[CertificateDer<'_>],
+                _server_name: &ServerName<'_>,
+                _ocsp: &[u8],
+                _now: UnixTime,
+            ) -> Result<ServerCertVerified, rustls::Error> {
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                Ok(ServerCertVerified::assertion())
+            }
+            fn verify_tls12_signature(
+                &self,
+                message: &[u8],
+                cert: &CertificateDer<'_>,
+                dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                rustls::crypto::verify_tls12_signature(
+                    message,
+                    cert,
+                    dss,
+                    &crypto_provider().signature_verification_algorithms,
+                )
+            }
+            fn verify_tls13_signature(
+                &self,
+                message: &[u8],
+                cert: &CertificateDer<'_>,
+                dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, rustls::Error> {
+                rustls::crypto::verify_tls13_signature(
+                    message,
+                    cert,
+                    dss,
+                    &crypto_provider().signature_verification_algorithms,
+                )
+            }
+            fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+                crypto_provider()
+                    .signature_verification_algorithms
+                    .supported_schemes()
+            }
+        }
+
+        let asked = Arc::new(AtomicUsize::new(0));
+        let trust = Trust::Custom(Arc::new(Counting {
+            asked: asked.clone(),
+        }));
+
+        // In its own window, the all-accepting verifier is reached and agrees.
+        let port = tls_server(
+            server_config(self_signed(&NAMES, valid_from(), valid_until())),
+            drain,
+        )
+        .await;
+        let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        connect(
+            address,
+            "localhost",
+            &["http/1.1"],
+            Mode::Verify,
+            now(),
+            &trust,
+        )
+        .await
+        .expect("a certificate inside its window reaches the verifier");
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+        // Expired: refused in our words, and the verifier is never asked.
+        let port = tls_server(
+            server_config(self_signed(&NAMES, EXPIRED_FROM, EXPIRED_UNTIL)),
+            drain,
+        )
+        .await;
+        let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let error = connect(
+            address,
+            "localhost",
+            &["http/1.1"],
+            Mode::Verify,
+            now(),
+            &trust,
+        )
+        .await
+        .map(|_| ())
+        .unwrap_err()
+        .into_probe_error()
+        .to_string();
+        assert!(error.contains("the certificate has expired"), "{error}");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            1,
+            "the platform must not have been asked about an expired certificate"
+        );
+    }
+
+    /// The two modes of one probe must answer "is this certificate valid?"
+    /// the same way, and in our words.
+    ///
+    /// They did not. `Mode::Inspect` judges validity from the moment the
+    /// caller asked about, deliberately (see `evaluate_trust`), but
+    /// `Mode::Verify` handed the whole question to the platform verifier —
+    /// which on Windows and macOS asks the operating system, which judges
+    /// against the *system* clock and words its refusal its own way. So on
+    /// those platforms a verified handshake refused an expired certificate
+    /// with a status code instead of a reason, and would have answered
+    /// "was this valid last June?" about today.
+    #[tokio::test]
+    async fn both_modes_judge_a_certificate_against_the_moment_they_were_asked_about() {
+        let ca = TestCa::new();
+        let trust = ca.trust();
+        let expired = || ca.issue(&NAMES, EXPIRED_FROM, EXPIRED_UNTIL);
+
+        let port = tls_server(server_config(expired()), drain).await;
+        let inspected = inspect_with(
+            "127.0.0.1",
+            port,
+            Some("localhost"),
+            TIMEOUT,
+            now(),
+            trust.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!inspected.trusted);
+        let looked_at = inspected.trust_error.clone().unwrap();
+
+        let port = tls_server(server_config(expired()), drain).await;
+        let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let refused = connect(
+            address,
+            "localhost",
+            &["http/1.1"],
+            Mode::Verify,
+            now(),
+            &trust,
+        )
+        .await
+        .map(|_| ())
+        .unwrap_err()
+        .into_probe_error()
+        .to_string();
+
+        assert_eq!(
+            looked_at, "the certificate has expired",
+            "the inspecting mode reads the dates itself"
+        );
+        assert!(
+            refused.contains(&looked_at),
+            "the verifying mode should give the same reason, not the platform's \
+             status code: inspect said {looked_at:?}, verify said {refused:?}"
+        );
     }
 
     #[tokio::test]
