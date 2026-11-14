@@ -28,6 +28,10 @@ nocturne-topology.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 serde_json.workspace = true
+# `tests/single_prompt.rs` needs a simulated device and a scripted model: this
+# is the only crate where the assistant and the change engine are both real.
+nocturne-app = { workspace = true, features = ["testing"] }
+nocturne-ai.workspace = true
 
 [lints]
 workspace = true
