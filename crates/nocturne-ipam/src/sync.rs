@@ -744,12 +744,28 @@ pub struct LearnPlan {
     pub prefixes: Vec<LearnPrefix>,
     pub addresses: Vec<LearnAddress>,
     pub vlans: Vec<LearnVlan>,
+    /// How many records were actually written. **Zero in a dry run**, which
+    /// is what `dry_run` is: see `to_create_*` for what it would do.
     pub created_prefixes: u32,
     pub created_addresses: u32,
     pub created_vlans: u32,
+    /// How many rows below have `action: "create"` — what a dry run *would*
+    /// write, and what a real run did.
+    ///
+    /// Without these a preview reported "0 blocks, 0 addresses, 0 VLANs"
+    /// above a list of thirty-three rows each saying `create`, which reads as
+    /// "there is nothing to do" about the opposite. Every caller had to count
+    /// the rows itself to find out what it was being asked to approve.
+    pub to_create_prefixes: u32,
+    pub to_create_addresses: u32,
+    pub to_create_vlans: u32,
     /// What the plan was built from.
     pub coverage: Coverage,
     pub notes: Vec<String>,
+}
+
+fn count_of(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Import what is already on the network as records: one call that shows what
@@ -771,6 +787,9 @@ pub fn learn(
         addresses: Vec::new(),
         vlans: Vec::new(),
         created_prefixes: 0,
+        to_create_prefixes: 0,
+        to_create_addresses: 0,
+        to_create_vlans: 0,
         created_addresses: 0,
         created_vlans: 0,
         coverage: Coverage {
@@ -969,5 +988,26 @@ pub fn learn(
         }
         plan.vlans.push(row);
     }
+
+    // Counted from the rows, so the figure and the list can never disagree.
+    let creating = |action: &str| action == "create";
+    plan.to_create_prefixes = count_of(
+        plan.prefixes
+            .iter()
+            .filter(|row| creating(&row.action))
+            .count(),
+    );
+    plan.to_create_addresses = count_of(
+        plan.addresses
+            .iter()
+            .filter(|row| creating(&row.action))
+            .count(),
+    );
+    plan.to_create_vlans = count_of(
+        plan.vlans
+            .iter()
+            .filter(|row| creating(&row.action))
+            .count(),
+    );
     Ok(plan)
 }

@@ -983,3 +983,59 @@ fn collect_cidrs(value: &serde_json::Value, into: &mut std::collections::BTreeMa
         _ => {}
     }
 }
+
+/// A preview says what it would do, not nothing.
+///
+/// `created_*` is how many records were *written*, so in a dry run it is
+/// correctly zero — but it was the only count there was, so a preview
+/// reported "0 blocks, 0 addresses, 0 VLANs" above a list of rows every one
+/// of which said `create`. That reads as "there is nothing to do" about
+/// exactly the opposite, and left every caller counting rows itself.
+#[tokio::test]
+async fn a_dry_run_counts_what_it_would_create_and_a_real_one_what_it_did() {
+    let campus = Campus::start(&["AS1", "AS2"]).await;
+    campus.ok("ipam.sync", json!({})).await;
+
+    let preview = campus.ok("ipam.learn", json!({"dry_run": true})).await;
+    assert_eq!(preview["dry_run"], json!(true));
+    let rows = |key: &str| {
+        preview[key]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| row["action"] == json!("create"))
+                    .count()
+            })
+            .unwrap_or(0) as i64
+    };
+    let would = rows("addresses") + rows("prefixes") + rows("vlans");
+    assert!(would > 0, "this campus has something to learn: {preview}");
+
+    // Nothing was written, and it says so…
+    assert_eq!(preview["created_addresses"], json!(0));
+    assert_eq!(preview["created_prefixes"], json!(0));
+    assert_eq!(preview["created_vlans"], json!(0));
+    // …while still saying what it would write, row for row.
+    assert_eq!(
+        preview["to_create_addresses"].as_i64(),
+        Some(rows("addresses"))
+    );
+    assert_eq!(
+        preview["to_create_prefixes"].as_i64(),
+        Some(rows("prefixes"))
+    );
+    assert_eq!(preview["to_create_vlans"].as_i64(), Some(rows("vlans")));
+    let promised = preview["to_create_addresses"].as_i64().unwrap_or(0)
+        + preview["to_create_prefixes"].as_i64().unwrap_or(0)
+        + preview["to_create_vlans"].as_i64().unwrap_or(0);
+    assert_eq!(promised, would);
+
+    // And the real run writes what the preview promised.
+    let done = campus.ok("ipam.learn", json!({"dry_run": false})).await;
+    assert_eq!(done["created_addresses"].as_i64(), Some(rows("addresses")));
+    assert_eq!(
+        done["to_create_addresses"].as_i64(),
+        done["created_addresses"].as_i64(),
+        "a real run's two counts agree: {done}"
+    );
+}
