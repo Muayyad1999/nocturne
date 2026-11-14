@@ -85,3 +85,10 @@ Under active construction. `docs/STATUS.md` lists, per component, what is
 implemented and how it has been verified — including what has only been
 tested against the simulator and recorded device output rather than real
 hardware.
+
+## Licence
+
+Proprietary — copyright © 2026 Muayyad1999, all rights reserved. The source
+being readable does not grant permission to use it; see [LICENSE](LICENSE),
+and ask if you would like to. Bundled third-party components keep their own
+licences, listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

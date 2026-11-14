@@ -206,5 +206,9 @@ of it:
 - Junos and IOS-XR have the ideal dead-man switch (`commit confirmed`) and
   cannot use it: `config.guard` runs its commands before configuration mode is
   entered, and `commit confirmed` is only valid inside it.
-- The licence file is a placeholder that grants nothing. The choice is the
-  owner's to make.
+- Nocturne is proprietary, by the owner's decision: nobody else may use,
+  copy or modify it without asking. That is not a gap, but it is worth
+  knowing before you read the rest as though it were an open-source project.
+  The bundled third-party components keep their own permissive licences
+  (`THIRD-PARTY-NOTICES.md`), which also records what those notices require
+  should the licensing ever change.
