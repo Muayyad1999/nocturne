@@ -128,6 +128,7 @@ async fn run_scan(
     run: &mut Run,
 ) -> AppResult<PortsResult> {
     run.job_id = Some(ctx.id().to_string());
+    history::running(ctx.app(), run);
     ctx.info(format!(
         "{} ports on {}, {} at a time, from {}",
         ports.len(),

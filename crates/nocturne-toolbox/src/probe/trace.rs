@@ -130,6 +130,7 @@ async fn run_trace(
     run: &mut Run,
 ) -> AppResult<TraceResult> {
     run.job_id = Some(ctx.id().to_string());
+    history::running(ctx.app(), run);
     let (sender, mut receiver) = unbounded_channel::<Hop>();
     let forwarder = {
         let (ctx, run_id) = (ctx.clone(), run.id.clone());

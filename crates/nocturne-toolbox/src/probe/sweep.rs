@@ -239,6 +239,7 @@ async fn run_sweep(
     run: &mut Run,
 ) -> AppResult<SweepResult> {
     run.job_id = Some(ctx.id().to_string());
+    history::running(ctx.app(), run);
     let (sender, mut receiver) = unbounded_channel::<HostResult>();
     let forwarder = {
         let (ctx, run_id, known) = (ctx.clone(), run.id.clone(), known.clone());

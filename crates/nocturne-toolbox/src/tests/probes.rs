@@ -108,6 +108,34 @@ async fn a_ping_until_cancelled_stops_when_the_job_is_cancelled() {
     // Give it long enough to send a few echoes, then stop it. A continuous
     // ping that ignored the cancel would run for the hour the settings allow.
     tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // While it is still running, its history record must name the job that is
+    // carrying it out. `history::begin` saves the record before `jobs::start`
+    // has returned an id, so without a second save once the id is known this
+    // is `null` for as long as the probe runs and is only corrected when it
+    // ends — which is to say, it is wrong at exactly the moment somebody
+    // wants to follow the probe or stop it.
+    let running = lab
+        .app
+        .rpc("probe.history", json!({"kind": "ping"}))
+        .await
+        .unwrap()["runs"][0]
+        .clone();
+    assert_eq!(
+        running["finished_at"],
+        Value::Null,
+        "this is meant to be a record of a probe still running: {running}"
+    );
+    assert_eq!(
+        running["job_id"].as_str(),
+        Some(job_id.as_str()),
+        "a running probe's record should name its job: {running}"
+    );
+    assert!(
+        running["method"].is_string(),
+        "and the method it settled on: {running}"
+    );
+
     let cancelled = lab
         .app
         .rpc("jobs.cancel", json!({"id": job_id}))

@@ -204,6 +204,7 @@ async fn run_ping(
             .and_then(|value| value.as_str().map(str::to_string))
             .unwrap_or_default(),
     );
+    history::running(&app, run);
     ctx.info(format!(
         "{} echo requests of {} bytes, every {} ms, from {} ({})",
         if continuous {

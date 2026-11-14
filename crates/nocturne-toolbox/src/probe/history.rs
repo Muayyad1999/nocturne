@@ -120,6 +120,18 @@ pub fn begin(app: &App, run: &Run) {
     save(app, run);
 }
 
+/// Record what is only known once the job is running: its id, and which
+/// method the probe settled on.
+///
+/// `begin` runs before `jobs::start` has returned, so the record it saves has
+/// `job_id: None`. Without this second save that stays true for as long as the
+/// probe runs and is corrected only when it ends — so nothing could join a
+/// *running* probe to its job, which is exactly when somebody wants to follow
+/// it or stop it.
+pub fn running(app: &App, run: &Run) {
+    save(app, run);
+}
+
 /// Record how a probe ended, with a line a person can read.
 pub fn succeeded<T: Serialize>(app: &App, run: &mut Run, summary: impl Into<String>, result: &T) {
     run.finished_at = Some(util::now_ms());
