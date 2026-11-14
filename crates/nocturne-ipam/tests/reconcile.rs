@@ -667,9 +667,22 @@ async fn reserving_an_address_a_device_already_has_is_refused_naming_who_has_it(
         "it names who has it: {}",
         refused.message
     );
+    // A sentence for a person has no machine timestamp in it. The time is in
+    // the evidence below, where a caller can render it the way it renders
+    // every other time — this message used to end "collected at
+    // 1794614077077" and the screen had to find those digits and rewrite them.
+    assert!(
+        !has_an_epoch(&refused.message),
+        "no raw timestamp in a sentence: {}",
+        refused.message
+    );
     let details = refused.details.expect("the evidence");
     assert_eq!(details["kind"], "duplicate_ip");
     assert_eq!(details["involved"][0]["device"], "AS1");
+    assert!(
+        details["involved"][0]["collected_at"].as_i64().is_some(),
+        "but the time is there, as a number, where it belongs"
+    );
 
     // An address in the same prefix that nothing has answered on is reserved,
     // and the reservation says what that rests on.
@@ -835,4 +848,64 @@ async fn a_collection_syncs_by_itself_once_the_dust_settles() {
         .await;
     assert_eq!(address["address"]["observed"], true);
     assert_eq!(address["address"]["documented"], false);
+}
+
+/// Does this text carry a raw millisecond timestamp — thirteen digits in a
+/// row — where a person is meant to read it?
+fn has_an_epoch(text: &str) -> bool {
+    let digits: Vec<char> = text.chars().collect();
+    digits
+        .windows(13)
+        .any(|run| run.iter().all(char::is_ascii_digit))
+}
+
+/// No sentence this engine writes for a person contains a machine timestamp,
+/// and the ones that have a time to report carry it as a field instead.
+#[tokio::test]
+async fn the_sentences_this_engine_writes_carry_no_raw_timestamps() {
+    let campus = Campus::start(&["AS1"]).await;
+    campus.ok("ipam.sync", json!({})).await;
+    let prefix = documented_prefix(&campus, "10.10.99.0/24", "Management").await;
+
+    // `next_address` in a block that has been seen: the case with a time.
+    let next = campus
+        .ok("ipam.next_address", json!({"prefix_id": prefix}))
+        .await;
+    let basis = next["basis"].as_str().expect("a basis");
+    assert!(!has_an_epoch(basis), "{basis}");
+    assert!(
+        basis.contains("sighting"),
+        "it still says what the answer rests on: {basis}"
+    );
+    assert!(
+        next["seen_until"].as_i64().is_some(),
+        "and when, as a field: {next}"
+    );
+
+    // Anything `ipam.learn` writes is *stored*, so a timestamp in it would
+    // outlive the sentence that carried it.
+    let learned = campus.ok("ipam.learn", json!({"dry_run": false})).await;
+    let text = serde_json::to_string(&learned).expect("serialisable");
+    assert!(!has_an_epoch_in_prose(&text), "{text}");
+
+    let grid = campus.ok("ipam.prefix.get", json!({"id": prefix})).await;
+    let note = grid["note"].as_str().unwrap_or_default();
+    assert!(!has_an_epoch(note), "{note}");
+}
+
+/// The same question over a JSON document, ignoring the numbers that are
+/// *meant* to be timestamps: a raw epoch is only wrong inside prose.
+fn has_an_epoch_in_prose(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .is_some_and(|value| prose(&value).iter().any(|text| has_an_epoch(text)))
+}
+
+fn prose(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::String(text) => vec![text.clone()],
+        serde_json::Value::Array(items) => items.iter().flat_map(prose).collect(),
+        serde_json::Value::Object(fields) => fields.values().flat_map(prose).collect(),
+        _ => Vec::new(),
+    }
 }

@@ -859,9 +859,14 @@ pub fn learn(
                 prefix_id: entry.map(|entry| entry.prefix.id.clone()),
                 status: Status::Active,
                 hostname: String::new(),
+                // The epoch used to be in here, and this one is *stored*:
+                // a record's description would have carried
+                // "collected at 1794614077077" for as long as the record
+                // lived. The record has `first_seen` and `last_seen` of its
+                // own, which is where a time belongs.
                 description: format!(
-                    "learned from {} ({}), collected at {}",
-                    observation.device, observation.interface, observation.collected_at
+                    "learned from {} ({})",
+                    observation.device, observation.interface
                 ),
                 device_id: Some(observation.device_id.clone()),
                 interface: Some(observation.interface.clone()),

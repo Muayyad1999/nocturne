@@ -374,6 +374,17 @@ pub struct Address {
 pub struct Disagreement {
     /// `device`, `interface` or `mac`.
     pub field: String,
+    /// What the record says, and what the network showed — in the terms of
+    /// `field`.
+    ///
+    /// For `interface` and `mac` these are the values themselves. **For
+    /// `device` they are inventory ids**, not names: they are produced by
+    /// `addresses::compose`, which is a pure function of a record and its
+    /// sightings and has no inventory to look a name up in. That is worth
+    /// keeping — it is why composing is cheap and testable — but it does mean
+    /// a caller that shows a `device` disagreement must resolve both sides
+    /// itself. [`Self::device`] below is already a name, which makes the
+    /// difference easy to miss.
     pub documented: String,
     pub observed: String,
     pub device_id: String,

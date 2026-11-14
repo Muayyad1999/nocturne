@@ -351,7 +351,17 @@ pub struct NextAddresses {
     pub skipped: Skipped,
     /// What the answer rests on: an address nothing has answered on is not
     /// known to be free, it is known not to have been seen.
+    ///
+    /// A sentence, with no timestamp in it. It used to end "last collected at
+    /// 1794614077077", which is a machine's way of saying a time and left
+    /// every reader to turn it back into one — the IPAM screen had to find
+    /// the digits and rewrite them. The time is [`Self::seen_until`] instead,
+    /// where a reader can render it however it renders every other time.
     pub basis: String,
+    /// When the newest sighting in this block was collected, if there is one.
+    /// `None` means nothing has ever been seen in it, which is the one case
+    /// where `basis` has no time to report.
+    pub seen_until: Option<i64>,
 }
 
 pub fn next_free(
@@ -411,6 +421,7 @@ pub fn next_free(
                 exhausted: true,
                 skipped,
                 basis: basis_text(&observations, floor),
+                seen_until: newest_collection(&observations),
             });
         }
     };
@@ -457,7 +468,16 @@ pub fn next_free(
         addresses,
         skipped,
         basis: basis_text(&observations, floor),
+        seen_until: newest_collection(&observations),
     })
+}
+
+/// When the newest sighting here was collected.
+fn newest_collection(observations: &[Observation]) -> Option<i64> {
+    observations
+        .iter()
+        .map(|observation| observation.collected_at)
+        .max()
 }
 
 fn basis_text(observations: &[Observation], floor: i64) -> String {
@@ -473,8 +493,8 @@ fn basis_text(observations: &[Observation], floor: i64) -> String {
         .max();
     match (fresh, newest) {
         (0, _) => "nothing has ever been seen in this prefix: these addresses are not documented, which is not the same as known to be free".to_string(),
-        (count, Some(at)) => format!(
-            "{count} sighting(s) in this prefix, last collected at {at}; an address nothing has answered on is not known to be free"
+        (count, Some(_)) => format!(
+            "{count} sighting(s) in this prefix; an address nothing has answered on is not known to be free"
         ),
         (count, None) => format!("{count} sighting(s) in this prefix"),
     }
@@ -680,13 +700,15 @@ pub fn reserve(
     if let Some(holder) = observations.iter().find(|observation| {
         observation.kind == ObservationKind::Interface || observation.last_seen >= floor
     }) {
+        // No timestamp in the sentence: `involved` below carries every
+        // sighting with its own `collected_at`, so a caller can say when in
+        // whatever form it says every other time.
         return Err(AppError::conflict(format!(
-            "{} is in use: {} has it on {} ({}), collected at {}",
+            "{} is in use: {} has it on {} ({})",
             address.text,
             holder.device,
             holder.interface,
             holder.kind.as_str(),
-            holder.collected_at
         ))
         .with_details(serde_json::json!({
             "kind": "duplicate_ip",
