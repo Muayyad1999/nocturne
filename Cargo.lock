@@ -4023,6 +4023,7 @@ dependencies = [
 name = "nocturne-suite"
 version = "0.1.0"
 dependencies = [
+ "nocturne-ai",
  "nocturne-app",
  "nocturne-assistant",
  "nocturne-automation",
