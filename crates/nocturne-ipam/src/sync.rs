@@ -58,8 +58,34 @@ pub struct SyncResult {
     pub conflicts: Vec<Conflict>,
 }
 
+/// Only one sync at a time.
+///
+/// Discovering a prefix is a read followed by an insert: ask whether anything
+/// on record covers this block, and write one if not. Two syncs at once both
+/// read "nothing covers 10.10.99.0/24" and both write it, so the namespace
+/// ends up with two rows for one block — and the next `ipam.prefix.save`
+/// refuses to document it, because it has found a duplicate of itself. That
+/// is easy to hit: the watcher syncs by itself a moment after a collection,
+/// so anybody who presses Sync at the wrong time collides with it.
+///
+/// Serialising is the whole fix, and costs nothing worth having: a sync is a
+/// reconciliation of the entire namespace, so two of them running together
+/// was never the intention. The second waits, then finds the prefixes the
+/// first wrote and refreshes their evidence instead of duplicating them.
+#[derive(Default)]
+pub struct SyncState {
+    running: std::sync::Mutex<()>,
+}
+
 /// Pull everything the devices said into observations.
 pub fn sync(app: &App, settings: &Settings, device_ids: &[String]) -> AppResult<SyncResult> {
+    let state = app.state::<SyncState>();
+    // A poisoned lock still serialises; a panicking sync is not a reason to
+    // start allowing two at once.
+    let _only_one = state
+        .running
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let now = now_ms();
     let harvest = collected::harvest(app, device_ids)?;
     let mut result = SyncResult {

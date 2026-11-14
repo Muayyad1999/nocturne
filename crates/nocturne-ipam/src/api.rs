@@ -332,6 +332,7 @@ fn rows_for(
 // -------------------------------------------------------------------- init
 
 pub fn init(builder: &mut AppBuilder) {
+    builder.state(sync::SyncState::default());
     settings::declare(builder, SETTINGS_SECTION, &Settings::default());
     // Without its tables the feature has nowhere to keep records or
     // evidence: failing here means a broken database, not a condition to

@@ -909,3 +909,77 @@ fn prose(value: &serde_json::Value) -> Vec<String> {
         _ => Vec::new(),
     }
 }
+
+/// Two syncs at once must not discover the same block twice.
+///
+/// Discovery is a read then an insert, so without serialising, both see that
+/// nothing covers a block and both write it — and the next attempt to
+/// *document* that block is refused as a duplicate of itself. The watcher
+/// syncs by itself shortly after a collection, so this is what happens to
+/// anyone who presses Sync at the wrong moment.
+///
+/// It needs a real two-thread runtime and two spawned tasks. `tokio::join!`
+/// on the default single-threaded test runtime proves nothing here: `sync` is
+/// synchronous from end to end, so the first future runs to completion before
+/// the second is ever polled, and the test passes whether or not anything
+/// serialises. This version fails without the lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_syncs_at_once_discover_each_block_once() {
+    let campus = Campus::start(&["AS1", "AS2"]).await;
+
+    let one = campus.app.clone();
+    let two = campus.app.clone();
+    let first = tokio::spawn(async move { one.rpc("ipam.sync", json!({})).await });
+    let second = tokio::spawn(async move { two.rpc("ipam.sync", json!({})).await });
+    first
+        .await
+        .expect("the first task")
+        .expect("the first sync");
+    second
+        .await
+        .expect("the second task")
+        .expect("the second sync");
+
+    let prefixes = campus.ok("ipam.prefixes", json!({})).await;
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    collect_cidrs(&prefixes, &mut seen);
+    let twice: Vec<(&String, &usize)> = seen.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(
+        twice.is_empty(),
+        "a block was discovered more than once: {twice:?}"
+    );
+    assert!(!seen.is_empty(), "the campus has addresses to discover");
+
+    // And the proof that it matters: a discovered block can still be
+    // documented, which is exactly what a duplicate row prevents.
+    let cidr = seen.keys().next().expect("a discovered block").clone();
+    campus
+        .rpc(
+            "ipam.prefix.save",
+            json!({"cidr": cidr, "name": "documented"}),
+        )
+        .await
+        .unwrap_or_else(|err| {
+            panic!("documenting {cidr} should adopt the discovered row: {err:?}")
+        });
+}
+
+/// Every `cidr` anywhere in a prefix tree, counted.
+fn collect_cidrs(value: &serde_json::Value, into: &mut std::collections::BTreeMap<String, usize>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_cidrs(item, into);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            if let Some(cidr) = fields.get("cidr").and_then(serde_json::Value::as_str) {
+                *into.entry(cidr.to_string()).or_default() += 1;
+            }
+            for nested in fields.values() {
+                collect_cidrs(nested, into);
+            }
+        }
+        _ => {}
+    }
+}
