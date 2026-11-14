@@ -23,6 +23,33 @@ struct RequirementsParams {
 }
 
 #[derive(Deserialize)]
+struct ExportParams {
+    /// The requirements to design from. A design is a pure function of these
+    /// (`nocturne_design::generate` reads no clock and no randomness), so the
+    /// document is reproduced rather than carried back and forth: the lab
+    /// inside a `Design` holds every configuration line of every device, and
+    /// `design.generate` deliberately does not return it.
+    #[serde(default)]
+    requirements: Requirements,
+    #[serde(default)]
+    format: ExportFormat,
+}
+
+#[derive(Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ExportFormat {
+    /// The whole design as one document: what to change before deploying,
+    /// the sites, the addressing plan, the links, the bill of materials, the
+    /// tests to run, every device's configuration, and why it is built this
+    /// way.
+    #[default]
+    Markdown,
+    /// Just the configurations, one per device, for handing to a deployment
+    /// tool.
+    Configs,
+}
+
+#[derive(Deserialize)]
 struct CreateLabParams {
     #[serde(default)]
     requirements: Requirements,
@@ -70,6 +97,38 @@ fn create_lab(app: &App, params: CreateLabParams) -> AppResult<LabView> {
     create_record(app, spec, "design.create_lab")
 }
 
+fn export(params: ExportParams) -> AppResult<Value> {
+    let design = nocturne_design::generate(&params.requirements).map_err(refuse)?;
+    if params.format == ExportFormat::Markdown {
+        return Ok(json!({
+            "format": "markdown",
+            "name": design.lab.name,
+            "document": nocturne_design::document(&design),
+        }));
+    }
+    // A host has addressing and services, not a command line, so it has no
+    // configuration to export. Saying which devices those are is the
+    // difference between a complete export and one that quietly left
+    // something out.
+    let mut configs = serde_json::Map::new();
+    let mut without = Vec::new();
+    for node in &design.lab.nodes {
+        match node.startup_config.as_deref() {
+            Some(config) => {
+                configs.insert(node.name.clone(), Value::String(config.to_string()));
+            }
+            None => without.push(json!({"node": node.name, "model": node.model})),
+        }
+    }
+    Ok(json!({
+        "format": "configs",
+        "name": design.lab.name,
+        "configs": configs,
+        // Named, not dropped: these are the nodes with no command line.
+        "without_a_configuration": without,
+    }))
+}
+
 pub fn init(builder: &mut AppBuilder) {
     let router = &mut builder.router;
     router.add("design.examples", |_app: App, _: NoParams| async move {
@@ -93,5 +152,9 @@ pub fn init(builder: &mut AppBuilder) {
     router.add(
         "design.create_lab",
         |app: App, params: CreateLabParams| async move { create_lab(&app, params) },
+    );
+    router.add(
+        "design.export",
+        |_app: App, params: ExportParams| async move { export(params) },
     );
 }

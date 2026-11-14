@@ -164,6 +164,7 @@ mod tests {
             "design.validate",
             "design.generate",
             "design.create_lab",
+            "design.export",
             // insights
             "insights.scan",
             "insights.list",
