@@ -38,3 +38,12 @@ kinds:
         oper_up: true
         speed_bps: 100000000
         duplex: full
+
+# The `status` listing names ports of a different switch, so none of its
+# rows merges. The collector reports that rather than letting the
+# collection pass for complete — which is also the honest measure of how
+# far this step is verified: not at all. See NOTES.md.
+problems:
+  - kind: interfaces
+    code: partial
+    contains: "none of them matched an existing row on `name`"

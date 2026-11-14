@@ -459,6 +459,8 @@ impl Collector {
         let mut required_failures: Vec<String> = Vec::new();
         let mut field_errors = 0;
         let mut first_field_error: Option<String> = None;
+        // Steps that read rows and placed none of them.
+        let mut unmerged: Vec<String> = Vec::new();
 
         for (index, step) in steps.iter().enumerate() {
             let command = step.command.trim();
@@ -506,7 +508,14 @@ impl Collector {
                         created = true;
                         count
                     } else if let Some(key) = step.merge_on.as_deref() {
-                        merge(&mut rows, mapped.rows, key, &names, &model)
+                        let (merged, offered) = merge(&mut rows, mapped.rows, key, &names, &model);
+                        if merged == 0 && offered > 0 {
+                            unmerged.push(format!(
+                                "`{command}` read {} but none of them matched an existing row on `{key}`",
+                                plural(offered, "row")
+                            ));
+                        }
+                        merged
                     } else {
                         let count = mapped.rows.len();
                         rows.extend(mapped.rows);
@@ -556,6 +565,21 @@ impl Collector {
                     .into(),
             });
             return None;
+        }
+        // A step that enriches rows and matched none of them added nothing at
+        // all. The collection is still good — this is `Partial`, not
+        // `Failed` — but it must not pass for complete, because every field
+        // that step was there to fill is missing and nothing else says so.
+        if !unmerged.is_empty() {
+            snapshot.problems.push(Problem {
+                kind,
+                code: ProblemCode::Partial,
+                message: format!(
+                    "{} added nothing: {}",
+                    plural(unmerged.len(), "step"),
+                    unmerged.join("; ")
+                ),
+            });
         }
         if !required_failures.is_empty() {
             snapshot.problems.push(Problem {
@@ -807,7 +831,15 @@ fn extend_list(current: &mut Value, incoming: Value) {
 /// it (several addresses for one interface). When the key occurs several
 /// times on both sides and equally often — the same listing parsed twice —
 /// the rows are paired in order instead, so that each keeps its own values.
-fn merge(rows: &mut [Row], new: Vec<Row>, key: &str, names: &Names, model: &Row) -> usize {
+/// Enrich existing rows from `new`, matching on `key`.
+///
+/// Returns how many of `new`'s rows landed somewhere and how many were
+/// offered. The second number is the one that matters when the first is zero:
+/// a step whose rows match nothing is a silent no-op today, and that is
+/// exactly how a step can look fine for months while contributing nothing —
+/// the key is wrong, or the names normalise differently, or the output came
+/// from a different device than the rows it was meant to enrich.
+fn merge(rows: &mut [Row], new: Vec<Row>, key: &str, names: &Names, model: &Row) -> (usize, usize) {
     let mut targets: HashMap<String, Vec<usize>> = HashMap::new();
     for (position, row) in rows.iter().enumerate() {
         if let Some(value) = row.get(key).filter(|value| !is_blank(value)) {
@@ -817,6 +849,7 @@ fn merge(rows: &mut [Row], new: Vec<Row>, key: &str, names: &Names, model: &Row)
                 .push(position);
         }
     }
+    let offered = new.len();
     let mut incoming: IndexMap<String, Vec<Row>> = IndexMap::new();
     for row in new {
         if let Some(value) = row.get(key).filter(|value| !is_blank(value)) {
@@ -844,7 +877,7 @@ fn merge(rows: &mut [Row], new: Vec<Row>, key: &str, names: &Names, model: &Row)
             }
         }
     }
-    merged
+    (merged, offered)
 }
 
 /// How interface names are treated for one kind of row.
@@ -1712,7 +1745,11 @@ Vlan10 is down, mtu 9000, address 10.0.10.1/24
             &names,
             &model,
         );
-        assert_eq!(merged, 3);
+        assert_eq!(
+            merged,
+            (3, 4),
+            "three of the four rows offered found a home"
+        );
         assert_eq!(
             existing
                 .iter()
@@ -1730,7 +1767,7 @@ Vlan10 is down, mtu 9000, address 10.0.10.1/24
             &names,
             &model,
         );
-        assert_eq!(merged, 1);
+        assert_eq!(merged, (1, 1));
         assert!(
             existing
                 .iter()

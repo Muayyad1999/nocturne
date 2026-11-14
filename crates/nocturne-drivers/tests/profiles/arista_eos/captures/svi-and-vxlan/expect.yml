@@ -28,3 +28,15 @@ kinds:
         mac: ""
         mtu: null
         ipv4: []
+
+# `show interfaces status` here comes from a different device than
+# `show interfaces`, so not one of its rows matches a row to enrich. The
+# collector says so rather than passing for complete, which is the whole
+# point: every field that step exists to fill — `mode`, `vlan`, `duplex`,
+# `speed_bps` — is missing from the rows below, and this is the only thing
+# that says why. It is also an honest statement of how far this step is
+# verified: not at all. See NOTES.md.
+problems:
+  - kind: interfaces
+    code: partial
+    contains: "none of them matched an existing row on `name`"
