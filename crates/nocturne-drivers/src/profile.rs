@@ -1029,9 +1029,21 @@ impl Registry {
                 let base = self.merged.get(parent).ok_or_else(|| {
                     fail(&id, format!("extends: unknown parent profile `{parent}`"))
                 })?;
-                merge(base.clone(), document)
+                merge(base.clone(), document).map_err(|problem| fail(&id, problem))?
             }
-            None => document,
+            None => {
+                let mut found = Vec::new();
+                extras(&document, "", &mut found);
+                if let Some(first) = found.first() {
+                    return Err(fail(
+                        &id,
+                        format!(
+                            "{first}: adding to an inherited list needs something to inherit from; this profile has no `extends`"
+                        ),
+                    ));
+                }
+                document
+            }
         };
         if let Yaml::Mapping(map) = &mut merged {
             match own_maturity {
@@ -1159,19 +1171,85 @@ impl Registry {
 }
 
 /// Merge `child` over `base`: mappings merge key by key, everything else is replaced.
-fn merge(base: Yaml, child: Yaml) -> Yaml {
+/// The suffix that makes a child *add to* an inherited list instead of
+/// replacing it.
+const EXTRA: &str = "_extra";
+
+/// Merge a child profile over its parent.
+///
+/// A mapping merges key by key; anything else the child states replaces what
+/// the parent said. A list is "anything else" — which is the right default
+/// (a child that lists its own `init` commands means *those* commands) but
+/// made adding one entry to an inherited list cost a full restatement of it.
+/// That is not a theoretical cost: restating `policy.read_only` to add two
+/// IPv6 ping patterns means retyping eight security-relevant regular
+/// expressions, and restating a list of secret patterns is how a pattern
+/// that captured a key *number* instead of a key came to be in this
+/// repository at all.
+///
+/// So `<name>_extra: [...]` appends to the parent's `<name>` list and leaves
+/// the rest of it alone. The extras go on the end, which is what order means
+/// for the lists where order matters (`cli.init`), and does not matter for
+/// the lists where it does not (any match in `policy.read_only` wins).
+fn merge(base: Yaml, child: Yaml) -> Result<Yaml, String> {
     match (base, child) {
         (Yaml::Mapping(mut base), Yaml::Mapping(child)) => {
             for (key, value) in child {
+                let appending = key.as_str().and_then(|key| key.strip_suffix(EXTRA));
+                if let Some(target) = appending {
+                    if target.is_empty() {
+                        return Err(format!("`{EXTRA}` is not a field name on its own"));
+                    }
+                    let Yaml::Sequence(extra) = value else {
+                        return Err(format!("{target}{EXTRA}: must be a list"));
+                    };
+                    let key = Yaml::String(target.to_string());
+                    let mut combined = match base.remove(&key) {
+                        Some(Yaml::Sequence(items)) => items,
+                        // Nothing inherited to add to: the extras are the
+                        // whole list, which is what the author asked for.
+                        None => Vec::new(),
+                        Some(_) => {
+                            return Err(format!(
+                                "{target}{EXTRA}: `{target}` is inherited as a single value, not a list, so there is nothing to add to"
+                            ));
+                        }
+                    };
+                    combined.extend(extra);
+                    base.insert(key, Yaml::Sequence(combined));
+                    continue;
+                }
                 let merged = match base.remove(&key) {
-                    Some(existing) => merge(existing, value),
+                    Some(existing) => merge(existing, value)?,
                     None => value,
                 };
                 base.insert(key, merged);
             }
-            Yaml::Mapping(base)
+            Ok(Yaml::Mapping(base))
         }
-        (_, child) => child,
+        (_, child) => Ok(child),
+    }
+}
+
+/// Every `<name>_extra` key in a document, by path.
+///
+/// Only meaningful with a parent to add to, so a profile without `extends`
+/// is told that plainly rather than left to serde's "unknown field".
+fn extras(document: &Yaml, path: &str, into: &mut Vec<String>) {
+    if let Yaml::Mapping(map) = document {
+        for (key, value) in map {
+            let Some(name) = key.as_str() else { continue };
+            let here = if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{path}.{name}")
+            };
+            if name.ends_with(EXTRA) {
+                into.push(here);
+                continue;
+            }
+            extras(value, &here, into);
+        }
     }
 }
 
@@ -1225,6 +1303,94 @@ collect:
       parser: colon
       map: {hostname: name, os_version: "version | regex_search('([\\d.]+)')"}
 "#;
+
+    /// `<name>_extra` adds to an inherited list rather than replacing it.
+    ///
+    /// This exists because the alternative was restating the list, and a
+    /// restatement is a chance to weaken it. It is how a secret pattern that
+    /// captured a key *number* instead of a key reached this repository: the
+    /// author needed one more pattern and copied nine.
+    #[test]
+    fn a_child_can_add_to_an_inherited_list_without_restating_it() {
+        const ADDS: &str = r#"
+id: acme_adds
+name: Acme, adding
+extends: _switch_base
+policy:
+  read_only_extra: ['^ping6\s+\S']
+cli:
+  init_extra: ["terminal width 511"]
+"#;
+        let mut registry = Registry::empty();
+        registry.add(BASE, Origin::Builtin).unwrap();
+        let platform = registry.add(ADDS, Origin::User).unwrap();
+        let profile = &platform.profile;
+
+        // The inherited entry is still there, untouched, and the new one is
+        // after it.
+        assert_eq!(
+            profile.policy.read_only,
+            vec![r"^show\b", r"^ping6\s+\S"],
+            "the parent's pattern survives and the child's is added"
+        );
+        assert_eq!(
+            profile.policy.dangerous,
+            vec![r"^reload\b"],
+            "a list the child said nothing about is inherited whole"
+        );
+        // Order matters for commands, and the extras go last.
+        assert_eq!(
+            profile.cli.init,
+            vec!["terminal length 0", "terminal width 511"]
+        );
+    }
+
+    #[test]
+    fn adding_to_a_list_is_refused_when_there_is_nothing_to_add_to() {
+        let mut registry = Registry::empty();
+        registry.add(BASE, Origin::Builtin).unwrap();
+
+        // No parent at all: the author almost certainly meant `read_only`.
+        let orphan = r#"
+id: acme_orphan
+name: Orphan
+policy:
+  read_only_extra: ['^show\b']
+"#;
+        let err = registry.add(orphan, Origin::User).unwrap_err().to_string();
+        assert!(
+            err.contains("policy.read_only_extra") && err.contains("no `extends`"),
+            "{err}"
+        );
+
+        // Not a list in the child.
+        let not_a_list = r#"
+id: acme_scalar
+name: Scalar
+extends: _switch_base
+policy:
+  read_only_extra: '^show\b'
+"#;
+        let err = registry
+            .add(not_a_list, Origin::User)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a list"), "{err}");
+
+        // Inherited as a single value, so there is no list to add to.
+        let not_inherited_as_list = r#"
+id: acme_wrong
+name: Wrong
+extends: _switch_base
+config:
+  running_extra: ['show running-config all']
+"#;
+        let err = registry
+            .add(not_inherited_as_list, Origin::User)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nothing to add to"), "{err}");
+    }
 
     #[test]
     fn child_profiles_merge_over_their_parent() {

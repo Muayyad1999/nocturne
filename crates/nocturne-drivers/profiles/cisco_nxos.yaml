@@ -48,14 +48,9 @@ cli:
   # not exist. Asking for it would print an error on every login.
   enable: null
   user_prompt: null
-  errors:
-    # The first five patterns are `_cli_ios_like`'s, restated because a child
-    # replaces a list rather than adding to it. Do not weaken them.
-    - '^%\s?(?:[A-Za-z]+:\s)?(?:Invalid|Incomplete|Ambiguous|Unknown|Unrecognized|Unrecognised|Bad|Illegal|Error|Cannot|Can''t|Could not|Unable|Failed|Failure|Authorization failed|Permission denied|Access denied|Not allowed|Not supported|Unsupported|No such|Type ")'
-    - '^%\s?[\w.''"/()\-]+\s.*?(?:\bnot (?:active|enabled|supported|allowed|permitted|configured|found|available|valid|running|possible)\b|\bis not (?:a|an|in|on)\b|does not exist\.?\s*$|\balready (?:exists|in use|configured|assigned|defined)\b|\boverlaps with\b|\bconflicts with\b|\bis invalid\b|\bout of range\b|\bmust be\b|\bmay not be\b|\bcannot be\b|\bcan not be\b|\bfailed\b|\brejected\b)'
-    - '^Command rejected\b'
-    - '^Command authorization failed'
-    - '^startup-config is not present'
+  # Added to `_cli_ios_like`'s five error patterns rather than restated over
+  # them, so the inherited ones stay exactly as the base defines them.
+  errors_extra:
     # NX-OS's own: the features report a refusal with this prefix and no
     # percent sign at all ("ERROR: Invalid number of arguments",
     # "ERROR: Ethernet1/1: Config not allowed, as first port of the
@@ -93,25 +88,19 @@ config:
   # claim a command NX-OS does not have.
 
 policy:
-  # The first eight patterns are `_cli_ios_like`'s, restated because a child
-  # replaces a list rather than adding to it. Do not weaken them: everything
-  # that is not matched here is a change.
-  read_only:
-    - '^sh(?:o(?:w)?)?\s+\S'
-    - '^pi(?:n(?:g)?)?\s+\S'
-    - '^tr(?:a(?:c(?:e(?:r(?:o(?:u(?:t(?:e)?)?)?)?)?)?)?)?\s+\S'
-    - '^dir\b'
-    - '^more\s+\S'
-    - '^ter(?:m(?:i(?:n(?:a(?:l)?)?)?)?)?\s+(?:len(?:g(?:t(?:h)?)?)?|wid(?:t(?:h)?)?|no mon(?:i(?:t(?:o(?:r)?)?)?)?|mon(?:i(?:t(?:o(?:r)?)?)?)?)\b'
-    - '^(?:en(?:a(?:b(?:l(?:e)?)?)?)?|disa(?:b(?:l(?:e)?)?)?|exit|end|logout)$'
-    - '^verify\s+\S'
-    # NX-OS's own: IOS reaches IPv6 with `ping ipv6 …` / `traceroute ipv6 …`,
-    # which the patterns above already allow, but on NX-OS the commands are
-    # one word (`ping6`, `traceroute6`) and nothing above reaches them — the
-    # abbreviation patterns demand white space straight after `ping`. Both
-    # only send packets, exactly as their IPv4 forms do.
+  # Added to `_cli_ios_like`'s eight read-only patterns rather than restating
+  # them: `read_only_extra` appends, so those eight stay exactly as the base
+  # defines them and cannot be weakened from here by a copying mistake.
+  #
+  # IOS reaches IPv6 with `ping ipv6 …` / `traceroute ipv6 …`, which the
+  # inherited patterns already allow. On NX-OS the commands are one word, and
+  # nothing inherited reaches them: the abbreviation patterns demand white
+  # space straight after `ping`. Both only send packets, exactly as their
+  # IPv4 forms do. A bare `ping6` is a change — `policy.yml` asserts it.
+  read_only_extra:
     - '^ping6\s+\S'
     - '^traceroute6\s+\S'
+
 
 collect:
   facts:

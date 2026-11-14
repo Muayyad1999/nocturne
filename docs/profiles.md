@@ -691,6 +691,36 @@ the reload-timer guard, and that is all it has to say.
 
 Use a base when two platforms share a *CLI*, not when they share a vendor.
 
+### Adding to an inherited list
+
+Replacing is the right default — a child that lists its own `init` commands
+means *those* commands — but it is wrong when you want the parent's list
+**and** one more entry. Write `<name>_extra` and your entries are appended:
+
+```yaml
+extends: _cli_ios_like
+policy:
+  # NX-OS spells these as one word, so the inherited `ping`/`traceroute`
+  # patterns cannot match them. The other eight stay exactly as the base
+  # defines them.
+  read_only_extra:
+    - '^ping6\s+\S'
+    - '^traceroute6\s+\S'
+```
+
+Use it, and do not copy a list in to add to it. Copying a list is how a
+security-relevant one gets weakened: this repository has already had a secret
+pattern that captured a key *number* instead of a key, written by an author
+who needed one more pattern and restated nine. Restating
+`policy.read_only` or `policy.dangerous` means retyping patterns that decide
+whether a command may be sent to a device at all.
+
+The extras go on the end, which is what order means for the lists where order
+matters (`cli.init`) and does not matter for those where it does not (any
+match in `policy.read_only` wins). It is refused, with the reason, if the
+profile has no `extends`, if the value is not a list, or if the parent holds
+that name as a single value rather than a list.
+
 ## Testing a profile
 
 ### While you write it

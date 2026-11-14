@@ -113,36 +113,14 @@ config:
   guard: null
 
 policy:
-  # Copied verbatim from `_cli_ios_like`, because `extends` replaces a list as
-  # a whole: stating only the XR additions below would silently drop every
-  # inherited pattern. Keep the two in step.
-  read_only:
-    - '^sh(?:o(?:w)?)?\s+\S'
-    - '^pi(?:n(?:g)?)?\s+\S'
-    - '^tr(?:a(?:c(?:e(?:r(?:o(?:u(?:t(?:e)?)?)?)?)?)?)?)?\s+\S'
-    - '^dir\b'
-    - '^more\s+\S'
-    - '^ter(?:m(?:i(?:n(?:a(?:l)?)?)?)?)?\s+(?:len(?:g(?:t(?:h)?)?)?|wid(?:t(?:h)?)?|no mon(?:i(?:t(?:o(?:r)?)?)?)?|mon(?:i(?:t(?:o(?:r)?)?)?)?)\b'
-    - '^(?:en(?:a(?:b(?:l(?:e)?)?)?)?|disa(?:b(?:l(?:e)?)?)?|exit|end|logout)$'
-    - '^verify\s+\S'
+  # Added to `_cli_ios_like`'s lists rather than restating them: `_extra`
+  # appends, so every inherited pattern stays exactly as the base defines it.
+  # These used to be copied in and "kept in step by hand", which is a standing
+  # invitation to weaken a security-relevant list by a copying mistake.
+  read_only_extra:
     # XR only: the admin plane answers `show` the same way the XR plane does.
     - '^adm(?:i(?:n)?)?\s+sh(?:o(?:w)?)?\s+\S'
-  dangerous:
-    - '^rel(?:o(?:a(?:d)?)?)?(?:\s*$|\s+[^cC\s])'
-    - '^er(?:a(?:s(?:e)?)?)?\b'
-    - '^wr(?:i(?:t(?:e)?)?)?\s+e(?:r(?:a(?:s(?:e)?)?)?)?\b'
-    - '^for(?:m(?:a(?:t)?)?)?\b'
-    - '^del(?:e(?:t(?:e)?)?)?\b'
-    - '^sq(?:u(?:e(?:e(?:z(?:e)?)?)?)?)?\b'
-    - '^(?:rmdir|mkdir)\b'
-    - '^conf(?:i(?:g(?:u(?:r(?:e)?)?)?)?)?\s+rep(?:l(?:a(?:c(?:e)?)?)?)?\b'
-    - '^boot\s+system\b'
-    - '^(?:test|hw-module|power|redundancy force-switchover|install|request platform software|factory-reset)\b'
-    - '^cl(?:e(?:a(?:r)?)?)?\s+(?:line|ip bgp|ip ospf|crypto|vtp)\b'
-    - '^deb(?:u(?:g)?)?\s+all\b'
-    - '^copy\s+(?:tftp|ftp|scp|sftp|https?|rcp|usb\S*|flash|bootflash|disk\d|slot\d|nvram)\S*\s+\S'
-    - '^archive\s+download-sw\b'
-    - '^(?:tclsh|guestshell|bash|run bash|shell|start shell|app-hosting)\b'
+  dangerous_extra:
     # XR only. `admin <anything>` reaches the hypervisor plane, where a reload
     # takes the whole chassis down; `clear configuration inconsistency` and
     # `load` rewrite the configuration wholesale.

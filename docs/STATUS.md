@@ -203,9 +203,6 @@ of it:
   should leave it empty) and therefore makes a typo indistinguishable from an
   absent field. Catching it properly means checking a map's names against the
   parser's at load time.
-- A child profile *replaces* an inherited list rather than extending it, so
-  adding one pattern means restating all of them — which is exactly how the
-  secret-pattern fault above got in. An append form would remove that class.
 - Junos and IOS-XR have the ideal dead-man switch (`commit confirmed`) and
   cannot use it: `config.guard` runs its commands before configuration mode is
   entered, and `commit confirmed` is only valid inside it.
