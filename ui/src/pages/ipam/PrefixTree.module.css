@@ -1,0 +1,223 @@
+/*
+ * The tree is dense — a campus has hundreds of blocks and they are scanned,
+ * not read — so rows are 28px and nothing wraps. Everything that cannot fit
+ * is in the panel beside it.
+ */
+
+.tree {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: var(--sp-16);
+}
+
+.group + .group {
+  margin-top: var(--sp-8);
+}
+
+/* The root of a namespace: production, or one lab. Sticky, because scrolling
+   past it must not leave a lab's blocks looking like production's. */
+.groupHead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-6) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+
+.groupTitle {
+  margin: 0;
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+}
+
+.groupCount {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.groupDiscovered {
+  color: var(--info);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px 116px 88px;
+  gap: var(--sp-8);
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--sp-12);
+  border-bottom: 1px solid var(--line);
+  cursor: default;
+}
+
+.row:hover {
+  background: var(--bg-2);
+}
+
+.row[data-selected] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cellName {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.chevron,
+.chevronSpace {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.chevron {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: transform 120ms ease-out;
+}
+
+.chevron[data-open] {
+  transform: rotate(90deg);
+  color: var(--text-2);
+}
+
+.cidr {
+  flex: 0 0 auto;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.name,
+.vlan,
+.devices,
+.none,
+.noPct {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vlan,
+.devices,
+.none,
+.noPct {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.none {
+  font-style: italic;
+}
+
+.cellRecord,
+.cellSeen {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.cellSeen {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Utilisation: a bar and the number. The bar is never the only signal — the
+   percentage is written next to it, and a block whose fullness cannot be
+   known says so in words instead. */
+.cellUse {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.bar {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-4);
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ok);
+}
+
+.bar[data-tone='warn'] .fill {
+  background: var(--warn);
+}
+
+.bar[data-tone='crit'] .fill {
+  background: var(--crit);
+}
+
+.bar[data-tone='idle'] .fill {
+  background: var(--idle);
+}
+
+.pct {
+  flex: none;
+  width: 44px;
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The columns answer to the width of the pane: what a block is called
+   matters more than how many interfaces are in it, so the right-hand columns
+   go first and the name keeps its room. */
+@container ipamtree (max-width: 520px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr) 88px 104px;
+  }
+
+  .cellSeen {
+    display: none;
+  }
+}
+
+@container ipamtree (max-width: 380px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr) 88px;
+  }
+
+  .cellUse {
+    display: none;
+  }
+}

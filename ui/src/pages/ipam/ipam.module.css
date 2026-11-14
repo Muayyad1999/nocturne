@@ -1,0 +1,92 @@
+/*
+ * The screen's own frame. `Page flush` gives no padding, so the toolbar and
+ * the panes bring their own; the body is a container, which is how the tree
+ * and the address grid know they are in a narrow column (the assistant dock
+ * open on a 1280px window leaves about 900px).
+ */
+
+.toolbar {
+  flex: none;
+  padding: var(--sp-8) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.filter {
+  flex: none;
+  width: 170px;
+}
+
+.search {
+  flex: none;
+  width: 240px;
+}
+
+.tabs {
+  flex: none;
+  padding: 0 var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.body {
+  container: ipambody / inline-size;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.split {
+  flex: 1;
+  min-height: 0;
+}
+
+.treePane {
+  /* Its own container, so the tree's columns answer to the width of the
+     pane rather than to the width of the screen. */
+  container: ipamtree / inline-size;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+
+.detailPane {
+  container: ipamdetail / inline-size;
+  display: flex;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+}
+
+/*
+ * On a small window with the assistant dock open there is about 840px of
+ * content, and a tree the user sized for a wide window would leave the panel
+ * beside it one word wide. The remembered size is kept — it is only clamped
+ * while there is no room for it.
+ */
+@container ipambody (max-width: 1040px) {
+  .split > :first-child {
+    max-width: 54cqw;
+  }
+}
+
+/* The tabs that are one list rather than two panes. */
+.pane {
+  display: flex;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  padding: var(--sp-12);
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+}

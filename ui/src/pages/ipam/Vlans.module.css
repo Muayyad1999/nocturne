@@ -1,0 +1,43 @@
+.wrap {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-12);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.about {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+}
+
+.quiet {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.site,
+.where,
+.mismatch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.against {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  white-space: nowrap;
+}

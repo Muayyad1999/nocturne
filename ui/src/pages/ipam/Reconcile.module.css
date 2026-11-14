@@ -1,0 +1,269 @@
+/* Coverage first, then the refusals, then what was found. */
+
+.wrap {
+  display: flex;
+  overflow: auto;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+  padding-bottom: var(--sp-24);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-16);
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.headText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  max-width: 88ch;
+}
+
+.title {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.headline {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-16);
+  font-weight: var(--fw-semibold);
+}
+
+.headline[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.headline[data-tone='idle'] {
+  color: var(--text-2);
+}
+
+.headline[data-tone='ok'] {
+  color: var(--ok);
+}
+
+.detail,
+.span,
+.about,
+.emptySentence,
+.rowDetail,
+.truncated {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.span,
+.about,
+.rowDetail {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.emptySentence {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.truncated {
+  padding: var(--sp-6) var(--sp-8);
+  border-left: 2px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-11);
+}
+
+.headActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.clear {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--ok);
+}
+
+/* ------------------------------------------------------------- refusals */
+
+.refused {
+  padding: var(--sp-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg-2);
+}
+
+.refusedTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0 0 var(--sp-8);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+}
+
+.refusedList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  max-width: 100ch;
+  margin: 0;
+  padding-left: var(--sp-16);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------- the device coverage */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-11);
+}
+
+.table th {
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-3);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+}
+
+.table tr[data-silent] td {
+  background: var(--warn-soft);
+}
+
+.number {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.never {
+  color: var(--warn);
+}
+
+.device {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-1);
+}
+
+.reason {
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------- the rows */
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin: var(--sp-8) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-1);
+}
+
+.rowMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.mono {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.host {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.summary,
+.block {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.sides {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.sideLabel {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.evidence li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}

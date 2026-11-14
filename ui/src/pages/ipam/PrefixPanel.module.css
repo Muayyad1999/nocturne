@@ -1,0 +1,209 @@
+/* The right-hand pane: one block, in full. It scrolls on its own. */
+
+.panel {
+  display: flex;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-12);
+  padding: var(--sp-12);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.cidr {
+  margin: 0;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-20);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+}
+
+.name {
+  color: var(--text-2);
+  font-size: var(--fs-13);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  align-items: center;
+}
+
+.description {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* A discovered block's provenance: the whole of its standing, so it gets a
+   box of its own rather than a badge. */
+.provenance {
+  display: flex;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid color-mix(in srgb, var(--info) 40%, var(--line));
+  border-radius: var(--radius-card);
+  background: var(--info-soft);
+  color: var(--text-2);
+}
+
+.provenanceTitle {
+  margin: 0 0 var(--sp-4);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.provenanceList {
+  margin: 0 0 var(--sp-8);
+  padding-left: var(--sp-16);
+  color: var(--text-2);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+}
+
+/* ---------------------------------------------------------- utilisation */
+
+.useRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.useFigures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+.usePct {
+  color: var(--text-1);
+  font-size: var(--fs-20);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+}
+
+.usePct[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.usePct[data-tone='crit'] {
+  color: var(--crit);
+}
+
+.usePct[data-tone='idle'] {
+  color: var(--text-1);
+}
+
+.useLabel {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.bar {
+  display: block;
+  overflow: hidden;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-4);
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--ok);
+}
+
+.bar[data-tone='warn'] .fill {
+  background: var(--warn);
+}
+
+.bar[data-tone='crit'] .fill {
+  background: var(--crit);
+}
+
+.bar[data-tone='idle'] .fill {
+  background: var(--idle);
+}
+
+.useDetail,
+.quiet {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+}
+
+.facts {
+  max-width: 560px;
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------ the lists */
+
+.ranges,
+.devices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0 0 var(--sp-6);
+  padding: 0;
+  list-style: none;
+}
+
+.ranges li,
+.devices li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.mono {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.rangeCount,
+.deviceWhen {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.deviceName {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -1,0 +1,242 @@
+/*
+ * The grid's four states are four different fills *and* four different words
+ * in the key: colour is never the only signal (spec-ui.md). The one that
+ * matters most is the empty one — "no record, nothing seen" — so it is the
+ * quietest fill on screen and the only one whose meaning is spelt out twice,
+ * in the key and in the backend's own note under it.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4) var(--sp-12);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key {
+  display: flex;
+  align-items: center;
+}
+
+.keyInner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.swatch {
+  display: inline-block;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+}
+
+.keyLabel {
+  color: var(--text-2);
+  font-size: var(--fs-11);
+}
+
+.keyCount {
+  color: var(--text-1);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.note,
+.coverage,
+.scope {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+}
+
+.note {
+  color: var(--text-2);
+}
+
+.coverageWarn {
+  color: var(--warn);
+}
+
+/* "last read 7s ago" is one fact: it does not break across two lines. */
+.nowrap {
+  white-space: nowrap;
+}
+
+.coverage {
+  flex-wrap: wrap;
+  gap: 0;
+}
+
+/* ------------------------------------------------------------------ the grid */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 2px;
+  max-width: 720px;
+}
+
+.cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-2);
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  transition: transform 120ms ease-out;
+}
+
+.cell:hover {
+  transform: scale(1.12);
+  border-color: var(--line-strong);
+  z-index: 1;
+}
+
+.cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  z-index: 2;
+}
+
+.cell[data-selected] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+.cellLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Documented and seen: the plan and the network agree. */
+.cell[data-state='both'],
+.swatch[data-state='both'] {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+/* Documented only: a record nothing confirms. */
+.cell[data-state='documented'],
+.swatch[data-state='documented'] {
+  border-color: color-mix(in srgb, var(--info) 50%, transparent);
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+/* Seen only: the network has it and nobody wrote it down. */
+.cell[data-state='observed'],
+.swatch[data-state='observed'] {
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* Nothing known. Deliberately the quietest thing here. */
+.cell[data-state='unknown'],
+.swatch[data-state='unknown'] {
+  border-color: var(--line);
+  background: var(--bg-1);
+  color: var(--text-3);
+}
+
+.cell[data-state='conflict'],
+.swatch[data-state='conflict'] {
+  border-color: var(--crit);
+  background: var(--crit-soft);
+  color: var(--crit);
+}
+
+/*
+ * What the *plan* says, on top of what is known: the documented gateway gets
+ * a ring, the documented DHCP range a dotted underline. Both are records, so
+ * neither changes a cell's state colour — they say "somebody wrote this",
+ * not "something answered here".
+ */
+.cell[data-plan='gateway'],
+.swatch[data-plan='gateway'] {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.cell[data-plan='dhcp'],
+.swatch[data-plan='dhcp'] {
+  border-bottom: 2px dotted var(--accent);
+}
+
+.swatch[data-plan] {
+  background: var(--bg-2);
+}
+
+/* A reserved record is hatched: it is a decision, not an observation. */
+.cell[data-status='reserved'] {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--info) 35%, transparent) 3px 4px
+  );
+}
+
+.cell[data-status='dhcp'] {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--accent) 30%, transparent) 3px 4px
+  );
+}
+
+/* A record that contradicts a sighting carries a corner mark as well as a
+   colour, because a disagreement is the thing this screen exists to show. */
+.flag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-top: 6px solid var(--crit);
+  border-left: 6px solid transparent;
+}
+
+.muted {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+/* Sixteen columns need about 420px; below that the block is drawn eight
+   wide rather than squeezed into cells nothing fits in. */
+@container ipamdetail (max-width: 470px) {
+  .grid {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}

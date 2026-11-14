@@ -1,0 +1,165 @@
+/* Two halves of one address, never merged into one. */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.meaning {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+  text-transform: none;
+}
+
+.heading[data-tone='crit'] {
+  color: var(--crit);
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-regular);
+}
+
+.quiet,
+.hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------- disagreements */
+
+.disagreements {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.disagreements > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-8);
+  border: 1px solid color-mix(in srgb, var(--crit) 35%, var(--line));
+  border-radius: var(--radius-control);
+  background: var(--crit-soft);
+}
+
+.field {
+  color: var(--crit);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-12);
+}
+
+.documented,
+.observed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sideLabel {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.mono {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* -------------------------------------------------------------- sightings */
+
+.sightings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sightings > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+}
+
+.sightingHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.device {
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.sightingDetail {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.5;
+}
