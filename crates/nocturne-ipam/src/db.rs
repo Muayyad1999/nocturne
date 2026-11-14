@@ -688,16 +688,14 @@ pub fn search(store: &Store, query: &str, limit: usize) -> AppResult<Found> {
     let mut clauses = Vec::new();
     let mut values: Vec<String> = Vec::new();
     for word in &words {
-        let bare = bare_mac(word);
         // A MAC typed in any notation becomes its bare digits, which is also
         // in `search`; everything else is matched as typed.
-        let needle =
-            if word.len() >= 6 && bare.len() >= 6 && bare.chars().all(|c| c.is_ascii_hexdigit()) {
-                bare
-            } else {
-                word.clone()
-            };
-        clauses.push("search LIKE ?".to_string());
+        let needle = if looks_like_a_mac(word) {
+            bare_mac(word)
+        } else {
+            word.clone()
+        };
+        clauses.push("search LIKE ? ESCAPE '\\'".to_string());
         values.push(format!("%{}%", escape_like(&needle)));
     }
     let where_clause = clauses.join(" AND ");
@@ -724,8 +722,57 @@ pub fn search(store: &Store, query: &str, limit: usize) -> AppResult<Found> {
 }
 
 /// `LIKE` treats these as wildcards; a search for `10.1.1%` means the text.
+/// A MAC, or something that only looks like one?
+///
+/// This decides whether a search term is matched as typed or stripped to bare
+/// hexadecimal digits, and getting it wrong is expensive: the rule used to be
+/// "six or more hexadecimal digits once the punctuation is gone", and
+/// `10.10.10` strips to `101010`, which is six hexadecimal digits. So an
+/// address was searched for as `%101010%`, matched nothing, and an IPAM
+/// answered "nothing is known about that address" about an address it had a
+/// record of. `10.10.1` was fine, because it strips to five.
+///
+/// The separators decide it instead, because the notations do not overlap:
+///
+/// * nothing at all — `aabbccddeeff`: bare digits, so a MAC;
+/// * `:` or `-` in pairs — `aa:bb:cc`, `aa-bb-cc`: a MAC, whole or a prefix;
+/// * `.` in fours — `aabb.ccdd.eeff`: Cisco's notation, a MAC;
+/// * `.` in anything else — `10.10.10`, `10.10.10.5`: an address;
+/// * `:` in groups that are not pairs — `2001:db8`: an IPv6 address.
+fn looks_like_a_mac(word: &str) -> bool {
+    let bare = bare_mac(word);
+    // A MAC is twelve digits; fewer than six is too little of one to be sure.
+    if !(6..=12).contains(&bare.len()) || !bare.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let groups: Vec<&str> = word.split(['.', ':', '-']).collect();
+    if groups.len() == 1 {
+        return true;
+    }
+    let width = if word.contains('.') && !word.contains(':') {
+        // Cisco writes a MAC in three groups of four; dotted decimal does not.
+        4
+    } else {
+        2
+    };
+    groups.iter().all(|group| group.len() == width)
+}
+
+/// Escape, not delete.
+///
+/// `_` and `%` are LIKE's wildcards and have to be escaped — but deleting
+/// them silently changes the question, so a search for `desk_12` quietly
+/// became a search for `desk12` and answered about something else. The
+/// clauses that use this carry `ESCAPE '\\'`.
 fn escape_like(text: &str) -> String {
-    text.replace(['\\', '%', '_'], "")
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(character);
+    }
+    out
 }
 
 /// A stable id for a new record document.
@@ -814,8 +861,27 @@ mod tests {
             1
         );
         assert_eq!(search(&store, "nothing", 50).unwrap().records.len(), 0);
-        // A wildcard is text, not a pattern.
-        assert_eq!(search(&store, "%", 50).unwrap().records.len(), 1);
+        // An address is an address, even when its digits are all
+        // hexadecimal: `10.10.10` strips to `101010`, and the old rule read
+        // that as a MAC and found nothing.
+        put_record(&store, &record("10.10.10.5", "desk_12")).unwrap();
+        assert_eq!(search(&store, "10.10.10", 50).unwrap().records.len(), 1);
+        assert_eq!(search(&store, "10.10.10.5", 50).unwrap().records.len(), 1);
+
+        // A wildcard is text, not a pattern. This used to assert `1`, which
+        // was the bug rather than the intent: `%` was *deleted* from the
+        // term, so the search became `%%` and matched everything. Escaped, it
+        // asks for a literal percent sign, and nothing here has one.
+        assert_eq!(search(&store, "%", 50).unwrap().records.len(), 0);
+        // `_` is LIKE's single-character wildcard. Escaped it asks for a
+        // literal underscore, and `desk_12` above has one — so this finds
+        // exactly that record and not the other two.
+        assert_eq!(search(&store, "_", 50).unwrap().records.len(), 1);
+        // And a term that really does contain one is found by it.
+        put_record(&store, &record("10.1.10.9", "100%-used")).unwrap();
+        assert_eq!(search(&store, "100%", 50).unwrap().records.len(), 1);
+        assert_eq!(search(&store, "desk_12", 50).unwrap().records.len(), 1);
+        assert_eq!(search(&store, "deskX12", 50).unwrap().records.len(), 0);
     }
 
     #[test]
@@ -899,5 +965,52 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// The rule that broke address search: `10.10.10` strips to `101010`,
+    /// which is six hexadecimal digits, so it was searched for as a MAC and
+    /// matched nothing. `10.10.1` strips to five and worked, which is why it
+    /// went unnoticed.
+    #[test]
+    fn an_address_is_never_mistaken_for_a_mac() {
+        for address in [
+            "10.10.10",
+            "10.10.10.5",
+            "10.1.1",
+            "192.168.100.254",
+            "172.16.0.0/12",
+            "2001:db8",
+            "2001:db8::1",
+            "fe80::1",
+        ] {
+            assert!(
+                !looks_like_a_mac(address),
+                "{address} is an address, not a MAC"
+            );
+        }
+        for mac in [
+            "aabbccddeeff",
+            "aa:bb:cc:dd:ee:ff",
+            "aa-bb-cc-dd-ee-ff",
+            "aabb.ccdd.eeff",
+            "aa:bb:cc",
+            "001122",
+        ] {
+            assert!(looks_like_a_mac(mac), "{mac} is a MAC");
+        }
+        // Too little to tell, so matched as typed rather than guessed at.
+        for short in ["aa:bb", "abcd", "10"] {
+            assert!(!looks_like_a_mac(short), "{short} is too short to be sure");
+        }
+    }
+
+    /// LIKE's wildcards are escaped, not deleted: deleting them answers a
+    /// different question from the one asked.
+    #[test]
+    fn a_wildcard_in_a_search_is_escaped_rather_than_dropped() {
+        assert_eq!(escape_like("desk_12"), r"desk\_12");
+        assert_eq!(escape_like("100%"), r"100\%");
+        assert_eq!(escape_like(r"a\b"), r"a\\b");
+        assert_eq!(escape_like("10.10.10.5"), "10.10.10.5");
     }
 }

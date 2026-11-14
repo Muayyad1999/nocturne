@@ -407,20 +407,33 @@ pub struct ChangeSummary {
     device_ids: Option<Vec<String>>,
     #[serde(default)]
     targets: Option<Vec<TargetDevice>>,
+    /// What `changes.list` actually sends. Features reach each other by
+    /// method name and have to cope with the shape they are given, so all
+    /// three spellings are read — but this is the one that is there, and
+    /// leaving it out meant [`Self::devices`] was always `None` in a real
+    /// build. Everything that asks which devices a change touched then
+    /// answered "none": no change was ever suggested for an incident, no
+    /// applied-change window ever covered a configuration change, and the
+    /// shift handover reported every change the pipeline itself had made as
+    /// `unplanned` — accusing somebody of working on the console.
+    #[serde(default)]
+    devices: Option<Vec<TargetDevice>>,
 }
 
 impl ChangeSummary {
-    /// The devices the change targets (`device_ids`, or `targets[].device_id`);
-    /// `None` when the summary carries neither.
+    /// The devices the change touched, from whichever of the three spellings
+    /// the change engine sent; `None` when the summary carries none of them.
     pub fn devices(&self) -> Option<Vec<String>> {
-        self.device_ids.clone().or_else(|| {
-            self.targets.as_ref().map(|targets| {
-                targets
-                    .iter()
-                    .map(|target| target.device_id.clone())
-                    .collect()
-            })
-        })
+        let from = |targets: &Vec<TargetDevice>| -> Vec<String> {
+            targets
+                .iter()
+                .map(|target| target.device_id.clone())
+                .collect()
+        };
+        self.device_ids
+            .clone()
+            .or_else(|| self.devices.as_ref().map(from))
+            .or_else(|| self.targets.as_ref().map(from))
     }
 
     pub fn is_awaiting_approval(&self) -> bool {
@@ -530,6 +543,8 @@ impl ChangeDetail {
                     .map(|target| target.device_id.clone())
                     .collect(),
             ),
+            // Built here from `device_ids`, which is already filled in above.
+            devices: None,
             targets: None,
         }
     }

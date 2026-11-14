@@ -61,8 +61,12 @@ impl With {
 #[derive(Default)]
 pub struct Fixture {
     pub alerts: Mutex<Vec<Value>>,
-    /// Whole changes; `changes.list` serves the same objects, which is what
-    /// a real `ChangeSummary` is a subset of.
+    /// Whole changes. `changes.get` serves them as they are; `changes.list`
+    /// projects each one into the shape a real `ChangeSummary` has, which is
+    /// *not* a subset of this — it carries `devices: [{device_id, …}]` where
+    /// a whole change has `targets`. Serving the whole object here was how
+    /// `ChangeSummary::devices()` came to be `None` in every real build
+    /// while these tests passed.
     pub changes: Mutex<Vec<Value>>,
     pub compliance: Mutex<Value>,
     pub compliance_policies: Mutex<Vec<Value>>,
@@ -239,6 +243,7 @@ pub async fn lab(names: &[&str], with: With) -> Lab {
                             .as_deref()
                             .is_none_or(|want| change["state"] == json!(want))
                     })
+                    .map(summarise)
                     .collect(),
             ))
         });
@@ -486,4 +491,53 @@ pub async fn rpc(app: &App, method: &str, params: Value) -> Value {
     app.rpc(method, params)
         .await
         .unwrap_or_else(|err| panic!("`{method}` failed: {} ({})", err.message, err.code))
+}
+
+/// A whole change as `changes.list` really returns it.
+///
+/// `nocturne-changes` builds a `ChangeSummary` with a `devices` array of
+/// `DeviceSummary` — `{device_id, name, risk, protected_hits, state}` — and
+/// no `targets` and no `device_ids`. Serving the whole change object instead
+/// is what let `ChangeSummary::devices()` return `None` in every real build
+/// without a single test noticing.
+pub fn summarise(change: Value) -> Value {
+    let devices: Vec<Value> = change["targets"]
+        .as_array()
+        .map(|targets| {
+            targets
+                .iter()
+                .map(|target| {
+                    json!({
+                        "device_id": target["device_id"].clone(),
+                        "name": target["device_name"].clone(),
+                        "risk": target["plan"]["risk"]["level"].clone(),
+                        "protected_hits": target["plan"]["protected_hits"]
+                            .as_array()
+                            .map_or(0, Vec::len),
+                        "state": target["result"]["state"].clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut summary = json!({
+        "id": change["id"].clone(),
+        "title": change["title"].clone(),
+        "description": change["description"].clone(),
+        "state": change["state"].clone(),
+        "origin": change["origin"].clone(),
+        "ticket": change["ticket"].clone(),
+        "created_at": change["created_at"].clone(),
+        "updated_at": change["updated_at"].clone(),
+        "created_by": change["created_by"].clone(),
+        "job_id": change["job_id"].clone(),
+        "approved_by": change["approval"]["by"].clone(),
+        "devices": devices,
+    });
+    if let Some(object) = summary.as_object_mut() {
+        // A null field and an absent one are different things on the wire,
+        // and the real summary leaves these out rather than sending null.
+        object.retain(|_, value| !value.is_null());
+    }
+    summary
 }
