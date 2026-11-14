@@ -1,0 +1,98 @@
+# ProVision's command policy, written from nothing: only commands that display
+# something are read-only, and `no page` is the single `no …` command on that
+# list, because it turns the pager off for this session and touches nothing on
+# the switch.
+read_only:
+  # --------------------------------------------------------------- `show`
+  # ProVision has no `show` that changes the switch, and both configuration
+  # fetches (`show running-config`, `show config`) go through this entry, so
+  # it is load-bearing. A writing output modifier is caught by the policy
+  # engine, not by the pattern.
+  - show running-config
+  - show config
+  - show version
+  - show system
+  - show interfaces brief
+  - show interfaces status
+  - show vlans
+  - show vlans 10
+  - show mac-address
+  - show arp
+  - show lldp info remote-device detail
+  - show ip route
+  - show flash
+  - show running-config | include vlan
+  # ----------------------------------------------------- `ping`/`traceroute`
+  # Diagnostics. They put packets on the wire and change nothing.
+  - ping 10.0.0.1
+  - ping 10.0.0.1 repetitions 5
+  - traceroute 10.0.0.1
+  # --------------------------------------------------------- `page`/`no page`
+  # Paging for this session only. This is ProVision's `terminal length 0` and
+  # the one `no …` command the profile calls a read; `cli.init` sends it.
+  - no page
+  - page
+  # --------------------------------------------------------------- leaving
+  - exit
+  - logout
+  - quit
+change:
+  # --- the negative cases for `^show\s+\S` ---
+  - show                             # nothing to show: not a read
+  - show running-config | tee flash:leak.cfg
+  # --- the negative cases for `^ping\s+\S` / `^traceroute\s+\S` ---
+  - ping                             # the interactive form, with no target
+  - traceroute
+  # --- the negative cases for `^no page$` / `^page$` ---
+  # Anchored to the bare words, so no other `no …` slips through.
+  - no page 24
+  - no telnet-server
+  - no spanning-tree
+  # --- the negative cases for `^(?:exit|logout|quit)$` ---
+  # `end` leaves configuration mode: a mode change, not a read. `enable`
+  # raises operator to manager: a privilege change, not a read. Neither is on
+  # the read-only list, and `cli.enable` sends `enable` directly without
+  # consulting the policy.
+  - end
+  - enable
+  - exit all
+  # `dir` is not on the read-only list either: it is not certain to exist on
+  # every ProVision release, and `show flash` covers the same ground.
+  - dir
+  # --- ordinary changes ---
+  - configure terminal
+  # ProVision's running configuration is lost on a reboot until this is run.
+  - write memory
+  - vlan 30
+  - untagged 1-12
+  - no untagged 1-12
+  - interface 1
+  - disable
+  - enable all                       # enables every port: a change, not privilege
+  - clear statistics
+  - clear arp
+  - setmib hpSwitchConfig.1 -i 1
+  # Reading a configuration *off* the switch is an ordinary change, like saving.
+  - copy running-config tftp 10.0.0.5 backup.cfg
+  - "show version\nconfigure terminal"   # two commands sent as one
+dangerous:
+  - reload
+  - reload after 00:05:00
+  # `boot` reboots on its own; `boot system flash secondary` also chooses the
+  # image the switch comes back on.
+  - boot
+  - boot system flash secondary
+  - erase startup-config
+  - erase flash
+  - delete config.txt
+  - rename oldcfg newcfg
+  - zeroize
+  - crypto key zeroize ssh
+  - factory-reset
+  - redundancy switchover
+  # Copying *onto* the switch: an image onto flash, a file over the config.
+  - copy tftp flash 10.0.0.5 WC_16_10_0012.swi primary
+  - copy tftp startup-config 10.0.0.5 backup.cfg
+  - copy usb command-output
+  - update software primary
+  - show clock ; reload

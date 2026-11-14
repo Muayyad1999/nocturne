@@ -1,0 +1,93 @@
+kinds:
+  interfaces:
+    # Seven physical interfaces and one logical unit.
+    count: 8
+    rows:
+      # The one real port: half-duplex gigabit, with a MAC address and a
+      # description. Speed, MAC, duplex and the rates all come from the
+      # profile's second step — the bundled template captures none of them.
+      - name: ge-0/0/0
+        description: Test
+        admin_up: true
+        oper_up: true
+        kind: Ethernet
+        mtu: 1514
+        # The physical interface carries no address; its logical unit does.
+        ipv4: []
+        # "Speed: 1000mbps"
+        speed_bps: 1000000000
+        # "Link-mode: Half-duplex"
+        duplex: half
+        mac: 00:0c:29:5e:2c:1a
+        counters:
+          in_rate_bps: 0
+          out_rate_bps: 0
+      # The logical unit. "Destination: 10.10.199.176/29, Local: 10.10.199.180"
+      # is one address, 10.10.199.180/29 — neither field is the answer alone.
+      # Junos prints no state for a unit, so `admin_up` is null, not false.
+      - name: ge-0/0/0.2036
+        admin_up: null
+        oper_up: true
+        mtu: 1500
+        ipv4: ["10.10.199.180/29"]
+        kind: ""
+        # Nothing merged in from the second step: it reads physical
+        # interfaces only, and a unit has no speed or MAC of its own.
+        speed_bps: null
+        mac: ""
+        duplex: ""
+      # "MTU: Unlimited" is not a number, so the field is left out.
+      - name: gr-0/0/0
+        admin_up: true
+        oper_up: true
+        kind: GRE
+        mtu: null
+        ipv4: []
+        speed_bps: 800000000
+        duplex: ""
+        counters:
+          in_rate_bps: 0
+      - name: ip-0/0/0
+        admin_up: true
+        oper_up: true
+        kind: IP-over-IP
+        mtu: null
+        speed_bps: 800000000
+      # Prints an MTU but no speed at all.
+      - name: lsq-0/0/0
+        admin_up: true
+        oper_up: true
+        kind: LinkService
+        mtu: 1504
+        speed_bps: null
+        counters:
+          in_rate_bps: 0
+          out_rate_bps: 0
+      # A tunnel with a MAC address of its own.
+      - name: lt-0/0/0
+        admin_up: true
+        oper_up: true
+        kind: Logical-tunnel
+        mtu: null
+        mac: 02:96:14:57:ee:b3
+        speed_bps: 800000000
+      # "Type: Multicast-GRE, Link-level type: GRE": the template takes the
+      # link-level type, so two different interfaces are both "GRE".
+      - name: mt-0/0/0
+        admin_up: true
+        oper_up: true
+        kind: GRE
+        mtu: null
+        speed_bps: 800000000
+        mac: ""
+      # No "Input rate" line at all, so the rate counters stay empty rather
+      # than reading zero.
+      - name: sp-0/0/0
+        admin_up: true
+        oper_up: true
+        kind: Adaptive-Services
+        mtu: 9192
+        speed_bps: 800000000
+        counters:
+          in_rate_bps: null
+          out_rate_bps: null

@@ -1,0 +1,28 @@
+kinds:
+  facts:
+    rows:
+      # "router uptime is 1 week, 6 days, 4 hours, 22 minutes": the only place
+      # the hostname appears in `show version`.
+      - hostname: router
+        vendor: Cisco
+        os: IOS-XR
+        # "Cisco IOS XR Software, Version 4.1.0[Default]" — the release, without
+        # the package label the brackets hold.
+        os_version: 4.1.0
+        # "cisco CRS-8/S (7457) processor with 4194304K bytes of memory."
+        model: CRS-8/S
+        # 1 week + 6 days + 4 hours + 22 minutes
+        uptime_s: 1138920
+        # `show version` carries no serial number on IOS XR.
+        serial: ""
+        extra:
+          image: bootflash:disk0/hfr-os-mbi-4.1.0/mbihfr-rp.vm
+          rom: System Bootstrap, Version 2.100(20100129:213223) [CRS-1 ROMMON]
+  health:
+    rows:
+      - uptime_s: 1138920
+        # IOS XR reports neither of these in `show version`.
+        cpu_pct: null
+        memory_total: null
+        memory_used: null
+        temperature_c: null

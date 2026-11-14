@@ -1,0 +1,99 @@
+# What ProVision prints when it refuses a command, and what it prints when it
+# does not.
+#
+# The `rejected` samples were typed from the platform's documented messages —
+# the ntc-templates corpus this profile's captures come from holds `show`
+# output only, and no device was available (see NOTES.md). The `clean` samples
+# are the opposite: they are copied out of the real captures under
+# `captures/`, because the patterns that matter are the ones that must leave
+# ordinary output alone.
+#
+# Nothing here starts with `%`. That is the whole reason this profile does not
+# extend `_cli_ios_like`.
+exec:
+  rejected:
+    - output: |
+        show nonsense
+             ^
+        Invalid input: nonsense
+      error: "Invalid input: nonsense"
+    - output: "Incomplete input: show\n"
+      error: "Incomplete input: show"
+    - output: "Ambiguous input: show i\n"
+      error: "Ambiguous input: show i"
+    - "Invalid VLAN ID.\n"
+    - "Invalid option: detial\n"
+    - "Unable to open file config.txt.\n"
+    - "Cannot assign an IP address to a VLAN with no ports.\n"
+    - "Could not reach the TFTP server.\n"
+    - "Error: no space left on the flash file system.\n"
+    - "Module not present.\n"
+    - "Access denied.\n"
+    - "Port 99 does not exist.\n"
+    - "Value must be between 1 and 4094.\n"
+  clean:
+    # Copied from captures/procurve-ports/show_interfaces_brief.txt.
+    - |
+       Status and Counters - Port Status
+
+                                | Intrusion                           MDI  Flow Bcast
+        Port         Type       | Alert     Enabled Status Mode       Mode Ctrl Limit
+        ------------ ---------- + --------- ------- ------ ---------- ---- ---- -----
+        1            100/1000T  | No        Yes     Down   1000FDx    Auto off  0
+        3            100/1000T  | Yes       Yes     Down   1000FDx    Auto off  0
+        24           100/1000T  | No        Yes     Up     100FDx     MDI  off  0
+    # Copied from captures/procurve-vlans/show_vlans.txt. "Management VLAN :"
+    # with nothing after it is a switch without one, not a failure.
+    - |
+       Status and Counters - VLAN Information
+
+        Maximum VLANs to support : 256
+        Primary VLAN : DEFAULT_VLAN
+        Management VLAN :
+
+        VLAN ID Name                             Status       Voice
+        ------- -------------------------------- ------------ -----
+        1       DEFAULT_VLAN                     Port-based   No
+    # Copied from captures/procurve-lldp/show_lldp_info_remote-device_detail.txt:
+    # a neighbour that advertises almost nothing. Empty fields are not errors.
+    - |
+       LLDP Remote Device Information Detail
+
+        Local Port   : A2
+        ChassisType  : mac-address
+        ChassisId    : c025a5-aabb01
+        PortType     : mac-address
+        PortId       : c0 25 a5 aa bb 01
+        SysName      :
+        System Descr :
+        PortDescr    :
+        Pvid         :
+    # A console log message. ProVision stamps it with a severity letter and a
+    # date, and prints it whenever it likes.
+    - |
+      W 01/02/70 03:04:05 ports: port 1 is now off-line
+      I 01/02/70 03:04:09 ports: port 24 is now on-line
+    # The pager, when `no page` was refused.
+    - " -- MORE --, next page: Space, next line: Enter, quit: Control-C\n"
+    - |
+      5 packets transmitted, 5 packets received, 0% packet loss
+      round-trip (ms) min/avg/max = 1/2/4
+config:
+  # ProVision complains in configuration mode the way it does at the exec
+  # prompt, so `config.errors` is left empty on purpose and these samples are
+  # judged against `cli.errors`.
+  rejected:
+    - output: |
+        ACC-SW-01(config)#vlan 5000
+                               ^
+        Invalid input: 5000
+      error: "Invalid input: 5000"
+    - "VLAN 10 already exists.\n"
+    - "Port 1/99 does not exist.\n"
+    - "Cannot remove the primary VLAN.\n"
+  clean:
+    # A note about what the switch just did, not a refusal.
+    - "The VLAN was created and port 1 was moved into it.\n"
+    - |
+      Device will be rebooted, do you want to continue [y/n]?
+    - "  Logging has been enabled on this switch.\n"

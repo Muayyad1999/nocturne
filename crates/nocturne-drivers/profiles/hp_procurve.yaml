@@ -1,0 +1,304 @@
+# HP / HPE / Aruba ProVision switches — the "ProCurve" line and what became
+# ArubaOS-Switch: 2510, 2530, 2610, 2810, 2910, 2920, 2930, 3800, 5400zl.
+#
+# This is not an IOS-like CLI and it does not extend `_cli_ios_like`:
+#
+#   * paging is turned off with `no page`, not `terminal length 0`, and the
+#     pager spells out its keys (`-- MORE --, next page: Space, next line:
+#     Enter, quit: Control-C`) instead of printing `--More--`;
+#   * the parser's complaints are not prefixed with `%`. ProVision answers
+#     `Invalid input: nonsense`, `Incomplete input: show`,
+#     `Ambiguous input: show i` — plain sentences, which means the `%` patterns
+#     of the IOS base would never notice a refused command and an empty
+#     interface list would be reported as the truth;
+#   * ports are bare numbers (`1`, `24`), stack members are `1/1`, modular
+#     chassis use letters (`A2`, `D13`) and link aggregations are `Trk1`. None
+#     of those is a Cisco abbreviation, hence `interface_names: verbatim`;
+#   * a switch nobody has named yet answers to its factory system name, so the
+#     prompt may contain spaces: `ProCurve Switch 2824#`.
+#
+# Everything else — `configure terminal`, `end`, `write memory`, indented
+# configuration blocks negated with `no` — does follow the IOS pattern, which
+# is why `config.syntax` is `ios`.
+#
+# Maturity is `community`. The collectors are checked against output recorded
+# from real ProVision switches (tests/profiles/hp_procurve/captures/), but the
+# prompts, the paging commands, the error patterns, the detection evidence and
+# the whole configuration path are written from the platform's documented
+# behaviour and have never been pointed at a switch. See
+# tests/profiles/hp_procurve/NOTES.md for what is documentation and what is a
+# capture.
+id: hp_procurve
+name: HP ProCurve / Aruba ProVision
+vendor: HP
+os: ProVision
+description: >-
+  HP, HPE and Aruba ProVision switches (ProCurve 2510 to 5400zl,
+  ArubaOS-Switch 2530/2920/2930/3800). Reads interfaces, VLANs, the MAC
+  address table, ARP and LLDP neighbours; configuration is read with
+  `show running-config` and saved with `write memory`.
+ntc_platform: hp_procurve
+maturity: community
+# `1`, `24`, `1/1`, `A2`, `D13`, `Trk1`: ProVision port names are not Cisco
+# abbreviations and must not be rewritten by the Cisco expansion rules.
+interface_names: verbatim
+
+detect:
+  # No `banner`: ProVision's SSH identification string varies by release and
+  # is not recorded anywhere in this repository, so this profile does not
+  # guess at one. The pre-login screen ("ProCurve J9085A Switch 2610-24")
+  # would identify it, but that too is only documented, not captured.
+  sysdescr:
+    # "ProCurve J9086A Switch 2610-24-PPoE, revision R.11.25, ROM R.10.06 (…)"
+    - '(?i)ProCurve\b.*\bSwitch\b'
+    # "HP J9773A 2530-24G-PoEP Switch, revision YA.16.02.0012, ROM YA.15.20 (…)"
+    # "Aruba JL256A 2930F-48G-PoE+-4SFP+ Switch, revision WC.16.10.0012, (…)"
+    # The "revision <two letters>.<digits>" form is ProVision's own software
+    # numbering; ArubaOS-CX, which shares the Aruba name, does not use it.
+    - '(?i)\b(?:HP|HPE|Aruba)\b.*\bSwitch,\s+revision\s+[A-Z]{1,2}\.\d'
+  sysobjectid:
+    # hpSwitch, under the HP enterprise number (11). Taken from the vendor's
+    # MIB, not from a device this repository has read.
+    - 1.3.6.1.4.1.11.2.3.7.11.
+  probes:
+    # ProVision's `show version` is a short block of its own shape: an image
+    # stamp, the build date, the release and which image booted. Written from
+    # the platform's documented output — the one `show version` capture in the
+    # ntc-templates corpus for this platform is an Aruba access point's, not a
+    # switch's.
+    - command: show version
+      matches: '(?m)^\s*Image stamp:|(?m)^\s*Boot Image:\s+(?:Primary|Secondary)\s*$'
+  priority: 60
+
+cli:
+  # ACC-SW-01#              named switch, manager mode
+  # ACC-SW-01>              operator mode
+  # ACC-SW-01(config)#      configuration
+  # ACC-SW-01(vlan-10)#     a VLAN context
+  # ACC-SW-01(eth-1/1)#     a port context
+  # ProCurve Switch 2824#   the factory system name, which has spaces in it
+  # The hostname is allowed up to three further space-separated words so that
+  # an unnamed switch is recognised, and no more, so that a line of output is
+  # not mistaken for a prompt.
+  prompt: '^(?P<host>[A-Za-z0-9][\w.\-]{0,31}(?: [\w.\-]{1,31}){0,3})(?:\([\w.\-/:]{1,40}\))?[>#]\s?$'
+  user_prompt: '>\s?$'
+  config_prompt: '\([^()\s]+\)#\s?$'
+  enable:
+    command: enable
+    password_prompt: '(?i)password:\s*$'
+  login:
+    username_prompt: '(?i)(?:user ?name|login):\s*$'
+    password_prompt: '(?i)password:\s*$'
+    failure: '(?i)(?:invalid password|access denied|authentication failed|login incorrect|unable to verify)'
+  # `no page` is ProVision's `terminal length 0`: it turns the pager off for
+  # this session only and touches nothing on the switch.
+  init:
+    - no page
+  # Met when `no page` was refused, or on a console line that re-enables it.
+  # ProVision names its own keys in the prompt.
+  pager:
+    pattern: '^\s*--\s?MORE\s?--'
+    key: ' '
+  errors:
+    # The parser's complaints. ProVision prints a sentence, not a `%` line,
+    # and usually a caret line above it.
+    - '^\s*(?:Invalid|Incomplete|Ambiguous)\s+input\b'
+    - '^\s*Invalid\s+(?:option|command|parameter|value|VLAN|IP|MAC|port|argument|input)\b'
+    - '^\s*(?:Unable to|Cannot|Could not)\s+\S'
+    - '^\s*Error:\s*\S'
+    - '^\s*Module\s+not\s+present\b'
+    - '^\s*(?:Access denied|Not allowed|Not authorized|Command not authorized)\b'
+    # "Value must be between 1 and 4094.", "Port 99 does not exist."
+    - '^\s*\S.*\b(?:does not exist|is not supported|must be between|out of range|already (?:exists|in use)|is not a valid)\b'
+  answers:
+    # ProVision's confirmations. "n" is the safe answer to all of them: the
+    # profile never sends a command that needs a "y", so a question here means
+    # something unexpected happened.
+    - {prompt: '\[y/n\]\?\s*$', answer: 'n'}
+    - {prompt: 'Continue\s*\(y/n\)\?\s*$', answer: 'n'}
+    # Asked by `write memory` on a switch that is also running a redundant
+    # management module; saying no leaves the standby alone.
+    - {prompt: 'Do you want to continue\s*\[y/n\]\?\s*$', answer: 'n'}
+  # Console log messages: "W 01/02/70 03:04:05 ports: port 1 is now off-line".
+  unsolicited:
+    - '^[IWE]\s+\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+\S+:'
+  timeout_s: 30
+
+config:
+  # Indented blocks left with `exit`, negated with `no`: the IOS grammar.
+  syntax: ios
+  enter: [configure terminal]
+  exit: [end]
+  # ProVision keeps a running and a saved configuration, like IOS, and
+  # `write memory` is what makes the running one survive a reboot.
+  save: [write memory]
+  running: show running-config
+  # `show config` prints the *saved* configuration on ProVision; there is no
+  # `show startup-config`.
+  startup: show config
+  ignore:
+    - '^Running configuration:'
+    - '^Startup configuration:'
+    # "; J9772A Configuration Editor; Created on release #WB.16.10.0012"
+    - '^;\s.*Configuration Editor; Created on release'
+    # "; Ver #14:6f.f8.1d.9b.…" — a feature bitmask the switch regenerates.
+    - '^;\s*Ver\s*#'
+    # Console log lines printed into the listing.
+    - '^[IWE]\s+\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+\S+:'
+  # No `errors` here: configuration mode complains the way the exec prompt
+  # does, so `cli.errors` apply. (Setting `config.errors` would *replace*
+  # them in configuration mode, not add to them.)
+  # No `guard`. ProVision's running configuration is lost on a reboot unless
+  # `write memory` has been run, so a scheduled reload would be a dead-man
+  # switch of exactly the IOS kind — but the command that schedules one
+  # (`reload after <dd:hh:mm>`) is only documented, not verified here, and
+  # arming a guard that does not really arm is worse than having none. See
+  # tests/profiles/hp_procurve/NOTES.md.
+  guard: null
+  secrets:
+    - 'password (?:manager|operator)(?: user-name \S+)?(?: \S+)? (?P<secret>\S+)'
+    - 'snmp-server community "(?P<secret>[^"]*)"'
+    - 'snmp-server community (?P<secret>\S+)'
+    - 'radius-server (?:host \S+ )?key (?P<secret>\S+)'
+    - 'tacacs-server (?:host \S+ )?key (?P<secret>\S+)'
+    - '\bkey-string (?P<secret>\S+)'
+
+policy:
+  # Default-deny, and written from nothing: only commands that display
+  # something are listed. Everything else — `configure terminal`,
+  # `write memory`, `vlan 30`, `clear`, and every form of `no …` but the one
+  # below — comes out as a change.
+  read_only:
+    # ProVision has no `show` that changes the switch, and this is also how
+    # the profile fetches a backup (`show running-config`, `show config`). A
+    # writing output modifier (`| tee`, `copy command-output`) is caught by
+    # the policy engine, not by this pattern.
+    - '^show\s+\S'
+    # Diagnostics. They put packets on the wire and change nothing.
+    - '^ping\s+\S'
+    - '^traceroute\s+\S'
+    # Paging for this session only; the switch's configuration is untouched.
+    # This is ProVision's `terminal length 0`, and the only `no …` command
+    # this profile calls a read. `enable` is deliberately *not* on this list:
+    # raising operator to manager changes nothing on the switch, but it is a
+    # privilege change, not a read, and `cli.enable` sends it directly without
+    # consulting the policy.
+    - '^no page$'
+    - '^page$'
+    # Ending the session. `end`, which leaves configuration mode, is a mode
+    # change and is not here.
+    - '^(?:exit|logout|quit)$'
+  dangerous:
+    # `boot` reboots on its own, and `boot system flash …` chooses which image
+    # the switch comes back on.
+    - '^(?:reload|boot)\b'
+    - '^erase\b'
+    - '^(?:delete|rename)\b'
+    - '^(?:format|zeroize)\b'
+    - '^crypto key zeroize\b'
+    - '^(?:factory-reset|startup-default)\b'
+    - '^redundancy switchover\b'
+    # Copying *onto* the switch: an image onto flash, a file over the
+    # configuration. `copy running-config tftp://…` reads, and is an ordinary
+    # change, like saving.
+    - '^copy\s+(?:tftp|sftp|scp|usb|xmodem|flash|command-output)\S*\s+\S'
+    - '^update\s+\S'
+
+collect:
+  interfaces:
+    # The administrative state (the "Enabled" column) is only in this one.
+    - command: show interfaces brief
+      parser: {ntc: auto}
+      map:
+        name: PORT
+        kind: TYPE
+        admin_up: "ENABLED == 'Yes'"
+        oper_up: "STATUS == 'Up'"
+        # ProVision writes a speed and a duplex as one word: 1000FDx, 100FDx,
+        # 10HDx, 10GigFD. `| bps` alone would read "1000FDx" as 1000 bits per
+        # second, so the word is rewritten into a rate first.
+        speed_bps: >-
+          MODE | regex_replace('^(\d+)Gig.*$', '$1 Gbps')
+               | regex_replace('^(\d+)(?:FDx|HDx|FD|HD)$', '$1 Mbps')
+               | bps
+        duplex: >-
+          'full' if MODE is matching('F[Dd]')
+          else ('half' if MODE is matching('H[Dd]') else none)
+    # The port name, the VLANs and whether the port is tagged. Older releases
+    # and some models do not have the command.
+    - command: show interfaces status
+      parser: {ntc: auto}
+      map:
+        name: PORT
+        # ProVision truncates it to ten characters in this table ("SW-05-0...").
+        description: NAME
+        # "Tagged: multi" or a VLAN id means a trunk in the 802.1Q sense;
+        # "No" with an untagged VLAN is an access port.
+        mode: >-
+          'trunk' if VLAN_TAGGED and VLAN_TAGGED != 'No'
+          else ('access' if VLAN_UNTAGGED and VLAN_UNTAGGED != 'No' else none)
+        # "No" when the port carries no untagged VLAN at all.
+        vlan: VLAN_UNTAGGED | num
+      merge_on: name
+      optional: true
+
+  vlans:
+    - command: show vlans
+      parser: {ntc: auto}
+      map:
+        id: VLAN_ID
+        name: VLAN_NAME
+        # ProVision prints how the VLAN is classified ("Port-based"), not
+        # whether it is up. `interfaces` is left out: this listing does not
+        # say which ports carry the VLAN — `show vlans <id>` does, one VLAN at
+        # a time, and there is no recorded output of it to check against.
+        status: STATUS
+
+  mac_table:
+    - command: show mac-address
+      parser: {ntc: auto}
+      map:
+        mac: MAC_ADDRESS | mac
+        vlan: VLAN_ID
+        interface: PORT
+        # No `kind`: ProVision's port address table does not say whether an
+        # entry was learned or configured.
+
+  arp:
+    - command: show arp
+      parser: {ntc: auto}
+      map:
+        ip: IP_ADDRESS
+        mac: MAC_ADDRESS | mac
+        interface: PORT
+        # No `age`: the ProVision ARP table has no age column. The `Type`
+        # column (dynamic/static) has nowhere to go in the model.
+
+  neighbors:
+    - command: show lldp info remote-device detail
+      parser: {ntc: auto}
+      map:
+        device: NEIGHBOR_NAME or CHASSIS_ID
+        local_interface: LOCAL_INTERFACE
+        # ProVision says outright what the port id is. When it is a MAC
+        # address the neighbour's port *description* is the port name
+        # (`bond0`, `eth0`); when it is an interface name or a local id, the
+        # port id is the name.
+        remote_interface: >-
+          NEIGHBOR_INTERFACE_DESCRIPTION if PORT_TYPE == 'mac-address'
+          else (NEIGHBOR_INTERFACE or NEIGHBOR_INTERFACE_DESCRIPTION)
+        platform: NEIGHBOR_DESCRIPTION
+        address: MGMT_ADDRESS
+        # What the neighbour says it has switched on, not what it supports.
+        capabilities: CAPABILITIES
+        protocol: "'lldp'"
+
+snmp:
+  cpu:
+    - 1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0   # hpSwitchCpuStat, a percentage
+  memory_total:
+    - 1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5  # hpLocalMemTotalBytes
+  memory_free:
+    - 1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6  # hpLocalMemFreeBytes
+  temperature:
+    - 1.3.6.1.2.1.99.1.1.1.4                # entPhySensorValue

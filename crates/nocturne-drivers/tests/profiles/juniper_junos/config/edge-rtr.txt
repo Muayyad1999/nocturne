@@ -1,0 +1,37 @@
+## Last commit: 2026-01-16 13:28:11 UTC by admin
+set version 20.4R3-S4.8
+set system host-name edge-rtr
+set system domain-name lab.example.com
+set system root-authentication encrypted-password "$6$lab.example.only$not.a.real.hash"
+set system login class netops-ro permissions view-configuration
+set system login user netops class netops-ro
+set system login user netops authentication encrypted-password "$6$lab.example.only$also.not.real"
+set system services ssh protocol-version v2
+set system services ssh connection-limit 10
+set system syslog host 10.0.0.9 any notice
+set system ntp server 10.0.0.123
+set chassis aggregated-devices ethernet device-count 4
+set interfaces ge-0/0/0 description "core uplink"
+set interfaces ge-0/0/0 mtu 9192
+set interfaces ge-0/0/0 unit 0 family inet address 198.51.100.1/30
+set interfaces ge-0/0/1 description spare
+set interfaces ge-0/0/1 disable
+set interfaces ge-0/0/2 description "access port"
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members v100-Control
+set interfaces ae0 aggregated-ether-options lacp active
+set interfaces ae0 unit 0 family ethernet-switching interface-mode trunk
+set interfaces ae0 unit 0 family ethernet-switching vlan members all
+set interfaces lo0 unit 0 family inet address 192.0.2.1/32
+set interfaces vlan unit 20 family inet address 10.1.100.1/24
+set snmp community lab-ro authorization read-only
+set snmp community lab-ro clients 10.0.0.0/24
+set routing-options static route 0.0.0.0/0 next-hop 198.51.100.2
+set routing-options router-id 192.0.2.1
+set protocols ospf area 0.0.0.0 interface lo0.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 interface-type p2p
+set protocols lldp interface all
+set protocols rstp interface ge-0/0/2
+set vlans v100-Control vlan-id 100
+set vlans v1005-HelpDesk vlan-id 1005
+
+{master:0}

@@ -1,0 +1,27 @@
+kinds:
+  arp:
+    # Seven entries under the `0/0/CPU0` banner and two under `0/RP0/CPU0`.
+    count: 9
+    rows:
+      - ip: 192.0.2.1
+        mac: ca:01:1d:8b:00:08
+        interface: GigabitEthernet0/0/0/0
+        age: "01:31:14"
+      - ip: 192.0.2.11
+        mac: 0c:a1:f3:ee:0b:a0
+        interface: GigabitEthernet0/0/0/0
+        age: "01:43:41"
+      # "State: Interface": one of the router's own addresses, which never ages.
+      - ip: 192.0.2.10
+        mac: 0c:99:68:69:00:03
+        interface: GigabitEthernet0/0/0/0
+        age: "-"
+      # The second half of the output, under the `0/RP0/CPU0` banner.
+      - ip: 192.168.57.1
+        mac: 52:54:00:4e:11:56
+        interface: MgmtEth0/RP0/CPU0/0
+        age: "00:00:02"
+      - ip: 192.168.57.10
+        mac: 0c:99:68:69:00:00
+        interface: MgmtEth0/RP0/CPU0/0
+        age: "-"

@@ -1,0 +1,56 @@
+# Prompts as ProVision prints them.
+#
+# The awkward one is the last `exec` entry: a switch nobody has named answers
+# to its factory system name, which has spaces in it. That is why the hostname
+# part of `cli.prompt` allows up to three further space-separated words — and
+# why `not_prompts` below has to carry lines of output that end in `#` or `>`
+# and must still not be read as a prompt.
+exec:
+  - "ACC-SW-01#"
+  - "HP-2920-48G#"
+  - "sw1#"
+  - "core-sw.lab.example.com#"            # dots: an FQDN system name
+  - "SW_Access-01#"
+  - "2530-24G#"                           # starts with a digit
+  - "ProCurve Switch 2824#"               # the factory system name
+  - "HP J9772A Switch#"
+  - "Aruba-2930F-48G-PoEP-4SFPP#"
+  - "ACC-SW-01# "                         # tolerated: a terminal server that adds a space
+user:
+  - "ACC-SW-01>"
+  - "ProCurve Switch 2824>"
+  - "core-sw.lab.example.com>"
+config:
+  - "ACC-SW-01(config)#"
+  - "ACC-SW-01(vlan-10)#"                 # the VLAN context
+  - "ACC-SW-01(eth-1/1)#"                 # a port context, with a slash in it
+  - "ACC-SW-01(eth-A2)#"
+  - "ACC-SW-01(trk1)#"
+  - "ProCurve Switch 2824(config)#"
+  - "ACC-SW-01(sflow-1)#"
+not_prompts:
+  - "Running configuration:"
+  - "Password: "
+  - "Username: "
+  - "Invalid input: nonsense"
+  - " -- MORE --, next page: Space, next line: Enter, quit: Control-C"
+  - "ACC-SW-01#show running-config"       # the echo of a command
+  - "; J9772A Configuration Editor; Created on release #WB.16.10.0012"
+  - "; Ver #14:6f.f8.1d.9b.3f.bf.bb.ef.7c.59.fc.6b.fb.9f.fc.ff.ff.3f.ef:bd"
+  - "#"
+  - "##########################"          # banner decoration
+  - " Status and Counters - Port Status"
+  - "  Port         Type       | Alert     Enabled Status Mode       Mode Ctrl Limit"
+  - "  ------------ ---------- + --------- ------- ------ ---------- ---- ---- -----"
+  - "  1            100/1000T  | No        Yes     Down   1000FDx    Auto off  0"
+  - "  Local Port   : A2"
+  - "   name \"Link to core #1\""          # a port name that ends in a hash
+  - "W 01/02/70 03:04:05 ports: port 1 is now off-line"
+  - "  Maximum VLANs to support : 256"
+  - "this system name has far too many separate words in it to be a prompt#"
+hosts:
+  "ACC-SW-01#": ACC-SW-01
+  "ACC-SW-01(eth-1/1)#": ACC-SW-01
+  "core-sw.lab.example.com>": core-sw.lab.example.com
+  "ProCurve Switch 2824#": ProCurve Switch 2824
+  "HP J9772A Switch(config)#": HP J9772A Switch

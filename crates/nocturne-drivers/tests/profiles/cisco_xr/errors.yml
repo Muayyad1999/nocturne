@@ -1,0 +1,73 @@
+# What IOS XR prints when it refuses, and what it prints when it does not.
+#
+# The patterns come from `_cli_ios_like`: XR's parser complains with `%` the
+# way IOS does. The samples below were typed from the platform's documented
+# messages, not recorded from a device — there is no error output in the
+# ntc-templates corpus. See NOTES.md.
+exec:
+  rejected:
+    - output: |
+        show nonsense
+                  ^
+        % Invalid input detected at '^' marker.
+      error: "% Invalid input detected at '^' marker."
+    - output: "% Incomplete command.\n"
+      error: "% Incomplete command."
+    - output: "% Ambiguous command:  \"show i\"\n"
+      error: "% Ambiguous command:  \"show i\""
+    - "% Authorization failed.\n"
+    - "% No such configuration item(s)\n"
+    - "% Bad hostname or protocol not running\n"
+    # A commit that the configuration manager would not take.
+    - |
+      % Failed to commit one or more configuration items during an atomic operation. No changes have been made.
+    - "% Invalid argument. Use 'show route ?' for help.\n"
+    # The two-stage commit again: the candidate was accepted, the apply was not.
+    - "% Cannot commit: the configuration is locked by another session\n"
+  clean:
+    # The date and time XR prints in front of a command's output, and ordinary
+    # `show interfaces` text that mentions errors because it counts them.
+    - |
+      Mon Mar 20 17:31:48.208 EDT
+      TenGigE0/3/0/0 is up, line protocol is up
+        Hardware is TenGigE, address is 5087.8964.53b0 (bia 5087.8964.53b0)
+           0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored, 0 abort
+           0 output errors, 0 underruns, 0 applique, 0 resets
+    # An interface description that happens to start with a percent sign, and
+    # a route table legend that talks about diversion and backup paths.
+    - |
+      Description: $DCI ~QTS Richmond DCI @CRDC %P-CRDC-C98 +Fort0/0/0/0 !CRIT
+      Codes: C - connected, S - static, R - RIP, B - BGP, (>) - Diversion path
+             ia - IS-IS inter area, su - IS-IS summary null, * - candidate default
+    # Log messages XR prints to the console: a facility-severity-mnemonic tag,
+    # not a refusal.
+    - |
+      RP/0/RSP0/CPU0:Mar 20 17:32:01.004 EDT: config[65923]: %MGBL-CONFIG-6-DB_COMMIT : Configuration committed by user 'admin'.
+      LC/0/2/CPU0:Mar 20 17:32:02.111 EDT: ifmgr[231]: %PKT_INFRA-LINK-3-UPDOWN : Interface TenGigE0/2/0/1, changed state to Down
+    - |
+      Building configuration...
+      [OK]
+    - |
+      Type escape sequence to abort.
+      Sending 5, 100-byte ICMP Echos to 10.0.0.1, timeout is 2 seconds:
+      !!!!!
+      Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/4 ms
+config:
+  rejected:
+    - output: |
+        RP/0/RSP0/CPU0:core-rtr(config)#interface TenGigE0/9/9/9
+                                                  ^
+        % Invalid input detected at '^' marker.
+      error: "% Invalid input detected at '^' marker."
+    # A commit that the configuration manager rejected.
+    - |
+      % Failed to commit one or more configuration items during an atomic operation. No changes have been made. Please issue 'show configuration failed [inheritance]' from this session to view the errors
+    - "% Incomplete command.\n"
+  clean:
+    # What a successful commit says.
+    - "Mon Mar 20 17:34:08.994 EDT\n"
+    - |
+      RP/0/RSP0/CPU0:Mar 20 17:34:09.212 EDT: config[65923]: %MGBL-CONFIG-6-DB_COMMIT : Configuration committed by user 'admin'. Use 'show configuration commit changes 1000000123' to view the changes.
+    # A note about a side effect, not a refusal.
+    - |
+      % Interface TenGigE0/3/0/4 is configured as a bundle member; its own layer-3 configuration will not take effect while it is.

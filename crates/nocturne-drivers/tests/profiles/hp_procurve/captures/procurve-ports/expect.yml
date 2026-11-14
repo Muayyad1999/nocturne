@@ -1,0 +1,40 @@
+kinds:
+  interfaces:
+    # The 24 ports of the `brief` listing. The 17 rows of the `status`
+    # listing name ports of a different switch (`1/1`, `2/4`, …), so none of
+    # them merges into a row here and none is added: every row below has an
+    # empty `description` and no `vlan`.
+    count: 24
+    rows:
+      - name: "1"
+        kind: 100/1000T
+        admin_up: true
+        oper_up: false
+        # "Mode: 1000FDx"
+        speed_bps: 1000000000
+        duplex: full
+        # Nothing from `show interfaces status` reached this row.
+        description: ""
+        vlan: null
+        mode: ""
+      # "Intrusion Alert: Yes" — nothing in the model holds it, and it must
+      # not be mistaken for a link state.
+      - name: "3"
+        admin_up: true
+        oper_up: false
+      # The one administratively disabled port: "Enabled: No".
+      - name: "5"
+        admin_up: false
+        oper_up: false
+        speed_bps: 1000000000
+      # "Flow Ctrl: on", "Bcast Limit: 50": neither has a home in the model.
+      - name: "10"
+        admin_up: true
+        oper_up: false
+      # The only port that is up, and the only one running at 100 Mbit.
+      - name: "24"
+        kind: 100/1000T
+        admin_up: true
+        oper_up: true
+        speed_bps: 100000000
+        duplex: full

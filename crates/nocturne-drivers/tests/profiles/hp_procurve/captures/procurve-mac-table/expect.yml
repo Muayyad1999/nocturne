@@ -1,0 +1,21 @@
+kinds:
+  mac_table:
+    count: 4
+    rows:
+      # "500000-260000" → the colon form. The same address is in VLAN 17 and
+      # in VLAN 50 on the same link aggregation.
+      - vlan: 17
+        mac: 50:00:00:26:00:00
+        interface: Trk1
+        # ProVision's port address table does not say learned or configured.
+        kind: ""
+      - vlan: 10
+        mac: 50:00:00:a8:00:09
+        interface: Trk1
+      - vlan: 50
+        mac: 50:00:00:26:00:00
+        interface: Trk1
+      # A bare port number, kept as the switch prints it.
+      - mac: 50:00:00:b7:00:08
+        vlan: 50
+        interface: "25"

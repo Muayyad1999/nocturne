@@ -1,0 +1,342 @@
+# Juniper Junos: MX, EX, QFX, SRX, ACX, PTX, vSRX, vMX.
+#
+# A standalone profile. Junos shares almost nothing with the Cisco CLI that
+# `_cli_ios_like` describes, and the places it differs are the places a shared
+# base would quietly do the wrong thing:
+#
+#   * the prompt characters mean the opposite of what they mean on IOS. `>` is
+#     *operational* mode, where every read happens; `#` is *configuration*
+#     mode. On IOS `>` is the unprivileged prompt something has to `enable` out
+#     of. So `cli.config_prompt` is `#` here, `cli.user_prompt` is switched off
+#     and there is no `enable` — what an account may do is decided by its login
+#     class;
+#   * paging is turned off with `set cli screen-length 0`, and the pager prints
+#     `---(more 23%)---`;
+#   * errors are lowercase sentences with no `%` anywhere: `unknown command.`,
+#     `syntax error, expecting <command>.`, `error: configuration check-out
+#     failed`. The patterns below are deliberately case-sensitive, because
+#     `show interfaces` output is full of `BPDU Error: None` and
+#     `MAC-REWRITE Error: None`, which are counters, not failures;
+#   * the configuration is not a flat text file of indented blocks. It is a
+#     tree, and the one form of it this repository can diff and remediate is
+#     `| display set` — flat `set …` lines, removed again with `delete …`.
+#     That is `config.syntax: set`, and `config.running` asks for exactly that
+#     form. The curly-brace form that `show configuration` prints on its own
+#     is *not* declared, because no grammar here parses it and declaring one
+#     would mis-diff;
+#   * a change is a candidate until `commit`, and a commit is also what makes
+#     it survive a reboot — there is no `write memory` and no startup
+#     configuration.
+#
+# Maturity is `community`: the collectors are checked against output recorded
+# from real Junos devices (tests/profiles/juniper_junos/captures/), but nobody
+# has pointed this profile at a device. The prompts, the paging commands, the
+# error patterns, the detection evidence and the whole configuration path come
+# from the platform's documented behaviour. See
+# tests/profiles/juniper_junos/NOTES.md.
+id: juniper_junos
+name: Juniper Junos
+vendor: Juniper
+os: Junos
+description: >-
+  Juniper Junos devices (MX, EX, QFX, SRX, ACX, PTX). Reads facts, interfaces,
+  LLDP neighbours, VLANs and ARP; configuration is read with
+  `show configuration | display set` and applied through the candidate
+  configuration and `commit`.
+ntc_platform: juniper_junos
+maturity: community
+# `ge-0/0/0`, `xe-2/1/5`, `et-0/0/24.0`, `ae7`, `vlan.20`, `irb.100`: Junos
+# names are not Cisco abbreviations and must not be rewritten. `ge-` is not
+# short for GigabitEthernet as far as any Junos command is concerned.
+interface_names: verbatim
+
+detect:
+  # No `banner`: Junos answers SSH with an OpenSSH identification string, which
+  # says nothing about the platform and would collide with every Linux host.
+  sysdescr:
+    # "Juniper Networks, Inc. ex4200-48t Ethernet Switch, kernel JUNOS 12.3R12.4, …"
+    - 'Juniper Networks, Inc\.'
+    - '\bJUNOS\b'
+  sysobjectid:
+    # juniperMIB. Junos and Junos Evolved both answer under it; so does
+    # ScreenOS, which this profile does not claim — the probe below and the
+    # sysDescr patterns above are what separate them.
+    - 1.3.6.1.4.1.2636.
+  probes:
+    # "Junos: 20.4R3-S4.8" on a current release; "JUNOS Base OS boot [13.3R1.4]"
+    # on an older one. Both are in the recorded `show version` this profile is
+    # tested against.
+    - command: show version
+      matches: '(?m)^Junos:\s+\S|^JUNOS Base OS|^JUNOS OS Kernel'
+  priority: 60
+
+cli:
+  # admin@edge-rtr>          operational mode
+  # admin@edge-rtr#          configuration mode
+  # root@edge-rtr%           the FreeBSD shell — deliberately NOT matched: a
+  #                          session that ends up there is not a Junos CLI and
+  #                          must not be driven as one.
+  # The `{master:0}` mastership line and the `[edit …]` banner are printed on
+  # their own lines above the prompt, so they are not part of this pattern;
+  # `prompts.yml` has them under `not_prompts`.
+  prompt: '^(?P<user>[\w.\-]{1,32})@(?P<host>[A-Za-z0-9][\w.\-]{0,62})[>#]\s?$'
+  # `#` is configuration mode on Junos, not a privileged exec prompt.
+  config_prompt: '#\s?$'
+  # There is no unprivileged mode to escape from and no `enable`: a login
+  # class decides what an account may run.
+  user_prompt: null
+  enable: null
+  login:
+    username_prompt: '(?i)(?:login|user ?name):\s*$'
+    password_prompt: '(?i)password:\s*$'
+    failure: '(?i)(?:login incorrect|permission denied|too many authentication failures)'
+  # Junos's `terminal length 0`. Both are CLI settings of this session only and
+  # change nothing on the device.
+  init:
+    - set cli screen-length 0
+    - set cli screen-width 0
+  pager:
+    # ---(more)---, ---(more 23%)---, ---(Help for CLI automore)---
+    pattern: '^---\(\s*(?:more|Help for CLI automore)'
+    key: ' '
+  errors:
+    # Junos writes `error:` in lowercase. Keeping these patterns
+    # case-sensitive is what stops `BPDU Error: None` in `show interfaces`
+    # from being read as a failed command.
+    - '^\s*error:\s*\S'
+    - '^\s*(?:unknown command|syntax error|missing argument|unknown object)\b'
+    - "^\\s*'[^']*' is ambiguous\\b"
+    - '^\s*invalid (?:value|interface|command|argument|number|address)\b'
+    - '^\s*(?:permission denied|command is not valid on the)\b'
+    # `commit` that the configuration daemon would not take.
+    - '^\s*(?:configuration check-out failed|commit failed)\b'
+  answers:
+    # Reached only if something went wrong: `config.abort` runs `rollback 0`
+    # first, which empties the candidate. "yes" is the safe answer *because*
+    # `config.enter` is `configure exclusive` — exiting an exclusive session
+    # discards the candidate, so yes means "throw my unapplied change away",
+    # not "leave it lying in a shared candidate for the next commit to pick
+    # up". That difference is the reason `configure exclusive` is used.
+    - {prompt: 'Exit with uncommitted changes\?\s*\[yes,no\].*$', answer: 'yes'}
+    - {prompt: 'Discard uncommitted changes\?\s*\[yes,no\].*$', answer: 'yes'}
+  # Junos log messages written to the console:
+  # "Jan 16 13:28:11  edge-rtr mgd[1234]: UI_COMMIT: User 'admin' requested …"
+  unsolicited:
+    - '^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\[\d+\]:\s+\S'
+  timeout_s: 30
+
+config:
+  # Flat `set …` lines, removed again with `delete …`. This is the only form of
+  # a Junos configuration this repository can diff, which is why
+  # `config.running` asks for it explicitly.
+  syntax: set
+  # `configure exclusive` locks the candidate. This is not caution for its own
+  # sake: in Junos's default shared configuration mode a `commit` commits
+  # *everybody's* uncommitted changes, so a change applied here could carry a
+  # half-finished edit someone else left in the candidate. An exclusive
+  # session cannot, and if someone else holds the lock the command fails and is
+  # reported instead of committing their work.
+  enter: [configure exclusive]
+  exit: [exit]
+  commit: [commit]
+  # Only on the failure path: throw the candidate away.
+  abort: [rollback 0]
+  # Nothing to save: `commit` is what writes the configuration to disk.
+  save: []
+  running: show configuration | display set
+  # Junos has no startup configuration. The committed configuration *is* what
+  # comes back after a reboot; previous ones are `rollback 1` … `rollback 49`.
+  startup: null
+  ignore:
+    # "## Last commit: 2024-01-16 13:28:11 UTC by admin"
+    - '^##\s+Last commit:'
+    # The routing-engine mastership line Junos prints after a command.
+    - '^\{(?:master|backup|primary|secondary|linecard|line card|re\d)'
+  # No `errors`: configuration mode complains the way operational mode does,
+  # so `cli.errors` apply. Setting `config.errors` would *replace* them there
+  # rather than add to them.
+  # No `guard`. Junos has the best dead-man switch of any platform here —
+  # `commit confirmed <minutes>`, cancelled by a plain `commit` — but it is a
+  # parameter of the commit, and `config.guard.arm` is a list of *operational
+  # mode* commands run before configuration mode is entered, where
+  # `commit confirmed` is not a command at all. Declaring one would arm
+  # nothing and report success. See tests/profiles/juniper_junos/NOTES.md.
+  guard: null
+  secrets:
+    # `| display set` writes them as set commands; the curly-brace form as
+    # `encrypted-password "…"`.
+    - 'encrypted-password "(?P<secret>[^"]*)"'
+    - 'encrypted-password (?P<secret>\S+)'
+    - 'authentication-key "(?P<secret>[^"]*)"'
+    - 'authentication-key (?P<secret>\S+)'
+    - '\bsecret "(?P<secret>[^"]*)"'
+    - '\bsecret (?P<secret>\S+)'
+    - 'community "(?P<secret>[^"]*)"'
+    - 'pre-shared-key (?:ascii-text|hexadecimal) "(?P<secret>[^"]*)"'
+    - 'simple-password "(?P<secret>[^"]*)"'
+
+policy:
+  # Written from nothing and deliberately short: Junos's operational mode has
+  # exactly one verb that only displays things (`show`), and every other verb
+  # — `request`, `restart`, `clear`, `test`, `op`, `start`, `file copy` — does
+  # something. Nothing is listed because it "looks harmless"; each entry is
+  # justified in tests/profiles/juniper_junos/policy.yml.
+  read_only:
+    # Operational mode has no `show` that changes the device, and in
+    # configuration mode `show` displays the candidate. `show configuration`
+    # is also how this profile fetches a backup. A writing output modifier
+    # (`| save`, `| tee`) is caught by the policy engine, not by this pattern.
+    - '^show\s+\S'
+    # Diagnostics. They send packets and change nothing.
+    - '^(?:ping|traceroute)\s+\S'
+    # Reading the file system. `file copy`, `file delete`, `file rename` and
+    # `file archive` are deliberately not here.
+    - '^file\s+(?:list|show|compare|checksum)\s+\S'
+    # The only `set` that is a read: these are CLI settings of this session,
+    # and this is how `cli.init` turns the pager off. Anchored so that it can
+    # never be confused with `set interfaces …`, which is a configuration
+    # change.
+    - '^set\s+cli\s+(?:screen-length|screen-width|complete-on-space|timestamp|idle-timeout|terminal)\b'
+    # Documentation.
+    - '^help\b'
+    # Leaving. `configure` is not here: entering configuration mode is a mode
+    # change, not a read.
+    - '^(?:exit|quit)$'
+  dangerous:
+    # Taking the box, a line card or an engine away.
+    - '^request\s+(?:system|vmhost)\s+(?:reboot|halt|power-off|zeroize|software|snapshot|partition|reset|scripts\s+delete)\b'
+    - '^request\s+(?:chassis|routing-engine|node|interface)\b'
+    # Restarts a daemon: `restart routing` drops every routing session.
+    - '^restart\b'
+    # Tearing down sessions or state. `clear interfaces statistics` and the
+    # other counter resets are ordinary changes, not these.
+    - '^clear\s+(?:bgp|ospf3?|isis|ldp|rsvp|mpls|security|services|vrrp|arp|route|dhcp|lacp)\b'
+    # Replaces the configuration wholesale rather than editing it.
+    - '^load\s+(?:override|replace|factory-default|patch|json|xml)\b'
+    - '^rollback\b'
+    # A bare `delete` in configuration mode deletes the entire configuration.
+    # `delete <path>`, which is what an ordinary change is made of, is not
+    # matched here and comes out as a change.
+    - '^(?:delete|wildcard\s+delete)\s*$'
+    # Out of the CLI and into FreeBSD, where none of this applies.
+    - '^(?:start\s+shell\b|op\b)'
+    - '^file\s+(?:delete|copy|rename|archive)\b'
+    - '^test\s+\S'
+
+collect:
+  facts:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        hostname: HOSTNAME
+        model: MODEL
+        os_version: JUNOS_VERSION
+        serial: SERIAL_NUMBER
+        vendor: "'Juniper'"
+        os: "'Junos'"
+        # Only a QFabric system answers with this.
+        extra.qfabric_system_id: QFABRIC_SYSTEM_ID
+        # No `uptime_s`: `show version` does not carry one on Junos. It is in
+        # `show system uptime` and `show chassis routing-engine`, for neither
+        # of which there is recorded output to check a step against.
+
+  interfaces:
+    - command: show interfaces
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        description: DESCRIPTION
+        # "Physical interface: ge-0/0/0, Enabled, Physical link is Up". A
+        # logical unit has no state of its own in this output and inherits
+        # the physical one, which the template leaves empty — so `admin_up` is
+        # only set when the device actually said something.
+        admin_up: "(ADMIN_STATE == 'Enabled') if ADMIN_STATE else none"
+        oper_up: "LINK_STATUS == 'Up'"
+        kind: HARDWARE_TYPE
+        # Tunnel interfaces print "MTU: Unlimited", which is not a number;
+        # `| num` leaves the field out rather than invent one.
+        mtu: MTU | num
+        # Junos prints the host address and the subnet separately:
+        # "Destination: 10.10.199.176/29, Local: 10.10.199.180". The prefix
+        # length belongs to the address.
+        ipv4: >-
+          [LOCAL ~ '/' ~ (DESTINATION | regex_search('/(\d+)$'))]
+          if LOCAL and (DESTINATION | regex_search('/(\d+)$'))
+          else ([LOCAL] if LOCAL else [])
+    # The speed, the MAC address, the duplex and the rates, none of which the
+    # bundled template captures although `show interfaces` prints all four.
+    - command: show interfaces
+      parser:
+        textfsm: |
+          Value Required INTERFACE (\S+)
+          Value SPEED (\S+)
+          Value MAC ([0-9a-fA-F:]{17})
+          Value LINK_MODE (\S+)
+          Value IN_RATE (\d+)
+          Value OUT_RATE (\d+)
+
+          Start
+            ^Physical interface: -> Continue.Record
+            ^Physical interface:\s+${INTERFACE},
+            ^\s+Link-mode:\s+${LINK_MODE}-duplex,\s+Speed:\s+${SPEED},
+            ^\s+Type:.*,\s+Speed:\s+${SPEED}\s*$$
+            ^\s+Current address:\s+${MAC},
+            ^\s+Input rate\s+:\s+${IN_RATE} bps
+            ^\s+Output rate\s+:\s+${OUT_RATE} bps
+      map:
+        name: INTERFACE
+        # "Speed: 1000mbps"
+        speed_bps: SPEED | bps
+        mac: MAC | mac
+        # "Link-mode: Half-duplex"
+        duplex: LINK_MODE | lower
+        counters.in_rate_bps: IN_RATE
+        counters.out_rate_bps: OUT_RATE
+      merge_on: name
+
+  neighbors:
+    - command: show lldp neighbors
+      parser: {ntc: auto}
+      map:
+        device: NEIGHBOR_NAME or CHASSIS_ID
+        local_interface: LOCAL_INTERFACE
+        remote_interface: NEIGHBOR_INTERFACE
+        protocol: "'lldp'"
+        # No `platform`, `address` or `capabilities`: the summary listing does
+        # not carry them. `show lldp neighbors interface <name>` does, one
+        # interface at a time, and there is no recorded output of it.
+
+  vlans:
+    - command: show vlans
+      parser: {ntc: auto}
+      map:
+        id: TAG
+        name: VLAN_NAME
+        # Junos marks a member that is forwarding with a trailing `*`
+        # ("ae0.0*"), which is state, not part of the name: an interface
+        # called `ae0.0*` exists nowhere else in the model.
+        interfaces: INTERFACES | map('regex_replace', '\*$', '')
+        # No `status`: this listing has no up/down column. The routing
+        # instance a VLAN belongs to ("default-switch") has nowhere to go in
+        # the model.
+
+  arp:
+    # `no-resolve` keeps the table as addresses. Without it Junos tries a
+    # reverse lookup on every entry, which is slow and fills the column with
+    # names instead of the addresses the model wants.
+    - command: show arp no-resolve
+      parser: {ntc: auto}
+      map:
+        ip: IP_ADDRESS
+        mac: MAC_ADDRESS | mac
+        interface: INTERFACE
+        # No `age`: Junos's ARP table has no age column. The `Flags` column
+        # ("none", "permanent") has nowhere to go in the model.
+
+snmp:
+  cpu:
+    - 1.3.6.1.4.1.2636.3.1.13.1.21   # jnxOperatingCPU, over the operating table
+  memory_used:
+    - 1.3.6.1.4.1.2636.3.1.13.1.11   # jnxOperatingBuffer, percent of memory used
+  temperature:
+    - 1.3.6.1.4.1.2636.3.1.13.1.7    # jnxOperatingTemp, degrees Celsius

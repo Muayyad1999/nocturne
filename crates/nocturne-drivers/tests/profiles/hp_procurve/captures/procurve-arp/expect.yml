@@ -1,0 +1,16 @@
+kinds:
+  arp:
+    count: 3
+    rows:
+      - ip: 10.11.12.11
+        mac: 00:15:b2:a4:50:78
+        interface: "2"
+        # ProVision's ARP table has no age column: "the switch did not say".
+        age: ""
+      - ip: 10.11.12.12
+        mac: 0c:15:b2:a4:5d:78
+        interface: "3"
+        age: ""
+      - ip: 10.11.12.13
+        mac: 00:1e:b2:a4:5f:78
+        interface: "4"

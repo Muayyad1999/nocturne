@@ -1,0 +1,25 @@
+kinds:
+  neighbors:
+    # Four links of one aggregate to one neighbour.
+    count: 4
+    rows:
+      - local_interface: xe-0/1/1
+        device: core01.sjc01
+        remote_interface: Ethernet3/29/1
+        protocol: lldp
+        # The summary listing carries none of these.
+        address: ""
+        capabilities: ""
+        platform: ""
+      - local_interface: xe-0/3/3
+        device: core01.sjc01
+        remote_interface: Ethernet3/29/2
+        protocol: lldp
+      - local_interface: xe-2/0/5
+        device: core01.sjc01
+        remote_interface: Ethernet3/29/3
+        protocol: lldp
+      - local_interface: xe-2/1/5
+        device: core01.sjc01
+        remote_interface: Ethernet3/29/4
+        protocol: lldp

@@ -1,0 +1,50 @@
+# Prompts as IOS XR prints them. The part before the colon is the node the
+# session landed on, which changes when a route processor fails over, so the
+# hostname has to be read from after it.
+#
+# There is no `user` section: IOS XR has no unprivileged mode and no `enable`,
+# so the profile switches `cli.user_prompt` off and the prompt is always `#`.
+exec:
+  - "RP/0/RSP0/CPU0:core-rtr#"
+  - "RP/0/RP0/CPU0:ios#"
+  - "RP/0/RSP1/CPU0:core-rtr#"             # the other route processor
+  - "RP/0/0/CPU0:asr9001#"
+  - "LC/0/2/CPU0:core-rtr#"                # a session attached to a line card
+  - "sysadmin-vm:0_RP0#"                   # the admin plane of a 64-bit release
+  - "RP/0/RSP0/CPU0:edge-rtr-01.lab.example.com#"
+  - "core-rtr#"                            # XRv, which has no node part
+  - "RP/0/RSP0/CPU0:core-rtr# "            # tolerated: a terminal server that adds a space
+config:
+  - "RP/0/RSP0/CPU0:core-rtr(config)#"
+  - "RP/0/RSP0/CPU0:core-rtr(config-if)#"
+  - "RP/0/RSP0/CPU0:core-rtr(config-subif)#"
+  - "RP/0/RSP0/CPU0:core-rtr(config-bgp)#"
+  - "RP/0/RSP0/CPU0:core-rtr(config-bgp-af)#"
+  - "RP/0/RSP0/CPU0:core-rtr(config-ospf-ar)#"
+  - "RP/0/RSP0/CPU0:core-rtr(config-ipv4-acl)#"
+  - "RP/0/RSP0/CPU0:core-rtr(admin-config)#"
+  - "RP/0/RP0/CPU0:ncs(config-l2vpn-bg-bd)#"
+not_prompts:
+  - "Building configuration..."
+  - "Tue May 22 22:32:30.765 UTC"          # the stamp XR puts in front of every command
+  - "Password: "
+  - "Username: "
+  - "% Invalid input detected at '^' marker."
+  - "RP/0/RSP0/CPU0:core-rtr#show running-config"   # the echo of a command
+  - "Uncommitted changes found, commit them before exiting(yes/no/cancel)? [cancel]:"
+  - "!! IOS XR Configuration 7.3.2"
+  - "!"
+  - "#"
+  - "##########################"            # banner decoration
+  - " description $DCI ~QTS Richmond DCI @CRDC %P-CRDC-C98 +Fort0/0/0/0 !CRIT"
+  - "Codes: C - connected, S - static, R - RIP, B - BGP, (>) - Diversion path"
+  - "TenGigE0/3/0/0 is up, line protocol is up"
+  - "NAME: \"0/RP0/CPU0\", DESCR: \"Cisco 8200 2RU 32x400G QSFP56-DD w/IOS XR HBM MACsec\""
+  - "  banner motd # Authorised access only #"
+  - "RP/0/RSP0/CPU0:core rtr#"              # a space in the hostname: not an XR prompt
+hosts:
+  "RP/0/RSP0/CPU0:core-rtr#": core-rtr
+  "RP/0/RSP0/CPU0:core-rtr(config-if)#": core-rtr
+  "RP/0/RSP1/CPU0:edge-rtr-01.lab.example.com#": edge-rtr-01.lab.example.com
+  "sysadmin-vm:0_RP0#": 0_RP0
+  "core-rtr#": core-rtr

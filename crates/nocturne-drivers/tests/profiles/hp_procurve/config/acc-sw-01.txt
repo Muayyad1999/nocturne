@@ -1,0 +1,46 @@
+Running configuration:
+
+; J9772A Configuration Editor; Created on release #WB.16.10.0012
+; Ver #14:6f.f8.1d.9b.3f.bf.bb.ef.7c.59.fc.6b.fb.9f.fc.ff.ff.3f.ef:bd
+
+hostname "ACC-SW-01"
+module 1 type j9772a
+trunk 25-26 trk1 lacp
+ip default-gateway 10.0.1.1
+ip route 0.0.0.0 0.0.0.0 10.0.1.1
+snmp-server community "lab-ro" operator restricted
+snmp-server host 10.0.0.9 community "lab-ro"
+oobm
+   ip address dhcp-bootp
+   exit
+vlan 1
+   name "DEFAULT_VLAN"
+   no untagged 1-24
+   no ip address
+   exit
+vlan 10
+   name "server"
+   untagged 1-12
+   tagged trk1
+   ip address 10.0.10.2 255.255.255.0
+   exit
+vlan 21
+   name "client"
+   untagged 13-24
+   tagged trk1
+   ip address 10.0.21.2 255.255.255.0
+   exit
+interface 1
+   name "AP-01"
+   exit
+interface 5
+   name "spare"
+   disable
+   exit
+interface 24
+   name "uplink to core #1"
+   exit
+spanning-tree
+spanning-tree trk1 priority 4
+lldp run
+no telnet-server

@@ -1,0 +1,33 @@
+kinds:
+  inventory:
+    count: 14
+    rows:
+      - name: Rack 0
+        description: Cisco 8200 2RU 32x400G QSFP56-DD w/IOS XR HBM MACsec
+        part_id: 8202-32FH-M
+        serial: FLM27ABCDEF
+      - name: 0/RP0/CPU0
+        description: Cisco 8200 2RU 32x400G QSFP56-DD w/IOS XR HBM MACsec
+        part_id: 8202-32FH-M
+        serial: FLM27ZBCDEF
+      - name: FourHundredGigE0/0/0/0
+        description: Cisco QSFPDD 400G LR4 Pluggable Optics Module
+        part_id: QDD-400G-LR4-S
+        serial: INL26ABCAUG
+      # A third-party optic: its part number is not a Cisco PID.
+      - name: HundredGigE0/0/0/30
+        description: Non-Cisco QSFP28 100G CWDM4 MSA WITH FEC Pluggable Optics Module
+        part_id: Q.161HG.2.C
+        serial: F78AAB5
+      # The part number carries a bracketed suffix, kept as the router prints it.
+      - name: 0/FB0
+        description: Cisco 8000 Series Fan Controller Board on 8202-32FH-M
+        part_id: 8202-32FH-M[FB]
+        serial: FLM2ZABCDEF
+      - name: 0/FT3
+        part_id: FAN-PI-V3
+        serial: DCH27DBCDEF
+      - name: 0/PM1
+        description: 2000W AC Power Module with Port-side Air Intake
+        part_id: PSU2KW-ACPI
+        serial: POG27ABCDEF

@@ -1,0 +1,44 @@
+kinds:
+  neighbors:
+    count: 5
+    rows:
+      # No system name and no port description: the chassis id stands in for
+      # the device, and there is no port name to report.
+      - local_interface: A2
+        device: c025a5-aabb01
+        remote_interface: ""
+        platform: ""
+        address: ""
+        capabilities: ""
+        protocol: lldp
+      # "PortType: mac-address", so the port description is the port name and
+      # "PortId: 20 a6 cd aa bb 02" is not.
+      - local_interface: A8
+        device: Generic-AP-1
+        remote_interface: bond0
+        platform: "ArubaOS (MODEL: 315), Version Aruba AP"
+        address: 192.0.2.41
+        # What the neighbour has switched on, not what it supports
+        # ("bridge, wlan-access-point").
+        capabilities: wlan-access-point
+        protocol: lldp
+      # "PortType: interface-name", so the port id is the name.
+      - local_interface: A9
+        device: SWITCH-1
+        remote_interface: 1/1/12
+        platform: "Aruba JL817A  RL.10.13.1060"
+        address: 192.0.2.12
+        capabilities: "bridge, router"
+      # "PortType: local": the port id is a local name, and the chassis id is
+      # a truncated location string, not a MAC address.
+      - local_interface: A17
+        device: Generic-AP-12
+        remote_interface: emac0
+        platform: Cisco 1200 Series AP 12.01T1
+        address: 192.0.2.11
+        capabilities: ""
+      - local_interface: D13
+        device: AP 07-01-04
+        remote_interface: eth0
+        address: 192.0.2.222
+        capabilities: wlan-access-point

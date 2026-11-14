@@ -1,0 +1,76 @@
+description: >-
+  An SSH session on an ASR 9000. The transport has authenticated, so the
+  router opens with its prompt; no `enable` is sent, because IOS XR has none.
+  Paging is turned off, a command is run, one is refused, and then a change
+  goes in the XR way: `configure terminal`, the lines, `commit`, and `abort` to
+  leave configuration mode without being asked whether to commit. Finally the
+  running configuration is fetched and the lines XR regenerates — the date
+  stamp, "Building configuration...", the `!!` header and the last-change
+  comment — must be gone from what the driver returns. Scripted from the
+  platform's documented behaviour; no device was recorded.
+credentials: {username: admin, password: secret}
+greeting: "\r\n\r\nRP/0/RSP0/CPU0:core-rtr#"
+dialogue:
+  - recv: terminal length 0
+    send: "terminal length 0\r\nThu Jan 16 13:30:40.112 AEST\r\nRP/0/RSP0/CPU0:core-rtr#"
+  - recv: terminal width 0
+    send: "terminal width 0\r\nThu Jan 16 13:30:40.998 AEST\r\nRP/0/RSP0/CPU0:core-rtr#"
+  - recv: show redundancy summary
+    send: "show redundancy summary\r\nThu Jan 16 13:30:51.004 AEST\r\n    Active/Primary   Standby/Backup\r\n    0/RSP0/CPU0(A)   0/RSP1/CPU0(S) (Node Ready, NSR:Ready)\r\nRP/0/RSP0/CPU0:core-rtr#"
+  - recv: show nonsense
+    send: "show nonsense\r\nThu Jan 16 13:30:58.221 AEST\r\n           ^\r\n% Invalid input detected at '^' marker.\r\nRP/0/RSP0/CPU0:core-rtr#"
+  - recv: configure terminal
+    send: "configure terminal\r\nThu Jan 16 13:31:02.004 AEST\r\nRP/0/RSP0/CPU0:core-rtr(config)#"
+  - recv: interface TenGigE0/0/0/1
+    send: "interface TenGigE0/0/0/1\r\nRP/0/RSP0/CPU0:core-rtr(config-if)#"
+  - recv: description spare
+    send: "description spare\r\nRP/0/RSP0/CPU0:core-rtr(config-if)#"
+  # Nothing has happened to the router until this succeeds: the two lines above
+  # only went into the candidate configuration.
+  - recv: commit
+    send: "commit\r\nThu Jan 16 13:31:20.550 AEST\r\nRP/0/RSP0/CPU0:core-rtr(config-if)#"
+  # `abort` leaves configuration mode with an empty candidate. `end` would ask
+  # whether to commit, which is not a question a driver should be answering.
+  - recv: abort
+    send: "abort\r\nRP/0/RSP0/CPU0:core-rtr#"
+  - recv: show running-config
+    send: |-
+      show running-config
+      Thu Jan 16 13:31:40.009 AEST
+      Building configuration...
+      !! IOS XR Configuration 7.3.2
+      !! Last configuration change at Thu Jan 16 13:31:20 2024 by admin
+      !
+      hostname core-rtr
+      !
+      interface TenGigE0/0/0/1
+       description spare
+      !
+      end
+
+      RP/0/RSP0/CPU0:core-rtr#
+actions:
+  - start:
+      hostname: core-rtr
+      prompt: "RP/0/RSP0/CPU0:core-rtr#"
+    # IOS XR has no unprivileged mode: whatever the account's task groups
+    # allow, the session is simply at the prompt.
+    mode: privileged
+  - exec: show redundancy summary
+    output: |-
+      Thu Jan 16 13:30:51.004 AEST
+          Active/Primary   Standby/Backup
+          0/RSP0/CPU0(A)   0/RSP1/CPU0(S) (Node Ready, NSR:Ready)
+  - exec: show nonsense
+    error: "% Invalid input detected at '^' marker."
+  - configure: [interface TenGigE0/0/0/1, description spare]
+    mode: privileged
+  - fetch_config: running
+    config: |
+      !
+      hostname core-rtr
+      !
+      interface TenGigE0/0/0/1
+       description spare
+      !
+      end

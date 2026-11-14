@@ -1,0 +1,65 @@
+# The IOS-style policy, copied into cisco_xr.yaml because `extends` replaces a
+# list as a whole, plus the XR-only patterns: `admin show …` reads the admin
+# plane, and `admin reload`, `clear configuration`, `load` and `process
+# restart` are the XR spellings of taking the router away.
+read_only:
+  - show running-config
+  - show version
+  - show route
+  - show route vrf all
+  - show ipv4 interface brief
+  - show arp
+  - show inventory
+  - show lldp neighbors detail
+  - show interfaces
+  - sh int br                        # abbreviations are accepted by the device, so by the policy too
+  - sho ver
+  - show run | include hostname
+  - admin show platform
+  - admin show inventory
+  - adm sh env all
+  - terminal length 0
+  - terminal width 0
+  - ping 10.0.0.1
+  - traceroute 2001:db8::1
+  - "dir disk0:"
+  - exit
+change:
+  - configure terminal
+  - conf t
+  # Not read-only, and deliberately not "dangerous" either: a commit is the
+  # ordinary way a reviewed change is applied.
+  - commit
+  - commit confirmed 5
+  - commit best-effort
+  - abort
+  - rollback configuration last 1
+  - interface TenGigE0/0/0/1
+  - shutdown
+  - no shutdown
+  - clear counters all
+  - clear arp-cache
+  # Entering the admin plane is a mode change, not a read.
+  - admin
+  - show                             # nothing to show: not a read
+  - show running-config | redirect disk0:leak.cfg
+  - show tech-support | file disk0:tech.tgz
+  - "show version\nconfigure terminal"   # two commands sent as one
+dangerous:
+  - reload
+  - reload location all
+  - admin reload location all
+  - adm rel loc all
+  - admin hw-module location 0/1 reload
+  - hw-module location 0/RSP0/CPU0 reload
+  # Replaces the running configuration from a file.
+  - load disk0:backup.cfg
+  - clear configuration inconsistency
+  - install add source tftp://10.0.0.5/ ncs-7.3.2.iso
+  - process restart bgp
+  - run
+  - attach location 0/0/CPU0
+  - "format disk1:"
+  - delete disk0:old.cfg
+  - "erase nvram:"
+  - show clock ; admin reload location all

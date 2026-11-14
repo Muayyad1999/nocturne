@@ -1,0 +1,66 @@
+description: >-
+  An SSH session on an MX. The transport has authenticated, so Junos opens with
+  its operational-mode prompt; no `enable` is sent, because Junos has none —
+  `>` already is the prompt reads happen at. Paging is turned off, a command is
+  run, one is refused, and then a change goes in the Junos way: `configure
+  exclusive`, `set` lines, `commit`, `exit`. Finally the configuration is
+  fetched as `| display set` and the two lines Junos regenerates — the
+  `## Last commit:` header and the `{master:0}` mastership line — must be gone
+  from what the driver returns. Scripted from the platform's documented
+  behaviour; no device was recorded.
+credentials: {username: admin, password: secret}
+greeting: "\r\n--- JUNOS 20.4R3-S4.8 Kernel 64-bit\r\n\r\nadmin@edge-rtr>"
+dialogue:
+  - recv: set cli screen-length 0
+    send: "set cli screen-length 0\r\nScreen length set to 0\r\n\r\nadmin@edge-rtr>"
+  - recv: set cli screen-width 0
+    send: "set cli screen-width 0\r\nScreen width set to 0\r\n\r\nadmin@edge-rtr>"
+  - recv: show system uptime
+    send: "show system uptime\r\nCurrent time: 2026-01-16 13:30:51 UTC\r\nSystem booted: 2026-01-02 09:12:03 UTC (2w0d 04:18 ago)\r\n\r\n{master:0}\r\nadmin@edge-rtr>"
+  - recv: show nonsense
+    send: "show nonsense\r\n            ^\r\nsyntax error, expecting <command>.\r\n\r\nadmin@edge-rtr>"
+  # The lock is the point: in Junos's default shared mode a `commit` would also
+  # commit whatever someone else had left in the candidate.
+  - recv: configure exclusive
+    send: "configure exclusive\r\nwarning: uncommitted changes will be discarded on exit\r\nEntering configuration mode\r\n\r\n[edit]\r\nadmin@edge-rtr#"
+  - recv: set interfaces ge-0/0/1 description spare
+    send: "set interfaces ge-0/0/1 description spare\r\n\r\n[edit]\r\nadmin@edge-rtr#"
+  - recv: set interfaces ge-0/0/1 disable
+    send: "set interfaces ge-0/0/1 disable\r\n\r\n[edit]\r\nadmin@edge-rtr#"
+  # Nothing has happened to the router until this succeeds.
+  - recv: commit
+    send: "commit\r\ncommit complete\r\n\r\n[edit]\r\nadmin@edge-rtr#"
+  - recv: exit
+    send: "exit\r\nExiting configuration mode\r\n\r\nadmin@edge-rtr>"
+  - recv: show configuration | display set
+    send: |-
+      show configuration | display set
+      ## Last commit: 2026-01-16 13:31:20 UTC by admin
+      set system host-name edge-rtr
+      set interfaces ge-0/0/1 description spare
+      set interfaces ge-0/0/1 disable
+
+      {master:0}
+      admin@edge-rtr>
+actions:
+  - start:
+      hostname: edge-rtr
+      prompt: "admin@edge-rtr>"
+    # `>` is operational mode, which is where everything is read. There is no
+    # unprivileged mode to escape from, so the session starts ready to work.
+    mode: privileged
+  - exec: show system uptime
+    output: |-
+      Current time: 2026-01-16 13:30:51 UTC
+      System booted: 2026-01-02 09:12:03 UTC (2w0d 04:18 ago)
+
+      {master:0}
+  - exec: show nonsense
+    error: "syntax error, expecting <command>."
+  - configure: [set interfaces ge-0/0/1 description spare, set interfaces ge-0/0/1 disable]
+    mode: privileged
+  - fetch_config: running
+    config: |
+      set system host-name edge-rtr
+      set interfaces ge-0/0/1 description spare
+      set interfaces ge-0/0/1 disable

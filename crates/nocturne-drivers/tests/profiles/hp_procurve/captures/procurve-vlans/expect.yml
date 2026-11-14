@@ -1,0 +1,21 @@
+kinds:
+  vlans:
+    count: 5
+    rows:
+      - id: 1
+        name: DEFAULT_VLAN
+        # How the VLAN is classified; ProVision's table has no up/down column.
+        status: Port-based
+        # The listing does not say which ports carry the VLAN.
+        interfaces: []
+      - id: 10
+        name: server
+        status: Port-based
+      - id: 21
+        name: client
+      - id: 24
+        name: guest
+      - id: 2000
+        name: dmz
+        status: Port-based
+        interfaces: []

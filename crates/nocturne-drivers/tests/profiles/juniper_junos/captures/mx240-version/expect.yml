@@ -1,0 +1,13 @@
+kinds:
+  facts:
+    rows:
+      - hostname: lab
+        vendor: Juniper
+        os: Junos
+        model: mx240
+        os_version: 13.3R1.4
+        serial: qfsn-0123456789
+        # `show version` carries no uptime on Junos.
+        uptime_s: null
+        extra:
+          qfabric_system_id: f158527a-f99e-11e0-9fbd-00e081c57cda

@@ -1,0 +1,69 @@
+description: >-
+  An SSH session on a 2930F. The transport has authenticated and the account is
+  a manager, so the switch opens at `#`; the driver turns paging off with
+  `no page`, not `terminal length 0`. A command is refused — and
+  the refusal is a plain sentence with no `%` in it, which is the reason this
+  profile does not extend `_cli_ios_like`. Then a change goes in, is saved with
+  `write memory` (without which ProVision loses it on the next reboot), and the
+  configuration is fetched: the `Running configuration:` header, the two `;`
+  comment lines and a console log line that arrived mid-listing must all be
+  gone from what the driver returns. Scripted from the platform's documented
+  behaviour; no switch was recorded.
+credentials: {username: manager, password: secret}
+greeting: "\r\nACC-SW-01#"
+dialogue:
+  - recv: no page
+    send: "no page\r\nACC-SW-01#"
+  - recv: show nonsense
+    send: "show nonsense\r\nInvalid input: nonsense\r\nACC-SW-01#"
+  - recv: configure terminal
+    send: "configure terminal\r\nACC-SW-01(config)#"
+  - recv: vlan 30
+    send: "vlan 30\r\nACC-SW-01(vlan-30)#"
+  - recv: name "voice"
+    send: "name \"voice\"\r\nACC-SW-01(vlan-30)#"
+  - recv: end
+    send: "end\r\nACC-SW-01#"
+  # Without this the change is gone after the next reboot.
+  - recv: write memory
+    send: "write memory\r\nACC-SW-01#"
+  - recv: show running-config
+    send: |-
+      show running-config
+
+      Running configuration:
+
+      ; J9772A Configuration Editor; Created on release #WB.16.10.0012
+      ; Ver #14:6f.f8.1d.9b.3f.bf.bb.ef.7c.59.fc.6b.fb.9f.fc.ff.ff.3f.ef:bd
+
+      hostname "ACC-SW-01"
+      I 01/02/70 03:04:09 ports: port 24 is now on-line
+      vlan 1
+         name "DEFAULT_VLAN"
+         no untagged 1-24
+         exit
+      vlan 30
+         name "voice"
+         exit
+      ACC-SW-01#
+actions:
+  - start:
+      hostname: ACC-SW-01
+      prompt: "ACC-SW-01#"
+    mode: privileged
+  - exec: show nonsense
+    # A sentence, not a `%` line.
+    error: "Invalid input: nonsense"
+  - configure: [vlan 30, 'name "voice"']
+    mode: privileged
+  - save: true
+  - fetch_config: running
+    config: |
+      hostname "ACC-SW-01"
+      vlan 1
+         name "DEFAULT_VLAN"
+         no untagged 1-24
+         exit
+      vlan 30
+         name "voice"
+         exit

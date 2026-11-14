@@ -1,0 +1,95 @@
+# What Junos prints when it refuses, and what it prints when it does not.
+#
+# The `rejected` samples were typed from the platform's documented messages —
+# the ntc-templates corpus this profile's captures come from holds `show`
+# output only, and no device was available (see NOTES.md). Most of the `clean`
+# samples are the opposite: they are copied out of the real captures under
+# `captures/`, because the patterns that matter are the ones that have to leave
+# ordinary output alone.
+#
+# Nothing here starts with `%`, and `error:` is lowercase. The second of those
+# is why `cli.errors` is case-sensitive: the first `clean` sample below is
+# three lines of real `show interfaces` output containing `BPDU Error: None`
+# and `MAC-REWRITE Error: None`, and a case-insensitive `^\s*error:` would
+# report a perfectly good command as having failed.
+exec:
+  rejected:
+    - output: |
+        show nonsense
+             ^
+        syntax error, expecting <command>.
+      error: "syntax error, expecting <command>."
+    - output: "unknown command.\n"
+      error: "unknown command."
+    - "missing argument.\n"
+    - "'sh i' is ambiguous.\n"
+    - "error: device ge-9/9/9 not found\n"
+    - "error: permission denied\n"
+    - "error: the ethernet-switching-options hierarchy is not applicable on this platform\n"
+    # Two-stage commit: the candidate was accepted, the commit was not.
+    - "error: configuration check-out failed\n"
+    - "error: configuration database locked by: admin terminal p0\n"
+    - "invalid value for interface name\n"
+  clean:
+    # Copied from captures/mx-interfaces/show_interfaces.txt. `Error: None` is
+    # a counter, and `error:` in lowercase is what Junos uses for failures.
+    - |
+      Physical interface: ge-0/0/0, Enabled, Physical link is Up
+        Link-mode: Half-duplex, Speed: 1000mbps, BPDU Error: None,
+        MAC-REWRITE Error: None, Loopback: Disabled, Source filtering: Disabled,
+        Active alarms  : None
+        Active defects : None
+    # Copied from captures/mx240-version/show_version.txt, mastership line and
+    # all.
+    - |
+      Hostname: lab
+      Model: mx240
+      Junos: 13.3R1.4
+      Serial Number: qfsn-0123456789
+
+      {master:0}
+    # Copied from captures/ex-arp/show_arp_no-resolve.txt.
+    - |
+      MAC Address       Address         Interface     Flags
+      00:00:00:00:00:04 10.1.100.130    vlan.20        none
+      Total entries: 9
+    # A warning is not a refusal: the command did what it was asked.
+    - |
+      warning: Interface ge-0/0/0 has an unsupported configuration
+      warning: cli-level licence not installed
+    - |
+      PING 10.0.0.1 (10.0.0.1): 56 data bytes
+      64 bytes from 10.0.0.1: icmp_seq=0 ttl=64 time=1.234 ms
+      --- 10.0.0.1 ping statistics ---
+      5 packets transmitted, 5 packets received, 0% packet loss
+    - " ---(more 23%)---\n"
+config:
+  # Configuration mode complains the way operational mode does, so
+  # `config.errors` is left empty on purpose and these are judged against
+  # `cli.errors`.
+  rejected:
+    - output: |
+        [edit]
+        admin@edge-rtr# set interfaces ge-9/9/9 description spare
+                                       ^
+        syntax error.
+      error: "syntax error."
+    - "error: configuration check-out failed: (statements constraint check failed)\n"
+    - "error: Access-list entry 10 does not exist\n"
+    - "unknown command.\n"
+  clean:
+    # What a successful commit says.
+    - "commit complete\n"
+    - |
+      re0:
+      configuration check succeeds
+      re1:
+      commit complete
+    # A note about a side effect, not a refusal.
+    - |
+      warning: statement not found
+      warning: [edit interfaces ge-0/0/0] 'unit 0' is deprecated
+    - |
+      [edit interfaces ge-0/0/0]
+      +   description "core uplink";
+      [edit]

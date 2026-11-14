@@ -1,0 +1,57 @@
+# Prompts as Junos prints them.
+#
+# The thing to get right here is that `>` and `#` mean the opposite of what
+# they mean on a Cisco CLI: `>` is operational mode, where reads happen, and
+# `#` is configuration mode. So every `exec` entry below ends in `>` and every
+# `config` entry in `#`, and there is no `user` section at all — Junos has no
+# unprivileged mode and no `enable`.
+#
+# `not_prompts` carries the two lines Junos prints *around* a prompt and which
+# are easy to mistake for one: the `{master:0}` mastership line on a
+# dual-engine chassis and the `[edit …]` banner in configuration mode. Both are
+# on their own lines above the prompt.
+exec:
+  - "admin@edge-rtr>"
+  - "root@mx240>"
+  - "netops@core01.sjc01>"
+  - "a@b>"
+  - "automation.svc@qfx5120-01>"
+  - "admin@edge-rtr> "                    # tolerated: a terminal server that adds a space
+config:
+  - "admin@edge-rtr#"
+  - "root@mx240#"
+  - "netops@core01.sjc01#"
+not_prompts:
+  # The FreeBSD shell. A session that lands here is not a Junos CLI and must
+  # not be driven as one.
+  - "root@edge-rtr%"
+  - "root@edge-rtr:~ #"
+  # The mastership line and the configuration-mode banner.
+  - "{master:0}"
+  - "{master}"
+  - "{backup:1}"
+  - "{linecard:0}"
+  - "[edit]"
+  - "[edit interfaces ge-0/0/0]"
+  - "[edit system login]"
+  # Ordinary output.
+  - "---(more 23%)---"
+  - "Password:"
+  - "login:"
+  - "unknown command."
+  - "syntax error, expecting <command>."
+  - "admin@edge-rtr> show interfaces"     # the echo of a command
+  - "## Last commit: 2024-01-16 13:28:11 UTC by admin"
+  - "Physical interface: ge-0/0/0, Enabled, Physical link is Up"
+  - "  Link-mode: Half-duplex, Speed: 1000mbps, BPDU Error: None,"
+  - "Total entries: 9"
+  - "#"
+  - ">"
+  - "set system host-name edge-rtr"
+  - "admin@edge-rtr"                      # no mode character at all
+  - "edge-rtr>"                           # no user part: not a Junos prompt
+hosts:
+  "admin@edge-rtr>": edge-rtr
+  "admin@edge-rtr#": edge-rtr
+  "netops@core01.sjc01>": core01.sjc01
+  "root@mx240>": mx240

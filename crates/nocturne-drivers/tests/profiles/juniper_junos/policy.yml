@@ -1,0 +1,182 @@
+# Junos's command policy, written from nothing. Default-deny: a command is a
+# change unless it is on the read-only list, and the list is six entries long.
+#
+# Every read-only entry below has positive cases and, directly after them, the
+# cases that must NOT be read-only — that is the whole point of the file. The
+# justification for each entry is in a comment above its block.
+
+read_only:
+  # ---------------------------------------------------------------- `show`
+  # Junos's operational mode has exactly one verb that only displays things.
+  # There is no `show` on this platform that changes the device, and in
+  # configuration mode `show` displays the candidate. `show configuration` is
+  # also how this profile fetches a backup, so this entry is load-bearing.
+  - show version
+  - show interfaces
+  - show interfaces ge-0/0/0 extensive
+  - show configuration
+  - show configuration | display set
+  - show configuration | display set | match host-name
+  - show vlans
+  - show arp no-resolve
+  - show lldp neighbors
+  - show chassis hardware
+  - show system uptime
+  - show route summary
+  - show interfaces ge-0/0/0 | no-more
+  - show log messages | last 50
+  # ------------------------------------------------------- `ping`/`traceroute`
+  # Diagnostics. They put packets on the wire and change nothing on the device.
+  - ping 10.0.0.1
+  - ping 10.0.0.1 count 5 rapid
+  - traceroute 10.0.0.1
+  # ------------------------------------------------------------ `file` reads
+  # Reading the file system. Narrow on purpose: the four verbs listed are the
+  # ones that only display, and `file copy`, `file delete`, `file rename` and
+  # `file archive` are on the dangerous list instead.
+  - file list /var/tmp/
+  - file show /config/juniper.conf
+  - file compare files /config/juniper.conf /config/juniper.conf.1
+  - file checksum md5 /var/tmp/x
+  # --------------------------------------------------------------- `set cli`
+  # The only `set` that is a read. These are settings of this CLI session —
+  # they are not configuration, they are not committed, and they do not
+  # survive logout. This is Junos's `terminal length 0`, and it is what
+  # `cli.init` sends. The pattern is anchored at `set cli` precisely so that it
+  # can never be confused with `set interfaces …`, which is a change.
+  - set cli screen-length 0
+  - set cli screen-width 0
+  - set cli complete-on-space off
+  - set cli timestamp
+  - set cli idle-timeout 0
+  # ------------------------------------------------------------------ `help`
+  # Reads the on-box documentation. Displays text, touches nothing.
+  - help
+  - help reference interfaces
+  - help apropos bgp
+  # --------------------------------------------------------- `exit` / `quit`
+  # Leaving the session. Anchored to the bare word: `exit` with an argument is
+  # not on the list.
+  - exit
+  - quit
+
+change:
+  # --- the negative cases for `^show\s+\S` ---
+  - show                          # nothing to show: not a read
+  # Junos completes an unambiguous prefix, so the device would accept these.
+  # The policy does not: it matches whole words only. The cost of refusing an
+  # abbreviation is one extra approval; the cost of a pattern loose enough to
+  # accept `sh` is that it accepts whatever `sh` completes to on a release
+  # nobody here has seen.
+  - sho ver
+  - sh int
+  # A writing output modifier. Junos's `| save`, `| tee` and `| request` do
+  # something; `| display`, `| match` and `| no-more` only filter.
+  - show configuration | save /var/tmp/leak.conf
+  - show version | tee /var/tmp/v.txt
+  - "show version\nconfigure"     # two commands sent as one
+  - show interfaces ; commit        # a read chained with a change is a change
+  # --- the negative cases for `^(?:ping|traceroute)\s+\S` ---
+  - ping                          # the interactive form, with no target
+  - traceroute
+  # --- the negative cases for `^file\s+(?:list|show|compare|checksum)\s+\S` ---
+  - file list                     # no argument
+  - file show
+  # --- the negative cases for `^set\s+cli\s+…` ---
+  - set cli                       # no setting named
+  - set cli directory /var/tmp    # changes the account's working directory on disk
+  - set interfaces ge-0/0/0 description spare
+  - set system host-name edge-rtr
+  - set date 2026-01-01.00:00
+  # --- the negative case for `^help\b` ---
+  - helpdesk-script run           # starts with "help" but is not `help`
+  # --- the negative cases for `^(?:exit|quit)$` ---
+  # Deliberately strict: only the bare words are reads.
+  - exit configuration-mode
+  - quit all
+  # --- entering configuration mode and committing are changes, not reads ---
+  - configure
+  - configure exclusive
+  - configure private
+  - commit
+  - commit check                  # safe in practice, but it is not a `show`
+  - commit confirmed 5
+  - commit and-quit
+  # --- ordinary configuration edits ---
+  - delete interfaces ge-0/0/0 disable
+  - deactivate interfaces ge-0/0/0
+  - annotate interfaces "reviewed 2026-01-01"
+  - copy interfaces ge-0/0/0 to interfaces ge-0/0/1
+  - rename interfaces ge-0/0/0 to interfaces ge-0/0/1
+  # --- `clear` that only resets counters ---
+  - clear interfaces statistics all
+  - clear log messages
+  # --- not read-only although they display things: neither command returns on
+  # --- its own, so an unattended caller would hang the session until it timed
+  # --- out. They are reads a human runs, not reads a program runs.
+  - monitor traffic interface ge-0/0/0
+  - monitor interface traffic
+  - monitor start messages
+  # --- `request` is Junos's verb for *doing* something. The destructive
+  # --- families are on the dangerous list; the rest are still not reads.
+  - request support information
+  - request message all message "maintenance in 5 minutes"
+  - request system license add terminal
+  # --- the shell-ish ones that are not quite the shell ---
+  - telnet 10.0.0.1
+  - ssh 10.0.0.1
+
+dangerous:
+  # Taking the box, an engine or a line card away.
+  - request system reboot
+  - request system reboot in 10
+  - request system halt
+  - request system power-off
+  - request system zeroize
+  - request system snapshot
+  - request system software add /var/tmp/junos.tgz
+  - request system partition hard-disk
+  - request chassis fpc slot 1 restart
+  - request routing-engine login other-routing-engine
+  - request node 0 reboot
+  - request interface switchover ge-0/0/0
+  # Restarts a daemon: `restart routing` drops every routing session on the box.
+  - restart routing
+  - restart chassis-control
+  - restart routing immediately
+  # Tearing down protocol state and sessions.
+  - clear bgp neighbor 10.0.0.1
+  - clear ospf neighbor all
+  - clear isis adjacency
+  - clear ldp session
+  - clear mpls lsp
+  - clear security flow session all
+  - clear arp hostname 10.0.0.1
+  - clear route 0.0.0.0/0
+  - clear vrrp
+  - clear dhcp server binding all
+  # Replaces the configuration wholesale rather than editing it.
+  - load override terminal
+  - load replace /var/tmp/new.conf
+  - load factory-default
+  - load patch terminal
+  - rollback
+  - rollback 1
+  - rollback 0
+  # A bare `delete` in configuration mode deletes the entire configuration.
+  # `delete <path>` is above, under `change`.
+  - delete
+  - wildcard delete
+  # Out of the CLI and into FreeBSD, where none of this applies.
+  - start shell
+  - start shell user root
+  - op my-script.slax
+  # Writing to or removing files on the device.
+  - file delete /var/tmp/x
+  - file copy /var/tmp/x ftp://10.0.0.5/
+  - file rename /config/juniper.conf /config/old.conf
+  - file archive compress source /var/log destination /var/tmp/logs.tgz
+  # `test interface` puts a port into a loopback test.
+  - test interface ge-0/0/0
+  - test configuration
+  - show clock ; request system reboot

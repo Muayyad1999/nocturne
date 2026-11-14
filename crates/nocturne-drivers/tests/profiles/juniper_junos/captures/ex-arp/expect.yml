@@ -1,0 +1,23 @@
+kinds:
+  arp:
+    # Nine entries. "Total entries: 9" is a summary line, not a tenth.
+    count: 9
+    rows:
+      - ip: 10.1.100.130
+        mac: 00:00:00:00:00:04
+        interface: vlan.20
+        # Junos's ARP table has no age column.
+        age: ""
+      - ip: 10.1.100.132
+        mac: 00:00:00:00:00:05
+        interface: vlan.20
+      - ip: 10.1.100.74
+        mac: 00:00:00:00:00:0a
+        interface: vlan.20
+        age: ""
+      - ip: 10.1.111.11
+        mac: 00:00:00:00:11:11
+        interface: vlan.20
+      - ip: 10.1.13.13
+        mac: 00:00:00:00:13:13
+        interface: vlan.20

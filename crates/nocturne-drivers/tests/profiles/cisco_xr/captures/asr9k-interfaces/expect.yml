@@ -1,0 +1,150 @@
+kinds:
+  interfaces:
+    count: 10
+    rows:
+      # A loopback: no speed, no duplex, no MAC, no byte counters, and an
+      # address the router prints already in CIDR form.
+      - name: Loopback5
+        description: $DCI ~Loopback for OSPF/LDP/BGP/TE
+        admin_up: true
+        oper_up: true
+        kind: Loopback
+        mtu: 1500
+        mac: ""
+        ipv4: ["192.168.169.21/32"]
+        speed_bps: null
+        duplex: ""
+        counters:
+          in_octets: null
+          in_packets: null
+      # "Internet address is Unknown" must not become an address.
+      - name: Null0
+        kind: "Null"
+        admin_up: true
+        oper_up: true
+        mtu: 1500
+        ipv4: []
+        counters:
+          in_packets: 0
+          out_packets: 0
+          in_octets: 0
+          out_octets: 0
+          in_rate_bps: 0
+          out_rate_bps: 0
+      - name: tunnel-te300
+        description: $DCI TE Tunnel For REPLICATION to P-YB19-C95
+        kind: Tunnel-TE
+        admin_up: true
+        oper_up: true
+        ipv4: ["192.168.169.21/32"]
+        counters:
+          out_packets: 1960425
+          out_octets: 674297494
+          out_rate_bps: 2000
+          in_packets: 0
+      # "administratively down, line protocol is administratively down", and
+      # "Duplex unknown, 0Kb/s": neither a duplex nor a speed worth recording.
+      - name: MgmtEth0/RSP0/CPU0/1
+        description: $DCI
+        admin_up: false
+        oper_up: false
+        kind: Management Ethernet
+        mac: 50:87:89:66:53:29
+        mtu: 1514
+        ipv4: []
+        speed_bps: null
+        duplex: ""
+        counters:
+          in_errors: 0
+          crc: 0
+          out_errors: 0
+      - name: MgmtEth0/RSP1/CPU0/0
+        description: Management Interface
+        admin_up: true
+        oper_up: true
+        kind: Management Ethernet
+        mac: f0:9e:63:40:14:20
+        mtu: 1514
+        ipv4: ["10.253.3.18/25"]
+        duplex: full
+        # "1000Mb/s"
+        speed_bps: 1000000000
+        counters:
+          in_packets: 43738403
+          out_packets: 121976
+          in_octets: 12696681984
+          out_octets: 18613909
+          in_rate_bps: 22000
+          out_rate_bps: 0
+          in_errors: 0
+          out_errors: 0
+          crc: 0
+      # "40000Mb/s", and the 30-second rates XR uses on a line-card port.
+      - name: FortyGigE0/0/0/0
+        admin_up: true
+        oper_up: true
+        kind: FortyGigE
+        mac: 50:87:89:5f:81:a0
+        mtu: 9216
+        ipv4: ["192.168.166.9/30"]
+        duplex: full
+        speed_bps: 40000000000
+        counters:
+          in_packets: 478575583
+          in_octets: 29095652278
+          out_packets: 478514791
+          out_octets: 29002406808
+          in_rate_bps: 62000
+          out_rate_bps: 62000
+      # The name the router prints, not the IOS long form: with
+      # `interface_names: verbatim` it is not rewritten to
+      # TenGigabitEthernet0/3/0/0, which IOS XR would not accept.
+      - name: TenGigE0/3/0/0
+        admin_up: true
+        oper_up: true
+        kind: TenGigE
+        mac: 50:87:89:64:53:b0
+        mtu: 9216
+        ipv4: ["192.168.166.65/30"]
+        speed_bps: 10000000000
+        counters:
+          in_packets: 74732197285
+          in_octets: 48622921819223
+          out_packets: 2222908838
+          out_octets: 856734632077
+          in_rate_bps: 134379000
+          out_rate_bps: 285000
+      # Shut down, but the port still reports the speed it would run at.
+      - name: TenGigE0/3/0/4
+        admin_up: false
+        oper_up: false
+        kind: TenGigE
+        mac: 50:87:89:64:53:b4
+        mtu: 1514
+        description: ""
+        ipv4: []
+        speed_bps: 10000000000
+      # A bundle: its MAC has no (bia …) beside it, and it has no address.
+      - name: Bundle-Ether123456
+        description: Bundle_example
+        admin_up: true
+        oper_up: true
+        kind: Aggregated Ethernet
+        mac: aa:aa:bb:bb:cc:cc
+        mtu: 1514
+        ipv4: []
+      # An 802.1Q sub-interface: the VLAN tag comes out of the encapsulation
+      # line, and the MTU is the 1518 of a tagged frame.
+      - name: GigabitEthernet0/0/0/12.456
+        description: qsqsd svsdvxcvsdv
+        admin_up: false
+        oper_up: false
+        kind: VLAN
+        vlan: 456
+        mac: 50:00:00:02:00:0d
+        mtu: 1518
+        ipv4: ["192.168.5.1/24"]
+        speed_bps: null
+        counters:
+          in_octets: 0
+          out_octets: 0

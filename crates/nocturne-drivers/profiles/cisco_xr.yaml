@@ -1,0 +1,307 @@
+# Cisco IOS XR: ASR 9000, CRS, NCS, 8000 series.
+#
+# The command line is IOS-like, so the prompts, `enable`-less privilege model
+# aside, come from `_cli_ios_like`. What is different, and what this file has
+# to say, is:
+#
+#   * the prompt carries the location of the route processor the session
+#     landed on: `RP/0/RSP0/CPU0:core-rtr#`, and in the admin plane
+#     `sysadmin-vm:0_RP0#`. The base's prompt pattern allows neither `/` nor
+#     `:`, so `cli.prompt` is replaced here;
+#   * there is no unprivileged mode and no `enable`: what an account may do is
+#     decided by its task groups, and the prompt is always `#`. Both
+#     `cli.user_prompt` and `cli.enable` are therefore switched off;
+#   * configuration is a two-stage affair — lines go into a candidate and
+#     `commit` activates it. A commit is also what persists it, so there is no
+#     `write memory` and no startup configuration;
+#   * every `show` is preceded by the date and time, which has to be dropped
+#     from a fetched configuration or two fetches of an untouched device would
+#     never compare equal.
+#
+# Maturity is `community`: the collectors below are checked against output
+# recorded from real IOS XR routers (the ntc-templates corpus, see
+# tests/profiles/cisco_xr/), but nobody has pointed this profile at a device —
+# the prompts, the paging commands, the error patterns and the configuration
+# path are all written from the platform's documented behaviour.
+id: cisco_xr
+name: Cisco IOS XR
+vendor: Cisco
+os: IOS-XR
+description: >-
+  Cisco IOS XR routers (ASR 9000, CRS, NCS, 8000). Reads facts, interfaces,
+  LLDP neighbours, ARP, routes, health and the chassis inventory; configuration
+  is read with `show running-config` and applied through the candidate
+  configuration and `commit`.
+extends: _cli_ios_like
+ntc_platform: cisco_xr
+maturity: community
+# IOS XR prints the whole name in every command (`TenGigE0/3/0/0`,
+# `MgmtEth0/RSP0/CPU0/0`, `FourHundredGigE0/0/0/0`), so nothing has to be
+# joined up — and the Cisco abbreviation rules would rewrite `TenGigE` to
+# `TenGigabitEthernet` and `FortyGigE` to `FortyGigabitEthernet`, which are
+# not names IOS XR knows.
+interface_names: verbatim
+
+detect:
+  # No `banner`: the SSH identification string of IOS XR (`SSH-2.0-Cisco-2.0`)
+  # is shared with other Cisco operating systems — the pack's own
+  # tests/profiles/cisco_ios/detect.yml lists it only as evidence that is *not*
+  # IOS — so claiming it here would be a guess. sysDescr and the probe below
+  # name the platform outright.
+  sysdescr:
+    - 'Cisco IOS[ -]XR Software'
+  # No `sysobjectid`: XR routers answer with an object id under ciscoProducts
+  # (1.3.6.1.4.1.9.1.), which `cisco_ios` already claims and which says
+  # nothing about which Cisco operating system is running. sysDescr does.
+  probes:
+    - command: show version
+      matches: 'Cisco IOS[ -]XR Software'
+  priority: 60
+
+cli:
+  # RP/0/RSP0/CPU0:core-rtr#            the usual prompt
+  # RP/0/RSP0/CPU0:core-rtr(config)#    configuration mode
+  # RP/0/RP0/CPU0:ncs(config-if)#       a submode
+  # sysadmin-vm:0_RP0#                  the admin plane of a 64-bit release
+  # The part before `:` is the node the session is on; the hostname follows it.
+  prompt: '^(?:[\w./\-]{1,40}:)?(?P<host>[A-Za-z0-9][\w.\-]{0,62})(?:\([\w.\-:+/]{1,40}\))?[>#]\s?$'
+  # IOS XR has no unprivileged mode and no `enable`: a task group decides what
+  # an account may do, and the prompt never becomes `>`.
+  user_prompt: null
+  enable: null
+  init:
+    - terminal length 0
+    # `terminal width 0` is how XR says "do not wrap", where IOS takes a column count.
+    - terminal width 0
+
+config:
+  syntax: ios
+  enter: [configure terminal]
+  # Lines are only candidates until this succeeds; a commit is also what makes
+  # them survive a reload.
+  commit: [commit]
+  # `abort` throws the candidate away *and* leaves configuration mode, which is
+  # what is wanted on both paths: after a successful `commit` the candidate is
+  # empty, so it only exits. `end` is avoided on purpose — it asks whether to
+  # commit when something is uncommitted, and answering that question wrongly
+  # would apply a change nobody approved.
+  abort: []
+  exit: [abort]
+  # Nothing to save: `commit` writes the configuration to the persistent store.
+  save: []
+  running: show running-config
+  # IOS XR has no startup configuration — there is one committed configuration,
+  # and that is what comes back after a reload.
+  startup: null
+  ignore:
+    - '^Building configuration'
+    # The date and time XR prints in front of a command's output.
+    - '^\w{3}\s+\w{3}\s+\d{1,2}\s+\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\s+\S+\s*$'
+    - '^!! IOS XR Configuration '
+    - '^!! Last configuration change at '
+    - '^!! No configuration change since last restart'
+  answers:
+    # Asked by `end` or `exit` when the candidate still holds something. "no":
+    # a change that was not approved must not slip in on the way out.
+    - {prompt: 'Uncommitted changes found, commit them before exiting\?.*\s*$', answer: 'no'}
+  # No `guard`. IOS XR has one (`commit confirmed <minutes>`, cancelled by a
+  # plain `commit`), but it is a *parameter of the commit*, not a command that
+  # can be sent beforehand: `config.guard.arm` runs in exec mode, before
+  # configuration mode is even entered, and `commit confirmed` is only valid
+  # inside it. Pretending otherwise would arm nothing and report success.
+  # See tests/profiles/cisco_xr/NOTES.md.
+  guard: null
+
+policy:
+  # Copied verbatim from `_cli_ios_like`, because `extends` replaces a list as
+  # a whole: stating only the XR additions below would silently drop every
+  # inherited pattern. Keep the two in step.
+  read_only:
+    - '^sh(?:o(?:w)?)?\s+\S'
+    - '^pi(?:n(?:g)?)?\s+\S'
+    - '^tr(?:a(?:c(?:e(?:r(?:o(?:u(?:t(?:e)?)?)?)?)?)?)?)?\s+\S'
+    - '^dir\b'
+    - '^more\s+\S'
+    - '^ter(?:m(?:i(?:n(?:a(?:l)?)?)?)?)?\s+(?:len(?:g(?:t(?:h)?)?)?|wid(?:t(?:h)?)?|no mon(?:i(?:t(?:o(?:r)?)?)?)?|mon(?:i(?:t(?:o(?:r)?)?)?)?)\b'
+    - '^(?:en(?:a(?:b(?:l(?:e)?)?)?)?|disa(?:b(?:l(?:e)?)?)?|exit|end|logout)$'
+    - '^verify\s+\S'
+    # XR only: the admin plane answers `show` the same way the XR plane does.
+    - '^adm(?:i(?:n)?)?\s+sh(?:o(?:w)?)?\s+\S'
+  dangerous:
+    - '^rel(?:o(?:a(?:d)?)?)?(?:\s*$|\s+[^cC\s])'
+    - '^er(?:a(?:s(?:e)?)?)?\b'
+    - '^wr(?:i(?:t(?:e)?)?)?\s+e(?:r(?:a(?:s(?:e)?)?)?)?\b'
+    - '^for(?:m(?:a(?:t)?)?)?\b'
+    - '^del(?:e(?:t(?:e)?)?)?\b'
+    - '^sq(?:u(?:e(?:e(?:z(?:e)?)?)?)?)?\b'
+    - '^(?:rmdir|mkdir)\b'
+    - '^conf(?:i(?:g(?:u(?:r(?:e)?)?)?)?)?\s+rep(?:l(?:a(?:c(?:e)?)?)?)?\b'
+    - '^boot\s+system\b'
+    - '^(?:test|hw-module|power|redundancy force-switchover|install|request platform software|factory-reset)\b'
+    - '^cl(?:e(?:a(?:r)?)?)?\s+(?:line|ip bgp|ip ospf|crypto|vtp)\b'
+    - '^deb(?:u(?:g)?)?\s+all\b'
+    - '^copy\s+(?:tftp|ftp|scp|sftp|https?|rcp|usb\S*|flash|bootflash|disk\d|slot\d|nvram)\S*\s+\S'
+    - '^archive\s+download-sw\b'
+    - '^(?:tclsh|guestshell|bash|run bash|shell|start shell|app-hosting)\b'
+    # XR only. `admin <anything>` reaches the hypervisor plane, where a reload
+    # takes the whole chassis down; `clear configuration inconsistency` and
+    # `load` rewrite the configuration wholesale.
+    - '^adm(?:i(?:n)?)?\s+(?:rel(?:o(?:a(?:d)?)?)?|hw-module|install)\b'
+    - '^cl(?:e(?:a(?:r)?)?)?\s+configuration\b'
+    - '^load\s+\S'
+    - '^(?:process restart|run\b|attach location)'
+
+collect:
+  facts:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        os_version: VERSION
+        model: HARDWARE
+        uptime_s: UPTIME | duration
+        os: "'IOS-XR'"
+        vendor: "'Cisco'"
+        # Only the newer, "Build Information" shape of `show version` has these.
+        extra.build_host: BUILD_HOST
+        extra.image_location: LOCATION
+        extra.label: LABEL
+    # What the bundled template leaves out, read from the same output. XR
+    # prints "<hostname> uptime is …", which is the only place in `show
+    # version` the hostname appears, and there is no serial number in it at
+    # all — that comes from `show inventory`.
+    - command: show version
+      parser: raw
+      map:
+        hostname: output | regex_search('(?m)^(\S+) uptime is ')
+        extra.image: output | regex_search('(?m)^[Ss]ystem image file is "([^"]+)"')
+        extra.rom: output | regex_search('(?m)^ROM:\s*(.+?),?\s*$')
+
+  interfaces:
+    - command: show interfaces
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        description: DESCRIPTION
+        # Beware: the bundled template reads
+        # "<name> is <X>, line protocol is <Y>" into LINK_STATUS and
+        # ADMIN_STATE in that order, so ADMIN_STATE holds the *line protocol*
+        # state and LINK_STATUS the administrative one. The names are the
+        # wrong way round; the meanings below are not.
+        admin_up: "not LINK_STATUS is startingwith('administratively')"
+        oper_up: "ADMIN_STATE is startingwith('up')"
+        # XR prints "0Kb/s" for a port whose link is down, which is not a
+        # speed; `or none` leaves the field out rather than claim zero.
+        speed_bps: "(SPEED | bps) or none"
+        duplex: DUPLEX | lower | regex_search('(full|half|auto)')
+        mtu: MTU
+        mac: MAC_ADDRESS | mac
+        # "Internet address is Unknown" on an interface without one.
+        ipv4: "[IP_ADDRESS] if IP_ADDRESS and IP_ADDRESS != 'Unknown' else []"
+        kind: HARDWARE_TYPE
+        vlan: VLAN_ID
+        counters.in_packets: INPUT_PACKETS
+        counters.out_packets: OUTPUT_PACKETS
+        counters.in_errors: INPUT_ERRORS
+        counters.out_errors: OUTPUT_ERRORS
+        counters.crc: CRC
+        counters.in_rate_bps: INPUT_RATE
+        counters.out_rate_bps: OUTPUT_RATE
+    # The byte counters, which the bundled template does not capture.
+    - command: show interfaces
+      parser:
+        textfsm: |
+          Value Required INTERFACE (\S+)
+          Value IN_OCTETS (\d+)
+          Value OUT_OCTETS (\d+)
+
+          Start
+            ^\S+\s+is\s+.+?,\s+line\s+protocol.*$$ -> Continue.Record
+            ^${INTERFACE}\s+is\s+.+?,\s+line\s+protocol
+            ^\s+\d+\s+packets\s+input,\s+${IN_OCTETS}\s+bytes
+            ^\s+\d+\s+packets\s+output,\s+${OUT_OCTETS}\s+bytes
+      map:
+        name: INTERFACE
+        counters.in_octets: IN_OCTETS
+        counters.out_octets: OUT_OCTETS
+      merge_on: name
+
+  neighbors:
+    # XR runs LLDP; CDP exists but is off by default on most deployments, and
+    # there is no recorded `show cdp neighbors detail` to check a step against.
+    - command: show lldp neighbors detail
+      parser: {ntc: auto}
+      map:
+        device: NEIGHBOR or CHASSIS_ID
+        local_interface: LOCAL_INTERFACE
+        # The port id is the neighbour's own spelling of its port; the port
+        # description is a sentence about the link, so it is only a fallback.
+        remote_interface: NEIGHBOR_PORT_ID or NEIGHBOR_PORT_DESCRIPTION
+        platform: SYSTEM_DESCRIPTION
+        address: MANAGEMENT_IP
+        capabilities: CAPABILITIES
+        protocol: "'lldp'"
+
+  arp:
+    - command: show arp
+      parser: {ntc: auto}
+      map:
+        ip: IP_ADDRESS
+        mac: MAC_ADDRESS | mac
+        interface: INTERFACE
+        age: AGE
+
+  routes:
+    - command: show route
+      parser: {ntc: auto}
+      map:
+        prefix: NETWORK ~ '/' ~ PREFIX_LENGTH
+        # The code in the left column, with the `*` of a candidate default and
+        # the `(>)`/`(!)` of a diversion or backup path taken off it.
+        protocol: >-
+          ({'C': 'connected', 'L': 'local', 'S': 'static', 'R': 'rip',
+            'B': 'bgp', 'D': 'eigrp', 'D EX': 'eigrp external', 'EX': 'eigrp external',
+            'O': 'ospf', 'IA': 'ospf inter area', 'O IA': 'ospf inter area',
+            'N1': 'ospf nssa external type 1', 'N2': 'ospf nssa external type 2',
+            'E1': 'ospf external type 1', 'E2': 'ospf external type 2', 'E': 'egp',
+            'i': 'isis', 'L1': 'isis level-1', 'L2': 'isis level-2',
+            'ia': 'isis inter area', 'su': 'isis summary null',
+            'U': 'per-user static', 'o': 'odr', 'G': 'dagr', 'l': 'lisp',
+            'A': 'access', 'a': 'application', 'M': 'mobile', 'r': 'rpl'
+           }[PROTOCOL | regex_replace('[*!>()]', '')])
+          or (PROTOCOL | regex_replace('[*!>()]', ''))
+        # A connected route has no next hop; the word "connected" stands in the
+        # column, and `protocol` already says so.
+        next_hop: "NEXT_HOP if NEXT_HOP != 'connected' else none"
+        interface: INTERFACE
+        distance: DISTANCE
+        metric: METRIC
+        vrf: VRF
+
+  health:
+    # Only the uptime. XR reports CPU with `show processes cpu` and memory and
+    # temperature from the admin plane (`admin show environment`); there is no
+    # recorded output of either to check a step against, so this profile does
+    # not guess at one. See tests/profiles/cisco_xr/NOTES.md.
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        uptime_s: UPTIME | duration
+
+  inventory:
+    - command: show inventory
+      parser: {ntc: auto}
+      map:
+        name: NAME
+        description: DESCR
+        part_id: PID
+        serial: SN
+
+snmp:
+  cpu:
+    - 1.3.6.1.4.1.9.9.109.1.1.1.1.7   # cpmCPUTotal1minRev
+  memory_used:
+    - 1.3.6.1.4.1.9.9.221.1.1.1.1.18  # cempMemPoolUsed, the pool MIB XR fills
+  memory_free:
+    - 1.3.6.1.4.1.9.9.221.1.1.1.1.20  # cempMemPoolFree
+  temperature:
+    - 1.3.6.1.2.1.99.1.1.1.4          # entPhySensorValue, over the sensor table

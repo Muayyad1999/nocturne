@@ -1,0 +1,65 @@
+Thu Jan 16 14:02:11.088 AEST
+Building configuration...
+!! IOS XR Configuration 7.3.2
+!! Last configuration change at Tue Jan 16 13:28:11 2024 by admin
+!
+hostname edge-rtr
+domain name lab.example.com
+!
+username admin
+ group root-lr
+ group cisco-support
+ secret 10 $6$Yd3cNXHm$lab.example.only.not.a.real.hash
+!
+line console
+ exec-timeout 10 0
+!
+line default
+ exec-timeout 10 0
+ transport input ssh
+!
+interface Loopback0
+ description router id
+ ipv4 address 192.0.2.1 255.255.255.255
+!
+interface MgmtEth0/RP0/CPU0/0
+ description out of band management
+ ipv4 address 192.168.57.10 255.255.255.0
+!
+interface TenGigE0/0/0/0
+ description core uplink
+ mtu 9216
+ ipv4 address 198.51.100.1 255.255.255.252
+ load-interval 30
+!
+interface TenGigE0/0/0/1
+ description spare
+ shutdown
+!
+interface GigabitEthernet0/0/0/12.456
+ description tagged handoff
+ ipv4 address 192.168.5.1 255.255.255.0
+ encapsulation dot1q 456
+!
+router static
+ address-family ipv4 unicast
+  0.0.0.0/0 198.51.100.2
+ !
+!
+router ospf CORE
+ router-id 192.0.2.1
+ area 0
+  interface Loopback0
+   passive enable
+  !
+  interface TenGigE0/0/0/0
+   network point-to-point
+  !
+ !
+!
+snmp-server community-map lab-ro context ro
+lldp
+!
+ssh server v2
+ssh server vrf default
+end
