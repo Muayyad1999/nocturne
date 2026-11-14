@@ -101,6 +101,34 @@ jobs:
           else
             cp target/release/nocturne-server "artifacts/$name"
           fi
+      # Nothing else in either workflow ever *runs* a release build, so without
+      # this a tag could ship a server that does not start, or one carrying
+      # the "build the interface first" fallback page instead of the
+      # interface. Both are silent: the compile succeeds either way.
+      - name: It starts, it answers, and it is carrying the real interface
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(ls artifacts/nocturne-server-*)
+          dir=$(mktemp -d)
+          "$bin" --data-dir "$dir" --port 8799 > server.log 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if "$bin" call --data-dir "$dir" app.methods > methods.json 2>/dev/null; then break; fi
+            sleep 1
+          done
+          cat server.log
+          # `ui="embedded"` and `ui="not built (fallback page)"` are the two
+          # things this is here to tell apart.
+          grep -q 'ui="embedded"' server.log
+          # One method from the core and one from four different feature
+          # crates: proof the whole suite assembled, not just that a binary
+          # with a working `--help` came out.
+          for method in app.info terminal.open changes.apply monitor.status ipam.prefixes tools.list; do
+            grep -q "\"$method\"" methods.json || { echo "missing: $method"; exit 1; }
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: nocturne-server-${{ runner.os }}-${{ runner.arch }}
