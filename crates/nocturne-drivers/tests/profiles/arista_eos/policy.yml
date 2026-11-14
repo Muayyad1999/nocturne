@@ -1,0 +1,65 @@
+# The profile adds nothing to `policy.read_only`: the IOS-style base already
+# covers every read an EOS operator makes daily. These cases prove that for
+# EOS's own commands, and — more importantly — that the commands EOS has and
+# IOS does not still come out as changes.
+read_only:
+  - show version
+  - show running-config
+  - show startup-config
+  - sh int status                       # EOS accepts abbreviations, so the policy does too
+  - sho ver
+  - show interfaces status | include connected
+  - show running-config | section interface Ethernet1
+  - show vlan | json                    # a JSON view is still only a view
+  - show ip route
+  - show ip arp vrf all
+  - show mac address-table
+  - show port-channel summary
+  - show tech-support                   # big, slow, but a read
+  - show logging last 1 hours
+  - ping 10.0.0.1
+  - ping vrf MGMT 10.0.0.1
+  - traceroute 8.8.8.8
+  - terminal length 0
+  - terminal width 32767
+  - "dir flash:"
+  - enable
+  - exit
+change:
+  - configure
+  - configure terminal
+  - configure session chg1
+  - write memory
+  - copy running-config startup-config  # saving is an ordinary change, not a read
+  - "copy running-config flash:backup.cfg"
+  - interface Ethernet1
+  - shutdown
+  - no shutdown
+  - vlan 30
+  - clear counters
+  - clear arp-cache
+  - show                                # nothing to show: not a read
+  # A pipe that writes the output somewhere is never a read, whichever
+  # spelling the platform offers.
+  - "show tech-support | tee flash:tech.txt"
+  - "show running-config | append flash:leak.cfg"
+  - "show version\nconfigure terminal"  # two commands sent as one
+  # `zerotouch enable` arms zero-touch provisioning, so the next reload comes
+  # up with no configuration at all. It is destructive and ought to be in
+  # `policy.dangerous`, but a child profile cannot add one pattern to an
+  # inherited list without restating all of it (see NOTES.md). Default deny
+  # still makes it a change, so it cannot be run as a read.
+  - zerotouch enable
+dangerous:
+  - reload
+  - reload now
+  - reload in 10
+  - write erase
+  - "delete flash:startup-config"
+  - "format flash:"
+  - bash                                # EOS drops straight into the Linux shell
+  - bash timeout 5 ls /mnt/flash
+  - "configure replace flash:backup.cfg"
+  - "copy flash:backup.cfg running-config"
+  - "copy scp://user@10.0.0.5/EOS-4.26.1F.swi flash:"
+  - show clock ; write erase

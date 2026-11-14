@@ -1,0 +1,69 @@
+kinds:
+  interfaces:
+    count: 3
+    rows:
+      # "Vlan20 is down (VLAN/BD is down), line protocol is down"
+      - name: Vlan20
+        # down, but not *administratively* down: the VLAN is
+        admin_up: true
+        oper_up: false
+        kind: EtherSVI
+        mac: 50:87:89:a1:d8:d5
+        mtu: 1500
+        # "Internet Address is 10.1.20.3/24"
+        ipv4: [10.1.20.3/24]
+        # "BW 1000000 Kbit" is a routing metric, not a link rate
+        speed_bps: null
+        duplex: ""
+        mode: ""
+        description: ""
+        counters: {in_packets: null, in_octets: null, out_octets: null}
+      # "mgmt0 is up" / "admin state is up," / "Description: out of band mgmt interface"
+      - name: mgmt0
+        admin_up: true
+        oper_up: true
+        kind: GigabitEthernet
+        mac: 50:87:89:a1:d8:ce
+        description: out of band mgmt interface
+        mtu: 1500
+        ipv4: [10.1.100.21/24]
+        # "full-duplex, 100 Mb/s"
+        duplex: full
+        speed_bps: 100000000
+        counters:
+          in_packets: 3093618
+          out_packets: 394746
+          # "1 minute input rate 744 bits/sec" / "output rate 1608 bits/sec"
+          in_rate_bps: 744
+          out_rate_bps: 1608
+          # the old Rx/Tx layout keeps its byte totals on the broadcast line,
+          # which the profile does not read: empty, not guessed
+          in_octets: null
+          out_octets: null
+      # "Ethernet1/1 is up" / "Port mode is access" / "full-duplex, 10 Gb/s, media type is 10G"
+      - name: Ethernet1/1
+        admin_up: true
+        oper_up: true
+        kind: 1000/10000 Ethernet
+        mac: 50:87:89:a1:d8:d6
+        mtu: 1500
+        # no "Internet Address" line: a switchport
+        ipv4: []
+        mode: access
+        duplex: full
+        speed_bps: 10000000000
+        counters:
+          # "68448 input packets  19188106 bytes"
+          in_packets: 68448
+          in_octets: 19188106
+          # "754962 output packets  62262008 bytes"
+          out_packets: 754962
+          out_octets: 62262008
+          in_errors: 0
+          out_errors: 0
+          in_discards: 0
+          out_discards: 0
+          crc: 0
+          # "30 seconds input rate 80 bits/sec" / "output rate 256 bits/sec"
+          in_rate_bps: 80
+          out_rate_bps: 256

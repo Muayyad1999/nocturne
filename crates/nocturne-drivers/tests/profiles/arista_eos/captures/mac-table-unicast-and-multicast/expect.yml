@@ -1,0 +1,44 @@
+kinds:
+  mac_table:
+    # 19 unicast entries and 4 multicast ones.
+    count: 23
+    rows:
+      # "   3    0012.3694.03ec    STATIC      Et7" - no Moves/Last Move columns
+      - mac: 00:12:36:94:03:ec
+        vlan: 3
+        interface: Ethernet7
+        kind: static
+      # "  55        001c.7313.a3de      DYNAMIC        Et32        1    0:08:16 ago"
+      - mac: 00:1c:73:13:a3:de
+        vlan: 55
+        interface: Ethernet32
+        kind: dynamic
+      # "101    001c.8224.36d7    DYNAMIC     Po2        1       9 days, 15:57:28 ago"
+      - mac: 00:1c:82:24:36:d7
+        vlan: 101
+        interface: Port-channel2
+        kind: dynamic
+      - mac: 00:1c:82:20:40:fa
+        vlan: 3911
+        interface: Port-channel8
+        kind: dynamic
+      # The multicast table: "   4    c867.3057.8423    STATIC      Po10 Po123"
+      - mac: c8:67:30:57:84:23
+        vlan: 4
+        interface: Port-channel10
+        kind: static
+      # "  42    5309.3057.8423    STATIC      Po135 Po12 po5"
+      - mac: 53:09:30:57:84:23
+        vlan: 42
+        interface: Port-channel135
+        kind: static
+      # " 200    jenn.3057.8423    STATIC      Po66": not an address, kept as printed
+      - mac: jenn.3057.8423
+        vlan: 200
+        interface: Port-channel66
+        kind: static
+      # "  47    4242.3057.8423    STATIC      Po135 Po12 po5 eth1/1"
+      - mac: 42:42:30:57:84:23
+        vlan: 47
+        interface: Port-channel135
+        kind: static

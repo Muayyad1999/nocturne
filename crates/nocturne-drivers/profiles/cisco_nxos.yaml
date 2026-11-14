@@ -1,0 +1,295 @@
+# Cisco NX-OS: Nexus 3000/5000/7000/9000 switches.
+#
+# NX-OS looks like IOS and differs in ways that matter: there is no `enable`
+# and no unprivileged mode, `write memory` does not exist, most features
+# report a refusal as `ERROR: …` rather than `% …`, and the running
+# configuration carries two timestamps that change on every fetch.
+#
+# `maturity: community`: every collector below is checked against real
+# recorded output under tests/profiles/cisco_nxos/, but nobody has pointed
+# this profile at a live Nexus, so it must not be trusted with a write path
+# yet.
+id: cisco_nxos
+name: Cisco NX-OS
+vendor: Cisco
+os: NX-OS
+description: >-
+  Cisco Nexus switches running NX-OS (3000, 5000, 7000, 9000). Structured data
+  is parsed with the ntc-templates library. Not yet verified against real
+  hardware.
+extends: _cli_ios_like
+ntc_platform: cisco_nxos
+maturity: community
+
+detect:
+  # No `banner`: NX-OS answers SSH as OpenSSH does, and the login screen it
+  # shows ("User Access Verification") is the same one IOS shows, so a banner
+  # pattern here could only take IOS's detection away from it.
+  sysdescr:
+    # Both wordings NX-OS uses: "Cisco NX-OS(tm) n9000, Software (n9000-dk9),
+    # Version 9.3(10), …" and "Cisco Nexus Operating System (NX-OS) Software".
+    - 'Cisco NX-OS'
+    - 'Cisco Nexus Operating System'
+  sysobjectid:
+    # cevChassis, where Nexus chassis types live.
+    - 1.3.6.1.4.1.9.12.3.1.3.
+  probes:
+    - command: show version
+      matches: 'Cisco Nexus Operating System|Cisco NX-OS'
+  # The same priority as cisco_ios, which claims the whole ciscoProducts
+  # object-id tree (1.3.6.1.4.1.9.1.). A Nexus that reports an object id from
+  # there must still come out as NX-OS, and it does because at equal priority
+  # a sysDescr match beats an object-id prefix — which only holds if the
+  # priorities are equal. See detect.yml.
+  priority: 60
+
+cli:
+  # NX-OS has one privilege level: a user lands at `switch#` and `enable` does
+  # not exist. Asking for it would print an error on every login.
+  enable: null
+  user_prompt: null
+  errors:
+    # The first five patterns are `_cli_ios_like`'s, restated because a child
+    # replaces a list rather than adding to it. Do not weaken them.
+    - '^%\s?(?:[A-Za-z]+:\s)?(?:Invalid|Incomplete|Ambiguous|Unknown|Unrecognized|Unrecognised|Bad|Illegal|Error|Cannot|Can''t|Could not|Unable|Failed|Failure|Authorization failed|Permission denied|Access denied|Not allowed|Not supported|Unsupported|No such|Type ")'
+    - '^%\s?[\w.''"/()\-]+\s.*?(?:\bnot (?:active|enabled|supported|allowed|permitted|configured|found|available|valid|running|possible)\b|\bis not (?:a|an|in|on)\b|does not exist\.?\s*$|\balready (?:exists|in use|configured|assigned|defined)\b|\boverlaps with\b|\bconflicts with\b|\bis invalid\b|\bout of range\b|\bmust be\b|\bmay not be\b|\bcannot be\b|\bcan not be\b|\bfailed\b|\brejected\b)'
+    - '^Command rejected\b'
+    - '^Command authorization failed'
+    - '^startup-config is not present'
+    # NX-OS's own: the features report a refusal with this prefix and no
+    # percent sign at all ("ERROR: Invalid number of arguments",
+    # "ERROR: Ethernet1/1: Config not allowed, as first port of the
+    # port-channel is a layer-2 port").
+    - '^ERROR:\s\S'
+  # NX-OS writes a console message with the virtual device context it came
+  # from between the timestamp and the facility tag, which the base's pattern
+  # (which allows no percent sign before the tag) cannot match. The base's
+  # other entry, IOS's scheduled-reload announcement (`***`), is dropped:
+  # NX-OS has no scheduled reload to announce.
+  unsolicited:
+    - '^[^%]{0,48}%[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+    - '^.{0,64}%\$ VDC-\d+ %\$ %[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+
+config:
+  # `write memory` is not an NX-OS command.
+  save: [copy running-config startup-config]
+  # NX-OS stamps the configuration with the time it was last changed and the
+  # time it was printed, so without these two an untouched switch looks
+  # changed on every fetch.
+  #
+  # The list replaces the base's, which is IOS-specific. The log-message
+  # patterns are kept, because a console line prints into the listing here
+  # too, in both of NX-OS's layouts.
+  ignore:
+    - '^!Command: '
+    - '^!Running configuration last done at: '
+    - '^!Time: '
+    - '^[^%]{0,48}%[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+    - '^.{0,64}%\$ VDC-\d+ %\$ %[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+  # No `guard`: NX-OS has no scheduled reload to arm from the exec prompt
+  # (there is no `reload in`), and its rollback is a checkpoint plus
+  # `rollback running-config`, which is a change pipeline of its own rather
+  # than a dead-man switch. Claiming IOS's `reload in {minutes}` here would
+  # claim a command NX-OS does not have.
+
+policy:
+  # The first eight patterns are `_cli_ios_like`'s, restated because a child
+  # replaces a list rather than adding to it. Do not weaken them: everything
+  # that is not matched here is a change.
+  read_only:
+    - '^sh(?:o(?:w)?)?\s+\S'
+    - '^pi(?:n(?:g)?)?\s+\S'
+    - '^tr(?:a(?:c(?:e(?:r(?:o(?:u(?:t(?:e)?)?)?)?)?)?)?)?\s+\S'
+    - '^dir\b'
+    - '^more\s+\S'
+    - '^ter(?:m(?:i(?:n(?:a(?:l)?)?)?)?)?\s+(?:len(?:g(?:t(?:h)?)?)?|wid(?:t(?:h)?)?|no mon(?:i(?:t(?:o(?:r)?)?)?)?|mon(?:i(?:t(?:o(?:r)?)?)?)?)\b'
+    - '^(?:en(?:a(?:b(?:l(?:e)?)?)?)?|disa(?:b(?:l(?:e)?)?)?|exit|end|logout)$'
+    - '^verify\s+\S'
+    # NX-OS's own: IOS reaches IPv6 with `ping ipv6 …` / `traceroute ipv6 …`,
+    # which the patterns above already allow, but on NX-OS the commands are
+    # one word (`ping6`, `traceroute6`) and nothing above reaches them — the
+    # abbreviation patterns demand white space straight after `ping`. Both
+    # only send packets, exactly as their IPv4 forms do.
+    - '^ping6\s+\S'
+    - '^traceroute6\s+\S'
+
+collect:
+  facts:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        hostname: HOSTNAME
+        model: PLATFORM
+        serial: SERIAL
+        # "NXOS: version 10.4(5) [Maintenance Release]": the bracket is a note
+        # about the release, not part of the version.
+        os_version: OS | regex_search('^\S+')
+        uptime_s: UPTIME | duration
+        os: "'NX-OS'"
+        vendor: "'Cisco'"
+        extra.image: BOOT_IMAGE
+        extra.bios_version: BIOS
+        extra.reload_reason: LAST_REBOOT_REASON
+
+  health:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        uptime_s: UPTIME | duration
+    # The memory size, which the bundled template does not capture:
+    # "Intel(R) Xeon(R) CPU D-1526 @ 1.80GHz with 32802700 kB of memory."
+    - command: show version
+      parser: {regex: 'with\s+(?P<memory_kb>\d+)\s+kB of memory'}
+      map:
+        memory_total: (memory_kb | num) * 1024
+
+  interfaces:
+    - command: show interface
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        description: DESCRIPTION
+        # NX-OS writes the administrative state into the first state line
+        # ("Ethernet1/1 is down (Administratively down)"). The template's
+        # ADMIN_STATE field cannot be used for it: on a physical port it holds
+        # the admin state, but on an SVI, which NX-OS prints in IOS's
+        # "…, line protocol is …" layout, it holds the line-protocol state.
+        admin_up: "not LINK_STATUS is matching('(?i)admin')"
+        oper_up: "LINK_STATUS is startingwith('up')"
+        # Only what the port negotiated. The "BW" figure of an SVI is a
+        # routing metric, not a link rate.
+        speed_bps: SPEED | bps
+        duplex: DUPLEX | lower | regex_search('(full|half|auto)')
+        mtu: MTU
+        mac: MAC_ADDRESS | mac
+        ipv4: "[cidr(IP_ADDRESS, PREFIX_LENGTH)] if IP_ADDRESS else []"
+        # "Port mode is access" / "… is trunk".
+        mode: MODE
+        kind: HARDWARE_TYPE
+        counters.in_packets: INPUT_PACKETS
+        counters.out_packets: OUTPUT_PACKETS
+        counters.in_errors: INPUT_ERRORS
+        counters.out_errors: OUTPUT_ERRORS
+        counters.in_discards: INPUT_DISCARDS
+        counters.out_discards: OUTPUT_DISCARDS
+        counters.crc: CRC
+        counters.in_rate_bps: BANDWIDTH_INPUT_RATE
+        counters.out_rate_bps: BANDWIDTH_OUTPUT_RATE
+    # The byte counters, which the bundled template leaves out. This reads
+    # NX-OS's current layout, where the totals are on the input/output packet
+    # line; on the older summary layout they sit on the broadcast line of the
+    # Rx and Tx blocks and are left empty rather than guessed.
+    - command: show interface
+      parser:
+        textfsm: |
+          Value Required INTERFACE (\S+)
+          Value IN_OCTETS (\d+)
+          Value OUT_OCTETS (\d+)
+
+          Start
+            ^\S+\s+is\s -> Continue.Record
+            ^${INTERFACE}\s+is\s
+            ^\s+\d+\s+input\s+packets\s+${IN_OCTETS}\s+bytes\s*$$
+            ^\s+\d+\s+output\s+packets\s+${OUT_OCTETS}\s+bytes\s*$$
+      map:
+        name: INTERFACE
+        counters.in_octets: IN_OCTETS
+        counters.out_octets: OUT_OCTETS
+      merge_on: name
+
+  neighbors:
+    # Either protocol may be switched off; a device with neither is reported
+    # as a failure, with what the device said, rather than as "no neighbours".
+    - command: show cdp neighbors detail
+      parser: {ntc: auto}
+      map:
+        # The device id carries the serial number in brackets on NX-OS
+        # ("dc-lf03(SAL19069XXX)"), so the system name is preferred.
+        device: NEIGHBOR_NAME or CHASSIS_ID
+        local_interface: LOCAL_INTERFACE
+        remote_interface: NEIGHBOR_INTERFACE
+        platform: PLATFORM
+        address: MGMT_ADDRESS
+        capabilities: CAPABILITIES
+        protocol: "'cdp'"
+      optional: true
+    - command: show lldp neighbors detail
+      parser: {ntc: auto}
+      map:
+        device: NEIGHBOR_NAME or CHASSIS_ID
+        local_interface: LOCAL_INTERFACE
+        remote_interface: NEIGHBOR_INTERFACE
+        # LLDP advertises no platform of its own; the system description is
+        # what the neighbour says about itself.
+        platform: NEIGHBOR_DESCRIPTION
+        address: MGMT_ADDRESS
+        capabilities: CAPABILITIES
+        protocol: "'lldp'"
+      optional: true
+
+  vlans:
+    - command: show vlan
+      parser: {ntc: auto}
+      map:
+        id: VLAN_ID
+        name: VLAN_NAME
+        status: STATUS
+        interfaces: INTERFACES
+
+  mac_table:
+    - command: show mac address-table
+      parser: {ntc: auto}
+      map:
+        mac: MAC_ADDRESS | mac
+        vlan: VLAN_ID
+        interface: PORTS
+        kind: TYPE | lower
+      # `sup-eth1` is the supervisor's inband port, which carries the switch's
+      # own gateway MAC, and `Drop` is a blackhole entry. Neither is a host
+      # behind a port.
+      when: "not PORTS is matching('(?i)^(?:sup-eth|drop)')"
+
+  arp:
+    - command: show ip arp
+      parser: {ntc: auto}
+      map:
+        ip: IP_ADDRESS
+        mac: MAC_ADDRESS | mac
+        interface: INTERFACE
+        age: AGE
+      # NX-OS lists an address it is still resolving as INCOMPLETE; it has no
+      # hardware address, so it is not an entry worth the name.
+      when: MAC_ADDRESS is matching('^[0-9a-fA-F]{4}\.')
+
+  routes:
+    # Every VRF in one read: unlike IOS's `vrf *`, `vrf all` is accepted by
+    # every NX-OS release and includes the default VRF, so one step does.
+    - command: show ip route vrf all
+      parser: {ntc: auto}
+      map:
+        prefix: NETWORK ~ '/' ~ PREFIX_LENGTH
+        # NX-OS names the protocol with its instance ("bgp-64512", "ospf-1").
+        protocol: PROTOCOL | regex_search('^[a-z]+')
+        next_hop: NEXTHOP_IP
+        interface: NEXTHOP_IF
+        distance: DISTANCE
+        metric: METRIC
+        vrf: VRF
+
+  inventory:
+    - command: show inventory
+      parser: {ntc: auto}
+      map:
+        name: NAME
+        description: DESCR
+        part_id: PID
+        serial: SN
+
+snmp:
+  cpu:
+    # cpmCPUTotal1minRev (CISCO-PROCESS-MIB), which NX-OS serves as IOS does.
+    - 1.3.6.1.4.1.9.9.109.1.1.1.1.7
+  # No memory or temperature OIDs: NX-OS reports memory as a percentage
+  # (cseSysMemoryUtilization), which is not the bytes the model holds, and its
+  # temperature lives in a sensor table that also carries fans and voltages.
+  # See tests/profiles/cisco_nxos/NOTES.md.

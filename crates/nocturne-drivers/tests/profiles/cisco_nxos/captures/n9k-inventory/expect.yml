@@ -1,0 +1,36 @@
+kinds:
+  inventory:
+    count: 14
+    rows:
+      - name: Chassis
+        description: Nexus9000 C9396PX Chassis
+        part_id: N9K-C9396PX
+        serial: SAL1819S6LU
+      - name: Slot 2
+        description: 40G Ethernet Expansion Module
+        part_id: N9K-M12PQ
+        serial: SAL1815QCJE
+      - name: Power Supply 1
+        description: Nexus9000 C9396PX Chassis Power Supply
+        part_id: N9K-PAC-650W
+        serial: DCB1809X07E
+      # A fan whose serial number the device reports as "N/A".
+      - name: Fan 1
+        description: Nexus9000 C9396PX Chassis Fan Module
+        part_id: N9K-C9300-FAN2
+        serial: N/A
+      # The 7009 parts the composite capture mixes in: no quotes around the
+      # name, and single spaces between the PID/VID/SN columns.
+      - name: Slot 33
+        description: Nexus7000 C7009 (9 Slot) Chassis Power Supply
+        part_id: N7K-AC-6.0KW
+        serial: DTM141600XT
+      # A transceiver: NX-OS quotes neither the name nor the description.
+      - name: Ethernet1/46
+        description: CISCO-AVAGO
+        part_id: 10Gbase-SR
+        serial: AVD42309ABD
+      - name: Ethernet1/47
+        description: CISCO
+        part_id: 1000base-LH
+        serial: ACW315000AD

@@ -1,0 +1,29 @@
+kinds:
+  inventory:
+    # 24 rows parsed, less the three port-count rows that have no serial number.
+    count: 21
+    rows:
+      # The chassis: model and description from one table, serial from the next.
+      - serial: ZHT78456940
+        part_id: DCS-7150S-52-CL
+        description: 52-port SFP+ 10GigE 1RU + Clock
+        name: ""
+      - serial: E436EG754CBQK
+        part_id: PWR-460AC-R
+        description: ""
+      - serial: Y353OE22S8NIJ
+        part_id: PWR-460AC-R
+      # The first of four fan modules; EOS prints "N/A" for their serials.
+      - serial: N/A
+        part_id: FAN-7000-R
+        description: ""
+      - serial: HPT9294065TV
+        part_id: SFP-1G-T
+        description: Arista Networks
+      # Not an Arista-branded transceiver.
+      - serial: IO1231OB80420
+        part_id: MC3309130-002
+        description: Mellanox
+      - serial: O2448394824
+        part_id: CW51-10G-10-1510
+        description: Arista Networks

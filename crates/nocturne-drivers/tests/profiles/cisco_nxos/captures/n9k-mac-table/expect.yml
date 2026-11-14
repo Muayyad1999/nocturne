@@ -1,0 +1,11 @@
+kinds:
+  mac_table:
+    # Three entries parsed; the supervisor's own address and the Drop entry
+    # are not hosts behind a port.
+    count: 1
+    rows:
+      # "*    145        000e.000e.000e   static     -        F      F    Po10"
+      - mac: 00:0e:00:0e:00:0e
+        vlan: 145
+        interface: Port-channel10
+        kind: static

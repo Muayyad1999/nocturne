@@ -1,0 +1,46 @@
+# Prompts as EOS prints them. EOS sends no trailing space.
+exec:
+  - "sw1#"
+  - "leaf1#"
+  - "spine-1.dc.example.com#"          # an FQDN hostname, dots and dashes
+  - "ARISTA_7050-01#"                  # underscore and dash
+  - "7280SR-48C6#"                     # starts with a digit
+  - "sw1(vrf:MGMT)#"                   # after `routing-context vrf MGMT`: still exec mode
+  - "sw1# "                            # tolerated: some terminal servers add a space
+user:
+  - "sw1>"
+  - "leaf1>"
+  - "spine-1.dc.example.com>"
+config:
+  - "sw1(config)#"
+  - "sw1(config-if-Et1)#"
+  - "sw1(config-if-Et1-7)#"            # an interface range
+  - "sw1(config-if-Po1)#"
+  - "sw1(config-vlan-10)#"
+  - "sw1(config-router-bgp)#"
+  - "sw1(config-router-bgp-vrf-RED)#"
+  - "sw1(config-mgmt-ssh)#"
+  - "sw1(config-acl-MGMT)#"
+  - "sw1(config-s-chg1)#"              # inside `configure session chg1`
+not_prompts:
+  - "Arista cEOSLab"
+  - "! Command: show running-config"
+  - "! device: sw1 (DCS-7050QX-32S, EOS-4.26.1F)"
+  - "Port       Name   Status       Vlan     Duplex Speed  Type"
+  - "% Invalid input (at token 1: 'nonsense')"
+  - "sw1#show running-config"          # the echo of a command
+  - " --More-- "
+  - "Password: "
+  - "localhost login: "
+  - "!"
+  - "#"
+  - "Et1"
+  - "Vlan888 is up, line protocol is up (connected)"
+  - "Total mac Addresses for this criterion: 24"
+  - "   888 10.0.0.1     10.0.0.2    "
+  - "Jan  1 00:05:12 sw1 Cli: %SYS-5-CONFIG_E: Enter configuration mode"
+hosts:
+  "sw1#": sw1
+  "spine-1.dc.example.com>": spine-1.dc.example.com
+  "leaf1(config-if-Et1)#": leaf1
+  "sw1(vrf:MGMT)#": sw1

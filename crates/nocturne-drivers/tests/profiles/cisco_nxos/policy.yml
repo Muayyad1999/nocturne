@@ -1,0 +1,75 @@
+# The profile adds two patterns to `policy.read_only`: `^ping6\s+\S` and
+# `^traceroute6\s+\S`. Both are proved below, and so is the rest of the
+# inherited list — and, with more care, every NX-OS command that must *not*
+# come out as a read.
+read_only:
+  - show version
+  - show running-config
+  - show startup-config
+  - sh int status                       # NX-OS accepts abbreviations, so the policy does too
+  - sho ver
+  - show running-config interface Ethernet1/1
+  - show running-config | section "interface Ethernet1/1"
+  - show interface Ethernet1/1
+  - show ip route vrf all
+  - show ip arp
+  - show mac address-table dynamic      # `clear mac address-table dynamic` is below, as a change
+  - show vpc
+  - show port-channel summary
+  - show cdp neighbors detail
+  - show tech-support                   # big, slow, but a read
+  - show tech-support details
+  - show logging logfile
+  - show module
+  - ping 10.0.0.1
+  - ping 10.0.0.1 vrf management
+  # The two additions. NX-OS spells the IPv6 forms as one word, where IOS
+  # says `ping ipv6 …`; without these they would be classified as changes and
+  # no collector or assistant tool could reach them.
+  - ping6 2001:db8::1
+  - ping6 2001:db8::1 vrf management
+  - traceroute6 2001:db8::1
+  - traceroute 8.8.8.8
+  - terminal length 0
+  - terminal width 511
+  - "dir bootflash:"
+  - exit
+change:
+  - configure terminal
+  - conf t
+  - copy running-config startup-config  # saving is an ordinary change, not a read
+  - "copy running-config bootflash:backup.cfg"
+  - checkpoint before-change
+  - interface Ethernet1/1
+  - shutdown
+  - no shutdown
+  - vlan 30
+  - clear counters interface Ethernet1/1
+  - clear mac address-table dynamic
+  - clear ip arp
+  - attach module 1                     # opens a shell on a line card
+  - "tac-pac bootflash:tac.tar.gz"      # writes an archive to flash
+  - show                                # nothing to show: not a read
+  # NX-OS redirects output to a file with `>` and `>>`, which makes the line
+  # a write however read-only the command in front of it looks.
+  - "show tech-support > bootflash:tech.txt"
+  - "show running-config >> bootflash:leak.cfg"
+  - "show version\nconfigure terminal"  # two commands sent as one
+  # `ping6` is a read (above), but `ping6` on its own is an incomplete command
+  # and not a read of anything.
+  - ping6
+dangerous:
+  - reload
+  - reload module 1
+  - write erase
+  - write erase boot
+  - "delete bootflash:nxos64-cs.10.4.5.M.bin"
+  - "format bootflash:"
+  - guestshell enable                   # NX-OS's Linux container
+  - guestshell destroy
+  - run bash                            # a shell on the supervisor
+  - install all nxos bootflash:nxos64-cs.10.4.5.M.bin
+  - "configure replace bootflash:backup.cfg"
+  - "copy bootflash:backup.cfg running-config"
+  - "copy scp://user@10.0.0.5/nxos64-cs.10.4.5.M.bin bootflash:"
+  - show clock ; write erase

@@ -1,0 +1,48 @@
+kinds:
+  routes:
+    # Five prefixes in VRF default (one with two next hops) and one in VRF
+    # BYPASS (also with two).
+    count: 8
+    rows:
+      # "10.0.0.0/8, ubest/mbest: 1/0" / "    *via Null0, [1/0], 1y17w, static"
+      - prefix: 10.0.0.0/8
+        protocol: static
+        interface: "Null0"
+        next_hop: ""
+        distance: 1
+        metric: 0
+        vrf: default
+      # The same prefix twice, told apart by its next hop.
+      - next_hop: 11.22.159.42
+        prefix: 44.55.0.11/32
+        protocol: static
+        interface: ""
+        distance: 1
+        metric: 0
+        vrf: default
+      # "     via 22.33.0.11, [200/0], 1y16w, bgp-2244, internal, tag 24436 (hidden)"
+      - next_hop: 22.33.0.11
+        prefix: 44.55.0.11/32
+        protocol: bgp
+        distance: 200
+        metric: 0
+        vrf: default
+      - prefix: 55.66.0.204/30
+        protocol: static
+        next_hop: 33.44.0.201
+        distance: 1
+        vrf: default
+      # VRF BYPASS: "0.0.0.0/0" via eBGP, and a floating static out of Null0.
+      - next_hop: 172.16.0.67
+        prefix: 0.0.0.0/0
+        protocol: bgp
+        distance: 20
+        metric: 0
+        vrf: BYPASS
+      # Keyed by its distance, which is unique: four routes leave by Null0.
+      - distance: 254
+        prefix: 0.0.0.0/0
+        protocol: static
+        interface: "Null0"
+        next_hop: ""
+        vrf: BYPASS

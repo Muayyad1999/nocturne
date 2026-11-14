@@ -1,0 +1,29 @@
+kinds:
+  facts:
+    rows:
+      # "Device name: N9K-LAB-15" / "cisco Nexus9000 C93180YC-FX3 Chassis"
+      - hostname: N9K-LAB-15
+        model: C93180YC-FX3
+        vendor: Cisco
+        os: NX-OS
+        # "NXOS: version 10.4(5) [Maintenance Release]"
+        os_version: 10.4(5)
+        # "Processor Board ID FLM27400B3D"
+        serial: FLM27400B3D
+        # "Kernel uptime is 60 day(s), 17 hour(s), 26 minute(s), 51 second(s)"
+        # = 60*86400 + 17*3600 + 26*60 + 51
+        uptime_s: 5246811
+        extra:
+          image: "bootflash:///nxos64-cs.10.4.5.M.bin"
+          bios_version: "01.11"
+          reload_reason: Power Down/UP epld upgrade process
+  health:
+    rows:
+      - uptime_s: 5246811
+        # "with 32802700 kB of memory." = 32802700 * 1024
+        memory_total: 33589964800
+        # NX-OS prints no free-memory figure, no CPU load and no temperature
+        # in `show version`.
+        memory_used: null
+        cpu_pct: null
+        temperature_c: null

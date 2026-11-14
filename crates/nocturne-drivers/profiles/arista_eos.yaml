@@ -1,0 +1,211 @@
+# Arista EOS: 7000-series switches, CCS, cEOS/vEOS lab images.
+#
+# The prompts, `enable`, configuration mode, the `%` error patterns and the
+# command policy come from `_cli_ios_like`; this file adds what is Arista's
+# own. `maturity: community`: every collector below is checked against real
+# recorded output under tests/profiles/arista_eos/, but nobody has pointed
+# this profile at a live Arista device, so it must not be trusted with a
+# write path yet.
+id: arista_eos
+name: Arista EOS
+vendor: Arista
+os: EOS
+description: >-
+  Arista EOS switches (7000 series, CCS, cEOS/vEOS). Structured data is parsed
+  with the ntc-templates library. Not yet verified against real hardware.
+extends: _cli_ios_like
+ntc_platform: arista_eos
+maturity: community
+
+detect:
+  # No `banner`: EOS answers SSH with OpenSSH's own identification string
+  # ("SSH-2.0-OpenSSH_…"), which says Linux as much as it says EOS, and its
+  # pre-login banner is whatever the operator configured. Claiming either
+  # would steal detection from `linux`.
+  sysdescr:
+    # "Arista Networks EOS version 4.31.6M running on an Arista Networks cEOSLab"
+    - 'Arista Networks EOS'
+  sysobjectid:
+    # arista (IANA enterprise 30065).
+    - 1.3.6.1.4.1.30065.
+  probes:
+    # Every EOS release opens `show version` with "Arista <model>".
+    - command: show version
+      matches: '(?m)^Arista\s+\S'
+  priority: 55
+
+cli:
+  # EOS takes a terminal width up to 32767, which keeps `show running-config`
+  # off a second line on wide output.
+  init:
+    - terminal length 0
+    - terminal width 32767
+  # Every EOS configuration sub-mode is `(config…)`: `(config)`,
+  # `(config-if-Et1)`, `(config-s-SESS)` of a configuration session. The
+  # base's `\([^()\s]+\)#` would also take `sw1(vrf:MGMT)#` — the prompt
+  # `routing-context vrf MGMT` leaves behind, which is still exec mode — for a
+  # configuration prompt, and the driver would then refuse to leave it.
+  config_prompt: '\(config[^()]*\)#\s?$'
+
+config:
+  # EOS prints two generated comment lines in front of the configuration. The
+  # `! device:` line carries the running EOS version, so ignoring it keeps a
+  # software upgrade from looking like a configuration change.
+  #
+  # The list replaces the base's, which is IOS-specific. Only the last entry
+  # is kept from it, because a console line prints log messages into the
+  # listing here too; IOS's scheduled-reload announcement (`***`) is dropped,
+  # since EOS does not print one.
+  ignore:
+    - '^! Command: '
+    - '^! device: '
+    - '^[^%]{0,48}%[A-Z][A-Z0-9_]*-[0-7]-[A-Z0-9_]+: '
+  # No `guard`: EOS's dead-man switch is `configure session` with
+  # `commit timer <hh:mm:ss>`, which is not a command that can be sent at the
+  # exec prompt around an ordinary line-by-line change — it needs the whole
+  # change to be built inside a named session and committed. Until that
+  # workflow exists in `nocturne-changes`, saying `reload in …` here would
+  # claim a guard that has not been tried on an Arista device.
+
+collect:
+  facts:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        model: MODEL
+        serial: SERIAL_NUMBER
+        os_version: IMAGE
+        uptime_s: UPTIME | duration
+        os: "'EOS'"
+        vendor: "'Arista'"
+        extra.system_mac: SYS_MAC | mac
+        extra.hardware_version: HW_VERSION
+      # `hostname` is not in EOS's `show version`; it needs `show hostname`,
+      # for which there is no recorded output (see tests/.../NOTES.md).
+
+  health:
+    - command: show version
+      parser: {ntc: auto}
+      map:
+        uptime_s: UPTIME | duration
+        # EOS prints both figures in kilobytes ("Total memory: 43138472 kB"),
+        # and the template captures the digits only.
+        memory_total: (TOTAL_MEMORY | num) * 1024
+        memory_used: ((TOTAL_MEMORY | num) - (FREE_MEMORY | num)) * 1024
+
+  interfaces:
+    - command: show interfaces
+      parser: {ntc: auto}
+      map:
+        name: INTERFACE
+        description: DESCRIPTION
+        admin_up: "not LINK_STATUS is startingwith('administratively')"
+        oper_up: "PROTOCOL_STATUS is startingwith('up')"
+        mtu: MTU
+        mac: MAC_ADDRESS | mac
+        kind: HARDWARE_TYPE
+        # EOS prints the address with its prefix length already attached.
+        ipv4: "[IP_ADDRESS] if IP_ADDRESS else []"
+        # No speed or duplex here: `show interfaces` states them in prose the
+        # bundled template does not capture, and the "BW" figure of an SVI is
+        # a routing metric, not a link rate. They come from the step below.
+    # The layer-2 role, negotiated speed and duplex of each port.
+    #
+    # The least-verified step in this profile. The corpus has a capture of
+    # this command, but from a different device than the `show interfaces`
+    # capture, so no test ever sees a row it enriched: the fields below were
+    # read off the capture's columns and nothing checks them. It is `optional`
+    # for the ordinary reason too — a router has no switchports — so a release
+    # that does not know the command costs nothing.
+    - command: show interfaces status
+      parser: {ntc: auto}
+      map:
+        name: PORT
+        description: NAME
+        # The Vlan column is a VLAN number on an access port, the word
+        # "trunk" on a trunk and "routed" on a layer-3 port.
+        mode: >-
+          'routed' if VLAN_ID == 'routed'
+          else 'trunk' if VLAN_ID == 'trunk'
+          else 'access' if VLAN_ID | num is number
+          else none
+        vlan: VLAN_ID | num
+        # "a-full" / "a-1G" mean the value was auto-negotiated.
+        duplex: DUPLEX | lower | regex_search('(full|half)')
+        speed_bps: SPEED | bps
+      merge_on: name
+      optional: true
+
+  vlans:
+    - command: show vlan
+      parser: {ntc: auto}
+      map:
+        id: VLAN_ID
+        name: VLAN_NAME
+        status: STATUS
+        interfaces: INTERFACES
+
+  mac_table:
+    - command: show mac address-table
+      parser: {ntc: auto}
+      map:
+        mac: MAC_ADDRESS | mac
+        vlan: VLAN_ID
+        # A multicast entry is flooded to several ports; the model holds one,
+        # so the first is kept.
+        interface: DESTINATION_PORT | first
+        kind: TYPE | lower
+
+  arp:
+    - command: show ip arp
+      parser: {ntc: auto}
+      map:
+        ip: IP_ADDRESS
+        mac: MAC_ADDRESS | mac
+        # EOS lists the routed interface and, behind a comma, the port the
+        # address was learnt on ("Vlan101, Port-Channel2") or a note that it
+        # was not ("Vlan1, not learned"). The model's one interface field
+        # takes the routed interface.
+        interface: INTERFACE | regex_replace(',.*$', '') | trim
+        age: AGE
+      # An address that never answered has no entry worth the name.
+      when: MAC_ADDRESS is matching('^[0-9a-fA-F]{4}\.')
+
+  routes:
+    - command: show ip route
+      parser: {ntc: auto}
+      map:
+        prefix: NETWORK ~ '/' ~ PREFIX_LENGTH
+        # The codes are the ones EOS prints in its own legend above the table.
+        protocol: >-
+          ({'C': 'connected', 'S': 'static', 'K': 'kernel', 'O': 'ospf',
+            'IA': 'ospf', 'E1': 'ospf', 'E2': 'ospf', 'N1': 'ospf', 'N2': 'ospf',
+            'B': 'bgp', 'B I': 'bgp', 'B E': 'bgp', 'A B': 'bgp', 'A O': 'ospf',
+            'R': 'rip', 'I': 'isis', 'NG': 'static'}[PROTOCOL]) or PROTOCOL
+        # A directly connected route says "connected" where a next hop would be.
+        next_hop: NEXT_HOP | reject('equalto', 'connected') | first
+        interface: INTERFACE | first
+        distance: DISTANCE
+        metric: METRIC
+        vrf: VRF
+
+  inventory:
+    - command: show inventory
+      parser: {ntc: auto}
+      map:
+        description: DESCR
+        part_id: PID
+        serial: SN
+      # EOS answers with a stack of tables (chassis, power supplies, fans,
+      # port counts, transceivers, storage) and the bundled template emits a
+      # row for each line of each of them, including the "System has 53 ports"
+      # counts, which are not parts and carry no serial number.
+      when: SN
+      # `name` is left empty: the template drops which table a row came from,
+      # so the only name available would be the bare slot or port number,
+      # which is the same for power supply 1, fan 1 and transceiver 1.
+
+# No `snmp`: the CPU and memory OIDs EOS serves were not verified. The one
+# commonly quoted for EOS, 1.3.6.1.4.1.2021.11.11.0, is UCD-SNMP's ssCpuIdle —
+# the percentage of CPU that is *idle*, which read as a utilisation would be
+# exactly wrong. See tests/profiles/arista_eos/NOTES.md.

@@ -1,0 +1,28 @@
+kinds:
+  arp:
+    # Every entry has a real hardware address, so the profile's `when` keeps all five.
+    count: 5
+    rows:
+      # VRF MGMT
+      - ip: 10.1.1.1
+        mac: 00:4c:62:11:11:3e
+        interface: Vlan1
+        age: "0:00:00"
+      # VRF default: "172.16.0.1  0  004c.6211.223b  Vlan101, Port-Channel2"
+      - ip: 172.16.0.1
+        mac: 00:4c:62:11:22:3b
+        interface: Vlan101
+        age: "0"
+      - ip: 172.16.0.2
+        mac: 00:4c:62:14:33:3c
+        interface: Vlan1000
+        age: "0"
+      - ip: 172.16.0.3
+        mac: 00:4c:62:19:44:4d
+        interface: Ethernet1
+        age: "0"
+      # "10.10.1.1  N/A  0002.00ff.555e  Vlan1, not learned"
+      - ip: 10.10.1.1
+        mac: 00:02:00:ff:55:5e
+        interface: Vlan1
+        age: N/A

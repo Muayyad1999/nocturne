@@ -1,0 +1,46 @@
+# What EOS prints when it refuses a command, and what it prints when it does
+# not. EOS complains with `%` like IOS, so the base's `cli.errors` apply
+# unchanged; these samples prove that they fit EOS's wording too.
+exec:
+  rejected:
+    - output: |
+        % Invalid input (at token 1: 'nonsense')
+      error: "% Invalid input (at token 1: 'nonsense')"
+    - output: "% Incomplete command\n"
+      error: "% Incomplete command"
+    - output: "% Ambiguous command (at token 1: 'sh i')\n"
+      error: "% Ambiguous command (at token 1: 'sh i')"
+    # A refusal phrased as a sentence rather than a parser complaint.
+    - "% Unavailable command (not supported on this hardware platform)\n"
+    - "% Interface does not exist\n"
+    - "% VLAN 4095 is invalid\n"
+  clean:
+    # Real output of `show interfaces` on a cEOS lab switch: it says an
+    # address is missing, which is not a refusal.
+    - |
+      Vlan888 is up, line protocol is up (connected)
+        Hardware is Vlan, address is fc59.c0e3.a579 (bia fc59.c0e3.a579)
+        No Internet protocol address assigned
+        IP MTU 1500 bytes (default)
+        Up 76 days, 2 hours, 51 minutes, 25 seconds
+    # EOS log messages carry a timestamp and the agent's name in front of the
+    # facility-severity-mnemonic tag, so they never start with `%`.
+    - |
+      Jan  1 00:05:12 sw1 Cli: %SYS-5-CONFIG_E: Enter configuration mode from console
+      Jan  1 00:05:20 sw1 Ebra: %LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet1, changed state to up
+    - |
+      Copy completed successfully.
+    - |
+      VRF: default
+      Address         Age (sec)  Hardware Addr   Interface
+      10.10.1.1              N/A 0002.00ff.555e  Vlan1, not learned
+config:
+  rejected:
+    - output: |
+        sw1(config)#vlan 5000
+        % Invalid input (at token 1: '5000')
+      error: "% Invalid input (at token 1: '5000')"
+    - "% Incomplete command\n"
+  clean:
+    - "Jan  1 00:06:01 sw1 Cli: %SYS-5-CONFIG_E: Enter configuration mode from console\n"
+    - "Copy completed successfully.\n"

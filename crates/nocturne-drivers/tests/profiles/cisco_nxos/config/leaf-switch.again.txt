@@ -1,0 +1,71 @@
+!Command: show running-config
+!Running configuration last done at: Tue Mar  4 14:22:07 2025
+!Time: Wed Mar  5 09:10:12 2025
+
+version 10.4(5) Bios:version 01.11
+hostname n9k-leaf1
+vdc n9k-leaf1 id 1
+  limit-resource vlan minimum 16 maximum 4094
+  limit-resource vrf minimum 2 maximum 4096
+  limit-resource port-channel minimum 0 maximum 511
+feature nxapi
+feature lldp
+feature interface-vlan
+feature lacp
+no password strength-check
+username admin password 5 $5$Lk0rP2$Zq5x0r7kH9bq1uVn3nXyL/ role network-admin
+ip domain-lookup
+ip name-server 192.0.2.53 use-vrf management
+snmp-server community n0cturne-ro group network-operator
+snmp-server location Building 4, floor 2
+ntp server 10.0.99.5 use-vrf management
+vlan 1,10,20,99
+vlan 10
+  name Staff
+vlan 20
+  name Guests
+vlan 99
+  name Management
+spanning-tree mode rapid-pvst
+vrf context management
+  ip route 0.0.0.0/0 10.0.99.1
+interface Vlan1
+  no ip redirects
+interface Vlan10
+2025 Mar  5 09:10:12 n9k-leaf1 %$ VDC-1 %$ %ETHPORT-5-IF_DOWN_LINK_FAILURE: Interface Ethernet1/2 is down (Link failure)
+  no shutdown
+  no ip redirects
+  ip address 10.0.10.1/24
+interface port-channel1
+  description uplink to spine1
+  switchport mode trunk
+  switchport trunk allowed vlan 10,20,99
+interface Ethernet1/1
+  description server-01 eth0
+  switchport access vlan 10
+  spanning-tree port type edge
+  no shutdown
+interface Ethernet1/2
+  description spare
+  shutdown
+interface Ethernet1/48
+  description uplink to spine1 Eth1/1
+  switchport mode trunk
+  switchport trunk allowed vlan 10,20,99
+  channel-group 1 mode active
+  no shutdown
+interface mgmt0
+  vrf member management
+  ip address 10.0.99.11/24
+line console
+  exec-timeout 15
+line vty
+  exec-timeout 15
+boot nxos bootflash:/nxos64-cs.10.4.5.M.bin
+router bgp 65101
+  router-id 10.0.255.1
+  address-family ipv4 unicast
+    network 10.0.255.1/32
+  neighbor 10.0.0.0
+    remote-as 65100
+    address-family ipv4 unicast

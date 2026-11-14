@@ -1,0 +1,30 @@
+kinds:
+  interfaces:
+    # Only the two interfaces of `show interfaces`: the rows of
+    # `show interfaces status` belong to another device and are dropped.
+    count: 2
+    rows:
+      # "Vlan888 is up, line protocol is up (connected)"
+      - name: Vlan888
+        admin_up: true
+        oper_up: true
+        kind: Vlan
+        mac: fc:59:c0:e3:a5:79
+        # "IP MTU 1500 bytes (default)"
+        mtu: 1500
+        # "No Internet protocol address assigned"
+        ipv4: []
+        description: ""
+        # nothing merged in from the other device's `show interfaces status`
+        mode: ""
+        vlan: null
+        duplex: ""
+        speed_bps: null
+      # "Hardware is Vxlan" and nothing else: no address, no MTU.
+      - name: Vxlan1
+        admin_up: true
+        oper_up: true
+        kind: Vxlan
+        mac: ""
+        mtu: null
+        ipv4: []

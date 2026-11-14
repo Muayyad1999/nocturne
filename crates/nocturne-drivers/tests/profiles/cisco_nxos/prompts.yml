@@ -1,0 +1,48 @@
+# Prompts as NX-OS prints them. There is only one privilege level, so there
+# is no `user` section: the profile sets `cli.user_prompt: null`.
+exec:
+  - "switch#"
+  - "n9k-leaf1#"
+  - "dc1-spine-01.example.net#"         # an FQDN hostname, dots and dashes
+  - "N9K_LAB-15#"                       # underscore and dash
+  - "7000-core#"                        # starts with a digit
+  - "switch-vdc2#"                      # a non-default virtual device context
+  - "switch# "                          # tolerated: some terminal servers add a space
+config:
+  - "switch(config)#"
+  - "switch(config-if)#"
+  - "switch(config-if-range)#"
+  - "switch(config-vlan)#"
+  - "switch(config-vlan-config)#"
+  - "switch(config-router)#"
+  - "switch(config-router-af)#"
+  - "switch(config-router-neighbor)#"
+  - "switch(config-line)#"
+  - "switch(config-mgmt)#"
+  - "switch(config-acl)#"
+  - "switch(config-monitor)#"
+  - "switch(config-vrf)#"
+  - "switch(config-sync)#"
+not_prompts:
+  - "!Command: show running-config"
+  - "!Time: Tue Mar  4 14:30:11 2025"
+  - "Cisco Nexus Operating System (NX-OS) Software"
+  - "  cisco Nexus9000 C93180YC-FX3 Chassis"
+  - "% Invalid command at '^' marker."
+  - "ERROR: Invalid number of arguments"
+  - "switch#show running-config"        # the echo of a command
+  - " --More-- "
+  - "Password: "
+  - "login: "
+  - "User Access Verification"
+  - "!"
+  - "#"
+  - "Ethernet1/1 is up"
+  - "loader >"                          # the boot loader is not a CLI the driver can use
+  - "Total number of entries: 22"
+  - "2025 Mar  4 14:22:07 switch %$ VDC-1 %$ %ETHPORT-5-IF_DOWN_LINK_FAILURE: Interface Ethernet1/1 is down"
+hosts:
+  "switch#": switch
+  "dc1-spine-01.example.net#": dc1-spine-01.example.net
+  "n9k-leaf1(config-if)#": n9k-leaf1
+  "switch-vdc2#": switch-vdc2

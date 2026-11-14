@@ -1,0 +1,87 @@
+description: >-
+  An SSH session on an EOS switch that lands in unprivileged mode, so the
+  driver has to raise its privilege with `enable` before anything else, then
+  turn paging off with EOS's wide terminal. A command the parser refuses, a
+  configuration change through an `(config-if-Et2)` prompt that the profile's
+  own `config_prompt` has to recognise, a save with `write memory`, and the
+  running configuration, whose two generated header lines and the log message
+  a console printed into the middle of it must be gone from what the driver
+  returns. Scripted from how EOS behaves; no device was recorded.
+credentials: {username: admin, password: secret, enable_secret: class}
+greeting: "\r\nAuthorised access only.\r\n\r\nleaf1>"
+dialogue:
+  - recv: enable
+    send: "enable\r\nPassword: "
+  - recv: class
+    send: "\r\nleaf1#"
+  - recv: terminal length 0
+    send: "terminal length 0\r\nleaf1#"
+  - recv: terminal width 32767
+    send: "terminal width 32767\r\nleaf1#"
+  - recv: show hostname
+    send: "show hostname\r\nHostname: leaf1\r\nFQDN: leaf1.lab.example.net\r\nleaf1#"
+  - recv: show vlan id 5000
+    send: "show vlan id 5000\r\n% Invalid input (at token 2: '5000')\r\nleaf1#"
+  - recv: configure terminal
+    send: "configure terminal\r\nleaf1(config)#"
+  - recv: interface Ethernet2
+    send: "interface Ethernet2\r\nleaf1(config-if-Et2)#"
+  - recv: description spare
+    send: "description spare\r\nleaf1(config-if-Et2)#"
+  - recv: end
+    send: "end\r\nleaf1#"
+  - recv: write memory
+    send: "write memory\r\nCopy completed successfully.\r\nleaf1#"
+  - recv: show running-config
+    send: |-
+      show running-config
+      ! Command: show running-config
+      ! device: leaf1 (DCS-7050SX3-48YC8, EOS-4.26.1F)
+      !
+      hostname leaf1
+      !
+      interface Ethernet2
+         description spare
+      !
+      Mar  4 14:31:02 leaf1 Cli: %SYS-5-CONFIG_E: Enter configuration mode from vty
+      !
+      interface Management1
+         vrf MGMT
+         ip address 10.0.99.11/24
+      !
+      end
+
+      leaf1#
+actions:
+  - start:
+      hostname: leaf1
+      prompt: "leaf1#"
+      login_screen: Authorised access only.
+    mode: privileged
+  - exec: show hostname
+    output: |-
+      Hostname: leaf1
+      FQDN: leaf1.lab.example.net
+  - exec: show vlan id 5000
+    error: "% Invalid input (at token 2: '5000')"
+  - configure: [interface Ethernet2, description spare]
+    mode: privileged
+  - save: true
+  - fetch_config: running
+    # The `! Command:` and `! device:` lines are gone — the second carries the
+    # EOS version, so an upgrade must not look like a configuration change —
+    # and so is the console's log message. Everything else is kept exactly as
+    # EOS printed it, three-space indentation included.
+    config: |
+      !
+      hostname leaf1
+      !
+      interface Ethernet2
+         description spare
+      !
+      !
+      interface Management1
+         vrf MGMT
+         ip address 10.0.99.11/24
+      !
+      end
