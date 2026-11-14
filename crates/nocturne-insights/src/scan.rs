@@ -315,21 +315,27 @@ pub async fn run(app: &App, device_ids: Vec<String>, checks: Vec<String>) -> App
             }
         }
         let (outcomes, coverage) = run_checks(&world, &settings, &checks);
-        let changed = db::reconcile(app_for_scan.store(), now, &outcomes)?;
-        let findings: usize = outcomes.iter().map(|outcome| outcome.found.len()).sum();
-        let checks_run = outcomes.len();
+        // Timed before the findings are stored rather than after, because the
+        // coverage goes into the same transaction as them: the two must agree,
+        // and `took_ms` missing the cost of its own write is a far smaller
+        // inaccuracy than a reader seeing findings from a scan that, according
+        // to the coverage, never happened.
         let coverage = Coverage {
             took_ms: started.elapsed().as_millis() as u64,
             ..coverage
         };
+        let changed = db::reconcile(app_for_scan.store(), now, &outcomes, &coverage)?;
+        let findings: usize = outcomes.iter().map(|outcome| outcome.found.len()).sum();
+        let checks_run = outcomes.len();
         Ok::<_, AppError>((changed, coverage, findings, checks_run, device_ids))
     });
     let (changed, coverage, findings, checks_run, device_ids) = worker
         .await
         .map_err(|err| AppError::internal(format!("the scan did not finish: {err}")))??;
 
+    // Already stored, with the findings, in one transaction. This only puts
+    // it where `coverage()` looks first.
     let coverage = Arc::new(coverage);
-    app.store().kv_set("insights.coverage", &*coverage)?;
     *state.last_coverage.lock() = Some(coverage.clone());
 
     let summary = Summary {

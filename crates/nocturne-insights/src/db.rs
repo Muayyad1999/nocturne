@@ -14,6 +14,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::model::{Category, Insight, Severity, State};
+use crate::scan::Coverage;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS insights (
@@ -129,9 +130,31 @@ pub(crate) struct Changed {
 /// Fold a scan's results into the ledger: new findings appear, findings seen
 /// again keep their identity and history, and findings that two consecutive
 /// evaluated scans did not see resolve.
-pub(crate) fn reconcile(store: &Store, now: i64, outcomes: &[Outcome]) -> AppResult<Changed> {
+/// Store what a scan found, and the coverage it found it under, together.
+///
+/// The coverage is written in the same transaction on purpose. It used to be
+/// written after this function returned, which left a window — the whole of
+/// it — in which `insights.list` already answered with findings while
+/// `insights.coverage` still said nothing had ever been scanned. That is the
+/// one contradiction this crate exists to prevent: the screen tells "nothing
+/// is wrong" from "nobody looked" by exactly that field, so for a moment it
+/// could show findings from a scan that never happened. An event-driven
+/// reader never saw it, because `insights.changed` is published after both
+/// writes, but anything that polled could. CI caught it.
+pub(crate) fn reconcile(
+    store: &Store,
+    now: i64,
+    outcomes: &[Outcome],
+    coverage: &Coverage,
+) -> AppResult<Changed> {
     let mut changed = Changed::default();
+    let coverage = serde_json::to_string(coverage)?;
     store.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params!["insights.coverage", coverage],
+        )?;
         for outcome in outcomes {
             let found_ids: BTreeSet<&str> =
                 outcome.found.iter().map(|insight| insight.id.as_str()).collect();
@@ -425,6 +448,64 @@ mod tests {
         let store = Store::in_memory().unwrap();
         init(&store).unwrap();
         store
+    }
+
+    fn coverage_at(scanned_at: i64) -> Coverage {
+        Coverage {
+            scanned_at,
+            devices: 1,
+            link_source: "neighbors".into(),
+            links: 0,
+            checks: Vec::new(),
+            missing_sources: Vec::new(),
+            took_ms: 1,
+        }
+    }
+
+    /// The tests below are about findings, so they say nothing about the
+    /// coverage that goes in with them; this shadows the real one to keep
+    /// them reading as they did.
+    fn reconcile(store: &Store, now: i64, outcomes: &[Outcome]) -> AppResult<Changed> {
+        super::reconcile(store, now, outcomes, &coverage_at(now))
+    }
+
+    /// Findings and the coverage they were found under are stored together,
+    /// so no reader can ever see one without the other. Before they shared a
+    /// transaction, `insights.list` answered with findings while
+    /// `insights.coverage` still said nothing had been scanned — the exact
+    /// contradiction between "nothing is wrong" and "nobody looked" that this
+    /// crate is built to avoid.
+    #[test]
+    fn the_coverage_lands_with_the_findings_and_not_after_them() {
+        let store = store();
+        assert!(
+            store
+                .kv_get::<Coverage>("insights.coverage")
+                .unwrap()
+                .is_none(),
+            "nothing has been scanned yet"
+        );
+
+        let found = insight("duplex_mismatch", "a", "Gi0/1", Severity::High);
+        let changed = super::reconcile(
+            &store,
+            1_000,
+            &[Outcome {
+                check: "duplex_mismatch",
+                found: vec![found.clone()],
+                evaluated: [String::from("a")].into_iter().collect(),
+            }],
+            &coverage_at(1_000),
+        )
+        .unwrap();
+        assert_eq!(changed.opened.len(), 1);
+
+        let stored: Coverage = store
+            .kv_get("insights.coverage")
+            .unwrap()
+            .expect("the coverage is there the moment the findings are");
+        assert_eq!(stored.scanned_at, 1_000);
+        assert_eq!(get(&store, &found.id).unwrap().state, State::Open);
     }
 
     #[test]
