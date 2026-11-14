@@ -189,13 +189,20 @@ of it:
   documentation and a real capture corpus, never run against a device.
 - `arista_eos` has no `neighbours` collector — no EOS capture or template
   exists — so the topology sees nothing on an EOS device. Its
-  `show interfaces status` step is the least-verified thing in the pack: the
-  only capture available comes from a different device, so every row that step
-  produces is dropped by the merge and no expectation sees a value it wrote.
+  `show interfaces status` step, and ProCurve's, are the least-verified things
+  in the pack: the only captures available come from different devices than
+  the rows they enrich, so no expectation has ever seen a value they wrote.
+  The collector now *says* so — a step offered rows that places none is a
+  `Partial` problem naming the command and the key, and both capture cases
+  expect it — but `mode`, `vlan`, `duplex` and `speed_bps` on those two
+  platforms remain unproven.
 - A collector expression that fails at *runtime* is silently left out rather
-  than reported. An unknown filter is caught when a profile loads; a typo in
-  an expression yields no data and no complaint, which sits badly against
-  "a read that failed is a recorded failure".
+  than reported. An unknown filter is caught when a profile loads, and a
+  genuine evaluation error is counted — but an unknown *name* is simply
+  absent, which is deliberate (a template that does not capture a field
+  should leave it empty) and therefore makes a typo indistinguishable from an
+  absent field. Catching it properly means checking a map's names against the
+  parser's at load time.
 - A child profile *replaces* an inherited list rather than extending it, so
   adding one pattern means restating all of them — which is exactly how the
   secret-pattern fault above got in. An append form would remove that class.
