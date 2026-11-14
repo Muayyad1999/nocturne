@@ -901,10 +901,33 @@ async fn hostile_datagrams_do_not_disturb_the_server() {
         .await
         .unwrap();
 
-    // The server is still there and still correct.
-    let download = client::get(address, "file.bin", &ClientOptions::default())
-        .await
-        .unwrap();
+    // Stop generating work for it: every refusal it sent us is sitting in our
+    // receive buffer, and on Windows each one we never read becomes an ICMP
+    // port-unreachable and then a receive error on *its* socket.
+    let mut sink = [0u8; 2048];
+    while socket.try_recv_from(&mut sink).is_ok() {}
+
+    // The server is still there and still correct. "Still there" is the
+    // claim, not "answers instantly": twenty thousand datagrams are a real
+    // backlog, and on a slower machine working through them takes longer than
+    // the ten seconds of patience the test client has — which is exactly how
+    // this test failed on Windows while passing on Linux. Asking once and
+    // demanding an answer inside that window tested the machine's speed. So
+    // ask until it answers or the deadline passes, which still fails if the
+    // server is genuinely stuck rather than merely behind.
+    let began = std::time::Instant::now();
+    let patience = Duration::from_secs(90);
+    let download = loop {
+        match client::get(address, "file.bin", &ClientOptions::default()).await {
+            Ok(download) => break download,
+            Err(error) => assert!(
+                began.elapsed() < patience,
+                "the server never came back after the flood ({:?} after {:?})",
+                error,
+                began.elapsed()
+            ),
+        }
+    };
     assert_eq!(download.data, pattern(3000));
 }
 

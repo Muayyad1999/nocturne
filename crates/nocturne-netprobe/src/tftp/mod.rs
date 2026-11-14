@@ -207,19 +207,26 @@ async fn serve(socket: UdpSocket, settings: Arc<Settings>) {
                     }
                     Err(error) => {
                         // An ICMP error about an earlier reply, or a full
-                        // buffer. Not fatal, and — this is the part that
-                        // matters — not rare either: on Windows an ICMP
-                        // port-unreachable for a reply we sent is delivered
-                        // as a receive error on this socket, one per reply.
-                        // A flood of junk requests is answered with a refusal
-                        // each, so a flood of refusals comes back as a flood
-                        // of these. Sleeping on each one let a sender stall
-                        // the whole server: 13,000 junk datagrams bought ten
-                        // seconds of sleep and genuine requests waited behind
-                        // it. So carry straight on, and only slow down if the
-                        // errors keep coming with nothing arriving in
-                        // between, which is the one case a busy loop is a
-                        // real risk.
+                        // buffer. Not fatal, and not rare either: on Windows
+                        // an ICMP port-unreachable for a reply we sent is
+                        // delivered as a receive error on this socket, one
+                        // per undeliverable reply, so answering a flood of
+                        // junk requests produces a flood of these.
+                        //
+                        // Sleeping 10ms on each one was indefensible whatever
+                        // else is true — it hands a sender a way to slow the
+                        // server by sending rubbish — so a single bad
+                        // datagram now costs a yield, and the sleep is kept
+                        // for errors that keep coming with nothing arriving
+                        // between them, which is the one case a busy loop is
+                        // a real risk.
+                        //
+                        // It is *not* why `hostile_datagrams_do_not_disturb_
+                        // the_server` was timing out on Windows, which is
+                        // what I first thought: changing this did not move
+                        // that test at all. That was a backlog — twenty
+                        // thousand queued datagrams take longer to work
+                        // through than the client's ten seconds of patience.
                         failures = failures.saturating_add(1);
                         tracing::debug!(%error, failures, "TFTP receive failed");
                         if failures >= 64 {

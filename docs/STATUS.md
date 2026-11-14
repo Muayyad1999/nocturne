@@ -6,7 +6,7 @@ recorded device output, it says so, and where a part is not written yet it
 says that rather than nothing.
 
 Every count here is a number that passed on this machine, not an estimate.
-**2,542 Rust tests across 163 targets, 864 interface tests and 186
+**2,548 Rust tests across 163 targets, 864 interface tests and 186
 end-to-end tests** pass as this is written, with no failures.
 
 ## Legend

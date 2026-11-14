@@ -91,8 +91,13 @@ async fn python_http_server_and_curl_agree_with_the_check() {
         .iter()
         .find(|(name, _)| name == "Server")
         .map(|(_, value)| value.as_str());
+    // `SimpleHTTP`, with nothing assumed after it. Python used to send
+    // `SimpleHTTP/0.6 Python/3.11.2` and 3.15 sends `SimpleHTTP Python/3.15.2`
+    // — the slash and the handler version are gone. What this test is for is
+    // that the header the server sent is the header we parsed, not which
+    // version string Python felt like using.
     assert!(
-        server.is_some_and(|server| server.starts_with("SimpleHTTP/")),
+        server.is_some_and(|server| server.starts_with("SimpleHTTP")),
         "{:?}",
         index.headers
     );
