@@ -380,9 +380,26 @@ async fn an_unverified_device_type_always_needs_a_human() {
     assert_eq!(err.code, "forbidden");
     assert!(err.message.contains("verified"), "{}", err.message);
 
-    // A human can still approve and apply it.
-    let applied = apply(app, &change).await;
-    assert_eq!(applied["state"], "applied");
+    // A human is *necessary* and no longer sufficient. This test used to end
+    // "A human can still approve and apply it", asserting the applied state —
+    // which is precisely the gap: `docs/profiles.md` and `docs/STATUS.md` both
+    // said a device type nobody had checked against hardware gets no write
+    // access by default, and nothing enforced it, so this test blessed the
+    // behaviour the documentation forbade. The gate is in `start_apply`, which
+    // both the human and the assistant paths pass through.
+    approve(app, &change)
+        .await
+        .expect("a human signs it off in full");
+    let refused = app
+        .rpc("changes.apply", json!({"id": id}))
+        .await
+        .expect_err("approval alone is not permission for an unchecked platform");
+    assert_eq!(refused.code, "forbidden", "{refused:?}");
+    assert!(
+        refused.message.contains("allow_unverified_writes"),
+        "and it says how to proceed deliberately: {}",
+        refused.message
+    );
 }
 
 #[tokio::test]
@@ -402,4 +419,75 @@ async fn a_change_that_is_already_approved_may_be_started_by_the_assistant() {
     let applied = app.rpc("changes.get", json!({"id": id})).await.unwrap();
     assert_eq!(applied["state"], "applied");
     assert_eq!(applied["approval"]["by"], "user");
+}
+
+/// A device type nobody has checked against real hardware gets no write
+/// access, from anybody, until somebody says otherwise in as many words.
+///
+/// `docs/profiles.md` and `docs/STATUS.md` have both promised this since the
+/// profile pack grew past Cisco and MikroTik. Nothing enforced it: the risk
+/// level was raised and said why, and `autonomy::decide` held the *assistant*
+/// back — but a human could approve and apply, and seven of the nine profiles
+/// that ship are `community`.
+#[tokio::test]
+async fn an_unverified_device_type_is_not_written_to_unless_that_is_asked_for() {
+    let lab = lab(&["SW1"]).await;
+    let app = &lab.app;
+    app.rpc(
+        "devices.update",
+        json!({"id": lab.id("SW1"), "profile": "test_ios"}),
+    )
+    .await
+    .unwrap();
+    let before = lab.fake("SW1").running_config();
+
+    let created = app
+        .rpc(
+            "changes.create",
+            json!({"title": "ntp", "targets": [{"device_id": lab.id("SW1"), "intent": desk_change()}]}),
+        )
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    run_job(app, "changes.plan", json!({"id": id})).await;
+
+    // A human approves it in full, with the typed confirmation if it needs
+    // one. The approval is not the question; the device type is.
+    let change = app.rpc("changes.get", json!({"id": id})).await.unwrap();
+    approve(app, &change).await.expect("a human approves it");
+
+    let refused = app
+        .rpc("changes.apply", json!({"id": id}))
+        .await
+        .expect_err("an unverified device type is not written to by default");
+    assert_eq!(refused.code, "forbidden");
+    for expected in ["test_ios", "experimental", "SW1", "allow_unverified_writes"] {
+        assert!(
+            refused.message.contains(expected),
+            "the refusal should name {expected}: {}",
+            refused.message
+        );
+    }
+    assert_eq!(
+        lab.fake("SW1").running_config(),
+        before,
+        "and the device is untouched"
+    );
+
+    // Said in as many words, it goes ahead: this is a decision, not a wall.
+    app.rpc(
+        "settings.set",
+        json!({"section": "changes", "value": {"allow_unverified_writes": true}}),
+    )
+    .await
+    .unwrap();
+    let started = app.rpc("changes.apply", json!({"id": id})).await;
+    assert!(started.is_ok(), "{started:?}");
+    let job = started.unwrap()["job_id"].as_str().unwrap().to_string();
+    nocturne_app::jobs::wait(app, &job).await.unwrap();
+    assert_ne!(
+        lab.fake("SW1").running_config(),
+        before,
+        "the change really was applied once it was allowed"
+    );
 }

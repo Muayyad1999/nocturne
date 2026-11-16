@@ -805,7 +805,44 @@ fn require_approved(change: &Change) -> AppResult<()> {
     Ok(())
 }
 
+/// Refuse a change to a device type nobody has checked against real hardware.
+///
+/// Both `docs/profiles.md` and `docs/STATUS.md` have long said a `community`
+/// or `experimental` profile "never gets write access by default". Nothing
+/// enforced it: `risk.rs` raised the risk level and said why, and
+/// `autonomy::decide` held the *assistant* back, but a human could approve
+/// and apply. Seven of the nine profiles that ship are `community`, so this
+/// was the difference between a documented safety control and a wish.
+///
+/// Checked here because `start_apply` is the one place both the human and the
+/// assistant paths pass through. Deliberately **not** applied to a rollback:
+/// undoing a change makes a device safer, and a gate that can stop you
+/// putting a device back as you found it is worse than the risk it guards.
+fn require_verified_or_allowed(app: &App, change: &Change) -> AppResult<()> {
+    if Settings::read(app).allow_unverified_writes {
+        return Ok(());
+    }
+    for target in &change.targets {
+        let Some(plan) = target.plan.as_ref() else {
+            continue;
+        };
+        if plan.maturity == "verified" {
+            continue;
+        }
+        // The name, not the id: this is a sentence somebody reads at speed.
+        let name = inventory::get(app, &target.device_id)
+            .map(|device| device.name)
+            .unwrap_or_else(|_| target.device_id.clone());
+        return Err(AppError::forbidden(format!(
+            "`{}` is a `{}` device type, which has never been checked against real hardware, so Nocturne will not send configuration to `{}`. The risk is that what the profile believes about this platform — which commands only read, how configuration mode is entered, whether the dead-man switch exists — has only ever been checked against recorded output. Turn on `changes.allow_unverified_writes` to apply anyway, or verify the device type first (`docs/profiles.md`).",
+            plan.profile, plan.maturity, name
+        )));
+    }
+    Ok(())
+}
+
 async fn start_apply(app: &App, mut change: Change, origin: &str) -> AppResult<Started> {
+    require_verified_or_allowed(app, &change)?;
     let claim = db::claim(app, &change, "applied")?;
     let device_ids: Vec<String> = change
         .targets

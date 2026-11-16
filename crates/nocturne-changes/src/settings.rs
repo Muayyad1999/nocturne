@@ -23,6 +23,22 @@ pub struct Settings {
     pub keep_transcripts: bool,
     /// Refuse to approve a change that names no ticket.
     pub require_ticket: bool,
+    /// Allow a change to be applied to a device whose *device type* has never
+    /// been checked against real hardware.
+    ///
+    /// Off, and the default is the point. A `community` or `experimental`
+    /// profile is a set of regular expressions and command lists written from
+    /// documentation; what it believes is read-only, how it enters
+    /// configuration mode, and whether its dead-man switch exists have been
+    /// checked against recorded output at best. Sending configuration through
+    /// one is a reasonable thing to *decide* to do, and an unreasonable thing
+    /// to do by accident on a device somebody depends on.
+    ///
+    /// `docs/profiles.md` and `docs/STATUS.md` have both promised this since
+    /// the profile pack grew past Cisco and MikroTik; until now neither the
+    /// apply path nor anything else enforced it, and only the *assistant* was
+    /// held back (by `autonomy::decide`). A human could approve and apply.
+    pub allow_unverified_writes: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +51,7 @@ impl Default for Settings {
             connect_wait_s: 45,
             keep_transcripts: true,
             require_ticket: false,
+            allow_unverified_writes: false,
         }
     }
 }
