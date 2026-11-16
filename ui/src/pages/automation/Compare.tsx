@@ -34,7 +34,7 @@ import { StatusPill } from '@/design/StatusPill';
 import { Switch } from '@/design/Switch';
 import { formatCount, plural } from '@/lib/format';
 import styles from './Automation.module.css';
-import { comparableCommands, diffSummary, headline, interestingLines } from './compare';
+import { comparableCommands, diffSummary, headline, interestingLines } from './comparison';
 import { given } from './given';
 import { stateWords } from './vocab';
 

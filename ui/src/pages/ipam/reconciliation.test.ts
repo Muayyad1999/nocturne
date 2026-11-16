@@ -14,7 +14,7 @@ import {
   silentDevices,
   truncatedNote,
   unobservedReading,
-} from './reconcile';
+} from './reconciliation';
 
 function device(over: Partial<DeviceCoverage> = {}): DeviceCoverage {
   return {

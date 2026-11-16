@@ -25,9 +25,9 @@
  *    explicit choice and sends exactly one.
  */
 
-import type { Field, Values } from './fields';
+import type { Field, Values } from './field-kinds';
 
-export type { Field, Values } from './fields';
+export type { Field, Values } from './field-kinds';
 
 export interface Spec {
   fields: readonly Field[];

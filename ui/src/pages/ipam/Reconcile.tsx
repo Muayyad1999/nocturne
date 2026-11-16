@@ -32,7 +32,7 @@ import {
   truncatedNote,
   unobservedReading,
   type Section,
-} from './reconcile';
+} from './reconciliation';
 import { siteLabel } from './tree';
 
 export interface ReconcileProps {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VlanDevice, VlanRow } from '@/api/types/ipam';
-import { nameDisagreements, presenceText, recordAge, vlanState } from './vlans';
+import { nameDisagreements, presenceText, recordAge, vlanState } from './vlan-rows';
 
 function on(device: string, name: string, over: Partial<VlanDevice> = {}): VlanDevice {
   return {

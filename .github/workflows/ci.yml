@@ -45,10 +45,23 @@ jobs:
       - run: cargo test
 
   ui:
-    name: UI — typecheck, unit tests, build
-    runs-on: ubuntu-24.04
+    name: UI — typecheck, unit tests, build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows as well as Linux, because a case-insensitive filesystem
+        # resolves an import differently and that made the whole interface
+        # unbuildable there while this job was green: `import './Compare'`
+        # found `compare.ts` instead of `Compare.tsx`. Nothing else in CI
+        # built the interface anywhere but Linux, so the first time anyone
+        # found out was the first time a release was attempted.
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: No two files differ only in case
+        shell: bash
+        run: ./scripts/check-case-collisions.sh
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: ui/package.json
@@ -60,7 +73,10 @@ jobs:
       - run: pnpm --dir ui install --frozen-lockfile
       - run: pnpm --dir ui test
       - run: pnpm --dir ui build
+      # Only the Linux build's output is kept: it is what the end-to-end job
+      # consumes, and two jobs uploading one name is an error.
       - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
         with:
           name: ui-dist
           path: ui/dist

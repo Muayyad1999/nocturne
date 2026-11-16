@@ -27,7 +27,7 @@ import {
   recordAge,
   VLAN_STATE_WORDS,
   vlanState,
-} from './vlans';
+} from './vlan-rows';
 
 export interface VlansProps {
   rows: readonly VlanRow[];

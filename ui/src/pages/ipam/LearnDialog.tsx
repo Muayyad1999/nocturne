@@ -18,7 +18,7 @@ import { Dialog } from '@/design/Dialog';
 import { Switch } from '@/design/Switch';
 import { TimeAgo } from '@/design/TimeAgo';
 import { formatCount, plural } from '@/lib/format';
-import { coverageReading } from './reconcile';
+import { coverageReading } from './reconciliation';
 import styles from './Dialogs.module.css';
 
 export interface LearnDialogProps {

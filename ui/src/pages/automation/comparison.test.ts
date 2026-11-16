@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { Comparison, CompareGroup, DiffLine } from '@/api/types/automation';
-import { comparableCommands, diffCount, diffSummary, headline, interestingLines } from './compare';
+import { comparableCommands, diffCount, diffSummary, headline, interestingLines } from './comparison';
 
 const group = (names: string[], diff: DiffLine[] = []): CompareGroup => ({
   devices: names.map((name) => ({ device_id: name, name })),

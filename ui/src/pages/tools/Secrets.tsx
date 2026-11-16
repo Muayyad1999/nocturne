@@ -28,7 +28,7 @@ import { AskedAnswer, LiveAnswer, Refusal } from './Answer';
 import { useDebounced, useToolResult, type Form } from './data';
 import { Fields } from './Fields';
 import { CopyButton, Facts } from './Sections';
-import { explainSecret, KEPT_NOWHERE, type Statement } from './secrets';
+import { explainSecret, KEPT_NOWHERE, type Statement } from './secret-answers';
 import type { Spec } from './specs';
 import styles from './Tools.module.css';
 import resultStyles from './Result.module.css';

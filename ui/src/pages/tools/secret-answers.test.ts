@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Identified } from '@/api/types/toolbox';
-import { decoderOf, explainSecret } from './secrets';
+import { decoderOf, explainSecret } from './secret-answers';
 
 /** The engine's own answers, from `tools.secret.identify` against a real build. */
 const TYPE7: Identified = {
