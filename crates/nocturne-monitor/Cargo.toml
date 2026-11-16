@@ -30,6 +30,10 @@ base64.workspace = true
 
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
+# Generates the certificates of the TLS service-check tests: one that expires
+# next week, one that expired last year. The same version `nocturne-netprobe`
+# uses for its own loopback TLS tests.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

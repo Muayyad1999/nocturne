@@ -7,6 +7,7 @@
 //! slow device delays nothing else" and "never more than `concurrency`
 //! probes in flight" both true at once.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nocturne_app::{App, inventory};
@@ -15,7 +16,7 @@ use tokio::sync::Semaphore;
 
 use crate::settings::MonitorSettings;
 use crate::state::MonitorState;
-use crate::{alerts, interfaces, poll, rules};
+use crate::{alerts, checks, interfaces, poll, rules};
 
 /// How often the scheduler looks at the clock. The shortest interval a
 /// device may have is five seconds, so a second of granularity is plenty.
@@ -28,8 +29,23 @@ const MAINTENANCE_MS: u64 = 3_600_000;
 /// Resolved alerts are kept this long.
 const ALERT_HISTORY_DAYS: i64 = 90;
 
-/// A device's offset inside its own interval, in milliseconds. Stable for a
-/// device, evenly spread across devices.
+/// An offset inside an interval, in milliseconds. Stable for an id, evenly
+/// spread across ids.
+///
+/// Used for devices and for service checks alike: a thousand checks on a
+/// 60-second interval are spread across the minute rather than all firing on
+/// the first tick after a start.
+/// Whether a check whose last run *began* at `last_run_at` is due at `now`.
+///
+/// Its own interval decides and nothing else does: not the device's poll
+/// interval, not another check's. Worth a named function because this is the
+/// one claim the scheduler makes about cadence that can be stated exactly —
+/// what a check's realised spacing turns out to be also depends on how long
+/// its probe holds the slot, which is not a promise.
+pub(crate) fn check_is_due(last_run_at: i64, interval_ms: i64, now: i64) -> bool {
+    last_run_at + interval_ms <= now
+}
+
 pub fn jitter(device_id: &str, interval_ms: i64) -> i64 {
     // FNV-1a: small, no dependency, and spreads short ids well.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -56,6 +72,11 @@ async fn scheduler(app: App) {
     let mut limit = 0u32;
     let mut gate = Arc::new(Semaphore::new(1));
     let mut devices: Vec<nocturne_app::model::Device> = Vec::new();
+    // Devices that are monitored at all. Wider than `devices`, which only
+    // holds the ones there is a way to *poll*: a device with no ICMP, no
+    // SNMP and no command line can still have service checks on it.
+    let mut monitored: HashSet<String> = HashSet::new();
+    let mut services: Vec<crate::checks::model::ServiceCheck> = Vec::new();
     // Zero forces the first tick to read the inventory.
     let mut listed_at = 0i64;
     loop {
@@ -72,9 +93,15 @@ async fn scheduler(app: App) {
         if now - listed_at >= INVENTORY_MS {
             match inventory::list(&app, &inventory::DeviceFilter::default()) {
                 Ok(rows) => {
-                    devices = rows
+                    let all: Vec<nocturne_app::model::Device> =
+                        rows.into_iter().map(|row| row.device).collect();
+                    monitored = all
+                        .iter()
+                        .filter(|device| device.monitor.enabled)
+                        .map(|device| device.id.clone())
+                        .collect();
+                    devices = all
                         .into_iter()
-                        .map(|row| row.device)
                         .filter(|device| device.monitor.enabled && poll::plan(device).any())
                         .collect();
                     listed_at = now;
@@ -83,6 +110,10 @@ async fn scheduler(app: App) {
                     tracing::warn!(%err, "the inventory could not be read");
                     continue;
                 }
+            }
+            match checks::store::enabled(&app) {
+                Ok(rows) => services = rows,
+                Err(err) => tracing::warn!(%err, "the service checks could not be read"),
             }
         }
         for device in &devices {
@@ -133,6 +164,56 @@ async fn scheduler(app: App) {
                 }
             });
         }
+
+        // ------------------------------------------------- service checks
+        //
+        // The same tick, the same semaphore and the same jitter as the
+        // devices above: one scheduler, so a thousand checks cannot escape
+        // the concurrency cap by being a different kind of work.
+        if !settings.checks_enabled {
+            continue;
+        }
+        for check in &services {
+            // Switching monitoring off for a device switches off everything
+            // about it, services included.
+            if !monitored.contains(&check.device_id) {
+                continue;
+            }
+            let interval_ms = i64::from(check.interval_s.max(5)) * 1_000;
+            let due = {
+                let mut runtime = state.runtime.lock();
+                if runtime.checks_in_flight.contains(&check.id) {
+                    // Still running from last time: a check that takes
+                    // longer than its interval runs as often as it can,
+                    // never twice at once.
+                    continue;
+                }
+                let entry = runtime.checks.entry(check.id.clone()).or_default();
+                if entry.last_run_at == 0 {
+                    entry.last_run_at = now - interval_ms + jitter(&check.id, interval_ms);
+                }
+                let due = check_is_due(entry.last_run_at, interval_ms, now);
+                if due {
+                    entry.last_run_at = now;
+                    runtime.checks_in_flight.insert(check.id.clone());
+                }
+                due
+            };
+            if !due {
+                continue;
+            }
+            let app = app.clone();
+            let gate = gate.clone();
+            let state = state.clone();
+            let check = check.clone();
+            tokio::spawn(async move {
+                let _permit = gate.acquire_owned().await;
+                if let Err(err) = checks::run_and_record(&app, &check).await {
+                    tracing::debug!(check = %check.id, %err, "a service check could not be recorded");
+                }
+                state.runtime.lock().checks_in_flight.remove(&check.id);
+            });
+        }
     }
 }
 
@@ -160,6 +241,10 @@ pub fn run_maintenance(app: &App, now: i64) -> nocturne_app::AppResult<()> {
         conn.execute("DELETE FROM rollups WHERE bucket < ?1", [rollup_before])
     })?;
     alerts::prune(app, now - ALERT_HISTORY_DAYS * 86_400_000)?;
+    checks::store::prune(
+        app,
+        now - i64::from(settings.check_history_days) * 86_400_000,
+    )?;
     Ok(())
 }
 
@@ -195,6 +280,14 @@ fn forget_devices(app: &App, payload: &Value) {
         state.forget(id);
         let _ = interfaces::forget(app, id);
         let _ = alerts::forget_device(app, id);
+        // A check belongs to its device: when the device goes, so do its
+        // checks and everything they found.
+        if let Ok(rows) = checks::store::of_device(app, id) {
+            for (check, _) in rows {
+                state.forget_check(&check.id);
+            }
+        }
+        let _ = checks::store::forget_device(app, id);
         let _ = app.store().delete(crate::db::collections::DEVICES, id);
     }
 }
@@ -202,6 +295,19 @@ fn forget_devices(app: &App, payload: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_is_due_on_its_own_interval_and_on_no_other() {
+        let last = 1_700_000_000_000;
+        assert!(!check_is_due(last, 10_000, last + 9_999));
+        assert!(check_is_due(last, 10_000, last + 10_000));
+        // The two-minute check next to it is not dragged along by the
+        // ten-second one, nor the ten-second one held back by it.
+        assert!(!check_is_due(last, 120_000, last + 10_000));
+        assert!(check_is_due(last, 120_000, last + 120_000));
+        // Nor does the device's hourly poll interval come into it.
+        assert!(check_is_due(last, 10_000, last + 3_600_000));
+    }
 
     #[test]
     fn jitter_is_stable_inside_the_interval_and_spreads_devices() {

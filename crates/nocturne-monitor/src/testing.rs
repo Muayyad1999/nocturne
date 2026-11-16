@@ -573,6 +573,42 @@ impl Harness {
         }
     }
 
+    /// Add a service check to a device, returning its id. `patch` is merged
+    /// into the `checks.save` parameters.
+    pub async fn check_on(&self, device_id: &str, name: &str, spec: Json, patch: Json) -> String {
+        let mut params = json!({"device_id": device_id, "name": name, "spec": spec});
+        merge(&mut params, patch);
+        let saved = self.rpc("checks.save", params).await;
+        saved["id"].as_str().expect("an id").to_string()
+    }
+
+    /// Run one service check and let the rules see it, as the scheduler does.
+    pub async fn run_check(&self, check_id: &str) -> crate::checks::store::Recorded {
+        let (check, _) = crate::checks::store::require(&self.app, check_id).expect("the check");
+        crate::checks::run_and_record(&self.app, &check)
+            .await
+            .expect("the check runs")
+    }
+
+    /// What a check last found.
+    pub fn check_state(&self, check_id: &str) -> crate::checks::model::CheckState {
+        crate::checks::store::require(&self.app, check_id)
+            .expect("the check")
+            .1
+    }
+
+    /// Pin a check's phase so that the scheduler's very next tick finds it
+    /// due, for the same reason [`Harness::due_now`] exists for devices: the
+    /// slot inside the interval is hashed from a freshly generated id, so
+    /// *when* a check first runs is random from a test's point of view.
+    pub fn check_due_now(&self, check_id: &str, interval_s: u32) {
+        let interval_ms = i64::from(interval_s.max(5)) * 1_000;
+        let now = self.now();
+        self.app.state::<MonitorState>().check(check_id, |runtime| {
+            runtime.last_run_at = now - interval_ms;
+        });
+    }
+
     /// Poll a device and run the alert rules over the result, as the
     /// scheduler does.
     pub async fn poll_and_evaluate(&self, device_id: &str) -> crate::poll::Poll {
@@ -650,11 +686,19 @@ impl Harness {
     }
 
     /// Every sample of one series, oldest first.
+    ///
+    /// The window is the last day rather than all of time, because the store
+    /// answers a range from the finest resolution that *exists* for it: ask
+    /// since the epoch and it reasonably decides that only hourly roll-ups
+    /// could cover such a span, and a test's samples — written seconds ago
+    /// and never rolled up — are not in them. A day keeps it on the raw
+    /// table, which is where a test's samples live.
     pub fn samples(&self, device_id: &str, metric: &str, instance: &str) -> Vec<(i64, f64)> {
         let store = self.app.store();
         let series = store.series_id(device_id, metric, instance).unwrap();
+        let now = nocturne_app::util::now_ms();
         store
-            .samples_query(series, 0, i64::MAX / 2, 5_000)
+            .samples_query(series, now - 86_400_000, now + 3_600_000, 5_000)
             .unwrap()
             .into_iter()
             .map(|point| (point.ts, point.avg))

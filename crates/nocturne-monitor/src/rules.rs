@@ -14,9 +14,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::alerts::{self, AlertSpec};
+use crate::checks::model::CheckStatus;
 use crate::db::collections::RULES;
 use crate::metrics::{self, glob};
-use crate::model::{AlertRule, Condition, IfStatus, InterfaceSelector, Op, Scope, Severity};
+use crate::model::{
+    AlertRule, CheckAlertState, Condition, IfStatus, InterfaceSelector, Op, Scope, Severity,
+};
 use crate::poll::Poll;
 use crate::state::MonitorState;
 use crate::{interfaces, scope};
@@ -133,6 +136,48 @@ pub fn builtins() -> Vec<AlertRule> {
             Severity::Info,
             0,
             Condition::ConfigChanged,
+        ),
+        // The three service-check rules. They are separate rules rather than
+        // one, because they are three different things to tell somebody and
+        // they do not deserve the same severity: a service being down is an
+        // incident, a certificate expiring next week is a job for Monday,
+        // and a check that cannot run is neither — it is monitoring that has
+        // stopped being able to answer, which has to be visible or it hides
+        // the first two.
+        builtin(
+            "service_check_down",
+            "Service check down",
+            Severity::High,
+            0,
+            Condition::CheckState {
+                check: None,
+                kinds: Vec::new(),
+                state: CheckAlertState::Down,
+            },
+        ),
+        builtin(
+            "service_check_warning",
+            "Certificate about to expire",
+            Severity::Low,
+            0,
+            Condition::CheckState {
+                check: None,
+                kinds: Vec::new(),
+                state: CheckAlertState::Warning,
+            },
+        ),
+        builtin(
+            "service_check_cannot_run",
+            "Service check cannot run",
+            Severity::Medium,
+            // Ten minutes: a credential being saved, or a name coming back,
+            // should not wake anybody.
+            600,
+            Condition::CheckState {
+                check: None,
+                kinds: Vec::new(),
+                state: CheckAlertState::CannotRun,
+            },
         ),
     ]
 }
@@ -421,6 +466,80 @@ pub fn evaluate_rule(
                 true,
             ))
         }
+        Condition::CheckState {
+            check,
+            kinds,
+            state,
+        } => {
+            // Judged from the checks' stored state rather than from the poll
+            // that happens to be in hand, so the same code answers after a
+            // poll, after one check has run, and for `alerts.rules.test`.
+            let wanted = check.as_deref().unwrap_or("*");
+            let rows = crate::checks::store::of_device(app, facts.device_id())?;
+            let mut findings = Vec::new();
+            for (service, current) in rows {
+                if !service.enabled
+                    || !glob(wanted, &service.name)
+                    || (!kinds.is_empty() && !kinds.contains(&service.kind()))
+                {
+                    continue;
+                }
+                let verdict = match (*state, current.status) {
+                    // Nothing has been found yet, or the check has just been
+                    // pointed somewhere else: say nothing either way.
+                    (_, CheckStatus::Unknown) => Verdict::Unknown,
+                    (CheckAlertState::Down, CheckStatus::Down) => Verdict::Active,
+                    (CheckAlertState::Warning, CheckStatus::Warning) => Verdict::Active,
+                    (CheckAlertState::CannotRun, CheckStatus::CannotRun) => Verdict::Active,
+                    // A check that cannot run has not found the service
+                    // healthy — it has found nothing. Resolving a
+                    // service-down alert on the strength of it would read as
+                    // a recovery that never happened.
+                    (CheckAlertState::Down | CheckAlertState::Warning, CheckStatus::CannotRun) => {
+                        Verdict::Unknown
+                    }
+                    _ => Verdict::Clear,
+                };
+                let detail = match verdict {
+                    Verdict::Active if current.message.is_empty() => format!(
+                        "The {} check `{}` is {}.",
+                        service.kind().as_str(),
+                        service.name,
+                        current.status.as_str()
+                    ),
+                    Verdict::Active => format!(
+                        "The {} check `{}` is {}: {}",
+                        service.kind().as_str(),
+                        service.name,
+                        current.status.as_str(),
+                        current.message
+                    ),
+                    _ => format!(
+                        "The {} check `{}` is {}.",
+                        service.kind().as_str(),
+                        service.name,
+                        current.status.as_str()
+                    ),
+                };
+                findings.push(Finding {
+                    instance: Some(service.name.clone()),
+                    verdict,
+                    // For a certificate warning the measurement *is* the
+                    // number of days, which is what a person wants to see.
+                    value: match state {
+                        CheckAlertState::Warning => {
+                            current.facts.cert_expires_in_days.map(|days| days as f64)
+                        }
+                        _ => None,
+                    },
+                    detail,
+                });
+            }
+            // The stored state is the whole truth about this device's
+            // checks, so an alert about a check that is no longer there can
+            // be resolved.
+            Ok((findings, true))
+        }
         // Raised from the `config.changed` event, not from a poll.
         Condition::ConfigChanged => Ok((Vec::new(), false)),
     }
@@ -458,6 +577,42 @@ pub async fn evaluate(app: &App, poll: &Poll) {
     if let Err(err) = evaluate_inner(app, poll) {
         tracing::warn!(device = %poll.device_id, %err, "alert rules could not be evaluated");
     }
+}
+
+/// Run the service-check rules for a device, after one of its checks has run.
+///
+/// A check running is not a poll, but it is still the rules engine that
+/// decides whether anybody hears about it: the same scope, the same `for_s`
+/// damping, the same hysteresis, the same maintenance windows, the same
+/// one-cause-one-alert suppression while the device itself is down. The only
+/// thing this does differently from [`evaluate`] is leave the rules that are
+/// not about checks alone, because nothing they watch has moved.
+pub async fn evaluate_checks(app: &App, device_id: &str) {
+    if let Err(err) = evaluate_checks_inner(app, device_id) {
+        tracing::warn!(device = %device_id, %err, "the service-check rules could not be evaluated");
+    }
+}
+
+fn evaluate_checks_inner(app: &App, device_id: &str) -> AppResult<()> {
+    let device = inventory::get(app, device_id)?;
+    let state = app.state::<MonitorState>();
+    let now = state.now();
+    let facts = Facts::Stored(app, &device);
+    let down = facts.down(app);
+    for rule in list(app)? {
+        if !rule.enabled
+            || !rule.condition.is_check()
+            || !scope::matches(&rule.scope, &device, true)
+        {
+            continue;
+        }
+        if down && rule.condition.suppressed_by_device_down() {
+            continue;
+        }
+        let (findings, complete) = evaluate_rule(app, &rule, &facts, now)?;
+        apply_findings(app, &state, &rule, &device, &findings, complete, now)?;
+    }
+    Ok(())
 }
 
 fn evaluate_inner(app: &App, poll: &Poll) -> AppResult<()> {

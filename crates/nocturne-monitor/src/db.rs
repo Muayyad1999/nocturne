@@ -45,6 +45,44 @@ CREATE TABLE IF NOT EXISTS monitor_alerts (
 CREATE INDEX IF NOT EXISTS monitor_alerts_state ON monitor_alerts (state, started_at);
 CREATE INDEX IF NOT EXISTS monitor_alerts_dedup ON monitor_alerts (dedup_key, state);
 CREATE INDEX IF NOT EXISTS monitor_alerts_device ON monitor_alerts (device_id, started_at);
+
+CREATE TABLE IF NOT EXISTS monitor_checks (
+    id           TEXT PRIMARY KEY,
+    device_id    TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    interval_s   INTEGER NOT NULL,
+    -- The definition, as `ServiceCheck`.
+    body         TEXT NOT NULL,
+    -- The live state. `status` and `since` are columns because `monitor.status`
+    -- counts them and a NOC list filters on them; `state` carries the whole
+    -- record. `state` is NULL until the first run, which is what `unknown`
+    -- means: a check that has never run has found nothing.
+    status       TEXT NOT NULL DEFAULT 'unknown',
+    since        INTEGER,
+    last_run_at  INTEGER,
+    state        TEXT,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS monitor_checks_name
+    ON monitor_checks (device_id, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS monitor_checks_status ON monitor_checks (status, enabled);
+
+CREATE TABLE IF NOT EXISTS monitor_check_events (
+    id        INTEGER PRIMARY KEY,
+    check_id  TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    at        INTEGER NOT NULL,
+    status    TEXT NOT NULL,
+    previous  TEXT NOT NULL,
+    -- How long `previous` had lasted; NULL when that is not known.
+    held_s    INTEGER,
+    code      TEXT NOT NULL,
+    message   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS monitor_check_events_check ON monitor_check_events (check_id, at);
 ";
 
 pub fn init(store: &Store) -> AppResult<()> {
@@ -83,7 +121,28 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(tables, 2);
+        assert_eq!(tables, 4);
+    }
+
+    #[test]
+    fn two_checks_on_one_device_cannot_share_a_name() {
+        // One name, one alert key, one line a person can read: the database
+        // is where that is made true, not the save handler alone.
+        let store = Store::in_memory().unwrap();
+        init(&store).unwrap();
+        let insert = |id: &str, name: &str| {
+            store.with(|conn| {
+                conn.execute(
+                    "INSERT INTO monitor_checks
+                        (id, device_id, name, kind, enabled, interval_s, body, created_at, updated_at)
+                     VALUES (?1, 'dev1', ?2, 'tcp', 1, 60, '{}', 0, 0)",
+                    rusqlite::params![id, name],
+                )
+            })
+        };
+        insert("c1", "web").unwrap();
+        assert!(insert("c2", "WEB").is_err(), "the same name in other case");
+        insert("c3", "mail").unwrap();
     }
 
     #[test]

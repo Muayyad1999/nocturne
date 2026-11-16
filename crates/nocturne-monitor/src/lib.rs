@@ -19,8 +19,15 @@
 //!   apart from one that wrapped ([`rates`]).
 //! * **It raises one alert per cause.** A device that is down suppresses the
 //!   interface and threshold alerts that are down because of it.
+//!
+//! Beside the one verdict per device, each device can carry named
+//! [`checks`] — ping, DNS, HTTP, HTTPS, TLS, NTP, a TCP port, SNMP — each on
+//! its own schedule with its own state, history and alert, so that "the web
+//! server on 10.0.0.5 is down but the box answers ping" is a sentence this
+//! crate can say.
 
 pub mod alerts;
+pub mod checks;
 pub mod clock;
 mod db;
 pub mod interfaces;
@@ -76,6 +83,7 @@ pub fn init(builder: &mut nocturne_app::AppBuilder) {
 
     status::register(&mut builder.router);
     metrics::register(&mut builder.router);
+    checks::register(&mut builder.router);
     alerts::register(&mut builder.router);
     rules::register(&mut builder.router);
     maintenance::register(&mut builder.router);

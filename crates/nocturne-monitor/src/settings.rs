@@ -28,6 +28,14 @@ pub struct MonitorSettings {
     pub retention_days_raw: u32,
     pub retention_days_rollup: u32,
     pub ping_timeout_ms: u64,
+    /// Turns the service checks off without touching any check's own
+    /// setting, the way `enabled` does for the device poller.
+    pub checks_enabled: bool,
+    /// How long a service check's changes of state are kept.
+    pub check_history_days: u32,
+    /// Days of certificate life left at which a TLS or HTTPS check goes to
+    /// `warning`. A check may set its own.
+    pub cert_warn_days: u32,
 }
 
 impl Default for MonitorSettings {
@@ -40,6 +48,9 @@ impl Default for MonitorSettings {
             retention_days_raw: 7,
             retention_days_rollup: 365,
             ping_timeout_ms: 1000,
+            checks_enabled: true,
+            check_history_days: 90,
+            cert_warn_days: 14,
         }
     }
 }
@@ -57,6 +68,10 @@ impl MonitorSettings {
             retention_days_raw: stored.retention_days_raw.clamp(1, 3_650),
             retention_days_rollup: stored.retention_days_rollup.clamp(1, 3_650),
             ping_timeout_ms: stored.ping_timeout_ms.clamp(50, 30_000),
+            check_history_days: stored.check_history_days.clamp(1, 3_650),
+            // Zero would mean "warn about every certificate", which is not a
+            // warning; a check that wants no warning says so itself.
+            cert_warn_days: stored.cert_warn_days.clamp(1, 365),
             ..stored
         }
     }
@@ -80,12 +95,14 @@ mod tests {
         assert_eq!(
             stored,
             json!({"enabled": true, "concurrency": 32, "down_after": 2, "cli_interval_s": 300,
-                   "retention_days_raw": 7, "retention_days_rollup": 365, "ping_timeout_ms": 1000})
+                   "retention_days_raw": 7, "retention_days_rollup": 365, "ping_timeout_ms": 1000,
+                   "checks_enabled": true, "check_history_days": 90, "cert_warn_days": 14})
         );
 
         app.rpc(
             "settings.set",
-            json!({"section": SECTION, "value": {"concurrency": 0, "down_after": 0, "cli_interval_s": 1}}),
+            json!({"section": SECTION, "value": {"concurrency": 0, "down_after": 0, "cli_interval_s": 1,
+                                                 "cert_warn_days": 0, "check_history_days": 0}}),
         )
         .await
         .unwrap();
@@ -97,6 +114,11 @@ mod tests {
                 settings.cli_interval_s
             ),
             (1, 1, 30)
+        );
+        assert_eq!(
+            (settings.cert_warn_days, settings.check_history_days),
+            (1, 1),
+            "a warning of zero days is not a warning"
         );
     }
 }

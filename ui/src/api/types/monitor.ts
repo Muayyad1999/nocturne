@@ -16,9 +16,14 @@
  *   subtract from, the poll after a reboot. `metrics.query` leaves those
  *   points out of its array entirely, so a graph drawn from them shows a
  *   hole rather than a drop to the floor.
- * * **Paging is by offset.** `monitor.interfaces` and `alerts.list` return a
- *   plain array, so `cursor` is the number of rows already received, as a
- *   decimal string (`"200"`). A page shorter than `limit` is the last one.
+ * * **Paging is by offset.** `monitor.interfaces`, `alerts.list` and
+ *   `checks.list` return a plain array, so `cursor` is the number of rows
+ *   already received, as a decimal string (`"200"`). A page shorter than
+ *   `limit` is the last one.
+ * * **A service check that could not run is not one that is down.**
+ *   `CheckStatus` has five values for a reason; `cannot_run` means nothing
+ *   is known about the service, and showing it as a failure invents an
+ *   outage. See the type's own documentation.
  */
 
 // ---------------------------------------------------------------- vocabulary
@@ -66,7 +71,17 @@ export type MetricName =
   | 'if.in_disc_ps'
   | 'if.out_disc_ps'
   /** 1 when the line protocol is up, 0 when it is not. */
-  | 'if.oper';
+  | 'if.oper'
+  /**
+   * Service checks. The instance is the **check's id**, not its name, so a
+   * rename does not split the series; `checks.list` maps id to name.
+   */
+  /** 1 when the check found the service up or in warning, 0 when down. Written only for a run that reached a verdict. */
+  | 'check.up'
+  | 'check.rtt_ms'
+  /** Days until the certificate expires; negative once expired. */
+  | 'check.cert_days'
+  | 'check.loss_pct';
 
 /** Which devices a rule or a maintenance window covers. Empty lists mean "any". */
 export interface Scope {
@@ -146,6 +161,24 @@ export type Condition =
     }
   /** Nothing has been recorded for `metric` in the last `for_s` seconds. */
   | { type: 'no_data'; metric: string; for_s: number }
+  /**
+   * A named service check on a device in scope is in `state`. This is what
+   * lets a rule say "the web server on this box", which a metric threshold
+   * cannot. `check` is a glob over check names; each matching check is its
+   * own alert, keyed on its name, so two services failing on one device are
+   * two alerts.
+   *
+   * `cannot_run` is a rule of its own because it is a different thing to be
+   * told: not that a service is down, but that monitoring cannot tell.
+   */
+  | {
+      type: 'check_state';
+      /** A glob over check names; `null` or `*` is every check. */
+      check: string | null;
+      /** Only checks of these kinds; empty is every kind. */
+      kinds: CheckKind[];
+      state: 'down' | 'warning' | 'cannot_run';
+    }
   /** The `config.changed` event fired for a device in scope. */
   | { type: 'config_changed' }
   /**
@@ -235,6 +268,308 @@ export interface Channel {
   updated_at: number;
 }
 
+
+// ----------------------------------------------------------- service checks
+
+/**
+ * What a service check speaks. `http` and `https` are separate kinds: the
+ * second inspects the certificate as well as the page.
+ */
+export type CheckKind =
+  | 'icmp'
+  | 'tcp'
+  | 'dns'
+  | 'http'
+  | 'https'
+  | 'tls'
+  | 'ntp'
+  | 'snmp';
+
+/**
+ * What a check is saying. Five values, not three, because three cannot tell
+ * the truth:
+ *
+ * * `unknown` — it has never run. Nothing is known.
+ * * `up` — it ran and the service answered properly.
+ * * `warning` — it ran, the service answered, and something it measures is
+ *   inside its warning margin (a certificate that expires in nine days).
+ *   Available now; **counted as up** in every availability figure.
+ * * `down` — it ran and the service did not answer, or answered wrongly.
+ *   This is a measurement of the service.
+ * * `cannot_run` — the check could not be attempted at all: no credential,
+ *   nothing to aim at, a name that will not resolve, a machine that may not
+ *   send ICMP, a simulated device. This says **nothing** about the service.
+ *   It is not an outage, it writes no `check.up` sample, and it does not
+ *   resolve an open outage alert. Show it as a blind spot, never as a
+ *   failure.
+ */
+export type CheckStatus = 'unknown' | 'up' | 'warning' | 'down' | 'cannot_run';
+
+/**
+ * The stable reason codes a check's `code` can carry. Switch on these; show
+ * `message`, which is the engine's own sentence.
+ *
+ * The ones that mean `cannot_run` are listed last, and are never an outage.
+ */
+export type CheckCode =
+  /** All well. */
+  | 'ok'
+  /** Nothing came back within the timeout. */
+  | 'timeout'
+  /** The connection was refused: nothing is listening. */
+  | 'refused'
+  | 'unreachable'
+  /** The peer answered, but not as the protocol requires. */
+  | 'protocol'
+  /** A connection the far end tore down. */
+  | 'io'
+  /** No echo request came back. */
+  | 'no_reply'
+  /** Loss at or above the check's own limit. */
+  | 'loss'
+  /** The HTTP status was not one the check accepts. */
+  | 'http_status'
+  /** The body did not contain the text the check insists on. */
+  | 'http_expect_text'
+  /** The server answered with a negative response code. */
+  | 'dns_rcode'
+  /** The server has no such record. */
+  | 'dns_empty'
+  /** No answer record contained the expected text. */
+  | 'dns_expect'
+  /** The certificate expired. */
+  | 'tls_expired'
+  /** The chain does not verify, and the check requires that it does. */
+  | 'tls_untrusted'
+  /** The certificate is not valid for the name asked for. */
+  | 'tls_name_mismatch'
+  /** Expiry is inside the check's warning margin: a `warning`, not a failure. */
+  | 'tls_expiring'
+  /** The server's own clock is not set (stratum 16). */
+  | 'ntp_unsynchronised'
+  /** The clock offset is beyond what the check allows. */
+  | 'ntp_offset'
+  | 'snmp_unreachable'
+  | 'snmp_failed'
+  // Below here: the check could not run, and nothing is known.
+  /** No SNMP credential is set for the device. */
+  | 'no_credential'
+  /** The agent answered, but does not have the object asked for. */
+  | 'snmp_no_such_object'
+  /** Neither the check nor its device names anything to send to. */
+  | 'no_address'
+  /** The target name does not resolve, so there was nowhere to aim. */
+  | 'dns_resolve'
+  /** This machine is not allowed to send what the check needs to send. */
+  | 'permission'
+  | 'unsupported'
+  /** The check's own parameters are wrong. */
+  | 'invalid'
+  /** A simulated device: a console, but no listening services. */
+  | 'sim'
+  /** The device is gone. */
+  | 'no_device'
+  /** The probe could not be attempted (the poller's own reachability layer). */
+  | 'probe_unavailable'
+  /** Something local failed — out of sockets, not the service's doing. */
+  | 'local_error';
+
+/** An HTTP or HTTPS check. No request headers: one would carry a token. */
+export interface HttpCheck {
+  /** Path and query; `/` when empty. */
+  path: string;
+  /** 80 for `http`, 443 for `https`, when null. */
+  port: number | null;
+  /** `GET` when null. */
+  method: string | null;
+  /** Statuses that count as up. Empty means any 2xx or 3xx. */
+  expect_status: number[];
+  /** Unless this appears in the first 2 KiB of the body, the check is down. */
+  expect_text: string | null;
+  /** Redirects followed; 0 makes a redirect the answer. Default 3. */
+  follow_redirects: number | null;
+  /** HTTPS only: a certificate that does not verify makes the check down. */
+  verify_tls: boolean | null;
+  /** HTTPS only: days of certificate life left at which it goes to `warning`. */
+  warn_days: number | null;
+}
+
+/** What a check does, and the parameters of that one kind. Tagged by `kind`. */
+export type CheckSpec =
+  | {
+      kind: 'icmp';
+      /** Echoes per run, 1–16; 3 when null. */
+      count: number | null;
+      /** Loss at or above this percentage is down; 100 by default. */
+      loss_pct_down: number | null;
+    }
+  | { kind: 'tcp'; port: number }
+  | {
+      kind: 'dns';
+      /** The name to ask about. */
+      name: string;
+      /** `A` when empty. */
+      record: string;
+      /** Unless an answer record contains this, the check is down. */
+      expect: string | null;
+      /** 53 when null. */
+      port: number | null;
+    }
+  | ({ kind: 'http' } & HttpCheck)
+  | ({ kind: 'https' } & HttpCheck)
+  | {
+      kind: 'tls';
+      /** 443 when null. */
+      port: number | null;
+      /** The server name to send and check instead of the target's. */
+      sni: string | null;
+      /** A chain that does not verify is down. True by default. */
+      require_trusted: boolean | null;
+      /** A certificate not valid for the name asked for is down. True by default. */
+      require_hostname: boolean | null;
+      /** Days of life left at which it goes to `warning`; the setting when null. */
+      warn_days: number | null;
+    }
+  | {
+      kind: 'ntp';
+      /** 123 when null. */
+      port: number | null;
+      /** A clock further out than this is down; null accepts any answer. */
+      max_offset_ms: number | null;
+    }
+  | {
+      kind: 'snmp';
+      /** The object to read; `sysUpTime` when null. */
+      oid: string | null;
+    };
+
+/** A named check attached to a device, with its own schedule. */
+export interface ServiceCheck {
+  id: string;
+  device_id: string;
+  /** What a person calls it: `web`, `mail`, `resolver`. Unique per device. */
+  name: string;
+  spec: CheckSpec;
+  /** Empty means the device's own address, which is the usual case. */
+  host: string;
+  enabled: boolean;
+  interval_s: number;
+  timeout_ms: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * What a run measured, beyond up or down. Every field is `null` until
+ * something actually measured it: a check that timed out has no HTTP status,
+ * and `0` would be a lie.
+ */
+export interface CheckFacts {
+  /** Echoes lost, as a percentage of those sent. */
+  loss_pct: number | null;
+  http_status: number | null;
+  /** The URL that answered, after redirects. */
+  final_url: string | null;
+  dns_rcode: string | null;
+  /** `0` with `NOERROR` means the name exists and has no such record. */
+  dns_records: number | null;
+  /** How far this machine's clock is behind the server's. */
+  ntp_offset_ms: number | null;
+  ntp_stratum: number | null;
+  /** Days until the certificate expires; negative once expired. */
+  cert_expires_in_days: number | null;
+  cert_subject: string | null;
+  cert_issuer: string | null;
+  /** End of validity, `YYYY-MM-DDTHH:MM:SSZ`. */
+  cert_not_after: string | null;
+  cert_trusted: boolean | null;
+  tls_protocol: string | null;
+  /** The SNMP object that was read, in presentation form. */
+  snmp_value: string | null;
+}
+
+/** What a check last found. */
+export interface CheckState {
+  check_id: string;
+  device_id: string;
+  status: CheckStatus;
+  code: CheckCode | string;
+  /** The engine's own sentence. Empty while all is well. */
+  message: string;
+  rtt_ms: number | null;
+  facts: CheckFacts;
+  /** When the current status began: with `status`, "down since 09:14". */
+  since: number | null;
+  last_run_at: number | null;
+  /** The last run that found it up (a warning counts as up). */
+  last_ok_at: number | null;
+  last_down_at: number | null;
+  /** Consecutive runs that came out with this same status. */
+  runs: number;
+}
+
+/** A check and what it last found, as the RPC surface returns it. */
+export interface ServiceCheckView extends ServiceCheck {
+  /** The kind, beside the spec that carries it, so a list can group on it. */
+  kind: CheckKind;
+  /** The device's name, for lists that span devices. */
+  device: string;
+  state: CheckState;
+}
+
+/** One change of status. The runs in between said the same thing. */
+export interface CheckEvent {
+  id: number;
+  check_id: string;
+  device_id: string;
+  at: number;
+  status: CheckStatus;
+  previous: CheckStatus;
+  /** How long `previous` had lasted; `null` when that is not known. */
+  held_s: number | null;
+  code: CheckCode | string;
+  message: string;
+}
+
+/**
+ * How a check spent a window. The five figures are kept apart on purpose:
+ * time that could not be measured — before the first run, or while the check
+ * could not run — is neither uptime nor downtime.
+ */
+export interface CheckSummary {
+  up_s: number;
+  warning_s: number;
+  down_s: number;
+  cannot_run_s: number;
+  unknown_s: number;
+  /**
+   * `(up + warning) / (up + warning + down)` as a percentage. `null` when
+   * nothing in the window was measured: no figure is better than 100 %.
+   */
+  availability_pct: number | null;
+  /** How much of the window the check had a verdict for. */
+  measured_s: number;
+  down_count: number;
+  last_down_at: number | null;
+  /** How long that outage lasted, or has lasted so far. */
+  last_down_for_s: number | null;
+}
+
+/** How many checks are in each state. Disabled checks are not in the rest. */
+export interface CheckCounts {
+  total: number;
+  up: number;
+  warning: number;
+  down: number;
+  unknown: number;
+  /**
+   * Checks that cannot run. Count and show these apart from `down`: they are
+   * how much of the screen is guesswork, not how much is broken.
+   */
+  cannot_run: number;
+  disabled: number;
+}
+
 // --------------------------------------------------------------- the device
 
 /** One interface as monitoring last saw it. Every rate is `null` for a gap. */
@@ -307,7 +642,9 @@ export interface DeviceState {
 export interface MonitorProblem {
   /**
    * `unreachable`, `no_probe`, `snmp_credential`, `channel`, `ping_method`,
-   * `maintenance` or `interfaces`.
+   * `maintenance`, `interfaces`, `checks` (service checks that are not
+   * answering) or `checks_blind` (service checks that cannot run — a blind
+   * spot, not a failure).
    */
   kind: string;
   message: string;
@@ -324,6 +661,8 @@ export interface MonitorStatus {
   last_cycle_ms: number;
   /** `icmp_datagram`, `icmp_raw` or `system_command`. */
   ping_method: string;
+  /** The service checks, counted by what they are saying. */
+  checks: CheckCounts;
   problems: MonitorProblem[];
 }
 
@@ -331,6 +670,8 @@ export interface MonitorDeviceView {
   state: DeviceState;
   health: DeviceHealth;
   interfaces: IfStatus[];
+  /** The device's service checks. Empty unless somebody added one. */
+  checks: ServiceCheckView[];
   sources: Sources;
   /** The damped verdict: true once `down_after` polls in a row have failed. */
   down: boolean;
@@ -388,6 +729,15 @@ export interface MonitorSettings {
   retention_days_raw: number;
   retention_days_rollup: number;
   ping_timeout_ms: number;
+  /** Turns the service checks off without touching any check's own setting. */
+  checks_enabled: boolean;
+  /** How long a service check's changes of state are kept. */
+  check_history_days: number;
+  /**
+   * Days of certificate life left at which a TLS or HTTPS check goes to
+   * `warning`. A check may set its own.
+   */
+  cert_warn_days: number;
 }
 
 // -------------------------------------------------------------- parameters
@@ -586,6 +936,110 @@ export interface ChannelTestResult {
   attempts: number;
 }
 
+
+// ------------------------------------------------------- service check calls
+
+export interface CheckListParams {
+  device_id?: string;
+  /** `problem` is everything that is not up and not unknown. */
+  status?: CheckStatus | 'problem';
+  kind?: CheckKind;
+  /** Free text over the check's name. */
+  filter?: string;
+  enabled?: boolean;
+  /** Default 200, at most 5000. */
+  limit?: number;
+  /** Rows already received, as a decimal string. */
+  cursor?: string;
+}
+
+/**
+ * Fields left out keep what is stored. `device_id`, `name` and `spec` are
+ * required for a new check.
+ *
+ * Changing the kind, the host or the port points the check at a different
+ * service, so what it found at the old one is dropped rather than carried
+ * over: the answer comes back with `state.status` of `unknown`.
+ */
+export interface CheckSaveParams {
+  id?: string;
+  device_id?: string;
+  name?: string;
+  spec?: CheckSpec;
+  /** A host or address, never a URL; empty means the device's own address. */
+  host?: string;
+  enabled?: boolean;
+  /** 5 s to 24 h; default 60. */
+  interval_s?: number;
+  /** Defaults per kind; may not exceed the interval. */
+  timeout_ms?: number;
+}
+
+export interface CheckRunNowParams {
+  id?: string;
+  ids?: string[];
+  /** Every enabled check of this device. At most 50 checks per call. */
+  device_id?: string;
+}
+
+/** One check's result from `checks.run_now`, or why it could not be recorded. */
+export interface CheckRunResult {
+  check_id: string;
+  name?: string;
+  kind?: CheckKind;
+  status?: CheckStatus;
+  previous?: CheckStatus;
+  changed?: boolean;
+  code?: CheckCode | string;
+  message?: string;
+  rtt_ms?: number | null;
+  facts?: CheckFacts;
+  error?: string;
+}
+
+export interface CheckRunNowResult {
+  ran: number;
+  checks: CheckRunResult[];
+}
+
+export interface CheckHistoryParams {
+  id: string;
+  /** Default: seven days ago. */
+  since?: number;
+  /** Default: now. */
+  until?: number;
+  /** Default 500. */
+  limit?: number;
+}
+
+export interface CheckHistory {
+  check_id: string;
+  device_id: string;
+  name: string;
+  kind: CheckKind;
+  since: number;
+  until: number;
+  current: CheckState;
+  /** The changes in the window, oldest first. */
+  events: CheckEvent[];
+  summary: CheckSummary;
+  /** Where the response times are: `metrics.query` with these. */
+  series: {
+    device_id: string;
+    /** The series instance — the check's id. */
+    instance: string;
+    metrics: string[];
+  };
+}
+
+export interface CheckKindInfo {
+  kind: CheckKind;
+  /** One line a form can show beside the name. */
+  what: string;
+  default_timeout_ms: number;
+  sees_certificates: boolean;
+}
+
 // ----------------------------------------------------------------- methods
 
 /**
@@ -696,9 +1150,25 @@ export interface AlertsChangedEvent {
   alert: Alert;
 }
 
+/** `checks.ran` — one service check has run. Published after every run. */
+export interface ChecksRanEvent {
+  check_id: string;
+  device_id: string;
+  name: string;
+  kind: CheckKind;
+  at: number;
+  status: CheckStatus;
+  previous: CheckStatus;
+  /** Whether this run changed the status, and so added to the history. */
+  changed: boolean;
+  code: CheckCode | string;
+  rtt_ms: number | null;
+}
+
 /**
- * `monitor.status_changed` — the setup moved: rules, maintenance windows or a
- * channel. `what` is `rules`, `maintenance` or `channel`.
+ * `monitor.status_changed` — the setup moved: rules, maintenance windows, a
+ * channel, or the service checks. `what` is `rules`, `maintenance`,
+ * `channel` or `checks`.
  */
 export interface MonitorStatusChangedEvent {
   what: string;
@@ -715,4 +1185,5 @@ export type MonitorEvent =
   | { topic: 'monitor.polled'; payload: MonitorPolledEvent }
   | { topic: 'monitor.interfaces'; payload: MonitorInterfacesEvent }
   | { topic: 'alerts.changed'; payload: AlertsChangedEvent }
+  | { topic: 'checks.ran'; payload: ChecksRanEvent }
   | { topic: 'monitor.status_changed'; payload: MonitorStatusChangedEvent };

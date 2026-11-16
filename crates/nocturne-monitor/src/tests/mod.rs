@@ -1,9 +1,13 @@
 //! Cross-cutting tests: the ones that need a whole app, a scheduler or a
 //! listener on a socket. The narrower ones live next to the code they check.
 
+mod certificates;
+mod check_engines;
+mod checks;
 mod counters;
 mod health;
 mod lifecycle;
+mod listeners;
 mod live;
 mod notifications;
 mod polling;

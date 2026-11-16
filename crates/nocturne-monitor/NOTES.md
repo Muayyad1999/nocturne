@@ -4,7 +4,7 @@ Spec: `docs/dev/features/monitor.md`. Conventions: `docs/dev/features/README.md`
 
 ## State: complete
 
-123 tests, `cargo clippy -p nocturne-monitor --all-targets --no-deps -- -D warnings`
+194 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
 clean, `cargo fmt` applied, no `unsafe`.
 
 ```
@@ -28,14 +28,101 @@ src/
   metrics.rs      metrics.* RPC, glob matching, resolution choice
   notify.rs       channels, payload per kind, retries, notify.* RPC
   smtp.rs         a small SMTP submission client on tokio + tokio-rustls
-  scheduler.rs    the scheduler, the hourly maintenance pass, the event listener
+  scheduler.rs    the scheduler (devices and service checks), the hourly
+                  maintenance pass, the event listener
   status.rs       monitor.status / .device / .interfaces / .poll_now
+  checks/         per-host service checks
+    model.rs      CheckKind/CheckSpec/CheckStatus/CheckState/CheckFacts (contract)
+    outcome.rs    ProbeError → did the check measure the service, or not run?
+    run.rs        aim one check, drive its engine, judge the answer, samples
+    store.rs      monitor_checks + monitor_check_events, state, history, summary
+    rpc.rs        checks.* (list/get/save/delete/run_now/history/kinds)
   testing.rs      fake probe, fake SNMP agents, Harness
   tests/          polling, counters, health, lifecycle, scheduling, notifications,
-                  live (in-process SNMP Agent + CLI), snmpd (real net-snmp), rpc
+                  live (in-process SNMP Agent + CLI), snmpd (real net-snmp), rpc,
+                  checks (the five states, history, alerting, scheduling),
+                  check_engines (real listeners), listeners + certificates
+                  (the servers those tests start)
 ```
 
 ## Decisions worth remembering
+
+### Service checks
+
+* **Five states, not three.** `unknown` (never run), `up`, `warning`, `down`
+  and `cannot_run`. The last is the whole point: a check with no credential,
+  nothing to aim at, a name that will not resolve or a machine that may not
+  send ICMP has not found an outage — it has failed to look. It writes no
+  `check.up` sample (a gap, like a failed poll), it is counted apart on
+  `monitor.status` (`checks_blind`), it has its own alert rule at a lower
+  severity after ten minutes, and — the part that matters most — it yields
+  **no verdict** for a `down` rule, so it can neither raise an outage nor
+  resolve one. "We cannot tell any more" must never read as a recovery.
+  `checks::outcome::from_probe_error` is the only place that decides which
+  side of that line an engine error falls on, and every variant is tested.
+* **A certificate about to expire is `warning`, not `down`.** It is serving
+  today; the date it stops is known. A warning counts as **up** everywhere
+  (`CheckStatus::is_up`), including in `availability_pct`, because saying a
+  working service is down is how service-down alerts get ignored. Expiry is
+  judged before trust, since an expired certificate also makes the chain
+  untrusted and `tls_expired` with a number of days says far more than "the
+  chain could not be verified". The days left are their own series
+  (`check.cert_days`), so "what expires next month" is a query.
+* **The series instance is the check's id, not its name.** A rename must not
+  split a history; the id is also what `checks.history` takes. The UI maps
+  id to name from `checks.list`. An alert's `instance`, by contrast, is the
+  **name**, because that is what a person reads in "web on SW1 is down" —
+  which is why `conditionMetric` in the UI cannot resolve a chart from a
+  check rule alone.
+* **History is the changes, not the runs.** One row per transition with the
+  previous status and how long it had lasted (`held_s`). That answers "when
+  did it last go down and for how long" without keeping every run for ever,
+  and the response times are already in the time series.
+* **Availability excludes what could not be measured.** `up_s`, `warning_s`,
+  `down_s`, `cannot_run_s` and `unknown_s` are kept apart, and
+  `availability_pct` is `null` when nothing in the window was measured. A
+  flattering 100 % for a window nobody watched is the exact failure this
+  crate's first rule forbids.
+* **A check on a simulated device reports `sim` and sends nothing.** A lab
+  device's `address` field is either empty or belongs to a stranger on the
+  real network — the same hazard `poll::plan` guards. The check still exists
+  and is still treated like any other (lab devices are devices); it just
+  says truthfully that a console is not a service. Naming a host on the
+  check overrides this, because that is a deliberate act.
+* **Severity lives on the rule, not on the check.** The Dude puts it on the
+  service; here it would be a second place for the same decision, and the
+  rules engine is the only thing allowed to decide who gets woken. "This
+  check is critical" is a rule with `check: "<name>"` and a scope — which is
+  also how one check gets a different severity from the rest.
+* **`Condition::CheckState` was added** rather than bending `Threshold` at
+  `check.up`. A threshold cannot say "this named check on this device", and
+  cannot tell `down` from `cannot_run` at all — `check.up` has no value for a
+  check that did not run, which is the point. It is evaluated from the
+  checks' stored state, so one code path answers after a poll, after a single
+  check has run (`rules::evaluate_checks`) and for `alerts.rules.test`.
+* **No new network code and no new scheduler.** ICMP goes through the
+  existing `Reachability` trait (whose contract already separates "could not
+  be attempted" from "no answer", which is exactly the distinction needed),
+  SNMP through the existing per-device session, and TCP/DNS/HTTP/TLS/NTP
+  straight to `nocturne-netprobe`. Runs are driven by the device poller's own
+  tick, jitter and concurrency semaphore.
+* **`nocturne-toolbox`'s `ProbeError` mapping was left where it is.** It
+  looks similar but answers a different question — "how should this RPC call
+  be refused" — and `Resolve` is `not_found` there and `cannot_run` here. Two
+  functions, deliberately, with the shared strings noted in both.
+* **`Harness::samples` asked the wrong window.** It queried from the epoch,
+  and `store.samples_query` reasonably answers such a span from hourly
+  roll-ups, which a test's seconds-old samples are not in — so it returned
+  empty for *everything*, and every existing use of it happened to be an
+  assertion of absence. Now a day wide, which keeps it on the raw table.
+  Worth knowing before writing another test that asserts a sample exists.
+* **One line of `ui/src/pages/monitoring/vocab.ts` is ours.** Adding
+  `check_state` to the `Condition` union breaks two exhaustive switches
+  there, so each gained a case. `CONDITION_KINDS` was deliberately **not**
+  extended: that drives the rule editor's dropdown, and offering a condition
+  with no form for its parameters would be worse than not offering it.
+
+### Polling and alerts
 
 * **`Condition::RttBaseline` was added** to the condition enum. The built-in
   "RTT above 5× the 24-hour median" rule the spec asks for cannot be written

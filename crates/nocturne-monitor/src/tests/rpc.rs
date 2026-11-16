@@ -10,7 +10,7 @@ use crate::testing::{AgentData, AgentIf, Harness};
 const MINUTE: Duration = Duration::from_secs(60);
 
 /// The methods this feature owns, as the specification lists them.
-const CONTRACT: [&str; 26] = [
+const CONTRACT: [&str; 33] = [
     "monitor.status",
     "monitor.poll_now",
     "monitor.device",
@@ -37,6 +37,13 @@ const CONTRACT: [&str; 26] = [
     "notify.channels.save",
     "notify.channels.delete",
     "notify.channels.test",
+    "checks.list",
+    "checks.get",
+    "checks.save",
+    "checks.delete",
+    "checks.run_now",
+    "checks.history",
+    "checks.kinds",
 ];
 
 #[tokio::test]
@@ -496,7 +503,7 @@ async fn the_built_in_rules_are_there_and_can_be_changed_but_not_deleted() {
     let harness = Harness::new().await;
     let rules = harness.rpc("alerts.rules.list", json!({})).await;
     let listed = rules.as_array().unwrap();
-    assert_eq!(listed.len(), 10);
+    assert_eq!(listed.len(), 13);
     assert!(listed.iter().all(|rule| rule["builtin"] == true));
     let kinds: Vec<&str> = listed
         .iter()
@@ -509,6 +516,7 @@ async fn the_built_in_rules_are_there_and_can_be_changed_but_not_deleted() {
         "no_data",
         "config_changed",
         "rtt_baseline",
+        "check_state",
     ] {
         if wanted == "no_data" {
             continue; // no built-in uses it; the condition exists for rules people write

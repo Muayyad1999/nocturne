@@ -218,6 +218,23 @@ export function conditionText(condition: Condition): string {
       return 'The configuration of a device in scope changed.';
     case 'rtt_baseline':
       return `Round-trip time is more than ${formatCount(condition.multiple)}× its median over the last ${formatDuration(condition.window_s * 1000)}.`;
+    case 'check_state': {
+      const which =
+        condition.check && condition.check !== '*'
+          ? `The service check “${condition.check}”`
+          : 'A service check';
+      const kinds = condition.kinds.length ? ` (${condition.kinds.join(', ')})` : '';
+      // `cannot_run` is worded as what it is — monitoring that cannot tell —
+      // because calling it a failure is exactly what the backend refuses to
+      // do.
+      const what =
+        condition.state === 'cannot_run'
+          ? 'cannot run, so nothing is known about what it watches'
+          : condition.state === 'warning'
+            ? 'answers with a warning, such as a certificate about to expire'
+            : 'finds the service it watches not answering';
+      return `${which}${kinds} ${what}.`;
+    }
   }
 }
 
@@ -238,6 +255,11 @@ export function conditionMetric(condition: Condition): string | null {
       return /[*?]/.test(condition.metric) ? null : condition.metric;
     case 'rtt_baseline':
       return 'icmp.rtt_ms';
+    case 'check_state':
+      // A check alert's instance is the check's *name*, while its series is
+      // keyed by the check's id, so the chart cannot be resolved from the
+      // condition alone: nothing is drawn rather than the wrong series.
+      return null;
     case 'config_changed':
       return null;
   }

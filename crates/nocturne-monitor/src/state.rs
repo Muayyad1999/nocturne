@@ -73,11 +73,25 @@ impl PollRate {
     }
 }
 
+/// What the scheduler remembers about one service check.
+///
+/// Only when it last ran: everything a check *found* is in the database, so
+/// that a restart loses the schedule (which is cheap to rebuild) and not the
+/// state (which is not).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CheckRuntime {
+    pub last_run_at: i64,
+}
+
 #[derive(Default)]
 pub struct Runtime {
     pub devices: HashMap<String, DeviceRuntime>,
     /// Devices being polled right now, so a slow poll is not started twice.
     pub in_flight: HashSet<String>,
+    /// When each service check last ran, and which are running now — the
+    /// same pair of facts the device poller keeps, for the same reasons.
+    pub checks: HashMap<String, CheckRuntime>,
+    pub checks_in_flight: HashSet<String>,
     /// How long the last full round of polls took, in milliseconds.
     pub last_cycle_ms: u64,
     /// When the round now in flight started.
@@ -141,6 +155,19 @@ impl MonitorState {
     pub fn device<T>(&self, device_id: &str, change: impl FnOnce(&mut DeviceRuntime) -> T) -> T {
         let mut runtime = self.runtime.lock();
         change(runtime.devices.entry(device_id.to_string()).or_default())
+    }
+
+    /// Run `change` on one check's schedule, creating it if needed.
+    pub fn check<T>(&self, check_id: &str, change: impl FnOnce(&mut CheckRuntime) -> T) -> T {
+        let mut runtime = self.runtime.lock();
+        change(runtime.checks.entry(check_id.to_string()).or_default())
+    }
+
+    /// Forget a check's schedule, so the scheduler gives it a fresh slot
+    /// inside its interval. Called when a check is saved (its interval may
+    /// have changed) or deleted.
+    pub fn forget_check(&self, check_id: &str) {
+        self.runtime.lock().checks.remove(check_id);
     }
 
     /// Drop everything remembered about a device (it left the inventory).

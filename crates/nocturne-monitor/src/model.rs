@@ -181,6 +181,38 @@ impl Op {
     }
 }
 
+/// Which state of a service check a rule fires on.
+///
+/// Three values, not one, because they are three different things to be told:
+/// a service is down, a service is about to stop working, and *we do not know
+/// whether a service is working* because the check cannot run. The third is
+/// the one that is usually missing from monitoring, and it is the one that
+/// hides outages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckAlertState {
+    /// The check ran and the service failed it.
+    #[default]
+    Down,
+    /// The check ran, the service answered, and something it measures is
+    /// inside its warning margin — a certificate about to expire.
+    Warning,
+    /// The check could not be attempted at all: no credential, nothing to
+    /// aim at, a machine that may not send what it needs to send. Not an
+    /// outage — a blind spot.
+    CannotRun,
+}
+
+impl CheckAlertState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CheckAlertState::Down => "down",
+            CheckAlertState::Warning => "warning",
+            CheckAlertState::CannotRun => "cannot_run",
+        }
+    }
+}
+
 /// What a rule watches for.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -204,6 +236,22 @@ pub enum Condition {
     },
     /// Nothing has been recorded for `metric` in the last `for_s` seconds.
     NoData { metric: String, for_s: u64 },
+    /// A named service check on a device in scope is in `state`.
+    ///
+    /// This is what lets a rule say "the web server on this box", which a
+    /// metric threshold cannot: `check` is a glob over check names (`web`,
+    /// `*`, `cert-*`), and each matching check is its own alert, keyed on its
+    /// name, so two services failing on one device are two alerts.
+    CheckState {
+        /// A glob over check names; `None` or `*` is every check.
+        #[serde(default)]
+        check: Option<String>,
+        /// Only checks of these kinds; empty is every kind.
+        #[serde(default)]
+        kinds: Vec<crate::checks::model::CheckKind>,
+        #[serde(default)]
+        state: CheckAlertState,
+    },
     /// The `config.changed` event fired for a device in scope.
     ConfigChanged,
     /// Round-trip time far above what this device normally does. Not in the
@@ -230,9 +278,16 @@ impl Condition {
             Condition::InterfaceDown { .. } => "interface_down",
             Condition::Threshold { .. } => "threshold",
             Condition::NoData { .. } => "no_data",
+            Condition::CheckState { .. } => "check_state",
             Condition::ConfigChanged => "config_changed",
             Condition::RttBaseline { .. } => "rtt_baseline",
         }
+    }
+
+    /// Whether this condition is about service checks, which are evaluated
+    /// after a check runs as well as after a poll.
+    pub fn is_check(&self) -> bool {
+        matches!(self, Condition::CheckState { .. })
     }
 }
 
@@ -502,6 +557,39 @@ mod tests {
     }
 
     #[test]
+    fn a_check_condition_names_the_check_and_the_state_it_fires_on() {
+        let condition = Condition::CheckState {
+            check: Some("web".into()),
+            kinds: vec![crate::checks::model::CheckKind::Https],
+            state: CheckAlertState::CannotRun,
+        };
+        let encoded = serde_json::to_value(&condition).unwrap();
+        assert_eq!(
+            encoded,
+            json!({"type": "check_state", "check": "web", "kinds": ["https"],
+                   "state": "cannot_run"})
+        );
+        assert_eq!(
+            serde_json::from_value::<Condition>(encoded).unwrap(),
+            condition
+        );
+        assert_eq!(condition.kind(), "check_state");
+        assert!(condition.is_check());
+        assert!(!Condition::DeviceDown.is_check());
+
+        // Everything but the state may be left out: "any check, down".
+        let bare: Condition = serde_json::from_value(json!({"type": "check_state"})).unwrap();
+        assert_eq!(
+            bare,
+            Condition::CheckState {
+                check: None,
+                kinds: Vec::new(),
+                state: CheckAlertState::Down
+            }
+        );
+    }
+
+    #[test]
     fn device_down_suppresses_the_rules_it_would_explain() {
         assert!(!Condition::DeviceDown.suppressed_by_device_down());
         assert!(!Condition::ConfigChanged.suppressed_by_device_down());
@@ -517,6 +605,15 @@ mod tests {
                 for_s: 600
             }
             .suppressed_by_device_down()
+        );
+        assert!(
+            Condition::CheckState {
+                check: None,
+                kinds: Vec::new(),
+                state: CheckAlertState::Down
+            }
+            .suppressed_by_device_down(),
+            "a box that is down explains its own web server being down"
         );
     }
 }

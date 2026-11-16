@@ -18,7 +18,7 @@ use crate::{maintenance, snmp};
 #[derive(Debug, Serialize)]
 pub struct Problem {
     /// `unreachable`, `no_probe`, `snmp_credential`, `channel`, `ping_method`,
-    /// `maintenance`, `interfaces`.
+    /// `maintenance`, `interfaces`, `checks`, `checks_blind`.
     pub kind: &'static str,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,6 +36,9 @@ pub struct Status {
     pub last_cycle_ms: u64,
     /// How echo requests are sent on this machine.
     pub ping_method: String,
+    /// The service checks, counted by what they are saying. `cannot_run` is
+    /// counted on its own: it is how much of this screen is guesswork.
+    pub checks: crate::checks::store::Counts,
     pub problems: Vec<Problem>,
 }
 
@@ -123,6 +126,36 @@ pub fn status(app: &App) -> AppResult<Status> {
         });
     }
 
+    let checks = crate::checks::store::counts(app)?;
+    if checks.down > 0 {
+        problems.push(Problem {
+            kind: "checks",
+            message: format!(
+                "{} service check{} not answering",
+                checks.down,
+                if checks.down == 1 { " is" } else { "s are" }
+            ),
+            device_id: None,
+            count: Some(checks.down),
+        });
+    }
+    // Said separately from `checks`, and never added to it: a check that
+    // cannot run has not found an outage, it has stopped being able to look.
+    // Hiding that among the failures is how a blind spot becomes a surprise.
+    if checks.cannot_run > 0 {
+        problems.push(Problem {
+            kind: "checks_blind",
+            message: format!(
+                "{} service check{} cannot run, so nothing is known about what {} watch",
+                checks.cannot_run,
+                if checks.cannot_run == 1 { "" } else { "s" },
+                if checks.cannot_run == 1 { "it" } else { "they" }
+            ),
+            device_id: None,
+            count: Some(checks.cannot_run),
+        });
+    }
+
     for channel in app.store().list::<Channel>(collections::CHANNELS)? {
         if let Some(error) = channel.last_error.filter(|_| channel.enabled) {
             problems.push(Problem {
@@ -177,6 +210,7 @@ pub fn status(app: &App) -> AppResult<Status> {
         polls_per_min,
         last_cycle_ms,
         ping_method,
+        checks,
         problems,
     })
 }
@@ -186,6 +220,9 @@ pub struct DeviceView {
     pub state: DeviceState,
     pub health: DeviceHealth,
     pub interfaces: Vec<IfStatus>,
+    /// The device's service checks and what each last found. Empty unless
+    /// somebody added one: a device acquires no checks by itself.
+    pub checks: Vec<crate::checks::model::ServiceCheckView>,
     pub sources: Sources,
     /// The damped verdict, which can differ from `state.reachable` only
     /// between a failed poll and the one that confirms it.
@@ -207,6 +244,7 @@ pub fn device_view(app: &App, device_id: &str) -> AppResult<DeviceView> {
         state: inventory::state_of(app, device_id)?,
         health: record.health,
         interfaces: interfaces::of_device(app, device_id)?,
+        checks: crate::checks::store::views(app, crate::checks::store::of_device(app, device_id)?),
         sources: record.sources,
         down: record.down,
         last_poll_at: record.last_poll_at,
