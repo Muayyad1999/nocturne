@@ -69,3 +69,18 @@ nodes and links. The rest of the directory is generated from it:
 ```bash
 pnpm dlx @tauri-apps/cli@2 icon icons/nocturne.svg -o icons
 ```
+
+## The two relative paths in `tauri.conf.json` have different bases
+
+`build.frontendDist` is resolved relative to the directory holding
+`tauri.conf.json` (`apps/desktop/src-tauri`), so it is `../../../ui/dist`.
+`build.beforeBuildCommand` and `beforeDevCommand` are *run* from the
+directory above it (`apps/desktop`), so they are `../../ui`. One `..` apart,
+for the same destination.
+
+Both were `../../../ui` until the first release was attempted, and the
+mistake is invisible until then: the bundle is the only thing that runs
+`beforeBuildCommand`, and nothing in CI built a bundle — the desktop job
+compiles the shell and runs its tests, which never touches it. The failure
+was `ENOENT … lstat '/home/runner/work/nocturne/ui'`, one directory above the
+checkout, which is what gives the base away.
