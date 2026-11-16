@@ -27,6 +27,8 @@ This document is the map. Each box below has its own specification under
 │ Feature crates (each: pub fn init(&mut AppBuilder); talk only via RPC + events)  │
 │  terminal  discovery  monitor  logs  insights  topology  ipam  toolbox           │
 │  config    changes    automation    lab    assistant    ops                      │
+│  isp — ISP edition only, compiled in behind an optional feature, absent from     │
+│        the free build; see docs/dev/spec-editions.md                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │ Core — crates/nocturne-app                                                       │
 │  App (RPC router, event bus, tasks) · Store (SQLite: documents, logs, series,    │
@@ -57,6 +59,14 @@ The desktop shell forwards both over Tauri IPC, the server over HTTP and a
 WebSocket, tests call the same methods directly. There is no second API for
 the assistant or for scripting — `nocturne-server call devices.list` and the
 AI's tools go through the same door as the UI.
+
+**A feature can also be absent on purpose.** `nocturne-isp` — subscribers,
+invoices, what the megabit earned — is registered only when `nocturne-suite`
+is built with its `isp` feature, so the free edition does not contain the
+billing code rather than hiding it. Nothing in the free set may depend on it,
+and the suite's own tests assert both halves of that. It is the one
+conditional registration in `init`, and `docs/dev/spec-editions.md` explains
+why the control is which artefact you have rather than a flag inside one.
 
 **Features do not link to each other.** A feature crate depends on the core
 and the engines it needs. When the configuration feature wants a fix applied

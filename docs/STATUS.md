@@ -94,12 +94,56 @@ output and the simulator. Nobody has pointed this at a production switch yet.
 | `nocturne-ipam` | **done** | 48 | A plan and a network kept in different tables that never merge: records written only by a person, observations only by a sync, and `reconcile` reporting what it refuses to decide. |
 | `nocturne-toolbox` | **done** | 78 | 52 methods: offline calculators, probes from this machine and from a device, a TFTP server, a syslog staging window, and a history. `reversible` and `decodable` are answered separately, because Cisco type 6 is the first and not the second. |
 
-`nocturne-suite` assembles the core and all fourteen features: **406 RPC
+`nocturne-suite` assembles the core and all fourteen features: **413 RPC
 methods across 46 namespaces, with no duplicate name**, and its tests assert
 every feature's methods are registered. One of them joins the two halves
 nothing else can: a prompt reaches the real assistant, which calls the real
 change engine, which configures a simulated switch — and the switch is read
 back.
+
+## The ISP edition
+
+One feature crate exists outside that set, for an internet provider rather
+than an engineer looking after one network. It is **not in the free build at
+all** — not disabled, absent — and `docs/dev/spec-editions.md` says why that
+is a distribution decision rather than a licence check in the code.
+
+| Crate | Status | Tests | How it was checked |
+|---|---|---|---|
+| `nocturne-isp` | **done**, no interface yet | 49 | Subscribers, tariffs, subscriptions, invoices, payments, arrears ageing, revenue, usage against what was sold, oversubscription and margin per megabit. 29 of the tests go through `App::rpc`. |
+
+What has been checked about it, specifically:
+
+* **Money cannot become a float.** There is no float field; the deserialiser
+  refuses a JSON float (`1000.0` as firmly as `25.5`); no schema column is
+  `REAL`, which a test reads back through `pragma_table_info`; and a test
+  greps the crate's own source and fails if `f64` appears on a money path.
+* **IQD has no minor digits and USD has two**, so `1000` is a thousand dinars
+  or ten dollars depending on the currency beside it. Each customer is billed
+  in their own currency.
+* **A total across currencies is not a number**, so there is nowhere to put
+  one: the reports return one amount per currency with no scalar, and a test
+  asserts the arrears result has no `total_minor` or `grand_total` field. One
+  figure requires rates passed in the request, and the answer says it is a
+  conversion rather than the ledger.
+* **A payment keeps the rate it settled at.** A 33,000 IQD payment against a
+  $25 invoice at 1,320 still reads 1,320 after a later payment uses 1,500.
+* **It is bookkeeping and nothing else.** Arrears are tracked; no customer is
+  disconnected. A test greps the crate for every way the core can reach a
+  device and for the change pipeline's method names and fails if any appears
+  — a billing bug that cuts off a paying customer is a worse failure than a
+  late suspension. Usage is read through two method names, both reads.
+
+The edition line itself is checked from both sides: the free build registers
+**413** methods and none beginning `isp.` and declares no `isp` settings
+section; the same source with `--features isp` registers **447** — the same
+413 plus exactly 34. Reading the two binaries agrees: the free one contains
+no `isp.` method string and no currency table. A tag builds both and the
+release refuses an artefact that is not the edition it is named for.
+
+Not built yet: the screens. The methods and their TypeScript types exist,
+`ui/src/api/types/isp.ts` among them, but an ISP cannot yet do any of this
+without calling the RPC surface directly.
 
 ## Interface
 
