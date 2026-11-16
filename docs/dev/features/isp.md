@@ -129,3 +129,144 @@ guess.
 * **Deleting a customer does not delete their ledger.** A customer is
   `cancelled`; their invoices and payments stay, because somebody will ask
   about them.
+
+---
+
+# What was built
+
+Everything above is the contract and none of it is weakened below. This part
+records what `crates/nocturne-isp` actually does, so the UI and the assistant
+have something exact to be written against.
+
+## RPC (contract)
+
+Every method is `App::rpc` only, every mutation calls `audit(...)`, and
+nothing here touches a device.
+
+| Method | Params | Result |
+|---|---|---|
+| `isp.currencies` | — | the accepted codes, their minor digits, their scale, and what 1,000 minor units of each is |
+| `isp.summary` | — | counts, states, per-currency arrears, usage coverage — **and no personal detail**, which makes it the one method fit to put in front of a model |
+| `isp.customers` | `{query?, state?, currency?, tower?, device_id?, limit?, cursor?}` | `{customers, matching, next_cursor}` |
+| `isp.customer.get` | `{id, invoices?}` | the customer, their subscriptions, their invoices, their balance per currency, and their usage row |
+| `isp.customer.save` | `{id?, code?, name?, currency?, phone?, email?, address?, site?, device_id?, interface?, tower?, location?, tags?, notes?}` | `{customer, created, warnings}` |
+| `isp.customer.state` | `{id, state, reason?}` | `{customer, was, device_changed: false, note}` |
+| `isp.customer.delete` | `{id}` | refused (`conflict`) once there is one invoice or payment |
+| `isp.tariffs` | — | each tariff with its period price and how many subscriptions were agreed on it |
+| `isp.tariff.save` | `{id?, name?, description?, mbit?, unit?, price?, period?}` | `{tariff, period_price, created, subscriptions_unaffected}` |
+| `isp.tariff.delete` | `{id}` | refused while an active subscription is on it |
+| `isp.subscriptions` | `{customer_id?, tariff_id?, state?}` | each with its monthly-equivalent price, and whether that division was exact |
+| `isp.subscription.create` | `{customer_id, tariff_id, mbit?, price?, unit?, period?, started_at?, note?}` | `{subscription, ended: null, note}` — the agreed figures are copied in |
+| `isp.subscription.amend` | `{id, mbit?, price?, from_at?, note?}` | `{subscription, ended, note}` — the old terms end, the new ones start |
+| `isp.subscription.end` | `{id, ended_at?, reason?}` | the ended subscription |
+| `isp.links` | — | the upstream links and tower feeds |
+| `isp.link.save` | `{id?, name?, description?, device_id?, interface?, tower?, capacity_mbit?, cost_per_mbit?, cost_period?}` | `{link, created}` |
+| `isp.link.delete` | `{id}` | `{deleted, name}` |
+| `isp.invoices` | `{customer_id?, state?, currency?, since?, until?, limit?, cursor?}` | invoices with their derived settlement |
+| `isp.invoice.get` | `{id}` | the invoice, its status, what is paid, what is outstanding, its payments |
+| `isp.invoice.draft` | `{customer_id, period_start, period_end, allow_empty?}` | `{invoice, skipped, warnings}` |
+| `isp.invoice.run` | `{period_start, period_end, customer_ids?, dry_run?, issue?}` | a per-customer preview (default) or the invoices it wrote, plus everyone skipped and why, and the totals per currency |
+| `isp.invoice.line.add` | `{invoice_id, description, amount}` | drafts only |
+| `isp.invoice.line.remove` | `{invoice_id, line_id}` | drafts only |
+| `isp.invoice.issue` | `{id, due_at?, issued_at?}` | the frozen invoice, with its number |
+| `isp.invoice.void` | `{id, reason}` | the void invoice; the reason is required |
+| `isp.invoice.reissue` | `{id, reason}` | `{voided, draft, note}` |
+| `isp.payments` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the payments, void ones included |
+| `isp.payment.record` | `{customer_id, invoice_id?, amount, method, reference?, note?, at?, conversion?}` | `{payment, invoice, warnings}` |
+| `isp.payment.void` | `{id, reason}` | the void payment; it is never deleted |
+| `isp.arrears` | `{customer_id?}` | one aged report **per currency**, plus who owes what |
+| `isp.revenue` | `{since, until?, convert?}` | issued and received per currency, what is outstanding, and a converted figure only if the caller supplied the rates |
+| `isp.usage` | `{customer_id? \| filters, since?, until?}` | used against sold, with coverage per row and counted per reason |
+| `isp.capacity` | `{link_id?, tower?, since?, until?}` | sold against capacity as a ratio with both figures, and what is measured |
+| `isp.margin` | `{link_id?, tower?, customer_id?}` | revenue per currency, the wholesale cost, and the margin **in the cost's currency only** |
+
+Events: `isp.changed {kinds}` for the records (`customers`, `tariffs`,
+`subscriptions`, `links`), `isp.invoices.changed {change, ids, customer_ids}`
+(`drafted`, `issued`, `voided`, `updated`; the `issued` one also carries
+`currency`, `total_minor` and `due_at`) and
+`isp.payments.changed {change, ids, customer_ids, invoice_ids}`
+(`recorded`, `voided`). Reads publish nothing.
+
+Settings section `isp`: `payment_terms_days` (14), `arrears_buckets`
+(`[30, 60, 90]`), `usage_basis` (`greater`), `usage_window_hours` (24),
+`invoice_number_prefix` (`""`).
+
+Storage: `isp_customer`, `isp_subscription`, `isp_invoice` and `isp_payment`
+are this feature's own tables, created with `CREATE TABLE IF NOT EXISTS`
+through `store.with` (a feature cannot add a core migration). Tariffs and
+links are document collections. **No money column is a REAL**, every amount
+is an INTEGER of minor units with its currency in a column beside it, and a
+test reads the schema back to keep it that way. TypeScript:
+`ui/src/api/types/isp.ts`.
+
+## Decisions this needed, that the contract did not settle
+
+1. **A rate is applied in whichever direction it was quoted.** `Conversion`
+   is exactly as specified, and `rate` is minor units of `to` per one major
+   unit of `from`. A dinar payment against a dollar invoice is therefore
+   recorded as `{from: USD, to: IQD, rate: 1320}` — the rate a person
+   actually quotes — and the settled amount is worked out by **dividing**:
+   `33,000 IQD × 100 ÷ 1,320 = 2,500` minor USD, exactly. Storing the
+   opposite direction instead would need 0.00076 USD per dinar, which in an
+   integer rate is zero, and the payment would settle nothing. So
+   `Conversion::apply` multiplies when the amount is in `from` and divides
+   when it is in `to`, and refuses an amount in a third currency. What the
+   payment settles is computed once, at that moment, and stored on it
+   (`settled`, `settled_exact`); nothing recomputes it.
+2. **An invoice may be issued with a date in the past** (`issued_at`), never
+   in the future. An ISP migrating a year of paper invoices into Nocturne
+   would otherwise have to enter them as if they were new, which is a worse
+   lie than a backdated record. `due_at` may not precede `issued_at`.
+3. **A billing window must be one whole period of a subscription, or that
+   subscription is not charged.** A monthly plan is billed in a window of
+   28–31 days, a quarterly one in 89–92, a yearly one in 365–366. A
+   seven-day window produces no line for a monthly subscription; the draft
+   lists it in `skipped` with the reason, and says what to do instead (bill a
+   whole period, or add the figure by hand). Nothing here divides a monthly
+   price by an invented average month. Within a valid window a part period is
+   pro-rated by the milliseconds covered, and the line carries that
+   arithmetic (`prorated`) so the figure can be rechecked.
+4. **Voiding an invoice that has a recorded payment against it is refused.**
+   The void would hide money that really came in. The payment is voided first,
+   with its own reason, and both records stay.
+5. **A payment with no invoice is money on account**, kept in the currency it
+   arrived in and reported as `on_account` in the customer's balance. A rate
+   on such a payment is refused: there is nothing to convert it towards yet.
+6. **Which direction is "usage" is a setting** (`usage_basis`: `greater`,
+   `in`, `out`), because it depends on which side of the link the serving
+   interface is, and every figure says in `basis` which it used. A usage
+   figure is `null` unless `coverage == "measured"`, and `Coverage`
+   distinguishes nine states, including the one that matters most in a
+   dispute: `interface_never_collected` ("nobody has looked") against
+   `no_rate_yet` ("the interval could not be measured").
+7. **Margin is only worked out in the currency the wholesale cost is in.**
+   Revenue behind a tower can be in several; the others are returned
+   untouched in `unconverted`, with a note saying so, rather than converted
+   at a rate nobody entered.
+8. **`IQD` has 0 minor digits**, as this specification settles, which is a
+   deliberate departure from ISO 4217's 3. The currency table
+   (`money::CURRENCIES`) is a fixed list of 21 codes including three-digit
+   ones (`JOD`, `KWD`, `BHD`, `OMR`) so that nothing can assume hundredths;
+   currencies whose everyday practice and ISO's minor unit disagree the way
+   the dinar's does are deliberately absent rather than guessed at. Adding one
+   is a line in that table and a decision recorded beside it.
+9. **A customer's currency cannot be changed once they have a ledger.** It
+   can be corrected before anything is billed; afterwards it is a new
+   account, because otherwise one customer's books would hold two currencies
+   with nothing saying which figure was which.
+10. **`isp.summary` is the assistant's method.** It carries counts, states and
+    per-currency money and no name, code, phone number, email address, street
+    or note; a test fails if any of those appear in it. An assistant tool must
+    be registered against it (and against nothing else in this feature that
+    returns a customer).
+
+## Tests
+
+`cargo test -p nocturne-isp`: 20 unit tests and 29 through `App::rpc`
+(`tests/money.rs`, `tests/ledger.rs`, `tests/network.rs`, `tests/rpc.rs`,
+`tests/boundaries.rs`). They build real state through the RPC surface, never
+by writing to the store. The monitor is reached by name and stubbed in
+`tests/common/mod.rs` with the shape the real one answers — including a
+`null` rate for an interval that could not be measured — because a feature
+crate may not link another feature crate; one fixture deliberately has no
+monitor at all. Nothing waits on real time or asserts a duration.

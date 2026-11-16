@@ -1,0 +1,30 @@
+[package]
+name = "nocturne-isp"
+description = "Subscribers, bandwidth and money: the ledger of an ISP that sells megabits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nocturne-app.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# The year of an invoice number and the month of a billing period are
+# calendar questions, not arithmetic on milliseconds.
+chrono.workspace = true
+# Invoices and payments are this feature's own two tables. A document
+# collection would do for the customers, but not for "every invoice that fell
+# due before this date and is still short" over ten years of them, which is
+# the query the arrears report is made of.
+rusqlite.workspace = true
+
+[dev-dependencies]
+nocturne-app = { workspace = true, features = ["testing"] }
+pretty_assertions.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -36,6 +36,7 @@ nocturne-discovery = { path = "crates/nocturne-discovery" }
 nocturne-topology = { path = "crates/nocturne-topology" }
 nocturne-insights = { path = "crates/nocturne-insights" }
 nocturne-ipam = { path = "crates/nocturne-ipam" }
+nocturne-isp = { path = "crates/nocturne-isp" }
 nocturne-toolbox = { path = "crates/nocturne-toolbox" }
 nocturne-lab = { path = "crates/nocturne-lab" }
 nocturne-assistant = { path = "crates/nocturne-assistant" }

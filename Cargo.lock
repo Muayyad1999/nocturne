@@ -3828,6 +3828,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nocturne-isp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nocturne-app",
+ "pretty_assertions",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nocturne-lab"
 version = "0.1.0"
 dependencies = [
@@ -3888,6 +3902,7 @@ dependencies = [
  "nocturne-snmp",
  "parking_lot",
  "pretty_assertions",
+ "rcgen",
  "reqwest",
  "rusqlite",
  "rustls",
