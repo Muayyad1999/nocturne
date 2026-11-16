@@ -67,11 +67,16 @@ jobs:
             macOS Gatekeeper will warn about them.
 
   server:
-    name: Server binary (${{ matrix.os }})
+    name: Server binary (${{ matrix.edition }}, ${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
+        # The ISP edition ships as the server; the free edition ships as the
+        # desktop application and as a server for anyone who wants one. Two
+        # artefacts rather than one binary with a switch in it, which is the
+        # whole of the commercial control — see `docs/dev/spec-editions.md`.
+        edition: [free, isp]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -90,12 +95,19 @@ jobs:
       # The server embeds the interface, so it is built first.
       - run: pnpm --dir ui install --frozen-lockfile
       - run: pnpm --dir ui build
-      - run: cargo build --release -p nocturne-server
+      - name: Build the server
+        shell: bash
+        run: |
+          if [ "${{ matrix.edition }}" = "isp" ]; then
+            cargo build --release -p nocturne-server --features isp
+          else
+            cargo build --release -p nocturne-server
+          fi
       - name: Name the binary after its platform
         shell: bash
         run: |
           mkdir -p artifacts
-          name="nocturne-server-${{ runner.os }}-${{ runner.arch }}"
+          name="nocturne-server-${{ matrix.edition }}-${{ runner.os }}-${{ runner.arch }}"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp target/release/nocturne-server.exe "artifacts/$name.exe"
           else
@@ -128,9 +140,22 @@ jobs:
           for method in app.info terminal.open changes.apply monitor.status ipam.prefixes tools.list; do
             grep -q "\"$method\"" methods.json || { echo "missing: $method"; exit 1; }
           done
+          # And the edition is what the artefact says it is. This is the last
+          # point at which a mistake is still cheap: a free installer that
+          # answers `isp.customers` has shipped somebody else's subscriber
+          # ledger to everyone, and an ISP build that does not answer it is a
+          # paid artefact missing the thing it was paid for.
+          if [ "${{ matrix.edition }}" = "isp" ]; then
+            grep -q '"isp.customers"' methods.json || { echo "the ISP edition has no billing methods"; exit 1; }
+            grep -q '"isp.summary"' methods.json
+          elif grep -q '"isp\.' methods.json; then
+            echo "the free edition is carrying billing methods:"
+            grep -o '"isp\.[a-z.]*"' methods.json
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nocturne-server-${{ runner.os }}-${{ runner.arch }}
+          name: nocturne-server-${{ matrix.edition }}-${{ runner.os }}-${{ runner.arch }}
           path: artifacts/*
           retention-days: 14
