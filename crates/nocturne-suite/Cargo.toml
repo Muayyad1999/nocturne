@@ -7,6 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The ISP edition. Off by default, which is the whole mechanism: the free
+# build does not *contain* the billing code — not disabled at run time, not
+# dead behind a flag, absent from the binary. There is deliberately no
+# edition setting to flip, because a client-side switch that unlocks paid
+# features is security theatre. See `docs/dev/spec-editions.md`.
+isp = ["dep:nocturne-isp"]
+
 [dependencies]
 # Feature crates are added here as they land; each exposes `init(&mut AppBuilder)`.
 nocturne-app.workspace = true
@@ -17,6 +25,7 @@ nocturne-config.workspace = true
 nocturne-discovery.workspace = true
 nocturne-insights.workspace = true
 nocturne-ipam.workspace = true
+nocturne-isp = { workspace = true, optional = true }
 nocturne-lab.workspace = true
 nocturne-logs.workspace = true
 nocturne-monitor.workspace = true

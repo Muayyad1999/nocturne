@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The ISP edition, passed straight through to the suite. Building without it
+# is the free edition, and the billing code is not in the binary at all; see
+# `docs/dev/spec-editions.md`.
+isp = ["nocturne-suite/isp"]
+
 [dependencies]
 nocturne-suite.workspace = true
 tokio.workspace = true

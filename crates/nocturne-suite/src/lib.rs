@@ -39,6 +39,12 @@ pub fn init(builder: &mut AppBuilder) {
     // absent, but registering it here means a fresh build's overview says
     // "that feature is not installed" rather than nothing at all.
     nocturne_ops::init(builder);
+    // The ISP edition's one feature, and the only conditional registration in
+    // this function. It is last because nothing in the free set may depend on
+    // it: every other module above must assemble, and its tests pass, with
+    // this line compiled out.
+    #[cfg(feature = "isp")]
+    nocturne_isp::init(builder);
 }
 
 /// Assemble and start the application.
@@ -207,6 +213,59 @@ mod tests {
             methods.len(),
             "two modules registered the same method"
         );
+    }
+
+    /// The edition line, checked rather than trusted.
+    ///
+    /// A free build must carry no trace of somebody else's subscribers: not a
+    /// method that answers, not a method that refuses politely. The screens
+    /// disappear on their own because every one of them gates on
+    /// `app.methods`, so this assertion is also what makes the interface
+    /// right.
+    #[cfg(not(feature = "isp"))]
+    #[tokio::test]
+    async fn the_free_edition_knows_nothing_about_billing_anybody() {
+        let app = start(AppConfig::in_memory()).unwrap();
+        let billing: Vec<&str> = app
+            .methods()
+            .into_iter()
+            .filter(|method| method.starts_with("isp."))
+            .collect();
+        assert!(
+            billing.is_empty(),
+            "the free edition registered {billing:?}"
+        );
+        // And the settings screen must not offer a section for it either.
+        let settings = app
+            .rpc("settings.all", serde_json::Value::Null)
+            .await
+            .unwrap();
+        assert!(
+            settings.get("isp").is_none(),
+            "the free edition declared an `isp` settings section"
+        );
+    }
+
+    /// And the paid build must actually have it — the same assertion from the
+    /// other side, so that `--features isp` cannot quietly become a no-op.
+    #[cfg(feature = "isp")]
+    #[tokio::test]
+    async fn the_isp_edition_has_the_billing_methods_and_the_rest_of_the_build() {
+        let app = start(AppConfig::in_memory()).unwrap();
+        let methods = app.methods();
+        for expected in [
+            "isp.customers",
+            "isp.invoices",
+            "isp.payments",
+            "isp.arrears",
+            "isp.summary",
+        ] {
+            assert!(methods.contains(&expected), "`{expected}` is missing");
+        }
+        // The NOC features are not traded away for them.
+        for expected in ["devices.list", "monitor.status", "changes.list"] {
+            assert!(methods.contains(&expected), "`{expected}` is missing");
+        }
     }
 
     #[tokio::test]

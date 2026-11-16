@@ -19,6 +19,12 @@ path = "src/main.rs"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# The ISP edition, passed straight through to the suite. Building without it
+# is the free edition, and the billing code is not in the binary at all; see
+# `docs/dev/spec-editions.md`.
+isp = ["nocturne-suite/isp"]
+
 [dependencies]
 nocturne-suite.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
