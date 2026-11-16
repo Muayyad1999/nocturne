@@ -145,6 +145,19 @@ Not built yet: the screens. The methods and their TypeScript types exist,
 `ui/src/api/types/isp.ts` among them, but an ISP cannot yet do any of this
 without calling the RPC surface directly.
 
+Driven by hand through a running ISP server, not only through its own tests:
+two customers, one billed in dinars and one in dollars; a tariff priced *per
+megabit* in each; a billing run that previewed and issued nothing; then an
+invoice each. 100 Mbit at 15,000 IQD came to `1500000` and 50 Mbit at
+\$12.00 came to `600.00` — the same field, formatted to its own currency's
+digits. A 790,000 IQD bank transfer against the \$600 invoice at a rate of
+1,320 settled **\$598.48**, said `settled_exact: false` because it had to
+round, and left exactly **\$1.52** outstanding; arrears then aged 1,500,000
+IQD and \$1.52 in separate reports, each with its own buckets, and the
+result carries no field in which a total across them could be put. A payment
+with no method was refused ("a payment with no method cannot be reconciled
+against anything"), and so was one against an invoice still in draft.
+
 ## Interface
 
 **Done** — 864 unit tests, a production build with no warnings, design
