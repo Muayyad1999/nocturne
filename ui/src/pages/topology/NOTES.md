@@ -115,10 +115,12 @@ that was not a second, quieter history screen; it is the obvious next piece.
   drawing first has nodes and when the view, layer or endpoint setting
   changes. The Lab screen's notes ask for a `fitKey` prop; this screen is a
   second vote for it.
-* `/terminal` takes no device, so the "Terminal" action the page spec lists for
-  a node is not offered — a button that opened the Terminal screen on whatever
-  it happened to be showing would be a lie. `/terminal?device=<id>` (or a
-  `terminal.open` the screen could call) would let it exist.
+* ~~`/terminal` takes no device, so the "Terminal" action the page spec lists
+  for a node is not offered.~~ **Done in the second pass**, and without a
+  route parameter: the map calls `terminal.open` itself, keeps the session in
+  the dock under the drawing, and hands it over to the Terminal screen
+  through that screen's own layout store when asked. A `/terminal?device=<id>`
+  route would still be a tidier way in from anywhere else.
 * There is no way to put something in the assistant's context from another
   page (`pages/terminal/assistant.ts` is a page-local store), so "Ask
   assistant" is not offered either.
@@ -171,8 +173,241 @@ caught, in the order they were found:
     this link" — next to links two devices really did report, that word reads
     as the devices confirming it. It now says what it was confirmed by.
 
+## Link load, and a session from the map (second pass)
+
+Two things The Dude does that this drawing did not: live utilisation on each
+line, and a command line on the device under the pointer. Both are here now.
+
+```
+load.ts           the reasoning: joining links to rates, unknown vs idle, live vs stale,
+                  what shows at which zoom                               (unit tested)
+session.ts        whether a node can be given a terminal, and why not    (unit tested)
+SessionDock.tsx   the terminal itself, borrowed from `pages/terminal/sessions.ts`
+```
+
+Methods added: `monitor.interfaces` (the whole table, one call, refetched on
+`monitor.interfaces` and `monitor.polled`), `devices.list`, `settings.get`
+(the `monitoring` section, for `cli_interval_s`), `terminal.list`,
+`terminal.open`, `terminal.close`, and `labs.get` for the one lab a selected
+device belongs to. Nothing new was asked of the backend, and nothing was
+added to it.
+
+### The four states of a rate, and how each one reads
+
+A direction of a link is in exactly one of four states, and they are four
+different facts — so each is drawn a different *shape*, not a different
+colour, because at the zoom where the numbers disappear hue would be all that
+is left:
+
+| state | on the line | in words | in the panel |
+|---|---|---|---|
+| measured, with a speed | a channel with a bar in it, as long as the load | `42%` (nothing under 0.1 %) | `24 Mb/s of 1 Gb/s · sent by Gi1/0/1` |
+| measured, and zero | an empty channel | `idle` | `0 b/s of 1 Gb/s` |
+| measured, no speed | a *dashed* channel, no bar | `24 Mb/s` | "the port did not say how fast it is, so there is no percentage" |
+| not measured | nothing at all | `no rate` (italic) | "no rate has been measured for this direction" |
+
+* **Zero is not unknown.** An empty channel means monitoring looked and
+  nothing was moving; *no* channel means nobody looked. The legend says both
+  in those words ("nothing has been measured — not the same as idle"), and an
+  e2e test asserts that the panel for an unmeasured link contains neither
+  `0%` nor `idle`.
+* **A bar is never shorter than 1.6 %** (a hundred kilobits on a ten-gigabit
+  port would otherwise be an invisible bar, i.e. indistinguishable from
+  idle), and a measured zero gets **no** bar, so "idle" and "a trickle" are
+  not two shades of one shape. A bar is also not drawn at all on a line under
+  52 px long on screen: there is nothing there to draw it on.
+* **The length carries the number**, through SVG `pathLength="100"`: the dash
+  pattern is literally the percentage. That is what the e2e test asserts —
+  the first figure of `stroke-dasharray` equals `out_bps / speed_bps × 100`
+  as the backend measured it.
+* **Both directions, separately**, because a link is rarely symmetrical. Each
+  is read from the *sending* port's `out_bps` where that port is monitored
+  (the only one of the two counters the wire cannot have thinned), and falls
+  back to the receiving port's `in_bps`. The panel says which it used — `sent
+  by` or `received by`, with the port's name. The one exception is age: a
+  current reading of what arrived beats a stale reading of what was sent,
+  because the question on a map is what is happening *now*.
+* **Where the numbers go**: not at the midpoint, where the words that say how
+  a link is known already are, but a third of the way along the line from the
+  end that is sending — which also means a direction needs no arrowhead to
+  say which way it is going.
+
+### Live, stale, and how the screen knows
+
+`IfStatus.at` is when the poll that produced a rate ran. A reading is stale
+when it is older than `2.5 ×` the cadence its own device is measured at, with
+a 90-second floor, and the cadence is worked out as monitoring works it out:
+with SNMP it is the device's `monitor.interval_s`; without SNMP the counters
+come from a command-line read, which happens no more often than the
+`cli_interval_s` setting however often the device is pinged, so the slower of
+the two wins. A stale bar keeps its length (it is still a statement about
+something that was measured) and loses its colour, the number is greyed, and
+the row in the panel carries a `Stale` pill with the reading's own age and
+the cadence of the port it came from — "measured 1m ago, and this port is
+read about every 5s" — because "stale" against no yardstick is just a scary
+word. The cadence shown is that end's, never the link's: a link between a
+device polled every half hour and one polled every five seconds has two
+different answers, and the one that matters is the one behind *that* number. The stats strip
+under the toolbar says `load measured 40s ago` for the newest reading in the
+whole drawing — which is the honest version of a screen that claims to be
+live.
+
+Nothing is polled by this screen: the rates refetch on `monitor.interfaces`
+and `monitor.polled`, and a 15-second tick re-reckons the *ages* (time
+passing is not an event, so nothing would otherwise turn a live reading into
+a stale one while the map is open).
+
+### What shows at which zoom
+
+`loadDetail(zoom, lineLengthOnScreen)`, unit tested, decides: nothing below
+0.2 (a card is a smudge), bars only below 0.6, one number — the direction
+that matters — up to 1.0, both numbers above it. A line shorter than 90 px on
+screen never gets writing however far in the map is zoomed, and one shorter
+than 150 px never gets two. At the zoom the campus fits at, the map is bars
+only; a measured zero, a loaded link and an unmeasured one are still three
+different shapes there. The whole layer has a toolbar toggle ("Load",
+remembered per browser), because the one thing a map owes you is a way to
+stop it shouting.
+
+`worthLabelling` then throws one more thing away: a percentage too small to
+write as a number (`<0.1%`) is never written, at any zoom. That rule came
+from the screenshots and is described under "What looking at it changed"
+below. A number is drawn beside the middle of its own bar, not near the end
+that is sending — also from the screenshots.
+
+### A session from the map
+
+Right-click a card → `Terminal`. It is `terminal.open {device_id}`, the
+backend's own session, and the xterm instance belongs to
+`pages/terminal/sessions.ts` — the registry the Terminal screen owns and the
+Lab screen already borrows. So the session survives being hidden, keeps its
+scrollback, and the dock's "open on the Terminal screen" button hands over
+*that* session (`useTerminalLayout.open(id)` + navigate) rather than dialling
+the device again. A device that already has a session gets that one back: two
+prompts on one switch is how a person types into the wrong one.
+
+The dock sits under the drawing rather than floating over it — a terminal on
+top of the map covers the thing the map is for.
+
+`session.ts` answers *before* the button is offered, and every refusal is a
+sentence plus three or four words for the one line a menu item has:
+
+| case | why |
+|---|---|
+| not in the inventory (`u:`) | "…add it as a device and give it a credential, and a terminal becomes possible" |
+| a host from a MAC table (`h:`) | "not a device Nocturne manages" |
+| an end somebody typed (`m:`) | "not a device" |
+| `transport: none` | "no command line" |
+| no address | "no address" |
+| no credential (and not a lab device) | "no credential" |
+| the lab is not running | "Start the lab and it comes back" |
+| the lab node is powered off | "Power it on and it comes back" |
+| no terminal feature in the build | "no terminal here" |
+
+A lab device needs no credential and no address — the simulator is the far
+end — but it does need the lab running and the node powered, and only the lab
+feature knows that, so `labs.get` is asked for the selected device's lab.
+Where the lab (or the inventory) has not answered, that is **not** read as a
+refusal: the backend has the last word, and a guess that hid the button would
+be worse than letting `terminal.open` say so itself.
+
+### The third thing: a right-click menu
+
+The Dude's third habit is that everything is on the right-click. The same
+actions the side panel has — Terminal, Open device, Trace from here, Pin, Add
+as a device — are on a context menu on every card, because the pointer is
+already there and because a map you have to travel to a panel to act on is a
+picture, not a tool. It is a shortcut, never the only path: every item is
+also in the panel.
+
+## What looking at the load changed
+
+The drawing was rendered with real rates on it, looked at, and fixed — three
+rounds of it. In order:
+
+1. **`<0.1%` seven times over.** A campus at rest is mostly links carrying a
+   few hundred kilobits on a gigabit port. Every one of them wrote `<0.1%`,
+   and around the two distribution switches they landed on each other and on
+   the port names. A percentage too small to write as a number says nothing
+   the bar has not; it is not written at any zoom now, and the exact figure is
+   one click away in the panel.
+2. **`no rate` printed through `Gi0/0`.** The numbers started a third of the
+   way along the line from the end that was sending — which is where the port
+   names are, on the same side. Numbers moved to the middle of their own bar:
+   midpoints are as far apart as the links are, and the side still says which
+   direction it is.
+3. **"load measured in 11s"** — a measurement from the future. `useNow` floors
+   to its own interval so that it is stable between ticks, which puts it up to
+   fifteen seconds behind. The tick is the signal to re-reckon; the instant it
+   is reckoned against is taken fresh at each tick.
+4. **The terminal dock made the cards at the bottom unclickable.** Opening it
+   takes a third of the canvas, and the drawing kept its old transform, so the
+   bottom row of cards ended up behind the legend — visible, and not
+   clickable. The dock is part of the fit key now, so the drawing refits when
+   it opens and again when it closes. (Playwright found this one: "`<b>
+   Confirmed</b>` from the legend intercepts pointer events".)
+5. **The panel contradicted itself on a stale link**: the rows said `Stale`
+   and the sentence under them said "these ports are measured about every
+   30m", because that sentence took the *slower* of the two ends. The cadence
+   belongs to the reading, so it moved into the row that is stale.
+6. **Three lines where there was one.** A channel either side of every wire
+   made a drawing of cables look like a drawing of pipes. The channel is a
+   dimmed version of the wire's own colour now (`--text-3` at 55 %), which
+   reads in both themes without turning the map into plumbing.
+7. **An idle direction drew a 1.6 % stub**, the same shape as a link carrying
+   a trickle, in a different colour. Colour alone is exactly what this layer
+   must not rely on: a measured zero draws an *empty* channel now, so idle, a
+   trickle, no speed and no rate are four different shapes.
+
 ## What the backend made awkward
 
+* **`topology.get`'s `util_pct` is one number for a link, with no direction,
+  no age and no speed beside it.** It is `max(in, out)` over both ends, from
+  `monitor.interfaces`, and the field says "utilisation" without saying of
+  what or when. This pass therefore does the join in the browser instead:
+  `monitor.interfaces` for the whole table, `devices.list` for each device's
+  cadence, `settings.get {monitoring}` for `cli_interval_s`. It works, but it
+  is three reads and a join on every drawing, and two of them are only there
+  because the link does not carry what it needs. What would close it, in the
+  shape the rest of this type file is in:
+
+  ```rust
+  pub struct LinkLoad {
+      pub a_to_b_bps: Option<f64>,   // the sending port's own counter
+      pub b_to_a_bps: Option<f64>,
+      pub speed_bps: Option<u64>,    // already there
+      pub measured_at: Option<i64>,  // the poll that produced them
+      pub measured_every_s: Option<u32>, // how often this link is measured
+      pub read_from: [Option<String>; 2], // which port each number came from
+  }
+  ```
+
+  `measured_every_s` is the one the screen cannot work out honestly: a lab
+  device's counters are read every `LAB_CLI_INTERVAL_S` (30 s, a constant
+  inside `nocturne-monitor`), not every `cli_interval_s`, so the UI's
+  staleness limit for a lab device is three times more generous than it needs
+  to be. It errs towards *not* crying stale, which is the right way round,
+  but only the backend can say what the real cadence is. `util_pct` itself
+  could stay as it is; nothing here reads it any more.
+* **`monitor.interfaces` is asked for 5 000 rows to draw a dozen links.**
+  There is no "the rates for these (device, interface) pairs" query, and no
+  per-link one. On a campus-sized install that is the right trade (one call,
+  paged in SQL, cached by the query client and shared with the Monitoring
+  screen), but on a ten-thousand-port estate it is the wrong shape and the
+  screen will need either the field above or a narrower query.
+* **A terminal from a map cannot be offered honestly without the inventory.**
+  Whether a device has a credential, an address or a command line is in
+  `devices.list`, which this screen now reads for that alone (and for the
+  monitoring cadence). A `can_connect: {ok, reason}` on the device row — the
+  backend already knows all of it, including whether its lab is running —
+  would let every screen say the same sentence instead of each writing its
+  own. `pages/topology/session.ts` is that sentence, written here.
+* **`labs.get` is the only way to find out whether a node is powered**, so a
+  map with lab devices on it has to ask the lab feature per lab. It is asked
+  for one lab at a time (the selected device's) and `labs.tick` is
+  deliberately *not* subscribed to — four events a second would turn a
+  context menu into a refetch storm. A `powered` flag on the device state
+  would make this unnecessary.
 * **`force` flings disconnected nodes a long way.** With `use_lab_links` off,
   the demo campus has seven hosts that nothing reports as a neighbour; a
   spring embedder pushes them apart and has nothing to pull them back, so
@@ -213,19 +448,22 @@ caught, in the order they were found:
 
 ## State at hand-off
 
-* `pnpm --dir ui test`: 522 green, 53 of them new here (`graph.test.ts`,
-  `search.test.ts`, `trace.test.ts`).
-* `pnpm --dir ui exec vite build`: clean, and the screen is its own 54 kB
-  chunk. `pnpm --dir ui build` additionally typechecks `tests/`, which at
-  hand-off fails on `tests/config.spec.ts` (an unused `tab` helper in the
-  Config slice, in flight at the same time) — nothing in this slice.
-* `tests/topology.spec.ts`: 16 tests against a real `nocturne-server` with the
-  demo campus lab really collected from, seeded so that all three
-  confidences, a drawn link, an endpoint and a node that is not in the
-  inventory are on the drawing. One of them adds a second device that answers
-  to a name a neighbour reported and checks that the backend's refusal to
-  guess is on screen. Every test asserts the console is clean.
-  Run: `CARGO_TARGET_DIR=~/.cache/nocturne-target/main pnpm exec playwright
-  test --project=e2e topology.spec.ts`.
-* `tests/topology.shots.ts`: 34 PNGs into `tests/shots/topology/` (both
-  themes, 1440×900 and 1280×720, dock open and closed).
+* `pnpm --dir ui test`: green; 99 of them in this screen's five files
+  (`graph.test.ts`, `search.test.ts`, `trace.test.ts`, and from this pass
+  `load.test.ts` and `session.test.ts`).
+* `pnpm --dir ui build` (whole-repo typecheck, then the bundle): clean. The
+  screen is its own 73 kB chunk, 19 kB more than before this pass.
+* `tests/topology.spec.ts`: 24 tests against a real `nocturne-server` with the
+  demo campus lab really collected from *and really polled*: the five campus
+  switches are read twice a simulated minute apart so the interface rates are
+  real, EDGE and the ISP router are left unmonitored so some links honestly
+  have no rate at all, and DS2 is taken off monitoring with a five-second
+  interval so one link's readings really do go stale while the suite runs.
+  Every test asserts the console is clean.
+  Run: `NOCTURNE_SERVER_BIN=~/.cache/nocturne-target/main/debug/nocturne-server
+  pnpm exec playwright test --project=e2e topology.spec.ts`.
+* `tests/topology.shots.ts`: 46 PNGs into `tests/shots/topology/` (23 per
+  theme: both themes, 1440×900 and 1280×720, dock open and closed, and from
+  this pass the load at a zoom where it is written out, a link's load in the
+  panel, a stale one, the right-click menu, a terminal open on a device from
+  the map, and a node that cannot be given one).

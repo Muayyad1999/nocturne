@@ -1,0 +1,51 @@
+/*
+ * Under the drawing, not over it: a terminal floating on the map covers the
+ * thing the map is for. It takes a strip of its own and the canvas keeps the
+ * rest.
+ */
+.dock {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  height: 272px;
+  min-height: 0;
+  border-top: 1px solid var(--line-strong);
+  background: var(--bg-0);
+}
+
+.head {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 6px 3px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-3);
+}
+
+.name {
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.state {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.failed {
+  color: var(--crit);
+}
+
+.surface {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 6px;
+}

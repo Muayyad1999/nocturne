@@ -245,3 +245,99 @@
 .note2 {
   color: var(--text-3);
 }
+
+/* ------------------------------------------------------------- link load */
+
+.load {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * One direction. The bar down the left edge carries the band, so the row is
+ * not telling the reader anything by colour that the words do not.
+ */
+.loadRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 8px;
+  padding: 4px 6px;
+  border-left: 2px solid var(--ok);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-2);
+}
+
+.loadRow[data-band='idle'],
+.loadRow[data-kind='unknown'] {
+  border-left-color: var(--idle);
+}
+
+.loadRow[data-band='busy'] {
+  border-left-color: var(--warn);
+}
+
+.loadRow[data-band='hot'] {
+  border-left-color: var(--crit);
+}
+
+.loadRow[data-age='stale'] {
+  border-left-style: dashed;
+}
+
+.loadWay {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  color: var(--text-1);
+  font-size: 11.5px;
+}
+
+.loadWay :global(svg) {
+  color: var(--text-3);
+}
+
+.loadValue {
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.loadRow[data-band='busy'] .loadValue {
+  color: var(--warn);
+}
+
+.loadRow[data-band='hot'] .loadValue {
+  color: var(--crit);
+}
+
+.loadRow[data-band='idle'] .loadValue,
+.loadRow[data-kind='unknown'] .loadValue {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.loadDetail {
+  grid-column: 1 / -1;
+  color: var(--text-3);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+/* Why a reading is stale: how old it is, and how often it should arrive. */
+.loadStale {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 10.5px;
+}

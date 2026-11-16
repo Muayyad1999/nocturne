@@ -7,7 +7,7 @@
  * person is about to act on.
  */
 
-import { ExternalLink, Pencil, Pin, PinOff, Plus, Route } from 'lucide-react';
+import { ArrowRight, ExternalLink, Pencil, Pin, PinOff, Plus, Route, TerminalSquare } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { useRpc } from '@/api/hooks';
 import type { Graph, Link, NeighborRow, Neighbors, Node } from '@/api/types/topology';
@@ -17,9 +17,19 @@ import { KeyValue, type KeyValueItem } from '@/design/KeyValue';
 import { LabPill, StatusPill } from '@/design/StatusPill';
 import { Skeleton } from '@/design/Skeleton';
 import { TimeAgo } from '@/design/TimeAgo';
-import { EMPTY, formatPercent, formatRate, plural } from '@/lib/format';
+import { EMPTY, formatDuration, formatRate, plural } from '@/lib/format';
+import { formatRelative } from '@/lib/time';
 import { evidence, nodeKindLabel } from './graph';
 import styles from './Inspector.module.css';
+import {
+  loadBand,
+  loadLabel,
+  rateText,
+  type DirectionLoad,
+  type LayerState,
+  type LinkLoad,
+} from './load';
+import type { SessionOffer } from './session';
 
 const STATUS_TONE = { up: 'ok', down: 'crit', unknown: 'idle' } as const;
 const STATUS_WORD = { up: 'Up', down: 'Down', unknown: 'Not known' } as const;
@@ -35,6 +45,19 @@ export interface InspectorProps {
   onAddToInventory: (node: Node) => void;
   onDeleteManual: (link: Link) => void;
   onSelectNode: (id: string) => void;
+  /**
+   * Whether the selected node can be given a terminal, worked out by the page
+   * from the inventory and the lab. A refusal is a sentence, shown where the
+   * button would have been.
+   */
+  terminal?: SessionOffer;
+  /** `show` when this device already has a session open. */
+  terminalAction?: 'open' | 'show';
+  onTerminal?: (node: Node) => void;
+  /** How loaded the selected link is, if monitoring has measured anything. */
+  load?: LinkLoad;
+  /** What the load layer as a whole has to say for itself. */
+  loadLayer?: LayerState;
 }
 
 export function Inspector(props: InspectorProps) {
@@ -65,6 +88,9 @@ function NodePanel({
   onPin,
   onAddToInventory,
   onSelectNode,
+  terminal,
+  terminalAction = 'open',
+  onTerminal,
 }: InspectorProps & { node: Node }) {
   const navigate = useNavigate();
   const neighbors = useRpc<Neighbors>(
@@ -128,6 +154,25 @@ function NodePanel({
       <KeyValue items={facts} layout="stacked" />
 
       <div className={styles.actions}>
+        {/*
+          A terminal on the device, from the map, which is the thing The Dude
+          is used for. The session is `nocturne-terminal`'s and lands in the
+          dock under the drawing; where one cannot be opened, the button is
+          disabled and the reason is written underneath rather than left for
+          the user to discover by pressing it.
+        */}
+        {onTerminal && terminal && (
+          <Button
+            size="sm"
+            variant={terminal.ok ? 'primary' : 'secondary'}
+            icon={TerminalSquare}
+            disabled={!terminal.ok}
+            {...(terminal.ok ? {} : { title: terminal.why })}
+            onClick={() => onTerminal(node)}
+          >
+            {terminalAction === 'show' ? 'Show the session' : 'Terminal'}
+          </Button>
+        )}
         {node.device_id && (
           <Button
             size="sm"
@@ -150,6 +195,12 @@ function NodePanel({
           {node.pinned ? 'Unpin' : 'Pin here'}
         </Button>
       </div>
+
+      {terminal && !terminal.ok && (
+        <p className={styles.hint} data-testid="no-terminal">
+          <Icon icon={TerminalSquare} size={11} /> {terminal.why}
+        </p>
+      )}
 
       {node.device_id && (
         <section className={styles.section}>
@@ -228,19 +279,18 @@ function LinkPanel({
   onTraceBetween,
   onDeleteManual,
   onSelectNode,
+  load,
+  loadLayer = 'ready',
 }: InspectorProps & { link: Link }) {
   const how = evidence(link);
   const a = graph.nodes.find((node) => node.id === link.a.node);
   const b = graph.nodes.find((node) => node.id === link.b.node);
+  const nameOf = (id: string) =>
+    (id === link.a.node ? a?.name : b?.name) ?? (id === link.a.node ? link.a.node : link.b.node);
 
   const facts: KeyValueItem[] = [
     { label: 'State', value: STATUS_WORD[link.status] },
     { label: 'Speed', value: link.speed_bps ? formatRate(link.speed_bps) : null },
-    {
-      label: 'Utilisation',
-      value:
-        link.util_pct === undefined ? null : formatPercent(link.util_pct, { digits: 2 }),
-    },
     { label: 'VLANs', value: link.vlans, mono: true },
     { label: 'Port-channel', value: link.aggregate, mono: true },
     { label: 'Label', value: link.label },
@@ -272,6 +322,44 @@ function LinkPanel({
           <dt>Reported by</dt>
           <dd>{how.basis}</dd>
         </dl>
+      </section>
+
+      {/*
+        How much is moving, and in which direction. Separately per direction
+        because a link is rarely symmetrical, and with the port each number
+        was read from, because "sent by one end" and "received by the other"
+        are two different measurements of the same thing.
+      */}
+      <section className={styles.section}>
+        <h3>Load</h3>
+        {loadLayer !== 'ready' || !load ? (
+          <p className={styles.hint}>{layerHint(loadLayer)}</p>
+        ) : (
+          <>
+            <ul className={styles.load}>
+              {/* Keyed by position, not by the ends: a stack cable's two
+                  directions have the same two ends. */}
+              {[load.aToB, load.bToA].map((direction, index) => (
+                <LoadRow
+                  key={index === 0 ? 'out' : 'in'}
+                  load={direction}
+                  from={nameOf(direction.from)}
+                  to={nameOf(direction.to)}
+                />
+              ))}
+            </ul>
+            <p className={styles.hint}>
+              {load.at == null ? (
+                'Neither end of this link has a measured rate: monitoring has not read these ports, or the last interval could not be measured.'
+              ) : (
+                <>
+                  Measured <TimeAgo at={load.at} />. Rates are worked out over the device's own
+                  clock, so a reboot is a gap and never a spike.
+                </>
+              )}
+            </p>
+          </>
+        )}
       </section>
 
       <section className={styles.section}>
@@ -330,4 +418,74 @@ function LinkPanel({
       </div>
     </>
   );
+}
+
+/**
+ * One direction of one link: how much is moving, out of how much, and where
+ * the number came from. Each of the three answers reads differently, because
+ * they are three different facts and the worst thing this panel could do is
+ * make "nothing measured" look like "nothing moving".
+ */
+function LoadRow({ load, from, to }: { load: DirectionLoad; from: string; to: string }) {
+  const band = loadBand(load);
+  return (
+    <li className={styles.loadRow} data-band={band} data-kind={load.kind} data-age={load.age.state}>
+      {/* An arrow, not the link's own ↔: this row is one direction of it. */}
+      <span className={styles.loadWay}>
+        {from} <Icon icon={ArrowRight} size={11} /> {to}
+      </span>
+      <span className={styles.loadValue}>{loadLabel(load)}</span>
+      <span className={styles.loadDetail}>
+        {load.kind === 'unknown' ? (
+          'no rate has been measured for this direction'
+        ) : (
+          <>
+            {rateText(load)}
+            {load.speedBps == null ? (
+              <> · the port did not say how fast it is, so there is no percentage</>
+            ) : (
+              <> of {formatRate(load.speedBps)}</>
+            )}
+            {load.read && (
+              <>
+                {' · '}
+                {load.read.sense === 'sent' ? 'sent by' : 'received by'}{' '}
+                <span className="mono">{load.read.interface}</span>
+              </>
+            )}
+          </>
+        )}
+      </span>
+      {load.age.state === 'stale' && (
+        <span className={styles.loadStale}>
+          <StatusPill tone="warn">Stale</StatusPill>
+          {/*
+            Why it is stale, in its own words, because "stale" against no
+            yardstick is just a scary label: this is how old the reading is
+            and how often that port is supposed to be read.
+          */}
+          <span>
+            measured {formatRelative(load.at)}
+            {load.cadenceS != null && (
+              <>, and this port is read about every {formatDuration(load.cadenceS * 1000)}</>
+            )}
+          </span>
+        </span>
+      )}
+    </li>
+  );
+}
+
+/** What the panel says when there is no load layer to show a number from. */
+function layerHint(state: LayerState): string {
+  switch (state) {
+    case 'absent':
+      return 'Link load comes from monitoring, which this build is not answering for. Nothing is drawn rather than a load of zeroes.';
+    case 'loading':
+      return 'Reading the interface rates…';
+    case 'nothing':
+      return 'Monitoring has not measured any interface yet, so no link has a load. Poll a device and the numbers appear.';
+    case 'ready':
+      return 'Neither end of this link is an interface monitoring has measured.';
+  }
 }

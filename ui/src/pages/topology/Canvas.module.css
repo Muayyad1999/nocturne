@@ -119,6 +119,110 @@
   stroke-width: 3;
 }
 
+/* --------------------------------------------------------------- link load */
+
+/*
+ * How loaded each direction of a link is: a channel beside the wire with a
+ * bar in it whose *length* is the percentage. Length, not colour, because a
+ * map is read at a glance and from a distance, and because the one number an
+ * operator must not misread is this one.
+ */
+.load {
+  pointer-events: none;
+}
+
+.load .track {
+  fill: none;
+  /*
+   * A dimmer version of the wire's own colour, so three lines where there was
+   * one still read as one cable. The channel has to be visible — an empty one
+   * is how "measured, and idle" is told from "nobody looked" — and no louder
+   * than that, in either theme.
+   */
+  stroke: color-mix(in srgb, var(--text-3) 55%, transparent);
+  stroke-width: 2.6;
+  stroke-linecap: butt;
+}
+
+/*
+ * A rate with no speed to compare it to: the channel is there, because the
+ * port was measured, and it is dashed, because no bar in it could be honest.
+ */
+.load .track[data-kind='unscaled'] {
+  stroke-dasharray: 2 3;
+}
+
+.load .fill {
+  fill: none;
+  stroke-width: 2.6;
+  stroke-linecap: butt;
+  stroke: var(--ok);
+}
+
+
+.load .fill[data-band='busy'] {
+  stroke: var(--warn);
+}
+
+.load .fill[data-band='hot'] {
+  stroke: var(--crit);
+}
+
+/*
+ * A reading older than its device's own measuring cadence allows. It keeps
+ * its length — it is still a statement about something that was measured —
+ * and loses its colour, so it cannot be mistaken for what is happening now.
+ */
+.load .fill[data-age='stale'] {
+  stroke: var(--text-3);
+  opacity: 0.8;
+}
+
+.loads {
+  pointer-events: none;
+}
+
+.loads[data-dimmed] text {
+  opacity: 0.3;
+}
+
+.loads text {
+  fill: var(--text-2);
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  /* A halo in the canvas colour keeps the number legible over a line. */
+  paint-order: stroke;
+  stroke: var(--bg-0);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+}
+
+.loads text[data-band='busy'] {
+  fill: var(--warn);
+}
+
+.loads text[data-band='hot'] {
+  fill: var(--crit);
+}
+
+/* Measured and idle, and nothing measured: two different greys and two words. */
+.loads text[data-band='idle'],
+.loads text[data-kind='unknown'] {
+  fill: var(--text-3);
+  font-weight: 500;
+}
+
+.loads text[data-kind='unknown'] {
+  font-style: italic;
+}
+
+.loads text[data-age='stale'] {
+  fill: var(--text-3);
+}
+
 /*
  * The word on the line. Every link that is not one both ends reported says so
  * in writing as well as in its pattern, because a dash pattern alone is a

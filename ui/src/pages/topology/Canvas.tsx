@@ -20,16 +20,19 @@ import {
   useId,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type Ref,
 } from 'react';
 import type { Graph, Group, Link, Node } from '@/api/types/topology';
+import { MenuPopup, type MenuEntry } from '@/design/Menu';
 import { Viewport, useViewport, type Bounds, type ViewportApi } from '@/design/Viewport';
 import { cx } from '@/lib/cx';
 import styles from './Canvas.module.css';
 import {
   NODE_H,
   NODE_W,
+  RIBBON_OFFSET,
   bows,
   centre,
   degrees,
@@ -38,14 +41,26 @@ import {
   fitName,
   groupBounds,
   labelPorts,
+  labelBeside,
   linkGeometry,
   nodeIcon,
   nodeIndex,
   nodeKindLabel,
+  ribbonPath,
   sceneBounds,
   shortInterface,
   type Point,
 } from './graph';
+import {
+  loadBand,
+  loadDetail,
+  loadLabel,
+  loadSentence,
+  worthLabelling,
+  type DirectionLoad,
+  type LinkLoad,
+  type LoadDetail,
+} from './load';
 import type { TraceOverlay } from './trace';
 
 export type Selection = { kind: 'node'; id: string } | { kind: 'link'; id: string };
@@ -72,6 +87,20 @@ export interface CanvasProps {
   host?: HostHighlight | null;
   /** Interface names on the links, when the zoom makes them readable. */
   showLabels: boolean;
+  /**
+   * How loaded each link is, by link id, from the rates monitoring measured.
+   * `null` is "there are no rates to draw" — which is not the same as a link
+   * whose entry says nothing was measured on it.
+   */
+  loads?: ReadonlyMap<string, LinkLoad> | null;
+  /** The load layer, which a person can switch off when it is in the way. */
+  showLoad?: boolean;
+  /**
+   * The actions a right-click on a node offers — the gesture The Dude is
+   * built around. The same actions are all in the side panel: a context menu
+   * is a shortcut, never the only way to something.
+   */
+  nodeMenu?: (node: Node) => readonly MenuEntry[];
   viewportRef?: Ref<ViewportApi>;
   /** Changing this fits the scene again (the panel opened, the layer changed). */
   fitKey?: string;
@@ -126,12 +155,22 @@ function Scene({
   trace,
   host,
   showLabels,
+  loads,
+  showLoad = true,
+  nodeMenu,
 }: SceneProps) {
   const viewport = useViewport();
   const index = nodeIndex(graph.nodes);
 
   /** Where a card is while the pointer holds it; cleared once the backend agrees. */
   const [dragged, setDragged] = useState<{ id: string; at: Point } | null>(null);
+  /**
+   * The right-clicked card and where the pointer was. `MenuPopup` is used
+   * directly rather than through `ContextMenu`, which clones an HTML element
+   * and cannot wrap an SVG group; the popup portals itself out, so opening it
+   * from inside the drawing is fine.
+   */
+  const [menu, setMenu] = useState<{ node: Node; at: { x: number; y: number } } | null>(null);
   const gesture = useRef<{ id: string; grab: Point; origin: Point; moved: boolean } | null>(null);
 
   // The backend has caught up with the drag: its position takes over again.
@@ -170,6 +209,8 @@ function Scene({
   // The words that say how a link is known are drawn after the cards, because
   // a short link between two cards put its chip half under one of them.
   const chipAt: { id: string; at: Point; how: ReturnType<typeof evidence> }[] = [];
+  /** The load numbers, drawn after the cards for the same reason. */
+  const loadAt: { key: string; at: Point; load: DirectionLoad; text: string }[] = [];
   const degree = degrees(graph.links);
   const selfSeen = new Map<string, number>();
 
@@ -251,21 +292,50 @@ function Scene({
           if (!a || !b) return null;
           const selfIndex = selfSeen.get(link.a.node) ?? 0;
           if (link.a.node === link.b.node) selfSeen.set(link.a.node, selfIndex + 1);
+          const bow = bowOf.get(link.id) ?? 0;
+          const geometry = linkGeometry(a, b, bow, selfIndex);
           const how = evidence(link);
           if (chips && how.chip !== '') {
-            chipAt.push({
-              id: link.id,
-              at: linkGeometry(a, b, bowOf.get(link.id) ?? 0, selfIndex).mid,
-              how,
-            });
+            chipAt.push({ id: link.id, at: geometry.mid, how });
           }
+
+          // How much of this link's load there is room for: the bars survive
+          // a long way out, the numbers need a line to sit beside.
+          const load = showLoad ? loads?.get(link.id) : undefined;
+          const screenLength =
+            Math.hypot(geometry.b.x - geometry.a.x, geometry.b.y - geometry.a.y) *
+            viewport.transform.k;
+          const detail: LoadDetail = load ? loadDetail(viewport.transform.k, screenLength) : 'none';
+          if (load && (detail === 'busiest' || detail === 'both')) {
+            // With room for one number it is the direction that matters, and
+            // on a link nothing has measured that is the words "no rate":
+            // leaving a line blank would let a reader take it for a quiet one.
+            // A cable from a device to itself gets one number wherever it is
+            // drawn, because both of its numbers would land in one place.
+            const shown =
+              detail === 'both' && link.a.node !== link.b.node
+                ? [load.aToB, load.bToA]
+                : [load.busiest];
+            for (const direction of shown) {
+              if (!worthLabelling(direction, detail)) continue;
+              const from = direction.from === link.a.node ? geometry.a : geometry.b;
+              const to = direction.from === link.a.node ? geometry.b : geometry.a;
+              loadAt.push({
+                key: `${link.id}-${direction.from}`,
+                at: labelBeside(from, to, geometry.mid, RIBBON_OFFSET + 7.5),
+                load: direction,
+                text: loadLabel(direction),
+              });
+            }
+          }
+
           return (
             <LinkLine
               key={link.id}
               link={link}
               a={a}
               b={b}
-              bow={bowOf.get(link.id) ?? 0}
+              bow={bow}
               selfIndex={selfIndex}
               aName={index.get(link.a.node)?.name ?? link.a.node}
               bName={index.get(link.b.node)?.name ?? link.b.node}
@@ -276,6 +346,8 @@ function Scene({
                 labelPorts(degree.get(link.a.node)) &&
                 labelPorts(degree.get(link.b.node))
               }
+              {...(load ? { load } : {})}
+              drawLoad={detail !== 'none'}
               onSelect={() => onSelect({ kind: 'link', id: link.id })}
             />
           );
@@ -303,6 +375,23 @@ function Scene({
           onPointerUp={(event) => onPointerUp(event, node)}
           onDoubleClick={() => onOpen(node)}
           onSelect={() => onSelect({ kind: 'node', id: node.id })}
+          {...(nodeMenu
+            ? {
+                onContextMenu: (event) => {
+                  event.preventDefault();
+                  // Selecting it too: the menu's actions are about this node,
+                  // and the side panel should agree with the menu.
+                  onSelect({ kind: 'node', id: node.id });
+                  setMenu({
+                    node,
+                    at:
+                      event.clientX !== 0 || event.clientY !== 0
+                        ? { x: event.clientX, y: event.clientY }
+                        : boxCentre(event.currentTarget),
+                  });
+                },
+              }
+            : {})}
         />
       ))}
 
@@ -319,8 +408,43 @@ function Scene({
           </text>
         ))}
       </g>
+
+      {/*
+        The load numbers. Drawn last, so a number is never half under a card,
+        and `aria-hidden` because every one of them is already a sentence in
+        the link's own `<title>`, which is what a screen reader is given.
+      */}
+      <g className={styles.loads} data-dimmed={dimmed || undefined} aria-hidden="true">
+        {loadAt.map((label) => (
+          <text
+            key={label.key}
+            x={label.at.x}
+            y={label.at.y}
+            data-band={loadBand(label.load)}
+            data-kind={label.load.kind}
+            data-age={label.load.age.state}
+          >
+            {label.text}
+          </text>
+        ))}
+      </g>
+
+      {menu && nodeMenu && (
+        <MenuPopup
+          anchor={menu.at}
+          items={nodeMenu(menu.node)}
+          onClose={() => setMenu(null)}
+          aria-label={`Actions for ${menu.node.name}`}
+        />
+      )}
     </>
   );
+}
+
+/** Where a keyboard-raised context-menu event should open: the card itself. */
+function boxCentre(element: SVGGElement): { x: number; y: number } {
+  const box = element.getBoundingClientRect();
+  return { x: box.left + Math.min(32, box.width / 2), y: box.top + box.height / 2 };
 }
 
 // ------------------------------------------------------------------ the groups
@@ -375,6 +499,9 @@ interface LinkLineProps {
   selected: boolean;
   onPath: boolean;
   labels: boolean;
+  load?: LinkLoad;
+  /** Whether the zoom is close enough for the load bars to mean anything. */
+  drawLoad?: boolean;
   onSelect: () => void;
 }
 
@@ -389,6 +516,8 @@ function LinkLine({
   selected,
   onPath,
   labels,
+  load,
+  drawLoad = false,
   onSelect,
 }: LinkLineProps) {
   const geometry = linkGeometry(a, b, bow, selfIndex);
@@ -398,10 +527,19 @@ function LinkLine({
   }`;
   const status =
     link.status === 'down' ? 'down' : link.status === 'up' ? 'up' : 'state not known';
+  // Every number on the line is also a sentence here, which is what hovering
+  // gives and what a screen reader is read.
+  const loadText = load
+    ? ` ${loadSentence(load.aToB, { from: aName, to: bName })} ${loadSentence(load.bToA, {
+        from: bName,
+        to: aName,
+      })}`
+    : '';
 
   return (
     <g
       className={styles.link}
+      data-link={link.id}
       data-source={how.source}
       data-confidence={how.confidence}
       data-status={link.status}
@@ -409,13 +547,29 @@ function LinkLine({
       data-path={onPath || undefined}
       data-aggregate={link.aggregate ? '' : undefined}
     >
-      <title>{`${ends} — ${status}. ${how.claim}`}</title>
+      <title>{`${ends} — ${status}. ${how.claim}${loadText}`}</title>
       {/* A wide invisible line: a 2px one is impossible to hit. */}
       <path className={styles.hit} d={geometry.path} onPointerDown={(event) => {
         event.stopPropagation();
         onSelect();
       }} />
       <path className={styles.wire} d={geometry.path} />
+
+      {load && drawLoad && (
+        <g className={styles.load} data-testid={`load-${link.id}`}>
+          {/*
+            A cable from a device to itself is a loop, and two bars along a
+            loop cannot be told apart: it gets the direction that matters.
+          */}
+          <Ribbon
+            path={ribbonPath(a, b, bow, RIBBON_OFFSET, selfIndex)}
+            load={link.a.node === link.b.node ? load.busiest : load.aToB}
+          />
+          {link.a.node !== link.b.node && (
+            <Ribbon path={ribbonPath(b, a, -bow, RIBBON_OFFSET)} load={load.bToA} />
+          )}
+        </g>
+      )}
       {labels && (
         <>
           {link.a.interface && (
@@ -431,6 +585,53 @@ function LinkLine({
         </>
       )}
     </g>
+  );
+}
+
+/**
+ * One direction's load, as a bar beside the wire.
+ *
+ * The bar's *length* carries the number — `pathLength="100"` makes the dash
+ * pattern a percentage of the line, whatever shape the line is — so the
+ * reading survives in a screenshot, in a colour-blind reading and at a zoom
+ * where nothing can be written. Colour only repeats what the length already
+ * says.
+ *
+ * The three states look different on purpose:
+ *
+ * * measured, with a speed → a channel with a bar in it, as long as the load
+ * * measured, and zero → an empty channel: looked at, nothing moving
+ * * measured, with no speed → a dashed channel and no bar: there is a rate
+ *   but nothing to compare it to, and a bar would be a made-up fraction
+ * * not measured → nothing at all. An empty channel means "measured, idle",
+ *   so drawing one here would say monitoring looked and found nothing moving.
+ *
+ * Four appearances for four facts, and none of them is a colour: at the zoom
+ * where the numbers are gone, hue would be the only thing left, and this is
+ * the number an operator must not misread.
+ */
+function Ribbon({ path, load }: { path: string; load: DirectionLoad }) {
+  if (load.kind === 'unknown') return null;
+  // A bar has to be visible to be read: a link carrying a hundred kilobits on
+  // a ten-gigabit port is not idle, and 0.001 % of a line is nothing at all.
+  // A measured zero gets no bar at all, so that "idle" and "a trickle" are
+  // not two shades of the same shape.
+  const fill =
+    load.pct == null || load.bps === 0 ? 0 : Math.min(100, Math.max(load.pct, 1.6));
+  return (
+    <>
+      <path className={styles.track} d={path} data-kind={load.kind} />
+      {fill > 0 && (
+        <path
+          className={styles.fill}
+          d={path}
+          pathLength={100}
+          strokeDasharray={`${fill} 100`}
+          data-band={loadBand(load)}
+          data-age={load.age.state}
+        />
+      )}
+    </>
   );
 }
 
@@ -509,6 +710,7 @@ interface NodeCardProps {
   onPointerUp: (event: ReactPointerEvent<SVGGElement>) => void;
   onDoubleClick: () => void;
   onSelect: () => void;
+  onContextMenu?: (event: ReactMouseEvent<SVGGElement>) => void;
 }
 
 function NodeCard({
@@ -522,6 +724,7 @@ function NodeCard({
   onPointerUp,
   onDoubleClick,
   onSelect,
+  onContextMenu,
 }: NodeCardProps) {
   // Node ids carry colons (`h:024e43d10901`), which have no place in a
   // fragment reference, so the clip path is named by React instead.
@@ -567,6 +770,7 @@ function NodeCard({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onDoubleClick={onDoubleClick}
+      {...(onContextMenu ? { onContextMenu } : {})}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();

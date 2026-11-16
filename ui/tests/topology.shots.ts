@@ -61,6 +61,56 @@ async function collectFrom(ids: string[]): Promise<void> {
   await waitForJob(started.job_id);
 }
 
+/**
+ * Real rates on the links, so the pictures show the load layer with real
+ * numbers in it rather than a drawing of "no rate" everywhere.
+ *
+ * Two reads a simulated minute apart are what makes a rate at all (the
+ * simulator's uptime moves in whole minutes, and a rate is a counter delta
+ * over an uptime delta), each one waited for as a job so the two really do
+ * straddle a minute. EDGE is left unmonitored and DS2 is taken off
+ * monitoring afterwards, which puts a link with no rate and a link with a
+ * stale one in the same picture as the measured ones — the three cases a
+ * screenshot has to be checked for.
+ */
+async function seedRates(devices: readonly { id: string; name: string }[]): Promise<void> {
+  const polled = ['Campus/DS1', 'Campus/DS2', 'Campus/AS1', 'Campus/AS2', 'Campus/AS3'];
+  for (const device of devices) {
+    const monitored = polled.includes(device.name);
+    await rpc('devices.update', {
+      id: device.id,
+      monitor: { enabled: monitored, icmp: monitored, snmp: false, interval_s: 1_800 },
+    });
+  }
+  const ids = devices.filter((device) => polled.includes(device.name)).map((device) => device.id);
+
+  const poll = async () => {
+    const started = await rpc<{ job_id: string }>('monitor.poll_now', { device_ids: ids });
+    await waitForJob(started.job_id);
+  };
+  const measured = async () => {
+    const rows = await rpc<{ device_id: string; out_bps: number | null }[]>('monitor.interfaces', {
+      limit: 5000,
+    });
+    return rows.some((row) => ids.includes(row.device_id) && (row.out_bps ?? 0) > 0);
+  };
+
+  await poll();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await new Promise((done) => setTimeout(done, 65_000));
+    await poll();
+    if (await measured()) break;
+  }
+
+  const ds2 = devices.find((device) => device.name === 'Campus/DS2');
+  if (ds2) {
+    await rpc('devices.update', {
+      id: ds2.id,
+      monitor: { enabled: false, icmp: false, snmp: true, interval_s: 5 },
+    });
+  }
+}
+
 test.beforeAll(async () => {
   test.setTimeout(900_000);
   uiDir = await mkdtemp(join(tmpdir(), 'nocturne-ui-'));
@@ -104,6 +154,8 @@ test.beforeAll(async () => {
     b: { name: 'ISP uplink', kind: 'cloud' },
     label: '100 Mb/s fibre',
   });
+
+  await seedRates(devices);
 
   const graph = await rpc<{ nodes: { id: string; address?: string }[] }>('topology.get', {
     include_endpoints: true,
@@ -170,6 +222,50 @@ for (const theme of THEMES) {
       .getByRole('button', { name: /cannot tell you/ })
       .click();
 
+    // ---------------------------------------------------------- the link load
+    // Zoomed in, which is where the numbers appear: the bars alone are what
+    // the fitted drawing above already shows.
+    await page.getByRole('button', { name: /Reset to 100%/ }).click();
+    await shoot(page, theme, 'load-zoomed');
+    await page.getByRole('button', { name: 'Fit to view' }).click();
+
+    // One link's load, in both directions, with where each number came from.
+    const loaded = page.locator('[data-testid^="load-"] path[data-band]').first();
+    if ((await loaded.count()) > 0) {
+      await loaded.click({ force: true });
+      await expect(selection.getByRole('heading', { name: 'Load' })).toBeVisible();
+      await shoot(page, theme, 'link-load');
+    }
+
+    // --------------------------------------------------------- from the map
+    // The right-click menu, which is how The Dude is used.
+    await node(page, 'Campus/AS1').click({ button: 'right' });
+    await expect(page.getByRole('menu', { name: 'Actions for Campus/AS1' })).toBeVisible();
+    await shoot(page, theme, 'node-menu');
+    await page.getByRole('menuitem', { name: 'Terminal' }).click();
+    const dock = page.getByRole('region', { name: 'Terminal on Campus/AS1' });
+    await expect(dock).toBeVisible({ timeout: 60_000 });
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const rows = [...document.querySelectorAll('.xterm-rows')].find(
+              (element) => (element as HTMLElement).offsetParent !== null,
+            );
+            return rows ? (rows.textContent ?? '') : '';
+          }),
+        { timeout: 60_000 },
+      )
+      .toContain('AS1');
+    await shoot(page, theme, 'terminal-from-the-map');
+    await dock.getByRole('button', { name: /^Close the session/ }).click();
+    await page.getByRole('button', { name: 'Close session' }).click();
+
+    // A node that cannot be given one, which says why where the button was.
+    await node(page, 'ISP uplink').click();
+    await expect(selection.getByTestId('no-terminal')).toBeVisible();
+    await shoot(page, theme, 'no-terminal');
+
     // ------------------------------------------------------------ 1280 x 720
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.getByRole('button', { name: 'Fit to view' }).click();
@@ -233,6 +329,35 @@ for (const theme of THEMES) {
     await expect(page.getByRole('dialog', { name: 'Links drawn by hand' })).toBeVisible();
     await shoot(page, theme, 'manual');
     await page.keyboard.press('Escape');
+
+    // ----------------------------------------------------------- a stale rate
+    // Last, deliberately: DS2 was taken off monitoring in the seed, so by the
+    // time the rest of these pictures have been taken its reading really is
+    // older than its own cadence allows — and that is what the drawing has to
+    // show as stale rather than as current.
+    const graph = await rpc<{
+      nodes: { id: string; name: string }[];
+      links: { id: string; a: { node: string }; b: { node: string } }[];
+    }>('topology.get', {});
+    const ds2 = graph.nodes.find((entry) => entry.name === 'Campus/DS2')?.id;
+    const edge = graph.nodes.find((entry) => entry.name === 'Campus/EDGE')?.id;
+    const stale = graph.links.find(
+      (entry) =>
+        (entry.a.node === ds2 && entry.b.node === edge) ||
+        (entry.a.node === edge && entry.b.node === ds2),
+    );
+    if (stale) {
+      await expect
+        .poll(
+          async () =>
+            page.locator(`g[data-link="${stale.id}"] path[data-age="stale"]`).count(),
+          { timeout: 150_000 },
+        )
+        .toBeGreaterThan(0);
+      await page.locator(`g[data-link="${stale.id}"] path`).first().click({ force: true });
+      await expect(selection.getByText('Stale').first()).toBeVisible();
+      await shoot(page, theme, 'link-load-stale');
+    }
 
     // -------------------------------------------------- with the assistant dock
     await openTopology(page, theme, true);

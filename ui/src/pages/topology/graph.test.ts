@@ -15,6 +15,8 @@ import {
   labelPorts,
   linkGeometry,
   linkSource,
+  labelBeside,
+  ribbonPath,
   nodeKindLabel,
   overlapping,
   positionsOf,
@@ -343,5 +345,51 @@ describe('what the drawing says about itself', () => {
   it('names a layer-3 switch the way the backend’s own drawing does', () => {
     expect(nodeKindLabel('l3_switch')).toBe('Layer-3 switch');
     expect(nodeKindLabel('cloud')).toBe('External');
+  });
+});
+
+
+describe('the lines a link’s load is drawn along', () => {
+  it('runs beside the wire, one direction each side of it', () => {
+    const a = { x: 0, y: 0 };
+    const b = { x: 400, y: 0 };
+    // Traced from a: a bar that grows from the start of the path grows from
+    // the end that is sending. Traced from b it is the other direction, and
+    // it lands on the other side of the wire by itself.
+    expect(ribbonPath(a, b, 0, 6)).toMatch(/^M [\d.]+ 6 L [\d.]+ 6$/);
+    expect(ribbonPath(b, a, 0, 6)).toMatch(/^M [\d.]+ -6 L [\d.]+ -6$/);
+    // Each starts at its own end of the line.
+    const aStart = Number(/^M ([\d.]+)/.exec(ribbonPath(a, b, 0, 6))?.[1]);
+    const bStart = Number(/^M ([\d.]+)/.exec(ribbonPath(b, a, 0, 6))?.[1]);
+    expect(aStart).toBeLessThan(bStart);
+  });
+
+  it('bows the same way as the wire it belongs to, rather than crossing it', () => {
+    const a = { x: 0, y: 0 };
+    const b = { x: 400, y: 0 };
+    const control = (path: string) => Number(/Q [\d.-]+ ([\d.-]+)/.exec(path)?.[1]);
+    const wire = control(linkGeometry(a, b, 20).path);
+    expect(wire).toBeGreaterThan(0);
+    // The same curve from either end, offset either side of it — and never
+    // on the far side of the wire, which would cross the line it labels.
+    expect(control(ribbonPath(a, b, 20, 6))).toBeGreaterThan(0);
+    expect(control(ribbonPath(b, a, -20, 6))).toBeGreaterThan(0);
+  });
+
+  it('draws a stack cable’s load along the loop itself, not beside it', () => {
+    const at = { x: 10, y: 10 };
+    expect(ribbonPath(at, at, 0, 6)).toBe(linkGeometry(at, at, 0, 0).path);
+  });
+
+  it('puts a direction’s number beside the middle of its own bar', () => {
+    const from = { x: 0, y: 0 };
+    const to = { x: 600, y: 0 };
+    const mid = { x: 300, y: 0 };
+    // Beside the middle, not near an end: the port names are near the ends,
+    // on the same side, and every link into one switch would otherwise put
+    // its number in the same place as the others.
+    expect(labelBeside(from, to, mid, 12)).toEqual({ x: 300, y: 12 });
+    // The other direction is on the other side of the same line.
+    expect(labelBeside(to, from, mid, 12)).toEqual({ x: 300, y: -12 });
   });
 });

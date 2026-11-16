@@ -351,6 +351,71 @@ export function linkGeometry(
   };
 }
 
+/**
+ * How far a load ribbon sits off the wire. Two of them, one per direction,
+ * either side of the line, close enough to read as belonging to it.
+ */
+export const RIBBON_OFFSET = 4.5;
+
+/**
+ * The line a direction's load bar is drawn along: the wire, moved sideways.
+ *
+ * It is traced *from* `fromCentre`, so a bar that grows from the start of the
+ * path grows from the end that is sending. Calling it with the ends swapped
+ * therefore gives the other direction — and lands it on the other side of the
+ * wire by itself, because the normal flips with the direction. The bow has to
+ * be negated to swap with it, or the mirrored curve would bend the wrong way
+ * and cross the line it belongs to.
+ */
+export function ribbonPath(
+  fromCentre: Point,
+  toCentre: Point,
+  bow: number,
+  offset: number,
+  selfIndex = 0,
+): string {
+  const geometry = linkGeometry(fromCentre, toCentre, bow, selfIndex);
+  // A cable from a device to itself is a loop; one bar along it is the most
+  // that can be read, and it is drawn on the loop itself.
+  if (fromCentre.x === toCentre.x && fromCentre.y === toCentre.y) return geometry.path;
+
+  const dx = geometry.b.x - geometry.a.x;
+  const dy = geometry.b.y - geometry.a.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / length) * offset;
+  const ny = (dx / length) * offset;
+  const a = { x: geometry.a.x + nx, y: geometry.a.y + ny };
+  const b = { x: geometry.b.x + nx, y: geometry.b.y + ny };
+  if (bow === 0) return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+
+  const midpoint = { x: (geometry.a.x + geometry.b.x) / 2, y: (geometry.a.y + geometry.b.y) / 2 };
+  const control = {
+    x: midpoint.x + (-dy / length) * (bow * 2 + offset),
+    y: midpoint.y + (dx / length) * (bow * 2 + offset),
+  };
+  return `M ${a.x} ${a.y} Q ${control.x} ${control.y} ${b.x} ${b.y}`;
+}
+
+/**
+ * Where a direction's number goes: beside the middle of its own bar, on that
+ * direction's own side of the line.
+ *
+ * The first attempt put it a third of the way along from the end that is
+ * sending, which reads well on a drawing of two devices and badly on a real
+ * one: the port names are near the ends too (and on the same side), so
+ * `no rate` was printed through `Gi0/0`, and every link into a distribution
+ * switch put its number in the same place as the others. Midpoints are as
+ * far apart as the links are. Which direction a number belongs to is carried
+ * by the side it is on — the same side as its own bar, which grows from the
+ * end that is sending.
+ */
+export function labelBeside(from: Point, to: Point, mid: Point, offset: number): Point {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return { x: mid.x + (-dy / length) * offset, y: mid.y + (dx / length) * offset };
+}
+
 /** How far apart parallel links between the same pair of nodes are fanned. */
 const PARALLEL_GAP = 20;
 
@@ -478,6 +543,15 @@ export function shortInterface(name: string | undefined): string {
   }
   return name;
 }
+
+/**
+ * The same table in lower case, long form first, for going the other way:
+ * `load.ts` joins a link's interface names to monitoring's own and has to
+ * expand a short name rather than miss the rate on that port.
+ */
+export const LONG_FORMS: readonly (readonly [long: string, short: string])[] = SHORT_FORMS.map(
+  ([long, short]) => [long.toLowerCase(), short.toLowerCase()] as const,
+);
 
 /** The extent of everything drawn, for the Viewport's fit. */
 export function sceneBounds(nodes: readonly Node[]): Bounds | null {

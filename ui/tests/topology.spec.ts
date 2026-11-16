@@ -113,6 +113,90 @@ async function seedCampus(): Promise<void> {
     b: { name: 'ISP uplink', kind: 'cloud' },
     label: '100 Mb/s fibre',
   });
+
+  await seedRates(devices);
+}
+
+/**
+ * Real interface rates on the links, measured by monitoring from the
+ * devices' own counters.
+ *
+ * Two reads are needed for a rate, and they have to straddle a simulated
+ * minute: the simulator reports its uptime in whole minutes, a rate is a
+ * counter delta over an *uptime* delta, and two reads inside one minute
+ * measure no interval at all and are recorded as a gap. Hence the wait, which
+ * is the same one the Monitoring spec pays.
+ *
+ * The fixture is uneven on purpose, because the four answers this screen has
+ * to keep apart are four different states of the data:
+ *
+ * * the campus switches are polled, so their links carry measured rates, and
+ *   the demo lab's traffic flows are asymmetrical, so the two directions of a
+ *   link really differ;
+ * * EDGE and the ISP router are not monitored at all, so the links at the top
+ *   of the drawing have no rate — which must not be drawn as idle;
+ * * DS2 is polled and then taken off monitoring with a five-second interval,
+ *   so its readings really are older than its own cadence allows and the
+ *   screen has to call them stale rather than current;
+ * * every device is given a half-hour interval first, so the scheduler does
+ *   not re-read the counters in the middle of a test and leave the drawing
+ *   showing a different number from the one the test just read.
+ */
+/**
+ * Polls until monitoring has really worked a rate out, rather than assuming
+ * that two polls a minute apart did. Each poll is waited for as a job, so the
+ * two readings are a whole simulated minute apart and the uptime delta
+ * between them is real; if the first pair still measures nothing (a poll that
+ * lands at the wrong end of a minute measures no interval at all), it tries
+ * again instead of leaving a later test to fail mysteriously.
+ */
+async function pollUntilMeasured(ids: readonly string[]): Promise<void> {
+  const poll = async () => {
+    const started = await rpc<{ job_id: string }>('monitor.poll_now', { device_ids: [...ids] });
+    await waitForJob(started.job_id);
+  };
+  const anyRate = async () => {
+    const rows = await rpc<{ device_id: string; out_bps: number | null }[]>('monitor.interfaces', {
+      limit: 5000,
+    });
+    return rows.some((row) => ids.includes(row.device_id) && (row.out_bps ?? 0) > 0);
+  };
+
+  await poll();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await new Promise((done) => setTimeout(done, 65_000));
+    await poll();
+    if (await anyRate()) return;
+  }
+  throw new Error('monitoring never measured a rate on the campus switches');
+}
+
+async function seedRates(devices: readonly { id: string; name: string }[]): Promise<void> {
+  const polled = ['Campus/DS1', 'Campus/DS2', 'Campus/AS1', 'Campus/AS2', 'Campus/AS3'];
+  const idOf = (name: string) => {
+    const device = devices.find((entry) => entry.name === name);
+    if (!device) throw new Error(`the demo lab has no ${name}`);
+    return device.id;
+  };
+
+  for (const device of devices) {
+    const monitored = polled.includes(device.name);
+    await rpc('devices.update', {
+      id: device.id,
+      monitor: { enabled: monitored, icmp: monitored, snmp: false, interval_s: 1_800 },
+    });
+  }
+
+  const ids = polled.map(idOf);
+  await pollUntilMeasured(ids);
+
+  // DS2 is now measured, and from here on nothing refreshes it: a device set
+  // to be read every five seconds whose last reading is a minute and a half
+  // old is not being watched, and its rates are not current.
+  await rpc('devices.update', {
+    id: idOf('Campus/DS2'),
+    monitor: { enabled: false, icmp: false, snmp: true, interval_s: 5 },
+  });
 }
 
 test.beforeAll(async () => {
@@ -541,5 +625,361 @@ test.describe('taking it away', () => {
     expect((await links(page)).filter((link) => link.source === 'drawn').length).toBe(2);
 
     expect(console_.messages).toEqual([]);
+  });
+});
+
+// -------------------------------------------------------------- the live map
+
+/** One row of the interface table monitoring keeps: the drawing's own source. */
+interface IfRow {
+  device_id: string;
+  name: string;
+  in_bps: number | null;
+  out_bps: number | null;
+  speed_bps: number | null;
+  at: number;
+}
+
+interface GraphEnd {
+  node: string;
+  interface?: string;
+}
+
+interface GraphLink {
+  id: string;
+  a: GraphEnd;
+  b: GraphEnd;
+  speed_bps?: number;
+}
+
+interface GraphNode {
+  id: string;
+  name: string;
+  device_id?: string;
+}
+
+interface GraphAnswer {
+  nodes: GraphNode[];
+  links: GraphLink[];
+}
+
+/** The rates as the backend has them, by device and interface. */
+async function rates(): Promise<Map<string, IfRow>> {
+  const rows = await rpc<IfRow[]>('monitor.interfaces', { limit: 5000 });
+  return new Map(rows.map((row) => [`${row.device_id}|${row.name.toLowerCase()}`, row]));
+}
+
+/** The load bars drawn for one link: the channel per direction and the bar in it. */
+function loadOf(page: Page, linkId: string) {
+  const group = page.locator(`[data-testid="load-${linkId}"]`);
+  return {
+    group,
+    tracks: group.locator('path[data-kind]'),
+    bars: group.locator('path[data-band]'),
+  };
+}
+
+/** Zoom to 100 %, where both directions' numbers are drawn. */
+async function zoomToFull(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /Reset to 100%/ }).click();
+}
+
+/** Selects one link by its id, whatever it looks like. */
+async function selectLink(page: Page, linkId: string): Promise<void> {
+  await page.locator(`g[data-link="${linkId}"] path`).first().click({ force: true });
+}
+
+test.describe('the load on the lines', () => {
+  test('draws what monitoring measured, in both directions, as the length of the bar', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    const graph = await rpc<GraphAnswer>('topology.get', {});
+    const measured = await rates();
+    const deviceOf = new Map(
+      graph.nodes.filter((node) => node.device_id).map((node) => [node.id, node.device_id as string]),
+    );
+    const sampleOf = (end: GraphEnd) => {
+      const device = deviceOf.get(end.node);
+      return device && end.interface
+        ? measured.get(`${device}|${end.interface.toLowerCase()}`)
+        : undefined;
+    };
+
+    // The DS1–AS1 uplink: both ends are polled, the demo lab's traffic flows
+    // up it, and the two cards are a layout rank apart, so the line is long
+    // enough on screen to carry what is drawn on it.
+    const idOf = (name: string) => graph.nodes.find((entry) => entry.name === name)?.id;
+    const ds1 = idOf('Campus/DS1');
+    const as1 = idOf('Campus/AS1');
+    const link = graph.links.find(
+      (entry) =>
+        (entry.a.node === ds1 && entry.b.node === as1) ||
+        (entry.a.node === as1 && entry.b.node === ds1),
+    );
+    expect(link, 'the fixture must have a DS1–AS1 link').toBeTruthy();
+    if (!link) return;
+    // …and monitoring must really have measured both of its ends, or the
+    // assertions below would be about nothing.
+    expect(sampleOf(link.a)?.out_bps, 'DS1 or AS1 was not measured').not.toBeNull();
+    expect(sampleOf(link.b)?.out_bps).not.toBeNull();
+
+    await openTopology(page);
+
+    const drawn = loadOf(page, link.id);
+    // One channel per direction, and a bar in each: both were measured.
+    await expect(drawn.tracks).toHaveCount(2);
+    await expect(drawn.bars).toHaveCount(2);
+
+    // The bar's length *is* the number: `pathLength` is 100, so the first
+    // figure of the dash pattern is the percentage, and it has to agree with
+    // the rate the backend measured over the speed the port reported.
+    const sample = sampleOf(link.a);
+    // The link's own speed first, then the port's: the same order the screen
+    // works it out in, and for this link the same number either way.
+    const speed = link.speed_bps ?? sample?.speed_bps ?? 0;
+    const expected = Math.max(1.6, ((sample?.out_bps ?? 0) / speed) * 100);
+    const pattern = await drawn.bars.first().getAttribute('stroke-dasharray');
+    expect(pattern, `dash pattern for ${link.id}`).toBeTruthy();
+    expect(Number(pattern?.split(' ')[0])).toBeCloseTo(expected, 1);
+
+    // And the panel says where each number came from, per direction.
+    await selectLink(page, link.id);
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await expect(panel.getByRole('heading', { name: 'Load' })).toBeVisible();
+    await expect(panel.getByText(/sent by/).first()).toBeVisible();
+    await expect(panel.getByText(/ of \d/).first()).toBeVisible();
+    await expect(panel.getByText(/Measured/).first()).toBeVisible();
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('a link nothing has measured says so, and is never drawn as idle', async ({ page }) => {
+    const console_ = watchConsole(page);
+    const graph = await rpc<GraphAnswer>('topology.get', {});
+    const measured = await rates();
+    const deviceOf = new Map(
+      graph.nodes.filter((node) => node.device_id).map((node) => [node.id, node.device_id as string]),
+    );
+    const known = (end: GraphEnd) => {
+      const device = deviceOf.get(end.node);
+      const row =
+        device && end.interface
+          ? measured.get(`${device}|${end.interface.toLowerCase()}`)
+          : undefined;
+      return row?.in_bps != null || row?.out_bps != null;
+    };
+
+    // EDGE and the ISP router are not monitored, so neither end of the link
+    // between them has ever been measured.
+    const link = graph.links.find((entry) => !known(entry.a) && !known(entry.b));
+    expect(link, 'the fixture must have a link neither end of which is measured').toBeTruthy();
+    if (!link) return;
+
+    await openTopology(page);
+
+    // The layer is on and drawing bars elsewhere, so what follows is not a
+    // test that passes because nothing is drawn at all.
+    await expect(page.locator('[data-testid^="load-"] path[data-band]').first()).toBeAttached();
+
+    const drawn = loadOf(page, link.id);
+    // Nothing on this one: no channel and no bar. An empty channel would say
+    // monitoring looked and found nothing moving, a different claim.
+    await expect(drawn.tracks).toHaveCount(0);
+    await expect(drawn.bars).toHaveCount(0);
+
+    await selectLink(page, link.id);
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await expect(panel.getByText('no rate has been measured for this direction')).toHaveCount(2);
+    await expect(
+      panel.getByText(/monitoring has not read these ports/),
+    ).toBeVisible();
+    // And the one number this screen must never show here.
+    await expect(panel.getByText('0%')).toHaveCount(0);
+    await expect(panel.getByText('idle')).toHaveCount(0);
+
+    // In writing on the line, too, once the zoom leaves room for it.
+    await zoomToFull(page);
+    await expect(page.locator('svg text', { hasText: 'no rate' }).first()).toBeAttached();
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('a reading older than its device’s own cadence is drawn stale, not live', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    const graph = await rpc<GraphAnswer>('topology.get', {});
+    const ds2 = graph.nodes.find((node) => node.name === 'Campus/DS2');
+    const edge = graph.nodes.find((node) => node.name === 'Campus/EDGE');
+    expect(ds2 && edge).toBeTruthy();
+    if (!ds2 || !edge) return;
+    // The only measurement this link has is DS2's, taken before DS2 was
+    // taken off monitoring: EDGE is not monitored, so there is nothing
+    // fresher to prefer.
+    const link = graph.links.find(
+      (entry) =>
+        (entry.a.node === ds2.id && entry.b.node === edge.id) ||
+        (entry.a.node === edge.id && entry.b.node === ds2.id),
+    );
+    expect(link, 'the fixture must have an EDGE–DS2 link').toBeTruthy();
+    if (!link) return;
+
+    await openTopology(page);
+
+    // The reading ages while the page is open; the drawing re-reckons it on
+    // its own, without a refetch, because time passing is not an event.
+    await expect
+      .poll(async () => loadOf(page, link.id).group.locator('path[data-age="stale"]').count(), {
+        message: 'waiting for DS2’s reading to pass its own cadence',
+        timeout: 150_000,
+      })
+      .toBeGreaterThan(0);
+
+    await selectLink(page, link.id);
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await expect(panel.getByText('Stale').first()).toBeVisible();
+    // It still says what was measured and when — stale is not unknown.
+    await expect(panel.getByText(/Measured/).first()).toBeVisible();
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('says when the load was measured, and can be switched off', async ({ page }) => {
+    const console_ = watchConsole(page);
+    await openTopology(page);
+
+    const asOf = page.getByTestId('load-as-of');
+    await expect(asOf).toContainText(/load measured/);
+
+    // Off: the bars go, and so does the line about them.
+    await page.getByRole('button', { name: 'Load' }).click();
+    await expect(page.locator('[data-testid^="load-"]')).toHaveCount(0);
+    await expect(asOf).toHaveCount(0);
+
+    // And it is remembered, which is what a toggle on a map has to do.
+    await page.reload();
+    await pageLoaded(page);
+    await expect(node(page, 'Campus/DS1')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-testid^="load-"]')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Load' }).click();
+    await expect(page.getByTestId('load-as-of')).toContainText(/load measured/);
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('the legend explains idle, no speed, no rate and stale apart from each other', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    await openTopology(page);
+
+    const legend = page.getByRole('region', { name: 'Legend' });
+    const load = legend.getByRole('list', { name: 'Link load' });
+    await expect(load.getByText('the bar is how much of the port speed is in use')).toBeVisible();
+    await expect(load.getByText('nothing has been measured — not the same as idle')).toBeVisible();
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+});
+
+test.describe('a session from the map', () => {
+  test.afterEach(async () => {
+    const open = await rpc<{ id: string }[]>('terminal.list');
+    for (const session of open) await rpc('terminal.close', { session_id: session.id });
+  });
+
+  test('a right-click gives a terminal on the device, in the backend’s own session', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    await openTopology(page);
+
+    await node(page, 'Campus/AS1').click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Actions for Campus/AS1' });
+    await expect(menu).toBeVisible();
+    await menu.getByRole('menuitem', { name: 'Terminal' }).click();
+
+    // The dock, under the drawing, with the device's own prompt in it.
+    const dock = page.getByRole('region', { name: 'Terminal on Campus/AS1' });
+    await expect(dock).toBeVisible({ timeout: 60_000 });
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const rows = [...document.querySelectorAll('.xterm-rows')].find(
+              (element) => (element as HTMLElement).offsetParent !== null,
+            );
+            return rows ? (rows.textContent ?? '') : '';
+          }),
+        { message: 'waiting for AS1’s prompt', timeout: 60_000 },
+      )
+      .toContain('AS1');
+
+    // It is one session, in the backend, on that device — not a second way in.
+    const sessions = await rpc<{ id: string; device_id?: string | null; state: string }[]>(
+      'terminal.list',
+    );
+    expect(sessions).toHaveLength(1);
+    const devices = await rpc<{ id: string; name: string }[]>('devices.list');
+    const as1 = devices.find((device) => device.name === 'Campus/AS1');
+    expect(sessions[0]?.device_id).toBe(as1?.id);
+
+    // Asking again lands in the session that is open rather than dialling the
+    // device twice: two prompts on one switch is how a person types into the
+    // wrong one.
+    await node(page, 'Campus/AS1').click();
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await expect(panel.getByRole('button', { name: 'Show the session' })).toBeVisible();
+    await panel.getByRole('button', { name: 'Show the session' }).click();
+    expect(await rpc<unknown[]>('terminal.list')).toHaveLength(1);
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('a node that cannot be given a session says why instead of offering a button', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    await openTopology(page);
+
+    // The far end of the drawn link is a name a person typed.
+    await node(page, 'ISP uplink').click();
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await expect(panel.getByTestId('no-terminal')).toContainText(/somebody typed/);
+    await expect(panel.getByRole('button', { name: 'Terminal' })).toBeDisabled();
+
+    // And the right-click menu says the same in the words a menu has room for.
+    await node(page, 'ISP uplink').click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Actions for ISP uplink' });
+    await expect(menu.getByRole('menuitem', { name: /Terminal — not a device/ })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await page.keyboard.press('Escape');
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('a lab device that is powered off says so rather than failing to connect', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    const labs = await rpc<{ id: string; name: string }[]>('labs.list');
+    const lab = labs.find((entry) => entry.name === 'Campus');
+    expect(lab).toBeTruthy();
+    if (!lab) return;
+
+    await rpc('labs.node.update', { lab_id: lab.id, node: 'AS3', powered: false });
+    try {
+      await openTopology(page);
+      await node(page, 'Campus/AS3').click();
+      const panel = page.getByRole('complementary', { name: 'Selection' });
+      await expect(panel.getByTestId('no-terminal')).toContainText(/powered off/);
+      await expect(panel.getByRole('button', { name: 'Terminal' })).toBeDisabled();
+      expect(console_.messages, backend.log()).toEqual([]);
+    } finally {
+      await rpc('labs.node.update', { lab_id: lab.id, node: 'AS3', powered: true });
+    }
   });
 });

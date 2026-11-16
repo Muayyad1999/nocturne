@@ -130,3 +130,24 @@
     font-size: 11px;
   }
 }
+
+/* The load key's samples: the same channel-and-bar the canvas draws. */
+.loadTrack {
+  stroke: var(--line-strong);
+  stroke-width: 3;
+  stroke-linecap: butt;
+}
+
+.loadTrack[data-kind='unscaled'] {
+  stroke-dasharray: 2 3;
+}
+
+.loadFill {
+  stroke: var(--ok);
+  stroke-width: 3;
+  stroke-linecap: butt;
+}
+
+.loadFill[data-state='stale'] {
+  stroke: var(--text-3);
+}
