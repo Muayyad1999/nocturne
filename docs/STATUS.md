@@ -207,12 +207,18 @@ raised by a real rule, a real change planned and applied, real syslog
 datagrams on the wire, a real lab collected from — and every one of them
 asserts the browser console is clean.
 
-One of them is not yet trustworthy. `terminal.spec.ts`'s "splits into panes
-and can type into both at once" passed three times out of three on its own
-and failed once in a full-suite run, so it is timing-sensitive under load
-rather than broken — which is exactly the failure that wastes a CI run and
-teaches people to press re-run. It is written down here rather than left for
-somebody to rediscover at a red build.
+One of them used to fail about once a suite, and chasing it was worth the
+hour. `terminal.spec.ts`'s "splits into panes and can type into both at
+once" passed on its own and failed in full runs, so the suspicion was the
+usual timing. It was not. Reproduced under deliberate CPU load — six busy
+loops on four cores, failing three times out of three — and made to print
+what the device had actually received, it turned out the keystrokes arrived
+**transposed**: `say TO-BOTH` reached the device as `sya TO-BOTH`,
+identically in both panes, which also proved the broadcast was correct and
+the typing was not. Playwright's `keyboard.type` with no delay does not
+guarantee ordering into xterm's input path on a loaded machine. Every test
+that types into a terminal now leaves 15 ms between keystrokes, and the two
+suites pass twenty out of twenty under the same load that broke them.
 
 Every screen was also looked at, in both themes, at 1440×900 and 1280×720
 with the assistant dock open and closed. That found about fifty things no

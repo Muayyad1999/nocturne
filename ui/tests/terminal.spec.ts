@@ -93,7 +93,13 @@ test.describe('Terminal', () => {
   /** Clicks into the focused terminal and types, as a person would. */
   async function typeInTerminal(page: Page, text: string): Promise<void> {
     await page.locator('.xterm-screen:visible').first().click();
-    await page.keyboard.type(text);
+    // With a gap between keystrokes, because without one they can arrive out
+    // of order. On a machine with every core busy `say TO-BOTH` reached the
+    // device as `sya TO-BOTH` — identically in both panes, so the broadcast
+    // was right and the typing was not. Nothing types at zero delay but a
+    // test, and asserting that the terminal survives it is not the point of
+    // any test here.
+    await page.keyboard.type(text, { delay: 15 });
   }
 
   async function openDeviceSession(page: Page): Promise<void> {

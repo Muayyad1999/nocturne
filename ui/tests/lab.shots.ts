@@ -145,7 +145,7 @@ for (const theme of THEMES) {
     await expect(page.getByRole('tab', { name: /AS1/ })).toBeVisible({ timeout: 30_000 });
     await page.locator('.xterm-screen:visible').first().click();
     for (const line of ['enable', 'terminal length 0', 'show vlan brief']) {
-      await page.keyboard.type(`${line}\r`);
+      await page.keyboard.type(`${line}\r`, { delay: 15 });
       await page.waitForTimeout(250);
     }
     await shoot(page, theme, 'console');

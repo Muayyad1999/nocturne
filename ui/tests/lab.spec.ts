@@ -76,7 +76,9 @@ async function expectOnScreen(page: Page, text: string): Promise<void> {
 async function typeConsole(page: Page, ...lines: string[]): Promise<void> {
   await page.locator('.xterm-screen:visible').first().click();
   for (const line of lines) {
-    await page.keyboard.type(`${line}\r`);
+    // A gap between keystrokes: without one they can arrive out of order
+    // on a busy machine. See `typeInTerminal` in terminal.spec.ts.
+    await page.keyboard.type(`${line}\r`, { delay: 15 });
     await page.waitForTimeout(90);
   }
 }

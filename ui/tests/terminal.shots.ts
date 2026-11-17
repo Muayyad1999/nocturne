@@ -72,7 +72,7 @@ async function connect(page: Page): Promise<void> {
   await expect(page.getByRole('tab', { name: /SW1-LAB/ })).toBeVisible();
   await page.locator('.xterm-screen:visible').first().click();
   for (const command of ['show version', 'say the device is answering', 'lines 12']) {
-    await page.keyboard.type(`${command}\r`);
+    await page.keyboard.type(`${command}\r`, { delay: 15 });
     await page.waitForTimeout(200);
   }
 }
@@ -109,7 +109,7 @@ for (const theme of THEMES) {
       await expect(page.getByRole('tab')).toHaveCount(2);
       await page.getByRole('button', { name: 'Move this session to a new pane' }).click();
       await page.locator('.xterm-screen:visible').last().click();
-      await page.keyboard.type('say a second console\r');
+      await page.keyboard.type('say a second console\r', { delay: 15 });
       await page.getByRole('button', { name: 'Broadcast' }).click();
       await shoot(page, theme, 'split-broadcast');
       await page.getByRole('button', { name: 'Stop' }).click();
@@ -136,7 +136,7 @@ for (const theme of THEMES) {
 
       // The find bar over a full screen of output.
       await page.locator('.xterm-screen:visible').first().click();
-      await page.keyboard.type('lines 400\r');
+      await page.keyboard.type('lines 400\r', { delay: 15 });
       await page.waitForTimeout(400);
       await page.getByRole('button', { name: 'Find in scrollback' }).first().click();
       await page.getByRole('textbox', { name: 'Find in scrollback' }).fill('line 003');
