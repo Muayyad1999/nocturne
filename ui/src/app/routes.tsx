@@ -47,6 +47,11 @@ export function createAppRouter() {
         screen('automation/:tab?', () => import('@/pages/automation')),
         screen('lab/:id?', () => import('@/pages/lab')),
         screen('ipam', () => import('@/pages/ipam')),
+        // The ISP edition's own screens. A build without the feature answers
+        // no `isp.*` method: the screen says so and the rail leaves the item
+        // out, rather than offering a page that errors.
+        screen('isp/customer/:id', () => import('@/pages/isp/CustomerRoute')),
+        screen('isp/:tab?', () => import('@/pages/isp')),
         screen('tools/:tool?', () => import('@/pages/tools')),
         screen('ops/:tab?', () => import('@/pages/ops')),
         screen('assistant', () => import('@/pages/assistant')),

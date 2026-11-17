@@ -1,12 +1,13 @@
 import { PanelLeftClose, PanelLeftOpen, Sparkles } from 'lucide-react';
 import { NavLink } from 'react-router';
+import { useRpc } from '@/api/hooks';
 import { Badge } from '@/design/Badge';
 import { Icon } from '@/design/Icon';
 import { Kbd } from '@/design/Kbd';
 import { LogoMark } from '@/design/LogoMark';
 import { Tooltip } from '@/design/Tooltip';
 import { formatCompact, formatCount } from '@/lib/format';
-import { DESTINATIONS, NAV_GROUPS, destination, type Destination } from '../destinations';
+import { NAV_GROUPS, destination, visibleDestinations, type Destination } from '../destinations';
 import { useLayout } from '../layout';
 import { useNavBadges, type NavBadge } from '../navBadges';
 import styles from './Nav.module.css';
@@ -45,6 +46,11 @@ function NavItem({ item, collapsed }: { item: Destination; collapsed: boolean })
 
 /** The nav rail: brand, grouped destinations, then assistant, settings and the collapse control. */
 export function Nav() {
+  // Which destinations this build has. One shared, cached read of
+  // `app.methods`: a feature crate that is not in this edition has no methods
+  // registered, and its item is not in the rail at all.
+  const methods = useRpc<string[]>('app.methods');
+  const destinations = visibleDestinations(methods.data);
   const collapsed = useLayout((state) => state.navCollapsed);
   const toggleNav = useLayout((state) => state.toggleNav);
   const dockOpen = useLayout((state) => state.dockOpen);
@@ -64,9 +70,11 @@ export function Nav() {
               {group.label}
             </h2>
             <ul>
-              {DESTINATIONS.filter((item) => item.group === group.id).map((item) => (
-                <NavItem key={item.id} item={item} collapsed={collapsed} />
-              ))}
+              {destinations
+                .filter((item) => item.group === group.id)
+                .map((item) => (
+                  <NavItem key={item.id} item={item} collapsed={collapsed} />
+                ))}
             </ul>
           </section>
         ))}

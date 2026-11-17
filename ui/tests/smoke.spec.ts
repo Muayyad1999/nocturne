@@ -57,13 +57,14 @@ test('the rail navigates, and a page says what it will be', async ({ page }) => 
   await expect(page.getByRole('heading', { level: 1, name: 'Lab' })).toBeVisible();
   await expect(page.getByText('This screen is not built yet')).toHaveCount(0);
 
-  // One that is not built says so, and never shows invented data. IPAM is
-  // the stub chosen because its backend is not written either, so it will be
-  // one for a while; as screens land this moves to whichever is still a stub,
-  // and when none is left it goes, along with the component behind it.
+  // This used to be where a screen that was not built said so, and IPAM was
+  // the chosen stub. No screen is a stub any more and the placeholder
+  // component is gone, so what is checked here is now the same as the two
+  // above: the rail reaches it and it shows the engine's answer.
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'IPAM' }).click();
   await expect(page).toHaveURL(/#\/ipam$/);
-  await expect(page.getByText('This screen is not built yet')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'IPAM' })).toBeVisible();
+  await expect(page.getByText('This screen is not built yet')).toHaveCount(0);
 
   // A route that does not exist is a screen, not a blank page.
   await goTo(page, '/nowhere');

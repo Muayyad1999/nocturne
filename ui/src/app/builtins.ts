@@ -7,20 +7,26 @@ import { Component, PanelLeft, Sparkles, SunMoon } from 'lucide-react';
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { useConnection } from '@/api/connection';
+import { useRpc } from '@/api/hooks';
 import type { ConnectionState, TransportKind } from '@/api/transport';
 import { useTheme } from '@/design/theme';
 import { registerCommand } from './CommandPalette/commands';
-import { DESTINATIONS } from './destinations';
+import { visibleDestinations } from './destinations';
 import { useLayout } from './layout';
 import { useStatusItem, type StatusItem } from './StatusBar/statusItems';
 
 /** Registers "Go to …" for every destination and the view toggles. */
 export function useBuiltinCommands(): void {
   const navigate = useNavigate();
+  // A destination the build cannot reach is not offered here either, so the
+  // palette never navigates to a screen that says the feature is missing.
+  const methods = useRpc<string[]>('app.methods');
+  const destinations = visibleDestinations(methods.data);
+  const reachable = destinations.map((item) => item.id).join(',');
 
   useEffect(() => {
     const unregister = [
-      ...DESTINATIONS.map((item) =>
+      ...destinations.map((item) =>
         registerCommand({
           id: `nav.${item.id}`,
           title: `Go to ${item.label}`,
@@ -72,7 +78,9 @@ export function useBuiltinCommands(): void {
     return () => {
       for (const off of unregister) off();
     };
-  }, [navigate]);
+    // `reachable` is the list as a string, so the commands are registered
+    // again when `app.methods` answers and not on every render.
+  }, [navigate, reachable]);
 }
 
 function engineStatus(state: ConnectionState, transport: TransportKind | null): StatusItem {

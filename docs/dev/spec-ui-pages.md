@@ -301,6 +301,29 @@ click) or *Add an API key* (Claude, OpenAI-compatible). Approval prompts
 (`approval_needed`) appear inline with Allow / Deny. Errors appear as a
 message with what to do, never as a dead spinner.
 
+## ISP — `features/isp.md` (the ISP edition only)
+
+Not in the free edition at all: the navigation item declares the method it
+needs (`isp.customers`) and is left out of the rail and the palette when the
+build does not answer it. Tabs: **Customers** (paged and filtered in the
+engine, joined with `isp.usage` and `isp.arrears` for what each was sold, is
+using and owes; a page per customer with their details, plans, invoices,
+payments, balance and ageing), **Invoices** (draft → issue → void/reissue in a
+drawer, with the lines' arithmetic and the payments against each; "Bill a
+period" previews and writes nothing until told otherwise, and issuing asks for
+the word to be typed), **Payments** (what was received, what it settled, and
+the rate it was taken at), **Arrears** (one aged report per currency, side by
+side), **Reports** (revenue, used against sold, oversubscription, margin per
+megabit) and **Tariffs and links**.
+
+Three rules the screens keep, which the money makes expensive to get wrong:
+an amount is formatted from its own currency's minor digits (`IQD` has none)
+and entered as whole minor units, never a float; a total across currencies is
+several figures, and one number only ever appears as a conversion at rates the
+person supplied, labelled as one; and a missing usage figure is a sentence
+saying which of the nine coverage reasons it is, never a zero. Nothing on
+these screens offers to suspend a service: arrears are a record.
+
 ## Settings — core + each feature's settings section
 
 Sections: **General** (theme, density, time format) · **Security** (vault

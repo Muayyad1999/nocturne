@@ -110,7 +110,7 @@ is a distribution decision rather than a licence check in the code.
 
 | Crate | Status | Tests | How it was checked |
 |---|---|---|---|
-| `nocturne-isp` | **done**, no interface yet | 58 | Subscribers, tariffs, subscriptions, invoices, payments, credit notes, arrears ageing, revenue, usage against what was sold, oversubscription and margin per megabit. 38 of the tests go through `App::rpc`. |
+| `nocturne-isp` | **done** | 58 | Subscribers, tariffs, subscriptions, invoices, payments, credit notes, arrears ageing, revenue, usage against what was sold, oversubscription and margin per megabit. 38 of the tests go through `App::rpc`. |
 
 What has been checked about it, specifically:
 
@@ -150,9 +150,31 @@ section; the same source with `--features isp` registers **447** — the same
 no `isp.` method string and no currency table. A tag builds both and the
 release refuses an artefact that is not the edition it is named for.
 
-Not built yet: the screens. The methods and their TypeScript types exist,
-`ui/src/api/types/isp.ts` among them, but an ISP cannot yet do any of this
-without calling the RPC surface directly.
+The screens are built (`ui/src/pages/isp/`): customers, invoices, payments,
+arrears, the four reports, and the tariffs and links, with a page per
+customer. They keep the edition's rules rather than restating them — an
+amount is formatted from its own currency's minor digits and entered as whole
+minor units, a total across currencies is several figures and there is no
+function in the screen's code that could add them, a row with no usage figure
+says which of the nine nothings it is in words, a billing run is a preview
+until it is explicitly told otherwise, and nothing anywhere offers to
+disconnect a customer. The free edition shows no sign of any of it: the
+navigation item declares the method it needs (`isp.customers`) and is left out
+when the build does not answer it, which is checked against a method list with
+the `isp.*` entries taken out of it.
+
+Checked: 57 unit tests over the screens' React-free modules (money, coverage,
+ageing, invoice lifecycle, the words about an account's state) and 9
+end-to-end tests against a real `nocturne-server --features isp` seeded
+through `/api/rpc` — a dinar customer and a dollar customer shown side by side
+and never summed, a run previewed with nothing written, a customer whose
+interface nobody has collected saying so in words, an issued invoice that
+offers no edit, a void-and-reissue, and a payment taken in dinars against a
+dollar invoice keeping the rate it was quoted at. Every screen was looked at
+in both themes; that found a duplicated page heading, a customer list that
+jumped back to the first page a moment after it opened, truncated coverage
+sentences, a device shown by its id, and an invoice row that could only be
+opened by double-clicking it (`ui/src/pages/isp/NOTES.md`).
 
 Driven by hand through a running ISP server, not only through its own tests:
 two customers, one billed in dinars and one in dollars; a tariff priced *per
@@ -169,7 +191,7 @@ against anything"), and so was one against an invoice still in draft.
 
 ## Interface
 
-**Done** — 864 unit tests, a production build with no warnings, design
+**Done** — 970 unit tests, a production build with no warnings, design
 tokens, both themes, about fifty components, the app shell (nav, header,
 status bar, assistant dock, command palette), and the RPC and event client
 with Tauri and HTTP transports.
@@ -177,13 +199,20 @@ with Tauri and HTTP transports.
 **No route is a stub.** Every screen in `docs/dev/spec-ui-pages.md` is built:
 Overview, Devices, Terminal, Topology, Monitoring (with Charts, Insights and
 Logs as tabs), Configuration, Changes, Automation, Lab, IPAM, Tools,
-Operations, Assistant and Settings.
+Operations, Assistant and Settings — and, in the ISP edition only, ISP.
 
-186 end-to-end tests in 19 files run the real interface against a real
+203 end-to-end tests in 20 files run the real interface against a real
 `nocturne-server`. They build real state rather than fixtures — a real alert
 raised by a real rule, a real change planned and applied, real syslog
 datagrams on the wire, a real lab collected from — and every one of them
 asserts the browser console is clean.
+
+One of them is not yet trustworthy. `terminal.spec.ts`'s "splits into panes
+and can type into both at once" passed three times out of three on its own
+and failed once in a full-suite run, so it is timing-sensitive under load
+rather than broken — which is exactly the failure that wastes a CI run and
+teaches people to press re-run. It is written down here rather than left for
+somebody to rediscover at a red build.
 
 Every screen was also looked at, in both themes, at 1440×900 and 1280×720
 with the assistant dock open and closed. That found about fifty things no

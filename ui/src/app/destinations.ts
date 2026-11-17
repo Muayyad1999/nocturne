@@ -11,6 +11,7 @@ import {
   GitPullRequestArrow,
   LayoutDashboard,
   Network,
+  Receipt,
   Server,
   Settings,
   Sparkles,
@@ -32,6 +33,13 @@ export interface Destination {
   group: DestinationGroup;
   /** Extra words that find it in the command palette. */
   keywords: string[];
+  /**
+   * An RPC method this destination needs. A build that does not answer it
+   * does not show the item at all — not greyed out, not "coming soon". It is
+   * how an edition that is assembled without a feature crate (the ISP
+   * feature, which is not in the free edition) shows no sign of it anywhere.
+   */
+  requires?: string;
 }
 
 /** The groups shown in the rail, in order. `system` items sit at the bottom. */
@@ -140,6 +148,26 @@ export const DESTINATIONS: readonly Destination[] = [
     keywords: ['incidents', 'handover', 'shift', 'reports', 'audit log'],
   },
   {
+    id: 'isp',
+    path: '/isp',
+    label: 'ISP',
+    icon: Receipt,
+    group: 'record',
+    keywords: [
+      'customers',
+      'subscribers',
+      'billing',
+      'invoices',
+      'payments',
+      'arrears',
+      'tariffs',
+      'revenue',
+      'margin',
+      'oversubscription',
+    ],
+    requires: 'isp.customers',
+  },
+  {
     id: 'assistant',
     path: '/assistant',
     label: 'Assistant',
@@ -161,4 +189,22 @@ export function destination(id: string): Destination {
   const found = DESTINATIONS.find((entry) => entry.id === id);
   if (!found) throw new Error(`Unknown destination "${id}"`);
   return found;
+}
+
+/**
+ * The destinations this build can actually reach, given the methods it
+ * answers (`app.methods`).
+ *
+ * `methods` is `undefined` while that call is still in flight, and a
+ * destination that declares `requires` is left out until the answer is in:
+ * an edition without the feature and an edition whose method list has not
+ * arrived yet look identical, and a paid feature appearing for a moment in
+ * the free edition's rail is the worse of the two mistakes.
+ */
+export function visibleDestinations(
+  methods: readonly string[] | undefined,
+): readonly Destination[] {
+  return DESTINATIONS.filter(
+    (entry) => entry.requires === undefined || (methods?.includes(entry.requires) ?? false),
+  );
 }

@@ -315,7 +315,13 @@ test.describe('rules, windows and channels', () => {
     const before = await rpc<unknown[]>('alerts.list', { limit: 2000 });
 
     await openApp(page, '/monitoring/rules', { backend });
-    await expect(page.getByRole('table', { name: 'Alert rules' }).locator('tbody tr')).toHaveCount(10);
+    const rules = page.getByRole('table', { name: 'Alert rules' }).locator('tbody tr');
+    // However many rules ship built in. The number grows whenever a feature
+    // adds one — service checks brought three — and this test is about what
+    // trying and saving a rule do, not about that count. What matters below
+    // is that trying changes nothing and saving adds exactly one.
+    await expect(rules.first()).toBeVisible();
+    const builtIn = await rules.count();
 
     await page.getByRole('button', { name: 'New rule' }).click();
     const drawer = page.getByRole('dialog', { name: 'New alert rule' });
@@ -336,7 +342,7 @@ test.describe('rules, windows and channels', () => {
     expect(after.length).toBe(before.length);
 
     await drawer.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByRole('table', { name: 'Alert rules' }).locator('tbody tr')).toHaveCount(11);
+    await expect(rules).toHaveCount(builtIn + 1);
     await expect(page.getByRole('cell', { name: 'Anything moving at all', exact: true })).toBeVisible();
 
     expect(console.messages, backend.log()).toEqual([]);

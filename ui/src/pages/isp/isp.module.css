@@ -1,0 +1,509 @@
+/*
+ * The ISP screens: a tab bar, a pane per tab, and a lot of money.
+ *
+ * Two rules the layout exists to serve. Amounts are tabular and monospaced so
+ * a column of them can be compared down the page (`.amount`), and a figure
+ * that does not exist is written in words, in prose type, so it can never be
+ * mistaken for a small number (`.words`).
+ */
+
+.tabs {
+  flex: none;
+  padding: 0 var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* A tab's body: its own scroll, its own padding. */
+.pane {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.scrollPane {
+  display: flex;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-16);
+  padding: var(--sp-16);
+}
+
+.toolbar {
+  flex: none;
+  padding: var(--sp-8) var(--sp-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.filter {
+  flex: none;
+  width: 150px;
+}
+
+.search {
+  flex: none;
+  width: 260px;
+}
+
+.tableWrap {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------------------- paging */
+
+.paging {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-12);
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------- money cells */
+
+.amount {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.amountMuted {
+  color: var(--text-3);
+}
+
+/* Several currencies: one line each, never added up. */
+.figures {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.figures li {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.figuresInline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Two amounts on one line are two figures, not a sequence of digits: the
+   separator is what keeps "150 000 IQD" and "250.00 USD" apart. */
+.figuresInline li + li::before {
+  margin-right: var(--sp-8);
+  color: var(--text-3);
+  content: '·';
+}
+
+.figuresInline li {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * A sentence where a figure would be. Prose type and a muted colour, so that
+ * "nobody has looked" cannot be read as a quantity.
+ */
+.words {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-style: italic;
+}
+
+.note,
+.quiet {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.quiet {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.warning {
+  margin: 0;
+  padding: var(--sp-8);
+  border-left: 2px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.error {
+  margin: 0;
+  padding: var(--sp-8);
+  border-left: 2px solid var(--crit);
+  background: var(--crit-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.success {
+  margin: 0;
+  padding: var(--sp-8);
+  border-left: 2px solid var(--ok);
+  background: var(--ok-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.list {
+  margin: var(--sp-4) 0 0;
+  padding-left: var(--sp-16);
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------ the preview banner */
+
+/*
+ * A billing run previews by default and writes nothing. That has to be the
+ * first thing in the dialog, in a block nobody can scroll past by accident.
+ */
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+}
+
+.previewTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+.written {
+  composes: preview;
+  border-style: solid;
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+/* ------------------------------------------------------------- sections */
+
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.panelBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  padding: var(--sp-12);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-12);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+}
+
+.cardTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-24);
+}
+
+.statGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 150px;
+}
+
+.statLabel {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.statValue {
+  composes: amount;
+  font-size: var(--fs-16);
+}
+
+/* ------------------------------------------------------------ the ageing */
+
+.buckets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bucket {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.bucketLabel {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.bucketCount {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* -------------------------------------------------------- customer detail */
+
+.detail {
+  /* Its own container, so the two columns answer to the width of the page
+     rather than to the window: the assistant dock takes 380px of it. */
+  container: ispdetail / inline-size;
+  display: flex;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-16);
+  padding: var(--sp-16);
+}
+
+.identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.identityCode {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-16);
+}
+
+@container (max-width: 900px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+
+.body {
+  container: ispbody / inline-size;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------------------ the lines */
+
+.lines {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-12);
+}
+
+.lines th {
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-3);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.lines td {
+  padding: var(--sp-6) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  vertical-align: top;
+}
+
+.lines td:last-child,
+.lines th:last-child {
+  text-align: right;
+}
+
+.lines tfoot td {
+  border-bottom: 0;
+  color: var(--text-1);
+  font-weight: var(--fw-semibold);
+}
+
+.lineDescription {
+  color: var(--text-1);
+}
+
+.lineSubtitle {
+  display: block;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+/* ---------------------------------------------------------------- forms */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-12);
+}
+
+.amountRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  gap: var(--sp-8);
+}
+
+.inlineFields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-8);
+}
+
+.rateRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--sp-8);
+}
+
+.scroll {
+  overflow: auto;
+  max-height: 300px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+/* A row of chips: tags, towers, coverage reasons. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The customer's name in a table, which is also the way into their page. */
+.rowLink {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowLink:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.rowSub {
+  display: block;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.inlineGroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+/*
+ * A one-column table of reasons (the customers a run left out). Its only
+ * cell is also its last one, and the last cell is right-aligned everywhere
+ * else in this stylesheet.
+ */
+.reasons td,
+.reasons td:last-child {
+  text-align: left;
+}

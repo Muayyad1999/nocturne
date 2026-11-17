@@ -51,6 +51,13 @@ export interface BackendOptions {
   uiDir?: string;
   /** Extra command-line arguments for the server. */
   args?: readonly string[];
+  /**
+   * Cargo features the server is built with (`['isp']` for the ISP edition).
+   * Only used when the binary is compiled here: a `NOCTURNE_SERVER_BIN`
+   * already has whatever it was built with, so a spec that needs a feature
+   * also has to check the methods are there.
+   */
+  features?: readonly string[];
 }
 
 function command(options: BackendOptions, dataDir: string): { bin: string; args: string[] } {
@@ -60,7 +67,11 @@ function command(options: BackendOptions, dataDir: string): { bin: string; args:
 
   const bin = process.env.NOCTURNE_SERVER_BIN;
   if (bin) return { bin, args };
-  return { bin: 'cargo', args: ['run', '-q', '-p', 'nocturne-server', '--', ...args] };
+  const features = options.features?.length ? ['--features', options.features.join(',')] : [];
+  return {
+    bin: 'cargo',
+    args: ['run', '-q', '-p', 'nocturne-server', ...features, '--', ...args],
+  };
 }
 
 async function stopProcess(child: ChildProcess): Promise<void> {
