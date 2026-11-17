@@ -110,7 +110,7 @@ is a distribution decision rather than a licence check in the code.
 
 | Crate | Status | Tests | How it was checked |
 |---|---|---|---|
-| `nocturne-isp` | **done**, no interface yet | 49 | Subscribers, tariffs, subscriptions, invoices, payments, arrears ageing, revenue, usage against what was sold, oversubscription and margin per megabit. 29 of the tests go through `App::rpc`. |
+| `nocturne-isp` | **done**, no interface yet | 58 | Subscribers, tariffs, subscriptions, invoices, payments, credit notes, arrears ageing, revenue, usage against what was sold, oversubscription and margin per megabit. 38 of the tests go through `App::rpc`. |
 
 What has been checked about it, specifically:
 
@@ -128,6 +128,15 @@ What has been checked about it, specifically:
   conversion rather than the ledger.
 * **A payment keeps the rate it settled at.** A 33,000 IQD payment against a
   $25 invoice at 1,320 still reads 1,320 after a later payment uses 1,500.
+* **A write-off is never a payment.** A credit note is its own document with
+  a required reason, in its own table rather than a negative payment — a
+  negative payment would be counted as revenue by every report that sums
+  payments. An invoice cleared by one reads `credited`, not `paid`, and one
+  part credited with nothing paid is still `issued`, because money is owed
+  and nobody has paid any of it. Voiding a credit note puts the debt back.
+  There is deliberately **no tax and no refund**: a tax model invented on an
+  operator's behalf is worse than none, and this crate has no way to know
+  whether money went back out of the business.
 * **It is bookkeeping and nothing else.** Arrears are tracked; no customer is
   disconnected. A test greps the crate for every way the core can reach a
   device and for the change pipeline's method names and fails if any appears
