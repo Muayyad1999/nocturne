@@ -581,14 +581,20 @@ async fn deleting_a_device_forgets_its_findings() {
     app.rpc("devices.delete", json!({"ids": [one]}))
         .await
         .unwrap();
-    // The watcher does the forgetting; give it the turn it needs.
-    for _ in 0..50 {
+    // The watcher does the forgetting; give it the turn it needs. The budget
+    // is a ceiling on a watcher that never ran, not an estimate of how long
+    // it takes: the loop leaves the moment the findings are gone, so making
+    // it generous costs a passing run nothing and spares a busy one.
+    for _ in 0..250 {
         if all_open(app).await.is_empty() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(all_open(app).await.is_empty());
+    assert!(
+        all_open(app).await.is_empty(),
+        "the findings of a deleted device were never forgotten"
+    );
 }
 
 #[tokio::test]

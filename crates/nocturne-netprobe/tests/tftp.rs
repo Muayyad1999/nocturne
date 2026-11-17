@@ -717,8 +717,12 @@ async fn duplicate_acknowledgements_do_not_duplicate_data() {
 #[tokio::test]
 async fn a_lost_acknowledgement_of_an_upload_is_sent_again() {
     let dir = tempfile::tempdir().unwrap();
+    // A long retransmission timeout on purpose: the test below asserts that a
+    // repeated block is acknowledged *at once* rather than after the server's
+    // own timer, so the two have to be far enough apart that a busy machine
+    // cannot be mistaken for the timer. At 1 s they were only 500 ms apart.
     let (_server, address, mut events) = start(TftpConfig {
-        timeout_ms: 1000,
+        timeout_ms: 8_000,
         ..config(dir.path())
     })
     .await;
@@ -736,8 +740,10 @@ async fn a_lost_acknowledgement_of_an_upload_is_sent_again() {
     let repeated = Instant::now();
     session.send(&client::data(1, &content[..512])).await;
     assert_eq!(session.receive().await.unwrap(), Received::Ack { block: 1 });
+    // Well inside the 8 s retransmission timeout: an acknowledgement that
+    // waited for the timer could not land here.
     assert!(
-        repeated.elapsed() < Duration::from_millis(500),
+        repeated.elapsed() < Duration::from_secs(4),
         "{:?}",
         repeated.elapsed()
     );

@@ -181,10 +181,16 @@ async fn a_host_is_a_device_too() {
 #[tokio::test]
 async fn typing_is_echoed_without_waiting_for_a_tick() {
     let app = app();
-    // One tick every two seconds: an echo that waits for one would be obvious.
+    // One tick every five seconds: an echo that waits for one takes seconds,
+    // and one that does not takes milliseconds. The gap between the two
+    // behaviours has to be much wider than what a busy machine adds, or the
+    // bound below stops being about the console and becomes a measurement of
+    // the runner — with a one-second tick there were only a few hundred
+    // milliseconds between "answered at once" and "waited for a tick".
+    const TICK_MS: u64 = 5_000;
     app.rpc(
         "settings.set",
-        json!({"section": "labs", "value": {"tick_ms": 1000}}),
+        json!({"section": "labs", "value": {"tick_ms": TICK_MS}}),
     )
     .await
     .unwrap();
@@ -205,14 +211,16 @@ async fn typing_is_echoed_without_waiting_for_a_tick() {
 
     let started = Instant::now();
     writer.send("show clock\r").await.unwrap();
+    // Read until the answer is complete or the tick interval runs out —
+    // waiting for the condition rather than for a fixed slice of the clock,
+    // so that the only thing the elapsed time below can mean is "this waited
+    // for a tick".
     let mut seen = String::new();
-    while started.elapsed() < Duration::from_millis(400) {
-        match tokio::time::timeout(Duration::from_millis(400), reader.recv()).await {
+    let answer_by = tokio::time::Instant::now() + Duration::from_millis(TICK_MS / 2);
+    while !seen.contains("UTC") {
+        match tokio::time::timeout_at(answer_by, reader.recv()).await {
             Ok(Some(Output::Data(bytes))) => seen.push_str(&String::from_utf8_lossy(&bytes)),
             _ => break,
-        }
-        if seen.contains("UTC") {
-            break;
         }
     }
     assert!(
@@ -224,7 +232,7 @@ async fn typing_is_echoed_without_waiting_for_a_tick() {
         "and the command answered without waiting for a tick: {seen:?}"
     );
     assert!(
-        started.elapsed() < Duration::from_millis(900),
+        started.elapsed() < Duration::from_millis(TICK_MS / 2),
         "it took {:?}, which is a tick's worth of waiting",
         started.elapsed()
     );

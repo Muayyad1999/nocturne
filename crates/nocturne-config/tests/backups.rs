@@ -595,6 +595,11 @@ async fn a_configuration_change_reported_by_the_log_feature_queues_a_backup() {
     );
 
     // The backup is debounced by a minute (the clock is paused, so no test waits for it).
+    //
+    // Bounded, because a loop with no deadline does not fail when the backup
+    // never starts — it hangs, and a hung job in CI says far less than a
+    // failure naming what never happened.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let job = loop {
         let started = jobs::list(&lab.app, &jobs::JobFilter::default()).expect("jobs");
         let system = started
@@ -602,7 +607,18 @@ async fn a_configuration_change_reported_by_the_log_feature_queues_a_backup() {
             .find(|job| job.kind == "config.backup" && job.origin == "system");
         match system {
             Some(job) => break jobs::wait(&lab.app, &job.id).await.expect("the job ends"),
-            None => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+            None => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a configuration change never started a system backup; the jobs \
+                     that did start were {:?}",
+                    started
+                        .iter()
+                        .map(|job| (job.kind.as_str(), job.origin.as_str()))
+                        .collect::<Vec<_>>()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
     };
     assert!(

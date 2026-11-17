@@ -385,6 +385,23 @@ async fn only_so_many_labs_run_at_once() {
     app.rpc("labs.start", json!({"id": ids[2]})).await.unwrap();
 }
 
+/// The lab's simulated clock, in microseconds.
+async fn sim_time(app: &nocturne_app::App, id: &str) -> u64 {
+    app.rpc("labs.get", json!({ "id": id })).await.unwrap()["sim_time"]
+        .as_u64()
+        .expect("a simulated time")
+}
+
+/// How far the lab's clock moves in `window` of real time at `speed`.
+async fn clock_advance(app: &nocturne_app::App, id: &str, speed: u64, window: Duration) -> u64 {
+    app.rpc("labs.speed", json!({"id": id, "speed": speed}))
+        .await
+        .expect("the speed is set");
+    let before = sim_time(app, id).await;
+    tokio::time::sleep(window).await;
+    sim_time(app, id).await - before
+}
+
 #[tokio::test]
 async fn speed_drives_the_clock_and_zero_pauses_it() {
     let app = app();
@@ -405,17 +422,27 @@ async fn speed_drives_the_clock_and_zero_pauses_it() {
         .unwrap();
     assert_eq!(paused, still, "a paused lab's clock does not move");
 
-    app.rpc("labs.speed", json!({"id": id, "speed": 16}))
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let fast = app.rpc("labs.get", json!({ "id": id })).await.unwrap()["sim_time"]
-        .as_u64()
-        .unwrap();
+    // `speed` is a multiple of real time, and the honest way to assert a
+    // multiple is to compare two speeds against each other rather than one
+    // speed against a wall clock. A tick advances the simulator by
+    // `tick_ms × speed` microseconds, and missed ticks are delayed rather
+    // than caught up (`runtime::ticker`), so starving the tick task drags
+    // *any* single speed towards real time: at 16× a runner that gives the
+    // task an eighth of the turns it asked for looks exactly like 2×, and a
+    // test comparing one speed against the clock would be measuring the
+    // runner. Two windows taken moments apart on the same machine are
+    // starved alike, so the ratio between them survives a busy one.
+    const WINDOW: Duration = Duration::from_millis(500);
+    let at_one = clock_advance(&app, &id, 1, WINDOW).await;
+    let at_sixteen = clock_advance(&app, &id, 16, WINDOW).await;
     assert!(
-        fast - still > 1_000_000,
-        "16× should pass far more than a second of simulated time in 300 ms, got {}",
-        fast - still
+        at_one > 0,
+        "a speed above zero restarts the clock, and at 1× it moved {at_one} µs in {WINDOW:?}"
+    );
+    assert!(
+        at_sixteen > at_one * 4,
+        "16× must pass several times the simulated time 1× does in the same window, \
+         and passed {at_sixteen} µs against {at_one} µs"
     );
     assert_eq!(
         app.rpc("labs.speed", json!({"id": id, "speed": 100}))

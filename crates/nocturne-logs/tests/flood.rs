@@ -129,13 +129,100 @@ fn counters(status: &Value) -> (u64, u64, u64) {
     )
 }
 
-/// Wait until the storm is over: the counters have stopped moving, the
-/// queue is empty, and everything received is accounted for.
+/// How long a storm is given to finish before a test here calls it stuck.
 ///
-/// "Accounted for" alone is not enough to wait on — it is momentarily true
-/// between two batches, while the sender is still going.
+/// This is the one place a wall clock decides anything in this file: it bounds
+/// a hang, it does not measure the machine, so it sits far above what any of
+/// these storms needs on hardware anybody would use.
+const PATIENCE: Duration = Duration::from_secs(90);
+
+/// Once every line has been read off the socket and the queue is empty, the
+/// only thing that can still be outstanding is one batch between leaving the
+/// queue and being committed — milliseconds of work. So from that moment the
+/// counters get this long to add up, and then have to. It means a counter that
+/// does not add up says so in seconds rather than making CI wait out the whole
+/// of `PATIENCE` for the same answer.
+const ACCOUNTING_GRACE: Duration = Duration::from_secs(10);
+
+/// Wait until the receiver has seen all `sent` lines and accounted for every
+/// one of them.
+///
+/// Over TCP the number is known exactly — TCP does not lose lines — so the end
+/// of the storm is a *condition* and not a moment to guess at. Guessing was
+/// the bug: the helper used to watch for the counters to stand still for six
+/// polls (300 ms) and call that the end. On a runner whose cores are all busy
+/// the socket reader can be off the CPU for longer than that in the middle of
+/// a storm, so "settled" fired while tens of thousands of lines were still
+/// sitting in the kernel's receive buffer — and `received == sent` then failed
+/// for a receiver that was about to see every one of them.
+async fn settled_at(app: &nocturne_app::App, sent: u64) -> Value {
+    let deadline = Instant::now() + PATIENCE;
+    let mut accounting_by: Option<Instant> = None;
+    loop {
+        let status = app
+            .rpc("logs.status", Value::Null)
+            .await
+            .expect("the status is readable");
+        let (received, stored, dropped) = counters(&status);
+        let queued = status["syslog"]["queued"].as_u64();
+        let rows = status["store"]["rows"].as_u64();
+        let all_read = received == sent && queued == Some(0);
+        let accounted = stored + dropped == received;
+        // `logs.status` reads the row count out of the database *before* it
+        // reads the in-memory counters, so a batch that commits between the
+        // two is in `stored` and not yet in `store.rows`: the payload claims
+        // more lines stored than the database holds. Waiting for the two to
+        // agree is waiting for a snapshot that is internally consistent,
+        // which is what every assertion below is about. Without it a caller
+        // could be handed the one payload in the run that contradicts
+        // itself — which is exactly how this test failed under load.
+        let consistent = rows == Some(stored);
+        if all_read && accounted && consistent {
+            return status;
+        }
+        if all_read {
+            let grace = *accounting_by.get_or_insert_with(|| Instant::now() + ACCOUNTING_GRACE);
+            assert!(
+                Instant::now() < grace,
+                "every line has been read off the socket and the queue is empty, but \
+                 {ACCOUNTING_GRACE:?} later the status still does not add up: {received} \
+                 received, {stored} stored, {dropped} dropped, {} rows in the database. \
+                 {}: {status:#}",
+                rows.unwrap_or_default(),
+                if accounted {
+                    "What the counters claim is stored is not what the database holds"
+                } else {
+                    "Some lines are in neither the stored nor the dropped column, so one \
+                     of the counters is not telling the truth"
+                },
+            );
+        } else {
+            accounting_by = None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waited {PATIENCE:?} for the storm to finish and it did not: {received} of \
+             {sent} lines received, {stored} stored, {dropped} dropped, {} still queued \
+             — still waiting for {}: {status:#}",
+            queued.unwrap_or_default(),
+            if received < sent {
+                "the rest of the lines to be read off the socket"
+            } else {
+                "the writer to drain the queue"
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Wait until the storm is over when the number sent is *not* knowable: over
+/// UDP the kernel discards whatever will not fit in the socket buffer and the
+/// receiver never sees it, so the counters standing still has to do. This one
+/// waits for a much longer quiet than a stalled reader can produce, and what
+/// a caller may assert afterwards is the invariant between the counters rather
+/// than a total.
 async fn settled(app: &nocturne_app::App) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + PATIENCE;
     let mut last = u64::MAX;
     let mut still = 0;
     loop {
@@ -147,14 +234,19 @@ async fn settled(app: &nocturne_app::App) -> Value {
         let quiet = received == last
             && received > 0
             && stored + dropped == received
-            && status["syslog"]["queued"].as_u64() == Some(0);
+            && status["syslog"]["queued"].as_u64() == Some(0)
+            // The same internally-consistent snapshot `settled_at` waits for:
+            // the row count in a status payload is read before the counters,
+            // so the two disagree while a batch is committing.
+            && status["store"]["rows"].as_u64() == Some(stored);
         still = if quiet { still + 1 } else { 0 };
-        if still >= 6 {
+        // Two seconds of nothing moving, not three hundred milliseconds of it.
+        if still >= 40 {
             return status;
         }
         assert!(
             Instant::now() < deadline,
-            "the receiver never settled: {status:#}"
+            "waited {PATIENCE:?} and the receiver never went quiet: {status:#}"
         );
         last = received;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -193,7 +285,10 @@ async fn a_storm_that_outruns_the_disk_is_dropped_and_counted_not_buffered() {
     let started = Instant::now();
     let sent = blast_tcp(tcp, &lines, 20_000).await;
     blocked.join().expect("the holder finishes");
-    let status = settled(app).await;
+    // Every line was written to the socket and the connection was closed, so
+    // the receiver *will* see all of them; the test waits for that rather than
+    // reading the counters at a moment of its own choosing.
+    let status = settled_at(app, sent as u64).await;
     let elapsed = started.elapsed();
 
     let (received, stored, dropped) = counters(&status);
@@ -201,6 +296,7 @@ async fn a_storm_that_outruns_the_disk_is_dropped_and_counted_not_buffered() {
         "tcp storm: sent {sent}, received {received}, stored {stored}, dropped {dropped} in {elapsed:?}"
     );
 
+    // Waited for above, so this is a restatement rather than a race.
     assert_eq!(
         received, sent as u64,
         "TCP does not lose lines, so every one of them was seen: {status:#}"
@@ -219,10 +315,10 @@ async fn a_storm_that_outruns_the_disk_is_dropped_and_counted_not_buffered() {
         status["syslog"]["queued"].as_u64().unwrap() <= 200,
         "the queue never grows past its limit: {status:#}"
     );
-    assert!(
-        elapsed < Duration::from_secs(60),
-        "the storm must not take minutes: {elapsed:?}"
-    );
+    // How long the storm took is bounded by `PATIENCE` above, which fails
+    // with the counters and what they were still waiting for. A second,
+    // tighter wall-clock bound here would only add a way to go red on a busy
+    // machine with a worse message, so there is none.
 
     // What the status claims is stored is what is in the database, and all
     // of it is searchable.
@@ -266,7 +362,7 @@ async fn a_hundred_thousand_lines_are_written_in_batches_and_stay_searchable() {
 
     let started = Instant::now();
     let sent = blast_tcp(tcp, &lines, 100_000).await;
-    let status = settled(app).await;
+    let status = settled_at(app, sent as u64).await;
     let elapsed = started.elapsed();
 
     let (received, stored, dropped) = counters(&status);
@@ -278,22 +374,27 @@ async fn a_hundred_thousand_lines_are_written_in_batches_and_stay_searchable() {
 
     assert_eq!(received, sent as u64, "{status:#}");
     assert_eq!(stored + dropped, received, "{status:#}");
+    // Not a throughput claim: `try_send` only refuses once the queue is full,
+    // so whatever the writer's speed, the first 50,000 lines are taken and
+    // every line taken is eventually stored. A slow machine drops *more* of
+    // the rest, never fewer of these.
     assert!(
         stored >= 50_000,
         "the queue absorbs its whole depth before anything is dropped: {status:#}"
     );
     assert_eq!(status["store"]["rows"].as_u64().unwrap(), stored);
-    assert!(
-        elapsed < Duration::from_secs(120),
-        "a hundred thousand lines must not take minutes: {elapsed:?}"
-    );
+    // How long it took is bounded by `PATIENCE` inside `settled_at`, which
+    // fails saying what it was still waiting for.
 
-    // A query over a hundred thousand rows is still a query.
+    // A query over a hundred thousand rows is still a query. The bound is a
+    // ceiling, not a target: it catches a query that forgot its index and
+    // went looking at every row, and is set well above anything a loaded
+    // runner adds to one that did not.
     let search = Instant::now();
     let found = query(app, json!({"text": "UPDOWN", "limit": 100})).await;
     assert_eq!(found.len(), 100);
     assert!(
-        search.elapsed() < Duration::from_secs(5),
+        search.elapsed() < Duration::from_secs(30),
         "searching took {:?}",
         search.elapsed()
     );
@@ -340,13 +441,16 @@ async fn a_sustained_rate_loses_nothing() {
     }
     stream.shutdown().await.expect("closed");
 
-    let status = settled(app).await;
+    let status = settled_at(app, total as u64).await;
     let (received, stored, dropped) = counters(&status);
     eprintln!(
         "sustained: sent {total}, received {received}, stored {stored}, dropped {dropped} in {:?}",
         started.elapsed()
     );
     assert_eq!(received, total as u64);
+    // Also not a throughput claim: eight thousand lines fit inside the default
+    // 50,000-line queue even if the writer never ran at all, so nothing here
+    // may be dropped however busy the machine is.
     assert_eq!(stored, total as u64, "nothing was dropped: {status:#}");
     assert_eq!(dropped, 0);
     assert_eq!(status["store"]["rows"].as_u64().unwrap(), stored);

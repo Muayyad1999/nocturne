@@ -166,7 +166,12 @@ async fn silent_addresses_are_not_reported_and_do_not_take_forever() {
         let address: std::net::Ipv4Addr = host.address.parse().unwrap();
         assert_eq!(address.octets()[..3], [198, 51, 100], "{host:?}");
     }
-    assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+    // "Do not take forever" means the sweep probes in parallel rather than
+    // address by address: 62 addresses, two echo rounds of 250 ms and then a
+    // TCP fallback, is a second or so at the default concurrency of 128 and
+    // over half a minute if it were serialised. The bound sits between the
+    // two with room on both sides, rather than a whisker above the fast one.
+    assert!(elapsed < Duration::from_secs(20), "{elapsed:?}");
 }
 
 #[tokio::test]

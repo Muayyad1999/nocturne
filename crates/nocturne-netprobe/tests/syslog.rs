@@ -223,8 +223,22 @@ async fn hostile_input_does_not_disturb_the_listener() {
         }
     }
     drop(endless);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    while messages.try_recv().is_ok() {}
+    // Drain whatever all of that junk produced, by waiting for the parser to
+    // go quiet rather than guessing how long it needs. A fixed pause and one
+    // non-blocking sweep left some of it in the channel on a machine that was
+    // busy, and the assertion below then read one of those messages instead
+    // of the one it had just sent — which looked like a listener that had
+    // stopped parsing.
+    let quiet_by = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::timeout(Duration::from_millis(250), messages.recv())
+        .await
+        .is_ok()
+    {
+        assert!(
+            tokio::time::Instant::now() < quiet_by,
+            "the junk never stopped producing messages"
+        );
+    }
 
     // Still listening on both, still parsing correctly.
     socket

@@ -374,7 +374,35 @@ async fn cancelling_a_scan_stops_it_sending_and_keeps_what_it_already_found() {
         started["scan_id"].as_str().unwrap().to_string(),
         started["job_id"].as_str().unwrap().to_string(),
     );
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    // Cancel in the middle, and make "the middle" a condition rather than a
+    // guess at the clock: wait until the scan has found something and is
+    // still going. A fixed sleep here decided both of the assertions below by
+    // how busy the machine was — too slow and nothing had been found yet, too
+    // fast and the scan was already over, and both read as a broken cancel.
+    // The fake probe sleeps 40 ms and the scan runs two at a time, so 40
+    // addresses cannot be done inside 800 ms however fast the machine is.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let scan = lab
+            .app
+            .rpc("discovery.scan_get", json!({"scan_id": &scan_id}))
+            .await
+            .unwrap();
+        let found = scan["hosts"].as_array().unwrap().len();
+        let sent = probes.sent_of("echo").len();
+        // Half way at the outside, so that the probes still in flight when
+        // the cancel lands cannot take the total to 40 either.
+        if found > 0 && sent <= 20 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "waited for the scan to be underway and to have found something to keep, \
+             and it never was: {found} found, {sent} of 40 probes sent, state {}",
+            scan["scan"]["state"]
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     assert_eq!(
         lab.app
             .rpc("jobs.cancel", json!({"id": job_id}))
@@ -386,7 +414,10 @@ async fn cancelling_a_scan_stops_it_sending_and_keeps_what_it_already_found() {
     assert_eq!(job.state, JobState::Cancelled);
 
     let sent_at_cancel = probes.sent_of("echo").len();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The job has already reported Cancelled, so nothing more is coming; this
+    // window is there to catch a cancel that only stopped the reporting and
+    // left the queue draining. Widening it can only make the check stricter.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
         probes.sent_of("echo").len(),
         sent_at_cancel,

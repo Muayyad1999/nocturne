@@ -414,14 +414,23 @@ async fn the_canvas_is_told_what_moves() {
     let id = lab["id"].as_str().unwrap().to_string();
     let mut events = app.subscribe();
 
-    // Background flows keep the rates moving, so ticks keep arriving.
+    // Background flows keep the rates moving, so ticks keep arriving. Wait
+    // for the second one rather than counting how many fit in five seconds —
+    // how many that is, is the runner's answer, not the lab's, and a loaded
+    // one delivering only the first read as a lab that had stopped reporting.
     let mut ticks = 0;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline && ticks < 2 {
-        if let Ok(Ok(event)) = tokio::time::timeout(Duration::from_secs(3), events.recv()).await
-            && event.topic == "labs.tick"
-            && event.payload["lab_id"] == id.as_str()
-        {
+    // `labs.tick` is published at most every 250 ms, so two of them are half
+    // a second's work; thirty seconds is a ceiling on a lab that has stopped
+    // reporting, not an estimate of how long two ticks take.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while ticks < 2 {
+        let event = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("only {ticks} of 2 ticks arrived: a running lab must keep reporting")
+            })
+            .expect("the event bus stayed open");
+        if event.topic == "labs.tick" && event.payload["lab_id"] == id.as_str() {
             assert!(event.payload["sim_time"].as_u64().unwrap() > 0);
             let links = event.payload["links"].as_array().unwrap();
             assert!(!links.is_empty());

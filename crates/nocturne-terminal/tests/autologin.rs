@@ -16,6 +16,17 @@ use serde_json::json;
 /// a loaded machine.
 const SETTLED: Duration = Duration::from_millis(1500);
 
+/// How long the quiet device below stays quiet.
+///
+/// The test watches part of that silence and asserts that nothing was typed
+/// into it. That only means anything while the silence lasts, so it has to be
+/// much longer than the window being watched: with the two a factor of two
+/// apart, a sleep that overshot — which a runner with every core busy does —
+/// ran past the end of the silence, the real login dialogue began, the
+/// password was typed exactly as it should be, and the test called that a
+/// leak.
+const SILENCE: Duration = Duration::from_secs(6);
+
 /// Everything the console was told, once it has had time to be told it.
 async fn lines_after_settling(heard: &common::Heard) -> Vec<String> {
     tokio::time::sleep(SETTLED).await;
@@ -72,12 +83,14 @@ async fn a_banner_that_mentions_a_password_is_not_a_password_prompt() {
                 },
             ),
             // The banner's last line ends with the word and the device then
-            // falls silent for longer than a prompt has to stand still.
+            // falls silent for much longer than a prompt has to stand still —
+            // long enough that the window the test watches during cannot run
+            // past the end of the silence on a machine whose sleeps overshoot.
             (
                 "PAUSED",
                 Script {
                     banner: "\r\nNOTICE: rotate your Password:\r\n".into(),
-                    after_pause: Some((SETTLED, String::new())),
+                    after_pause: Some((SILENCE, String::new())),
                     ..Script::default()
                 },
             ),
@@ -93,13 +106,20 @@ async fn a_banner_that_mentions_a_password_is_not_a_password_prompt() {
     assert_eq!(lab.heard("INLINE").lines(), ["admin", SECRET]);
 
     let paused = session_id(&open_device(app, &lab.id("PAUSED")).await.expect("open"));
-    // While the device is quiet after that banner, nothing may be typed.
-    tokio::time::sleep(SETTLED / 2).await;
-    assert!(
-        lab.heard("PAUSED").lines().is_empty(),
-        "answered a banner: {:?}",
-        lab.heard("PAUSED").lines()
-    );
+    // While the device is quiet after that banner, nothing may be typed. The
+    // window is watched throughout rather than only at the end, so the first
+    // thing typed is caught whenever in the silence it happens — and it is
+    // comfortably shorter than the silence, so reaching the end of it is not
+    // a race with the login dialogue starting.
+    let watch_until = tokio::time::Instant::now() + SETTLED;
+    while tokio::time::Instant::now() < watch_until {
+        assert!(
+            lab.heard("PAUSED").lines().is_empty(),
+            "answered a banner: {:?}",
+            lab.heard("PAUSED").lines()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     events.wait_for(&paused, "SW1>").await;
     assert_eq!(lab.heard("PAUSED").lines(), ["admin", SECRET]);
 }

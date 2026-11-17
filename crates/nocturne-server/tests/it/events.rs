@@ -248,8 +248,22 @@ async fn the_server_pings_and_keeps_clients_that_answer() {
             ),
         }
     }
-    // Three idle timeouts have passed, and pings came roughly every 150 ms.
-    assert!((6..=19).contains(&pings), "{pings} pings in 2.7 s");
+    // Three idle timeouts have passed and the client was never dropped —
+    // which the loop above would have caught, because a drop ends the stream
+    // and lands in the `None` arm.
+    //
+    // The guarantee is that the server keeps pinging a client that answers and
+    // keeps it. How *many* pings fit in 2.7 s is the scheduler's business: the
+    // interval is a floor, so a busy runner can only deliver fewer, and the
+    // old lower bound of six was a bet on the machine managing one every
+    // 450 ms. The upper bound is the one worth keeping — a timer that fired in
+    // a loop rather than on its interval would sail past it, and no amount of
+    // load can make a 150 ms interval produce more than eighteen in 2.7 s.
+    assert!(
+        pings >= 2,
+        "{pings} pings in 2.7 s: the server stopped pinging"
+    );
+    assert!(pings <= 19, "{pings} pings in 2.7 s, at a 150 ms interval");
 
     server.app.publish("keepalive.test", &json!(1));
     assert_eq!(
@@ -269,6 +283,15 @@ async fn a_silent_client_is_dropped() {
     // waiting for the answer to its close frame (it waits a second): a client that only
     // starts reading after that window finds the socket gone, which proves nothing about
     // *why* it was dropped.
+    //
+    // This sleep cannot be turned into a wait for a condition, and it is the
+    // one thing left in this file that a loaded machine can upset. Reading is
+    // what the test must not do — the client library answers a ping the moment
+    // the stream is polled, and a client that answers is a client the server
+    // is right to keep — so there is nothing to poll. The window it has to
+    // land in is `ws_idle_timeout` (0.9 s, configured above) to that plus
+    // `events::CLOSE_TIMEOUT` (1 s, not configurable), and 1.2 s sits 300 ms
+    // into a 1 s window. Both ends are timers the runner can delay.
     tokio::time::sleep(Duration::from_millis(1_200)).await;
 
     // What the server sent meanwhile: pings, then the reason, then the end of the stream.
@@ -282,10 +305,21 @@ async fn a_silent_client_is_dropped() {
     };
     assert_eq!(close.code, CloseCode::Policy);
     assert!(close.reason.contains("no traffic"), "{}", close.reason);
-    // Dropped at the idle timeout (0.9 s): the pings sent until then arrived, none after.
-    // Were the client not dropped, the pings would simply keep coming and the read above
-    // would time out waiting for a close frame.
-    assert!((3..=8).contains(&pings), "{pings} pings before the drop");
+    // The close frame above is the whole claim: the server noticed the silence
+    // and said why it was closing. The loop that found it also establishes
+    // that the pings stopped, because a server that kept pinging would never
+    // have sent one and the read would have timed out instead.
+    //
+    // How many pings fit in the 0.9 s before the drop is the scheduler's
+    // business: the interval is a floor, so a busy runner delivers fewer, and
+    // a lower bound of three was a bet on it managing one every 300 ms. The
+    // upper bound stays — at a 150 ms interval nothing can produce more than
+    // this inside the idle timeout, so a ping loop still fails here.
+    assert!(
+        pings >= 1,
+        "the server never pinged before dropping the client"
+    );
+    assert!(pings <= 8, "{pings} pings before the drop");
 
     // The connection is really gone, not just marked.
     let end = within("the end of the stream", async {

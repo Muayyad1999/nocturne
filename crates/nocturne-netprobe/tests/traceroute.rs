@@ -120,12 +120,56 @@ async fn an_unanswered_trace_stops_at_max_hops_within_its_time_budget() {
         "in TTL order, no gaps"
     );
     for hop in &report.hops {
-        assert_eq!(hop.rtts_ms.len(), 2, "{hop:?}");
+        // How many probes a hop reports is not this test's business, and
+        // "both of them came back" is a statement about the network, not
+        // about the tracer. Two things are the tracer's: the native tracer
+        // sends exactly as many probes as it was asked for and accounts for
+        // every one of them (`None` for a probe nothing answered), and a
+        // hop parsed out of the system program reports whatever that program
+        // sent — Windows `tracert` always sends three, whatever `probes`
+        // says, which is why asserting two here failed there.
+        assert!(
+            !hop.rtts_ms.is_empty(),
+            "a hop accounts for its probes: {hop:?}"
+        );
+        if report.method == "native-udp" {
+            assert_eq!(
+                hop.rtts_ms.len(),
+                usize::from(options.probes),
+                "the native tracer sends what it was asked for: {hop:?}"
+            );
+        }
+        // What did arrive is well formed: a time inside the hop's own budget.
+        assert!(
+            hop.rtts_ms
+                .iter()
+                .flatten()
+                .all(|rtt| *rtt >= 0.0 && *rtt <= options.timeout_ms as f64),
+            "{hop:?}"
+        );
+        // A hop that nothing answered says so, rather than looking like an
+        // ordinary hop with no address.
         if hop.address.is_none() {
             assert_eq!(hop.note, "no reply");
+            assert!(
+                hop.rtts_ms.iter().all(Option::is_none),
+                "a hop with no responder has no times: {hop:?}"
+            );
+        } else {
+            assert!(
+                hop.rtts_ms.iter().any(Option::is_some),
+                "a hop with a responder has at least one time: {hop:?}"
+            );
         }
     }
-    assert!(elapsed < Duration::from_secs(20), "{elapsed:?}");
+    // Four hops, two probes each, 300 ms apiece is a second and a bit when
+    // the tracer is strictly sequential and nothing answers. The bound has to
+    // be wider than the patience the system path allows itself, which is
+    // `(timeout_ms + 1000) * max_hops * max(probes, 3) + 5 s` — 20.6 s for
+    // these options. The old bound of 20 s was *inside* that, so the test
+    // could fail for a tracer that was behaving exactly as designed. This one
+    // only catches a tracer that ignores its budget altogether.
+    assert!(elapsed < Duration::from_secs(45), "{elapsed:?}");
 
     // Whether the trace *ends without reaching* depends on the network being
     // honest about an address that is not assigned to anybody. Behind a
@@ -168,7 +212,14 @@ async fn dropping_a_trace_stops_it() {
     let trace = traceroute::traceroute("198.51.100.204", &options, None);
     let started = Instant::now();
     let _ = tokio::time::timeout(Duration::from_millis(200), trace).await;
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // A trace that is not stopped by being dropped runs its 30 hops of 5 s
+    // probes — minutes. The bound only has to be below that, so it is set
+    // well above anything a busy machine adds to abandoning the future.
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
     // Nothing of the abandoned trace lingers: a new one works right away.
     let quick = TraceOptions {
         max_hops: 2,

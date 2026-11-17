@@ -228,8 +228,13 @@ async fn unanswered_connection_is_filtered_and_bounded_by_the_timeout() {
     if result.state == PortState::Filtered {
         assert_eq!(result.rtt_ms, None);
     }
+    // The claim is that the check is bounded by the timeout it was given
+    // rather than by the kernel's own SYN retry schedule, which is north of
+    // twenty seconds on every platform here. The bound only has to separate
+    // those two, so it is set far above the 400 ms asked for: a bound a
+    // whisker above the timeout measures the runner, not the tracker.
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );
@@ -247,10 +252,31 @@ async fn a_thousand_ports_with_bounded_concurrency() {
     };
     let started = Instant::now();
     let results = tcp::scan(LOCALHOST, &ports, &options, None).await.unwrap();
+    // Every port asked about is reported on, exactly once, and the one thing
+    // listening is the one found. That is what the scan guarantees, and none
+    // of it depends on the machine.
     assert_eq!(results.len(), ports.len());
+    let mut reported: Vec<u16> = results.iter().map(|result| result.port).collect();
+    reported.sort_unstable();
+    let mut asked = ports.clone();
+    asked.sort_unstable();
+    assert_eq!(reported, asked, "one result per port asked about");
     assert_eq!(results.last().unwrap().state, PortState::Open);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.state == PortState::Open)
+            .count(),
+        1,
+        "only the port that is listening is open"
+    );
+    // A thousand ports, sixty-four at a time, a second apiece: sixteen
+    // seconds if every one of them had to wait out its timeout. The old bound
+    // of twenty seconds was inside that, so the test could go red for a scan
+    // that was behaving exactly as configured — it only passed because
+    // loopback refuses a closed port at once. This one is a hang detector.
     assert!(
-        started.elapsed() < Duration::from_secs(20),
+        started.elapsed() < Duration::from_secs(120),
         "{:?}",
         started.elapsed()
     );
