@@ -21,7 +21,9 @@ use nocturne_app::{AppError, AppResult};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde::Deserialize;
 
-use crate::model::{Customer, CustomerState, Invoice, InvoiceState, Payment, Subscription};
+use crate::model::{
+    CreditNote, Customer, CustomerState, Invoice, InvoiceState, Payment, Subscription,
+};
 use crate::money::{Currency, Money};
 
 const SCHEMA: &str = "
@@ -99,6 +101,25 @@ CREATE TABLE IF NOT EXISTS isp_payment (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS isp_payment_customer ON isp_payment (customer_id, at);
 CREATE INDEX IF NOT EXISTS isp_payment_invoice ON isp_payment (invoice_id);
+
+-- A credit note: money a customer stopped owing. Its own table rather than a
+-- negative payment, because a negative payment would be counted as money
+-- received by every report that sums `isp_payment`, and no money moved.
+CREATE TABLE IF NOT EXISTS isp_credit (
+    id          TEXT PRIMARY KEY,
+    number      TEXT NOT NULL DEFAULT '',
+    customer_id TEXT NOT NULL,
+    -- '' when it credits the account rather than one invoice.
+    invoice_id  TEXT NOT NULL DEFAULT '',
+    -- Always the customer's billing currency: nothing is converted here.
+    currency    TEXT NOT NULL,
+    minor       INTEGER NOT NULL,
+    state       TEXT NOT NULL,
+    at          INTEGER NOT NULL,
+    body        TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS isp_credit_customer ON isp_credit (customer_id, at);
+CREATE INDEX IF NOT EXISTS isp_credit_invoice ON isp_credit (invoice_id);
 ";
 
 pub fn init(store: &Store) -> AppResult<()> {
@@ -112,6 +133,10 @@ pub const LINKS: &str = "isp_links";
 /// The key the next invoice number's counter lives under, per year.
 fn number_key(year: i32) -> String {
     format!("isp.invoice_number.{year}")
+}
+
+fn credit_number_key(year: i32) -> String {
+    format!("isp.credit_number.{year}")
 }
 
 fn body_of<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> rusqlite::Result<T> {
@@ -897,6 +922,186 @@ pub fn count_payments(store: &Store, customer_id: &str) -> AppResult<u64> {
     Ok(count.max(0) as u64)
 }
 
+// ------------------------------------------------------------- credit notes
+
+/// The next credit-note number. Its own sequence, and prefixed `CN-` so that
+/// a credit note can never be mistaken for an invoice in a conversation about
+/// "number 14".
+pub fn next_credit_number(store: &Store, year: i32, prefix: &str) -> AppResult<String> {
+    let key = credit_number_key(year);
+    store.transaction(|tx| {
+        let stored: Option<String> = tx
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let last: i64 = stored
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<i64>(text).ok())
+            .unwrap_or(0);
+        let next = last + 1;
+        tx.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, next.to_string()],
+        )?;
+        Ok(format!("{prefix}CN-{year}-{next:04}"))
+    })
+}
+
+pub fn put_credit(store: &Store, credit: &CreditNote) -> AppResult<()> {
+    store.with(|conn| {
+        conn.execute(
+            "INSERT INTO isp_credit (id, number, customer_id, invoice_id, currency,
+                                     minor, state, at, body)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (id) DO UPDATE SET state = excluded.state,
+                 body = excluded.body",
+            params![
+                credit.id,
+                credit.number,
+                credit.customer_id,
+                credit.invoice_id.clone().unwrap_or_default(),
+                credit.amount.currency.code(),
+                credit.amount.minor,
+                credit.state.as_str(),
+                credit.at,
+                to_sql(credit)?,
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn credit(store: &Store, id: &str) -> AppResult<Option<CreditNote>> {
+    store.with(|conn| {
+        conn.query_row(
+            "SELECT body FROM isp_credit WHERE id = ?1",
+            params![id],
+            |row| body_of(row, 0),
+        )
+        .optional()
+    })
+}
+
+pub fn require_credit(store: &Store, id: &str) -> AppResult<CreditNote> {
+    credit(store, id)?.ok_or_else(|| AppError::not_found(format!("credit note `{id}`")))
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct CreditQuery {
+    pub customer_id: Option<String>,
+    pub invoice_id: Option<String>,
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    /// `issued` or `void`; both by default.
+    pub state: Option<String>,
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+pub fn credits(store: &Store, query: &CreditQuery) -> AppResult<Vec<CreditNote>> {
+    let limit = i64::from(query.limit.unwrap_or(100).clamp(1, 2_000));
+    let offset = offset_of(query.cursor.as_deref())?;
+    let mut clauses: Vec<&str> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(customer_id) = &query.customer_id {
+        clauses.push("customer_id = ?");
+        values.push(customer_id.clone().into());
+    }
+    if let Some(invoice_id) = &query.invoice_id {
+        clauses.push("invoice_id = ?");
+        values.push(invoice_id.clone().into());
+    }
+    if let Some(since) = query.since {
+        clauses.push("at >= ?");
+        values.push(since.into());
+    }
+    if let Some(until) = query.until {
+        clauses.push("at < ?");
+        values.push(until.into());
+    }
+    if let Some(state) = &query.state {
+        let state = match state.trim().to_ascii_lowercase().as_str() {
+            "issued" => "issued",
+            "void" | "voided" => "void",
+            other => {
+                return Err(AppError::invalid(format!(
+                    "`{other}` is not a credit note state (issued, void)"
+                )));
+            }
+        };
+        clauses.push("state = ?");
+        values.push(state.to_string().into());
+    }
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", clauses.join(" AND "))
+    };
+    values.push(limit.into());
+    values.push(offset.into());
+    store.with(|conn| {
+        let mut statement = conn.prepare(&format!(
+            "SELECT body FROM isp_credit{where_clause} ORDER BY at DESC, id LIMIT ? OFFSET ?"
+        ))?;
+        statement
+            .query_map(params_from_iter(values.iter()), |row| body_of(row, 0))?
+            .collect()
+    })
+}
+
+/// What has been credited against one invoice, in that invoice's currency.
+///
+/// A credit note is always written in the customer's billing currency, which
+/// is the currency the invoice was raised in, so unlike a payment there is no
+/// rate and nothing to have rounded.
+pub fn credited_of_invoice(store: &Store, invoice: &Invoice) -> AppResult<Money> {
+    let minor: i64 = store.with(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(SUM(minor), 0) FROM isp_credit
+              WHERE invoice_id = ?1 AND state = 'issued' AND currency = ?2",
+            params![invoice.id, invoice.currency.code()],
+            |row| row.get(0),
+        )
+    })?;
+    Ok(Money::new(minor, invoice.currency))
+}
+
+/// Credit notes that stand against the account rather than one invoice.
+pub fn credit_on_account(
+    store: &Store,
+    customer_id: Option<&str>,
+) -> AppResult<Vec<(String, i64)>> {
+    let (filter, values): (&str, Vec<rusqlite::types::Value>) = match customer_id {
+        Some(id) => (" AND customer_id = ?", vec![id.to_string().into()]),
+        None => ("", Vec::new()),
+    };
+    store.with(|conn| {
+        let mut statement = conn.prepare(&format!(
+            "SELECT currency, SUM(minor) FROM isp_credit
+              WHERE state = 'issued' AND invoice_id = ''{filter}
+              GROUP BY currency ORDER BY currency"
+        ))?;
+        let rows = statement.query_map(params_from_iter(values.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect()
+    })
+}
+
+pub fn count_credits(store: &Store, customer_id: &str) -> AppResult<u64> {
+    let count: i64 = store.with(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM isp_credit WHERE customer_id = ?1",
+            params![customer_id],
+            |row| row.get(0),
+        )
+    })?;
+    Ok(count.max(0) as u64)
+}
+
 // ----------------------------------------------------------------- the books
 
 /// One issued invoice that is still short, with what has been settled against
@@ -909,6 +1114,8 @@ pub struct Shortfall {
     pub currency: Currency,
     pub total_minor: i64,
     pub paid_minor: i64,
+    /// Written off by credit notes, in the invoice's own currency.
+    pub credited_minor: i64,
     pub issued_at: Option<i64>,
     pub due_at: Option<i64>,
     pub period_start: i64,
@@ -917,7 +1124,10 @@ pub struct Shortfall {
 
 impl Shortfall {
     pub fn outstanding(&self) -> Money {
-        Money::new(self.total_minor - self.paid_minor, self.currency)
+        Money::new(
+            self.total_minor - self.paid_minor - self.credited_minor,
+            self.currency,
+        )
     }
 }
 
@@ -934,10 +1144,13 @@ pub fn shortfalls(store: &Store, customer_id: Option<&str>) -> AppResult<Vec<Sho
                       COALESCE((SELECT SUM(p.settled_minor) FROM isp_payment p
                                  WHERE p.invoice_id = i.id AND p.state = 'recorded'
                                    AND p.settled_currency = i.currency), 0) AS paid_minor,
+                      COALESCE((SELECT SUM(c.minor) FROM isp_credit c
+                                 WHERE c.invoice_id = i.id AND c.state = 'issued'
+                                   AND c.currency = i.currency), 0) AS credited_minor,
                       i.issued_at, i.due_at, i.period_start, i.period_end
                  FROM isp_invoice i
                 WHERE i.state = 'issued'{filter}
-             ) WHERE total_minor - paid_minor > 0
+             ) WHERE total_minor - paid_minor - credited_minor > 0
              ORDER BY due_at, period_start"
         ))?;
         let rows = statement.query_map(params_from_iter(values.iter()), |row| {
@@ -955,10 +1168,11 @@ pub fn shortfalls(store: &Store, customer_id: Option<&str>) -> AppResult<Vec<Sho
                 })?,
                 total_minor: row.get(4)?,
                 paid_minor: row.get(5)?,
-                issued_at: row.get(6)?,
-                due_at: row.get(7)?,
-                period_start: row.get(8)?,
-                period_end: row.get(9)?,
+                credited_minor: row.get(6)?,
+                issued_at: row.get(7)?,
+                due_at: row.get(8)?,
+                period_start: row.get(9)?,
+                period_end: row.get(10)?,
             })
         })?;
         rows.collect()

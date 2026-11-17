@@ -409,6 +409,10 @@ pub enum InvoiceStatus {
     /// Something paid, something left.
     PartPaid,
     Paid,
+    /// Nothing more is owed, but a credit note is part of why. Kept apart
+    /// from `Paid` on purpose: `Paid` is a claim that the customer's money
+    /// arrived, and a write-off is not that claim.
+    Credited,
     /// Issued, something left and the due date has passed.
     Overdue,
     Void,
@@ -566,14 +570,103 @@ pub struct InvoiceView {
     pub status: InvoiceStatus,
     /// What has been recorded against it, in its own currency.
     pub paid: Money,
+    /// What has been written off against it by credit notes. Kept apart from
+    /// `paid` everywhere: the two numbers answer different questions, and a
+    /// report that adds them cannot tell you how much money came in.
+    pub credited: Money,
     pub outstanding: Money,
     /// Days past its due date, when it is issued, due and short.
     pub days_overdue: Option<i64>,
     /// The payments recorded against it, newest first.
     pub payments: Vec<Payment>,
+    /// The credit notes against it, newest first.
+    pub credits: Vec<CreditNote>,
 }
 
 // ------------------------------------------------------------------- payment
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreditState {
+    #[default]
+    Issued,
+    /// Issued in error and withdrawn, with a reason. Never deleted, and the
+    /// debt it cancelled comes back.
+    Void,
+}
+
+impl CreditState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CreditState::Issued => "issued",
+            CreditState::Void => "void",
+        }
+    }
+
+    pub fn parse(text: &str) -> AppResult<CreditState> {
+        match text {
+            "issued" => Ok(CreditState::Issued),
+            "void" => Ok(CreditState::Void),
+            other => Err(AppError::invalid(format!(
+                "`{other}` is not a credit note state (issued, void)"
+            ))),
+        }
+    }
+}
+
+/// Money a customer no longer owes — a service that was not delivered, a
+/// goodwill gesture, an invoice that was wrong in a way nobody wants to void.
+///
+/// It is a document, never an edit: an issued invoice's figures are still the
+/// figures, and this stands beside them. It is deliberately *not* a refund.
+/// Nothing here says money went back out of the business, because this
+/// feature does not know whether it did; that belongs to whatever the ISP
+/// reconciles their bank against.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreditNote {
+    pub id: String,
+    /// Its own sequence, and visibly not an invoice number.
+    pub number: String,
+    pub customer_id: String,
+    /// The invoice it credits. `None` credits the account, which is what to
+    /// do when the thing being made good is not one invoice.
+    pub invoice_id: Option<String>,
+    /// Always the currency the customer is billed in: a credit note is not a
+    /// place to convert anything, because no money moved to convert.
+    pub amount: Money,
+    /// Required, and the reason this is a document rather than a correction.
+    /// An amount a customer stopped owing with no reason recorded is
+    /// indistinguishable from a mistake six months later.
+    pub reason: String,
+    pub note: String,
+    pub at: i64,
+    pub state: CreditState,
+    pub void_reason: String,
+    pub voided_at: Option<i64>,
+    pub recorded_at: i64,
+}
+
+impl Default for CreditNote {
+    fn default() -> Self {
+        CreditNote {
+            id: String::new(),
+            number: String::new(),
+            customer_id: String::new(),
+            invoice_id: None,
+            amount: Currency::of("USD")
+                .expect("USD is in the currency table")
+                .zero(),
+            reason: String::new(),
+            note: String::new(),
+            at: 0,
+            state: CreditState::Issued,
+            void_reason: String::new(),
+            voided_at: None,
+            recorded_at: 0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

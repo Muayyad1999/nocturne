@@ -85,6 +85,7 @@ enters what they actually got.
 | **Subscription** | A customer on a tariff from a date, holding **its own copy** of the agreed megabits and price |
 | **Invoice** | A period, its lines, its total, its currency, when it is due, and its state |
 | **Payment** | What was actually received: amount, currency, date, method, reference, which invoice it settles, and a `Conversion` if the currency differs |
+| **Credit note** | An amount a customer no longer owes, with a **required reason**, its own `CN-` number, and the invoice it credits (or the account). Not a payment and not an edit |
 
 A subscription copies the price it was agreed at rather than pointing at the
 tariff. Raising a tariff must not rewrite what somebody was charged last
@@ -174,6 +175,9 @@ nothing here touches a device.
 | `isp.payments` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the payments, void ones included |
 | `isp.payment.record` | `{customer_id, invoice_id?, amount, method, reference?, note?, at?, conversion?}` | `{payment, invoice, warnings}` |
 | `isp.payment.void` | `{id, reason}` | the void payment; it is never deleted |
+| `isp.credits` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the credit notes, newest first |
+| `isp.credit.issue` | `{customer_id, invoice_id?, amount, reason, note?, at?}` | `{credit, invoice?, warnings}` |
+| `isp.credit.void` | `{id, reason}` | the void credit note; the debt it cancelled comes back |
 | `isp.arrears` | `{customer_id?}` | one aged report **per currency**, plus who owes what |
 | `isp.revenue` | `{since, until?, convert?}` | issued and received per currency, what is outstanding, and a converted figure only if the caller supplied the rates |
 | `isp.usage` | `{customer_id? \| filters, since?, until?}` | used against sold, with coverage per row and counted per reason |
@@ -259,6 +263,51 @@ test reads the schema back to keep it that way. TypeScript:
     or note; a test fails if any of those appear in it. An assistant tool must
     be registered against it (and against nothing else in this feature that
     returns a customer).
+
+## Tax, refunds and credit notes
+
+Three gaps were left open deliberately rather than guessed at. Two of them
+are now settled, and the settlement is as much a part of the contract as
+anything above.
+
+**There is no tax, and that is the decision — not a gap waiting to be
+filled.** An invoice's total is its lines, and that is the amount owed.
+Nothing here computes, holds or reports a tax figure, and nothing should be
+added that does without the owner asking for it: a tax model invented on
+somebody's behalf is worse than no tax model, because an operator cannot
+tell by looking at a total whether the number was reasoned about or made up.
+Where tax applies it is handled in whatever the ISP files their returns
+with, and an invoice from here is an input to that.
+
+**There are no refunds.** Nothing in this crate says money went back out of
+the business, because it has no way to know whether it did and no business
+asserting it. A payment recorded in error is voided, with a reason.
+
+**Credit notes exist** (`isp.credit.*`), and they are a document rather than
+a correction:
+
+* An issued invoice's figures are still the figures. A credit note stands
+  beside them and reduces what is owed; it never rewrites a total.
+* **A reason is required.** An amount a customer stopped owing with no reason
+  recorded cannot be told from a mistake six months later.
+* It is written in the currency the customer is billed in, always. No money
+  moves, so there is no rate anybody actually got, and converting here would
+  put an invented figure in the ledger.
+* It is **not money.** It lives in its own table rather than as a negative
+  payment, because a negative payment would be counted as revenue by every
+  report that sums payments. `isp.revenue` does not see it; `isp.payments`
+  does not list it; the balance keeps `credit_on_account` apart from
+  `on_account`, and nobody can be paid out of the former.
+* A cleared invoice reads **`credited`, not `paid`**. `Paid` is a claim that
+  the customer's money arrived for all of it, and a write-off is not that
+  claim. An invoice part credited with nothing paid is still `issued` or
+  `overdue`: money is owed and nobody has paid any of it.
+* You cannot credit more than was charged. The cap is the invoice's total,
+  not what is left outstanding, so crediting an invoice that has already been
+  paid is allowed — a real case — and leaves the customer in credit with a
+  warning saying so.
+* It is never deleted. Voiding one needs its own reason, and puts the debt
+  back.
 
 ## Tests
 

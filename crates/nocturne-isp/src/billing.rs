@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::db;
 use crate::model::{
-    Customer, Invoice, InvoiceLine, InvoiceState, InvoiceStatus, InvoiceView, LineKind, Payment,
-    PaymentState, Proration, Settings,
+    CreditNote, CreditState, Customer, Invoice, InvoiceLine, InvoiceState, InvoiceStatus,
+    InvoiceView, LineKind, Payment, PaymentState, Proration, Settings,
 };
 use crate::money::{Conversion, ConversionInput, Money, Totals};
 
@@ -683,22 +683,212 @@ pub fn void_payment(app: &App, id: &str, reason: &str) -> AppResult<Payment> {
     Ok(payment)
 }
 
+// ----------------------------------------------------------- credit notes
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreditInput {
+    pub customer_id: String,
+    /// The invoice to credit. Leave it out to credit the account, which is
+    /// what to do when what is being made good is not one invoice.
+    #[serde(default)]
+    pub invoice_id: Option<String>,
+    pub amount: Money,
+    pub reason: String,
+    #[serde(default)]
+    pub note: String,
+    /// When it was agreed; now by default.
+    #[serde(default)]
+    pub at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IssuedCredit {
+    pub credit: CreditNote,
+    /// The invoice as it now reads, when the note credits one.
+    pub invoice: Option<InvoiceView>,
+    pub warnings: Vec<String>,
+}
+
+/// Write off money a customer owes, as a document.
+///
+/// Deliberately not a negative payment and not an edit to the invoice: the
+/// invoice's figures are what was charged, and this stands beside them. It
+/// also records nothing about money leaving the business, because this
+/// feature does not know whether any did.
+pub fn issue_credit(app: &App, settings: &Settings, input: CreditInput) -> AppResult<IssuedCredit> {
+    let store = app.store();
+    let now = util::now_ms();
+    let at = input.at.unwrap_or(now);
+    let customer = db::require_customer(store, input.customer_id.trim())?;
+    if input.amount.minor <= 0 {
+        return Err(AppError::invalid(
+            "a credit note is an amount a customer no longer owes, so it is more than nothing.              To charge them for something, raise an invoice; to undo a credit note, void it.",
+        ));
+    }
+    if input.reason.trim().is_empty() {
+        return Err(AppError::invalid(
+            "say why this is being credited: an amount a customer stopped owing with no reason              recorded cannot be told apart from a mistake six months later",
+        ));
+    }
+    // No conversion, ever: a credit note moves no money, so there is no rate
+    // anybody actually got, and inventing one here would put a made-up figure
+    // into the ledger.
+    if input.amount.currency != customer.currency {
+        return Err(AppError::invalid(format!(
+            "{} is billed in {}, and this note is in {}. A credit note is written in the \
+             currency the customer is billed in — no money moves, so there is no rate to \
+             convert it at.",
+            customer.name, customer.currency, input.amount.currency
+        )));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let invoice = match input
+        .invoice_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => {
+            let invoice = db::require_invoice(store, id)?;
+            if invoice.customer_id != customer.id {
+                return Err(AppError::invalid(format!(
+                    "invoice {} belongs to another customer",
+                    invoice.number.clone().unwrap_or_else(|| invoice.id.clone())
+                )));
+            }
+            match invoice.state {
+                InvoiceState::Issued => {}
+                InvoiceState::Draft => {
+                    return Err(AppError::conflict(
+                        "that invoice is still a draft, so nobody owes it yet: change the draft,                          or issue it first and then credit it",
+                    ));
+                }
+                InvoiceState::Void => {
+                    return Err(AppError::conflict(format!(
+                        "invoice {} is void, so nothing is owed on it to credit",
+                        invoice.number.clone().unwrap_or_else(|| invoice.id.clone())
+                    )));
+                }
+            }
+            // You cannot credit more than you charged. The cap is the
+            // invoice's total rather than what is left outstanding, so that
+            // crediting an invoice a customer has already paid is allowed —
+            // that is a real case, and it leaves them in credit rather than
+            // silently refusing.
+            let already = db::credited_of_invoice(store, &invoice)?;
+            let after = already.plus(input.amount)?;
+            if after.minor > invoice.total.minor {
+                return Err(AppError::invalid(format!(
+                    "invoice {} is {} and {} of it has already been credited, so this note of {}                      would write off more than was ever charged",
+                    invoice.number.clone().unwrap_or_else(|| invoice.id.clone()),
+                    invoice.total.text(),
+                    already.text(),
+                    input.amount.text()
+                )));
+            }
+            Some(invoice)
+        }
+        None => None,
+    };
+
+    let year = chrono::DateTime::from_timestamp_millis(at)
+        .map(|moment| moment.format("%Y").to_string())
+        .and_then(|text| text.parse::<i32>().ok())
+        .ok_or_else(|| AppError::internal("that moment is outside any calendar year"))?;
+    let credit = CreditNote {
+        id: util::new_id(),
+        number: db::next_credit_number(store, year, &settings.invoice_number_prefix)?,
+        customer_id: customer.id.clone(),
+        invoice_id: invoice.as_ref().map(|invoice| invoice.id.clone()),
+        amount: input.amount,
+        reason: input.reason.trim().to_string(),
+        note: input.note,
+        at,
+        state: CreditState::Issued,
+        void_reason: String::new(),
+        voided_at: None,
+        recorded_at: now,
+    };
+    db::put_credit(store, &credit)?;
+
+    let view = match invoice {
+        Some(invoice) => {
+            let view = invoice_view(app, invoice, now)?;
+            if view.outstanding.is_negative() {
+                warnings.push(format!(
+                    "invoice {} had already been paid, so crediting it leaves {} standing to the                      customer's favour rather than reducing a debt",
+                    view.invoice
+                        .number
+                        .clone()
+                        .unwrap_or_else(|| view.invoice.id.clone()),
+                    Money::new(-view.outstanding.minor, view.outstanding.currency).text()
+                ));
+            }
+            Some(view)
+        }
+        None => {
+            warnings.push(
+                "this note credits the account rather than an invoice, so it reduces nothing                  until it is set against one"
+                    .to_string(),
+            );
+            None
+        }
+    };
+    Ok(IssuedCredit {
+        credit,
+        invoice: view,
+        warnings,
+    })
+}
+
+/// Withdraw a credit note, with a reason. The debt it cancelled comes back.
+pub fn void_credit(app: &App, id: &str, reason: &str) -> AppResult<CreditNote> {
+    let store = app.store();
+    let mut credit = db::require_credit(store, id)?;
+    if reason.trim().is_empty() {
+        return Err(AppError::invalid(
+            "voiding a credit note needs a reason: it puts back money a customer had been told              they no longer owed",
+        ));
+    }
+    if credit.state == CreditState::Void {
+        return Err(AppError::conflict("that credit note is already void"));
+    }
+    credit.state = CreditState::Void;
+    credit.void_reason = reason.trim().to_string();
+    credit.voided_at = Some(util::now_ms());
+    db::put_credit(store, &credit)?;
+    Ok(credit)
+}
+
 // -------------------------------------------------------------------- views
 
 /// What to call an invoice, from its state, its payments and the clock. Not
 /// stored: there is one copy of this truth and it is the payments.
-pub fn status_of(invoice: &Invoice, paid: Money, now: i64) -> InvoiceStatus {
+pub fn status_of(invoice: &Invoice, paid: Money, credited: Money, now: i64) -> InvoiceStatus {
     match invoice.state {
         InvoiceState::Draft => InvoiceStatus::Draft,
         InvoiceState::Void => InvoiceStatus::Void,
         InvoiceState::Issued => {
-            if paid.minor >= invoice.total.minor {
-                InvoiceStatus::Paid
+            // Nothing more is owed. Which of the two words applies turns on
+            // whether a credit note is part of the reason, because `Paid` is
+            // a claim that the customer's money arrived for all of it and a
+            // write-off is not that claim.
+            if paid.minor + credited.minor >= invoice.total.minor {
+                if credited.minor > 0 {
+                    InvoiceStatus::Credited
+                } else {
+                    InvoiceStatus::Paid
+                }
             } else if invoice.due_at.is_some_and(|due| due < now) {
                 InvoiceStatus::Overdue
             } else if paid.minor > 0 {
                 InvoiceStatus::PartPaid
             } else {
+                // A part-credited invoice with no payment is still simply
+                // issued or overdue: money is owed, and nobody has paid any
+                // of it. The credit shows in the figures, not in the word.
                 InvoiceStatus::Issued
             }
         }
@@ -716,8 +906,17 @@ pub fn invoice_view(app: &App, invoice: Invoice, now: i64) -> AppResult<InvoiceV
             ..db::PaymentQuery::default()
         },
     )?;
-    let outstanding = invoice.total.minus(paid)?;
-    let status = status_of(&invoice, paid, now);
+    let credited = db::credited_of_invoice(store, &invoice)?;
+    let credits = db::credits(
+        store,
+        &db::CreditQuery {
+            invoice_id: Some(invoice.id.clone()),
+            limit: Some(500),
+            ..db::CreditQuery::default()
+        },
+    )?;
+    let outstanding = invoice.total.minus(paid)?.minus(credited)?;
+    let status = status_of(&invoice, paid, credited, now);
     let days_overdue = match (invoice.due_at, status) {
         (Some(due), InvoiceStatus::Overdue) => Some(days_of(now - due)),
         _ => None,
@@ -726,9 +925,11 @@ pub fn invoice_view(app: &App, invoice: Invoice, now: i64) -> AppResult<InvoiceV
         invoice,
         status,
         paid,
+        credited,
         outstanding,
         days_overdue,
         payments,
+        credits,
     })
 }
 
@@ -741,6 +942,9 @@ pub struct Balance {
     pub outstanding: Totals,
     /// Money received and not yet against an invoice, as it was received.
     pub on_account: Totals,
+    /// Credit notes standing against the account rather than one invoice.
+    /// Not money: nobody can be paid out of this.
+    pub credit_on_account: Totals,
     pub invoices_outstanding: u32,
     pub oldest_due_at: Option<i64>,
     pub note: String,
@@ -757,10 +961,15 @@ pub fn balance(app: &App, customer_id: &str) -> AppResult<Balance> {
     for (code, minor) in db::on_account(store, Some(customer_id))? {
         on_account.add(Money::new(minor, crate::money::Currency::of(&code)?))?;
     }
+    let mut credit_on_account = Totals::new();
+    for (code, minor) in db::credit_on_account(store, Some(customer_id))? {
+        credit_on_account.add(Money::new(minor, crate::money::Currency::of(&code)?))?;
+    }
     Ok(Balance {
         customer_id: customer_id.to_string(),
         outstanding,
         on_account,
+        credit_on_account,
         invoices_outstanding: u32::try_from(shortfalls.len()).unwrap_or(u32::MAX),
         oldest_due_at: shortfalls.iter().filter_map(|row| row.due_at).min(),
         note: "one figure per currency: an amount owed in one currency is not converted into \

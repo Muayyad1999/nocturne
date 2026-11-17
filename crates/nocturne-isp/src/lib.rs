@@ -40,7 +40,7 @@
 //! | | written by | lives in | changed by |
 //! |---|---|---|---|
 //! | **records** | a person | [`model::Customer`], [`model::Tariff`], [`model::Subscription`], [`model::Link`] | `isp.customer.*`, `isp.tariff.*`, `isp.subscription.*`, `isp.link.*` |
-//! | **the ledger** | a person, once | [`model::Invoice`], [`model::Payment`] | `isp.invoice.*`, `isp.payment.*` — issue, void, record; never recalculate |
+//! | **the ledger** | a person, once | [`model::Invoice`], [`model::Payment`], [`model::CreditNote`] | `isp.invoice.*`, `isp.payment.*`, `isp.credit.*` — issue, void, record; never recalculate |
 //! | **the network** | devices | nothing here | nothing: it is read through `monitor.*` at the moment a report is asked for |
 
 pub mod api;

@@ -4047,6 +4047,7 @@ dependencies = [
  "nocturne-discovery",
  "nocturne-insights",
  "nocturne-ipam",
+ "nocturne-isp",
  "nocturne-lab",
  "nocturne-logs",
  "nocturne-monitor",

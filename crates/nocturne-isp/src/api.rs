@@ -55,6 +55,18 @@ fn payment_changed(app: &App, change: &str, payment: &crate::model::Payment) {
     );
 }
 
+fn credit_changed(app: &App, change: &str, credit: &crate::model::CreditNote) {
+    app.publish(
+        "isp.credits.changed",
+        &json!({
+            "change": change,
+            "ids": [credit.id],
+            "customer_ids": [credit.customer_id],
+            "invoice_ids": credit.invoice_id.iter().collect::<Vec<_>>(),
+        }),
+    );
+}
+
 // ------------------------------------------------------------------ params
 
 #[derive(Debug, Deserialize)]
@@ -1025,6 +1037,73 @@ pub fn init(builder: &mut AppBuilder) {
             );
             payment_changed(&app, "voided", &payment);
             Ok(payment)
+        },
+    );
+
+    // --------------------------------------------------------- credit notes
+
+    router.add(
+        "isp.credits",
+        |app: App, params: db::CreditQuery| async move { db::credits(app.store(), &params) },
+    );
+
+    router.add(
+        "isp.credit.issue",
+        |app: App, params: billing::CreditInput| async move {
+            let settings = config(&app)?;
+            let issued = billing::issue_credit(&app, &settings, params)?;
+            let credit = &issued.credit;
+            app.audit(
+                "isp.credit.issue",
+                None,
+                format!(
+                    "Credited {} to customer {} ({}){}",
+                    credit.amount.text(),
+                    credit.customer_id,
+                    credit.reason,
+                    match &credit.invoice_id {
+                        Some(id) => format!(" against invoice {id}"),
+                        None => " on account".to_string(),
+                    }
+                ),
+                json!({
+                    "credit": credit.id,
+                    "number": credit.number,
+                    "customer": credit.customer_id,
+                    "invoice": credit.invoice_id,
+                    "amount": credit.amount,
+                    "reason": credit.reason,
+                }),
+            );
+            credit_changed(&app, "issued", credit);
+            Ok(issued)
+        },
+    );
+
+    router.add(
+        "isp.credit.void",
+        |app: App, params: ReasonParams| async move {
+            let credit = billing::void_credit(&app, &params.id, &params.reason)?;
+            app.audit(
+                "isp.credit.void",
+                None,
+                format!(
+                    "Voided a credit note of {} to customer {}: {}",
+                    credit.amount.text(),
+                    credit.customer_id,
+                    credit.void_reason
+                ),
+                json!({
+                    "credit": credit.id,
+                    "number": credit.number,
+                    "customer": credit.customer_id,
+                    "invoice": credit.invoice_id,
+                    "amount": credit.amount,
+                    "reason": credit.void_reason,
+                }),
+            );
+            credit_changed(&app, "voided", &credit);
+            Ok(credit)
         },
     );
 
