@@ -6,8 +6,11 @@ recorded device output, it says so, and where a part is not written yet it
 says that rather than nothing.
 
 Every count here is a number that passed on this machine, not an estimate.
-**2,548 Rust tests across 163 targets, 864 interface tests and 186
-end-to-end tests** pass as this is written, with no failures.
+**2,672 Rust tests across 168 targets, 970 interface tests and 203
+end-to-end tests** pass as this is written, with no failures. Those Rust and
+interface figures are from a full run on Linux; what the other two platforms
+do with the same suite is its own section below, because for a while the
+answer was "nobody had looked".
 
 ## Legend
 
@@ -282,6 +285,32 @@ of it:
   table is numbered in insertion order, that renumbered every placeholder
   after it, so a placeholder the model wrote restored a different secret —
   into a line nothing re-redacts on the way back.
+
+### What the other two platforms did with the same suite
+
+Linux was green for a long time while macOS and Windows were not, which is
+the whole reason that matrix exists and is also the honest answer to "why do
+so many runs fail". Every failure found so far has been a *test* asserting
+one platform's habits rather than a defect in the code, and each run only
+reveals the first one it meets, so they came out one a round:
+
+| | was asserted | what the platform actually does |
+|---|---|---|
+| Windows | a connection to a port with nothing on it is `refused` | it is dropped, so the check times out — and the service was still correctly reported as **down** |
+| Windows | a local shell prints what it was told to | ConPTY first asks the terminal where the cursor is and *waits*; in the application xterm.js answers, and a test with no terminal in it has to answer for itself |
+| Windows | a digest from coreutils is the first field | GNU prefixes the line with `\` when the filename needs escaping, and every Windows path has backslashes |
+| macOS | 200 concurrent loopback echoes mostly come back | it throttles ICMP far harder than Linux: 133 of 200 |
+| macOS | a 65464-byte TFTP block can be transferred | `net.inet.udp.maxdgram` is 9216 by default and the send fails with EMSGSIZE before anything reaches the wire |
+| macOS | a closed UDP port is refused | the ICMP port unreachable is not delivered for loopback, so it times out |
+| Linux | a port is bindable the instant its server stops | closing a socket and the port becoming free are not the same moment |
+
+Two things are worth taking from that table rather than only fixing it.
+**The product was right every time** — what failed was a test demanding one
+operating system's answer. And **on Windows a refused connection and an
+unreachable host look more alike than they do on Linux**, so Nocturne will
+say "timed out" where Linux says "refused". That is the host's doing, it is
+not asserted away, and it is worth knowing when you are reading why a device
+did not answer.
 
 ## Known gaps worth stating plainly
 
