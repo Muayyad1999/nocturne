@@ -305,9 +305,12 @@ async fn the_agent_keeps_serving_under_fire() {
             );
         }
     }
-    // Empty and maximal datagrams.
+    // Empty and maximal datagrams. The maximal one only where the host will
+    // carry it: macOS refuses anything over `net.inet.udp.maxdgram` — 9216
+    // by default — with EMSGSIZE at the sender, and a datagram that never
+    // leaves is no test of the agent's nerve. The empty one goes everywhere.
     attacker.send_to(&[], target).await.unwrap();
-    attacker.send_to(&vec![0x30; 65_000], target).await.unwrap();
+    let _ = attacker.send_to(&vec![0x30; 65_000], target).await;
 
     // Still alive, still correct, and the task has not ended.
     let walked = client

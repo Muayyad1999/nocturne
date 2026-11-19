@@ -311,10 +311,14 @@ reveals the first one it meets, so they came out one a round:
 | Windows | a device's last words survive input it never read | Windows resets a socket closed while unread input sits in its buffer, and the reset discards what was already in flight the other way |
 | Linux | a port is bindable the instant its server stops | closing a socket and the port becoming free are not the same moment |
 
-Three of those rows are the same fact wearing different clothes — macOS
-will not send a UDP datagram over `net.inet.udp.maxdgram`, so a 64 KiB TFTP
-block, a 60000-byte filename and a bulk reply carrying four hundred objects
-all fail at the sender. Each is now asked by trying rather than assumed.
+Four of those rows are the same fact wearing different clothes — macOS will
+not send a UDP datagram over `net.inet.udp.maxdgram`, so a 64 KiB TFTP
+block, a 60000-byte filename, a bulk reply carrying four hundred objects and
+a 65000-byte hostile datagram all fail at the sender rather than on the
+wire. Each is now asked by trying rather than assumed, and the rest of the
+workspace was searched for the same shape rather than waiting for it to turn
+up a fifth time: every other large buffer is either a receive buffer, an
+in-memory value, or sent over TCP, where size is not a limit.
 
 Two things are worth taking from that table rather than only fixing it.
 **The product was right every time** — what failed was a test demanding one
