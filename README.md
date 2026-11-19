@@ -51,9 +51,11 @@ itself if verification fails. The AI assistant has no path around this.
 ## Building
 
 Requirements: the Rust toolchain pinned in `rust-toolchain.toml` (1.97;
-`rustup` installs it for you), Node.js 20+ with pnpm, and — for the
-desktop app — the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/)
-for your platform.
+`rustup` installs it for you), Node.js 22.12 or newer with pnpm (the
+interface's `package.json` asks for it and the install refuses an older
+one), and — for the desktop app — the
+[Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your
+platform. On Windows 11 the WebView those need is already installed.
 
 ```bash
 cargo test
@@ -67,9 +69,28 @@ pnpm --dir ui install && pnpm --dir ui build
 cargo run -p nocturne-server
 ```
 
-The server prints the address to open. See `docs/ARCHITECTURE.md` for how
-the pieces fit, `docs/profiles.md` for adding a device type, and `docs/dev/`
-for the specifications each part was built against.
+The server prints the address to open. For the desktop window instead, build
+the interface first (the binary embeds it) and then:
+
+```bash
+cargo run -p nocturne-desktop
+```
+
+There are two editions from one tree. Everything above is the free one: the
+whole network-operations tool. The ISP edition adds subscribers, tariffs,
+invoices, payments, arrears and what the megabit earned, and is a separate
+build rather than a setting:
+
+```bash
+cargo run -p nocturne-server --features isp
+```
+
+The free build does not contain that code at all — `docs/dev/spec-editions.md`
+says why that is a distribution decision rather than a licence check.
+
+See `docs/ARCHITECTURE.md` for how the pieces fit, `docs/profiles.md` for
+adding a device type, and `docs/dev/` for the specifications each part was
+built against.
 
 ## What it looks like
 
