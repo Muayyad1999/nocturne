@@ -662,3 +662,26 @@ pub fn local_shell(unix: &str, windows: &str) -> serde_json::Value {
     };
     serde_json::json!({"program": program, "args": [flag, script]})
 }
+
+/// Answers the cursor-position report a Windows console asks for as it starts.
+///
+/// ConPTY opens by sending `ESC[6n` — "terminal, where is the cursor?" — and
+/// waits for the answer before letting the program run. In the application a
+/// real terminal answers: xterm.js in the browser replies as a matter of
+/// course. A test that only collects events has no terminal in it, so it has
+/// to answer for itself, and without this a local shell on Windows prints
+/// nothing at all but that one query. Not a defect in the product — nothing
+/// here is reached unless a client is attached — but it is why the test saw
+/// `"\u{1b}[6n"` and no shell output.
+pub async fn answer_console_probe(app: &App, session_id: &str, events: &mut Events) {
+    if !cfg!(windows) {
+        return;
+    }
+    events.wait_for(session_id, "\u{1b}[6n").await;
+    app.rpc(
+        "terminal.input",
+        serde_json::json!({"session_id": session_id, "data": "\u{1b}[1;1R"}),
+    )
+    .await
+    .expect("answering the cursor-position report");
+}

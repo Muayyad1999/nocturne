@@ -116,6 +116,11 @@ async fn negotiates_block_size_transfer_size_and_timeout() {
     );
     assert_eq!(download.blocks, 100_000 / 1428 + 1);
 
+    // Both of the cases below end up moving 65464-byte datagrams — the
+    // greedy one because the server caps it there — so they share one answer
+    // to whether this host will carry one.
+    let jumbo_datagrams = host_sends_datagram(65_464).await;
+
     // The largest block size TFTP allows: the whole file in two datagrams.
     //
     // Only where the host will carry a datagram that size. Linux's loopback
@@ -123,7 +128,7 @@ async fn negotiates_block_size_transfer_size_and_timeout() {
     // 9216 by default, with EMSGSIZE before it ever reaches the wire. That
     // is the host's limit and not this server's, and what the server does
     // with the option — grants it, below — is asserted either way.
-    if host_sends_datagram(65_464).await {
+    if jumbo_datagrams {
         let jumbo = ClientOptions {
             blksize: Some(65_464),
             ..ClientOptions::default()
@@ -136,14 +141,23 @@ async fn negotiates_block_size_transfer_size_and_timeout() {
         );
     }
 
-    // More than the maximum is granted as the maximum.
-    let greedy = ClientOptions {
-        blksize: Some(100_000),
-        ..ClientOptions::default()
-    };
-    let download = client::get(address, "image.bin", &greedy).await.unwrap();
-    assert_eq!(download.acknowledged, granted(&[("blksize", "65464")]));
-    assert_eq!(download.data, pattern(100_000));
+    // More than the maximum is granted as the maximum. Seeing what was
+    // granted means completing the transfer, and the transfer is in those
+    // same 65464-byte datagrams, so this one goes with the case above.
+    if jumbo_datagrams {
+        let greedy = ClientOptions {
+            blksize: Some(100_000),
+            ..ClientOptions::default()
+        };
+        let download = client::get(address, "image.bin", &greedy).await.unwrap();
+        assert_eq!(download.acknowledged, granted(&[("blksize", "65464")]));
+        assert_eq!(download.data, pattern(100_000));
+    } else {
+        eprintln!(
+            "skipping the capped block size: it is granted as 65464, which this host \
+                   will not send"
+        );
+    }
 
     // The smallest legal block size.
     let tiny = ClientOptions {

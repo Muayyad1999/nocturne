@@ -292,6 +292,7 @@ async fn the_local_shell_runs_and_ends() {
     assert_eq!(info["kind"], "local");
     assert_eq!(info["title"], "Local shell");
 
+    common::answer_console_probe(&app, &id, &mut events).await;
     events.wait_for(&id, "nocturne-is-here").await;
     let closed = events.wait_topic("terminal.closed").await;
     assert_eq!(closed.payload["session_id"], id.as_str());
