@@ -154,7 +154,11 @@ mod tests {
         let error = connect("127.0.0.1", port, Duration::from_secs(5))
             .await
             .unwrap_err();
-        assert_eq!(error.code(), "refused");
+        // Windows drops a connection to a port with nothing on it rather
+        // than answering, so it times out where Linux is refused. The
+        // mapping from the operating system's error to this code is
+        // asserted exactly, on a constructed error, in `error.rs`.
+        assert!(matches!(error.code(), "refused" | "timeout"), "{error:?}");
     }
 
     #[tokio::test]

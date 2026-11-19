@@ -529,7 +529,16 @@ mod tests {
         let error = query(&address, Duration::from_secs(2), 1_700_000_000.0)
             .await
             .unwrap_err();
-        assert!(matches!(error, ProbeError::Refused), "{error:?}");
+        // A closed UDP port is refused where the host sends the ICMP port
+        // unreachable back to the socket and times out where it does not.
+        // Linux does; macOS does not deliver it for loopback, so insisting
+        // on `Refused` asserts the host's ICMP behaviour rather than this
+        // client's. Either way nothing is invented: the query failed and
+        // said how.
+        assert!(
+            matches!(error, ProbeError::Refused | ProbeError::Timeout),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]

@@ -799,7 +799,13 @@ async fn connection_errors_are_classified() {
     let address = listener.local_addr().unwrap();
     drop(listener);
     let error = login_error(&params_for(address, "op", vec![])).await;
-    assert_eq!(error.code(), "refused");
+    // Refused where the host answers a connection to a port with nothing on
+    // it, timed out where it drops it instead — Windows does the latter. The
+    // mapping itself is asserted exactly, on a constructed error, in
+    // `error.rs`; what matters here is that a connection that cannot be made
+    // fails and says which, rather than hanging or being called something
+    // else.
+    assert!(matches!(error.code(), "refused" | "timeout"), "{error:?}");
 
     let params = SshParams {
         host: "no-such-host.invalid".to_owned(),

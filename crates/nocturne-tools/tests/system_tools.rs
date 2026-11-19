@@ -101,10 +101,18 @@ fn digests_match_coreutils() {
                 .expect("the tool was there a moment ago");
             assert!(output.status.success(), "{tool} failed");
             let stdout = String::from_utf8_lossy(&output.stdout);
+            // GNU's tools mark a line whose *filename* needed escaping by
+            // putting a backslash in front of the digest, and on Windows
+            // every path has backslashes in it. The digest is what is being
+            // compared here, so the marker comes off.
+            let digest = stdout
+                .split_whitespace()
+                .next()
+                .map(|field| field.trim_start_matches('\\'));
             assert_eq!(
-                stdout.split_whitespace().next(),
+                digest,
                 Some(expected.as_str()),
-                "{tool} of sample {index}"
+                "{tool} of sample {index}: {stdout:?}"
             );
             checked += 1;
         }

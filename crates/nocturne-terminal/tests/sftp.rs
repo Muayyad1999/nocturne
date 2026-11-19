@@ -474,13 +474,12 @@ async fn sftp_is_only_for_ssh_devices_and_only_where_files_may_be_touched() {
             .unwrap_err();
         assert_eq!(refused.code, "forbidden", "{method}");
     }
-    assert_eq!(
-        remote
-            .rpc("sftp.open", json!({"device_id": device["id"]}))
-            .await
-            .unwrap_err()
-            .code,
-        // Nothing is listening: the point is that it was allowed to try.
-        "refused"
-    );
+    // Nothing is listening: the point is that it was allowed to try. Which
+    // way the host says so differs — refused where it answers, timed out
+    // where it drops the connection, as Windows does.
+    let tried = remote
+        .rpc("sftp.open", json!({"device_id": device["id"]}))
+        .await
+        .unwrap_err();
+    assert!(matches!(tried.code, "refused" | "timeout"), "{tried:?}");
 }
