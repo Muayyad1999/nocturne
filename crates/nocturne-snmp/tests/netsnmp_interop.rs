@@ -468,16 +468,25 @@ async fn v1_and_v2c_get_and_walk_system_and_interfaces() {
         for (bind, requested) in got.iter().zip(&scalars) {
             assert_eq!(&bind.oid, requested, "{version}");
         }
+        // The agent describes the machine it runs on — "Linux …" here,
+        // "Darwin …" on a Mac — so what is asserted is that it said
+        // something, not what the kernel is called.
         assert!(
-            text(&got[0]).contains("Linux"),
+            !text(&got[0]).trim().is_empty(),
             "{version}: sysDescr {:?}",
             got[0].value
         );
-        // net-snmp identifies itself as netSnmpAgentOIDs.10 (linux).
-        assert_eq!(
-            got[1].value,
-            Value::Oid(oid("1.3.6.1.4.1.8072.3.2.10")),
-            "{version}"
+        // And that it identifies itself as a net-snmp agent:
+        // netSnmpAgentOIDs.<platform>, where the platform is 10 for Linux
+        // and another number elsewhere. The arc is the claim; the leaf is
+        // which machine happens to be running the daemon.
+        let object_id = match &got[1].value {
+            Value::Oid(found) => found.to_string(),
+            other => panic!("{version}: sysObjectID {other:?}"),
+        };
+        assert!(
+            object_id.starts_with("1.3.6.1.4.1.8072.3.2."),
+            "{version}: sysObjectID {object_id} is not a net-snmp agent"
         );
         assert!(matches!(got[2].value, Value::TimeTicks(_)), "{version}");
         assert_eq!(text(&got[3]), SYS_CONTACT, "{version}");
@@ -1015,8 +1024,20 @@ async fn v3_security_matrix() {
         failures.len()
     );
     assert!(failures.is_empty(), "{failures:#?}");
-    // net-snmp built without any cryptography would make this test vacuous.
-    assert!(passed >= 13, "only {passed} combinations could be verified");
+    // Vacuity guard. Thirteen is what a full net-snmp build offers; one with
+    // fewer algorithms offers fewer — macOS ships such a build and verified
+    // seven — and which algorithms a distribution compiles in is its
+    // business rather than ours. Note that `supported` above is decided by
+    // net-snmp's own tools, so a combination this client cannot do is
+    // already a failure and not an excuse. What is required here is that the
+    // build verified everything it claims to support, and that the shortfall
+    // is explained by the build rather than by the matrix having quietly
+    // shrunk.
+    assert!(passed > 0, "no combination could be verified at all");
+    assert!(
+        passed >= 13 || unsupported > 0,
+        "only {passed} combinations were tried and this build supports them all"
+    );
 }
 
 #[tokio::test]

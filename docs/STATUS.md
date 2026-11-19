@@ -302,6 +302,8 @@ reveals the first one it meets, so they came out one a round:
 | macOS | 200 concurrent loopback echoes mostly come back | it throttles ICMP far harder than Linux: 133 of 200 |
 | macOS | a 65464-byte TFTP block can be transferred | `net.inet.udp.maxdgram` is 9216 by default and the send fails with EMSGSIZE before anything reaches the wire |
 | macOS | a closed UDP port is refused | the ICMP port unreachable is not delivered for loopback, so it times out |
+| macOS | `sysDescr` says "Linux" and the agent is netSnmpAgentOIDs**.10** | it says "Darwin" and carries its own platform number — the arc is the claim, the leaf is which machine runs the daemon |
+| macOS | a net-snmp build offers 13 v3 auth/privacy combinations | this one offers 7; which algorithms a distribution compiles in is its business, and net-snmp's own tools say which are supported |
 | macOS | an agent can answer a 1000-object GETBULK | the reply is one datagram past `maxdgram`, so it is never sent and the walk times out |
 | macOS | the `tftp` client takes `-m mode` | it ships BSD's, which takes neither `-m` nor `-c` and cannot be driven from a command line |
 | Windows | a device's last words survive input it never read | Windows resets a socket closed while unread input sits in its buffer, and the reset discards what was already in flight the other way |
