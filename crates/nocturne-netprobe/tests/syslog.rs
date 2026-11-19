@@ -259,6 +259,28 @@ async fn hostile_input_does_not_disturb_the_listener() {
     }
 }
 
+/// Waits for a port to become bindable again.
+///
+/// Closing a socket and the port becoming free are not the same instant:
+/// the kernel finishes the close in its own time, and on a busy machine the
+/// next line of a test runs first. What the server promises is that it lets
+/// its ports go, not that it has let go before the caller's next statement —
+/// so this waits a moment for it instead of asserting on a race.
+async fn becomes_bindable(address: SocketAddr, tcp: bool) -> bool {
+    for _ in 0..100 {
+        let free = if tcp {
+            tokio::net::TcpListener::bind(address).await.is_ok()
+        } else {
+            UdpSocket::bind(address).await.is_ok()
+        };
+        if free {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 #[tokio::test]
 async fn stopping_and_dropping_release_the_ports() {
     let (server, udp, tcp, mut messages) = start().await;
@@ -266,8 +288,14 @@ async fn stopping_and_dropping_release_the_ports() {
     open.write_all(b"<13>connected\n").await.unwrap();
     assert_eq!(next(&mut messages).await.message, "connected");
     server.stop().await;
-    assert!(UdpSocket::bind(udp).await.is_ok());
-    assert!(tokio::net::TcpListener::bind(tcp).await.is_ok());
+    assert!(
+        becomes_bindable(udp, false).await,
+        "the UDP port {udp} was never released"
+    );
+    assert!(
+        becomes_bindable(tcp, true).await,
+        "the TCP port {tcp} was never released"
+    );
     // The connection was closed by the server.
     let mut sink = [0u8; 16];
     let closed = tokio::time::timeout(
@@ -280,7 +308,10 @@ async fn stopping_and_dropping_release_the_ports() {
     let (server, udp, _tcp, _messages) = start().await;
     drop(server);
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(UdpSocket::bind(udp).await.is_ok());
+    assert!(
+        becomes_bindable(udp, false).await,
+        "the UDP port {udp} was never released"
+    );
 
     // UDP only: no TCP address.
     let (server, _messages) = SyslogServer::start("127.0.0.1:0".parse().unwrap(), None)

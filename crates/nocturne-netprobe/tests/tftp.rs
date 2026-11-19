@@ -117,12 +117,24 @@ async fn negotiates_block_size_transfer_size_and_timeout() {
     assert_eq!(download.blocks, 100_000 / 1428 + 1);
 
     // The largest block size TFTP allows: the whole file in two datagrams.
-    let jumbo = ClientOptions {
-        blksize: Some(65_464),
-        ..ClientOptions::default()
-    };
-    let download = client::get(address, "image.bin", &jumbo).await.unwrap();
-    assert_eq!((download.data.len(), download.blocks), (100_000, 2));
+    //
+    // Only where the host will carry a datagram that size. Linux's loopback
+    // takes 64 KiB; macOS refuses anything over `net.inet.udp.maxdgram`,
+    // 9216 by default, with EMSGSIZE before it ever reaches the wire. That
+    // is the host's limit and not this server's, and what the server does
+    // with the option — grants it, below — is asserted either way.
+    if host_sends_datagram(65_464).await {
+        let jumbo = ClientOptions {
+            blksize: Some(65_464),
+            ..ClientOptions::default()
+        };
+        let download = client::get(address, "image.bin", &jumbo).await.unwrap();
+        assert_eq!((download.data.len(), download.blocks), (100_000, 2));
+    } else {
+        eprintln!(
+            "skipping the 65464-byte block size: this host will not send a datagram that large"
+        );
+    }
 
     // More than the maximum is granted as the maximum.
     let greedy = ClientOptions {
@@ -882,14 +894,17 @@ async fn hostile_datagrams_do_not_disturb_the_server() {
     for cut in 0..valid.len() {
         socket.send_to(&valid[..cut], address).await.unwrap();
     }
+    // A name far past any datagram's worth. Where the host refuses to send
+    // something this big at all (macOS, EMSGSIZE) there is no hostile
+    // datagram to test the server's nerve against, and the rest of the
+    // hostile cases below still run.
     let huge_name = "a".repeat(60_000);
-    socket
+    let _ = socket
         .send_to(
             &client::request(client::RRQ, &huge_name, "octet", &[]),
             address,
         )
-        .await
-        .unwrap();
+        .await;
     socket
         .send_to(
             &client::request(
@@ -1014,4 +1029,21 @@ async fn a_busy_or_privileged_port_is_explained() {
         Err(ProbeError::Io(_)) => {}
         Err(other) => panic!("unexpected error {other:?}"),
     }
+}
+
+/// Whether this host will send a UDP datagram of `bytes` at all.
+///
+/// Linux's loopback carries a 64 KiB datagram; macOS refuses anything over
+/// `net.inet.udp.maxdgram` — 9216 by default — with EMSGSIZE at the sender,
+/// so a test that needs one that big is testing the host rather than this
+/// code. Asked by trying, because the limit is a sysctl and not worth
+/// reading.
+async fn host_sends_datagram(bytes: usize) -> bool {
+    let Ok(socket) = tokio::net::UdpSocket::bind("127.0.0.1:0").await else {
+        return false;
+    };
+    let Ok(itself) = socket.local_addr() else {
+        return false;
+    };
+    socket.send_to(&vec![0u8; bytes], itself).await.is_ok()
 }

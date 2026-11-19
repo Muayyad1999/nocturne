@@ -182,7 +182,13 @@ impl Events {
     }
 
     /// Read events until `ready` says there are enough.
-    pub async fn until(&mut self, ready: impl Fn(&Events) -> bool) {
+    ///
+    /// On a timeout it says what it was waiting for, which topics arrived and
+    /// what each session had actually printed. "Timed out waiting for events"
+    /// is the same sentence whichever wait in a test gave up, and on a
+    /// platform you cannot run yourself that is the difference between a
+    /// diagnosis and a guess.
+    pub async fn until(&mut self, what: &str, ready: impl Fn(&Events) -> bool) {
         if ready(self) {
             return;
         }
@@ -200,16 +206,27 @@ impl Events {
                 }
             }
         };
-        tokio::time::timeout(PATIENCE, waiting)
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for events"));
+        let outcome = tokio::time::timeout(PATIENCE, waiting).await;
+        if outcome.is_err() {
+            let topics: Vec<&str> = self.seen.iter().map(|event| event.topic.as_str()).collect();
+            let printed: Vec<String> = self
+                .streams
+                .keys()
+                .map(|id| format!("{id}: {:?}", self.text(id)))
+                .collect();
+            panic!(
+                "timed out after {PATIENCE:?} waiting for {what}\n  topics seen: {topics:?}\n  \
+                 printed: {printed:?}"
+            );
+        }
     }
 
     /// Read events until the session's output contains `needle`.
     pub async fn wait_for(&mut self, session_id: &str, needle: &str) {
         let id = session_id.to_string();
-        let needle = needle.to_string();
-        self.until(|events| events.text(&id).contains(&needle))
+        let wanted = needle.to_string();
+        let what = format!("session {session_id} to print {needle:?}");
+        self.until(&what, move |events| events.text(&id).contains(&wanted))
             .await;
     }
 
@@ -217,7 +234,8 @@ impl Events {
     pub async fn wait_topic(&mut self, topic: &str) -> Event {
         let wanted = topic.to_string();
         let from = self.seen.len();
-        self.until(|events| {
+        let what = format!("a `{topic}` event");
+        self.until(&what, |events| {
             events.seen[from..]
                 .iter()
                 .any(|event| event.topic == wanted)
