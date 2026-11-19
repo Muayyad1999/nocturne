@@ -192,10 +192,18 @@ async fn many_concurrent_echoes_each_get_their_own_reply() {
         ECHOES,
         "every echo came back either answered or timed out"
     );
+    // Enough came back to have proved the point above, which is all this
+    // floor is for. It is deliberately not a delivery rate: how many of two
+    // hundred simultaneous loopback echoes survive is the kernel's business
+    // and differs by platform — macOS throttles ICMP far harder than Linux
+    // and answered 133 of 200 on a CI runner, which is not a defect in
+    // anything here. What this test is *for* is the assertion inside the
+    // loop: every reply that did come back carried its own requester's
+    // payload size, so no two concurrent echoes were crossed.
     assert!(
-        answered * 4 >= ECHOES * 3,
-        "only {answered} of {ECHOES} concurrent echoes were answered, which is more \
-         loss than a busy machine accounts for (timed out: {lost:?})"
+        answered * 4 >= ECHOES,
+        "only {answered} of {ECHOES} concurrent echoes were answered, too few to \
+         have shown that replies are matched to requests (timed out: {lost:?})"
     );
 }
 

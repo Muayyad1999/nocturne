@@ -50,7 +50,16 @@ async fn a_tcp_check_tells_a_port_that_is_listening_from_one_that_is_not() {
 
     let down = harness.run_check(&nothing).await;
     assert_eq!(down.state.status, CheckStatus::Down);
-    assert_eq!(down.state.code, "refused");
+    // Unix refuses a connection to a port with nothing on it; Windows does
+    // not always answer at all — on a CI runner a closed loopback port is
+    // dropped rather than rejected, and the check times out. Both are the
+    // same fact about the service, and the status above is the assertion
+    // that matters. The code only says how the host put it.
+    assert!(
+        matches!(down.state.code.as_str(), "refused" | "timeout"),
+        "a port with nothing on it is refused or times out: {:?}",
+        down.state
+    );
 }
 
 // ------------------------------------------------------------------ HTTP

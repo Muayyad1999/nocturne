@@ -80,11 +80,20 @@ async fn a_service_that_stops_answering_goes_down_while_the_box_stays_up() {
     server.stop().await;
     let down = harness.run_check(&check).await;
     assert_eq!(down.state.status, CheckStatus::Down, "{:?}", down.state);
-    assert_eq!(down.state.code, "refused");
+    // Unix refuses a connection to a port with nothing on it; Windows does
+    // not always answer at all — on a CI runner a closed loopback port is
+    // dropped rather than rejected, and the check times out. Both are the
+    // same fact about the service, and the status above is the assertion
+    // that matters. The code only says how the host put it.
     assert!(
-        down.state.message.contains("nothing is listening"),
-        "{}",
-        down.state.message
+        matches!(down.state.code.as_str(), "refused" | "timeout"),
+        "a service that has gone is refused or times out: {:?}",
+        down.state
+    );
+    let said = &down.state.message;
+    assert!(
+        said.contains("nothing is listening") || said.contains("did not answer"),
+        "the message has to say which it was: {said}"
     );
 
     // And the device itself is untouched by any of it.
