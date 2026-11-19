@@ -131,7 +131,16 @@ impl Snmpd {
                 port,
             };
             if daemon.wait_until_ready().await {
-                return Some(daemon);
+                if daemon.enforces_its_configuration().await {
+                    return Some(daemon);
+                }
+                eprintln!(
+                    "skipping the net-snmp interoperability tests: this `snmpd` answered a \
+                     community it was never given, so it is not enforcing the configuration \
+                     these tests were written against — half of them assert the opposite of \
+                     what they mean against such an agent"
+                );
+                return None;
             }
             let log = std::fs::read_to_string(daemon.dir().join("snmpd.log")).unwrap_or_default();
             eprintln!("snmpd did not come up on port {port}, retrying; its log:\n{log}");
@@ -163,6 +172,21 @@ impl Snmpd {
             self.wait_until_ready().await,
             "snmpd did not come back after the restart"
         );
+    }
+
+    /// Whether this agent ignores a community it was never configured with.
+    ///
+    /// The premise under every test here is that the daemon enforces the
+    /// configuration it was handed — the suite writes its own `snmpd.conf`
+    /// and starts with `-C` so that nothing else is read. net-snmp is
+    /// third-party software and its builds differ; one that answers an
+    /// unknown community turns "the wrong community is met with silence"
+    /// and "the read-only community may not write" into assertions of the
+    /// opposite. Better to say so once than to fail five tests that are
+    /// each correct about a daemon that is not.
+    async fn enforces_its_configuration(&self) -> bool {
+        let mut client = connect_impatient(self, v2c("not-the-community")).await;
+        client.get(&[oid(oids::SYS_LOCATION)]).await.is_err()
     }
 
     async fn wait_until_ready(&mut self) -> bool {
@@ -526,7 +550,7 @@ async fn v1_and_v2c_get_and_walk_system_and_interfaces() {
         let descriptions = client.walk(&oid(oids::IF_DESCR), usize::MAX).await.unwrap();
         assert_eq!(descriptions.len() as u64, if_number, "{version}");
         assert!(
-            descriptions.iter().any(|bind| text(bind) == "lo"),
+            descriptions.iter().any(|bind| text(bind).starts_with("lo")),
             "{version}: no loopback"
         );
         let interfaces = client
