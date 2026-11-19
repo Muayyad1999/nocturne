@@ -611,6 +611,19 @@ async fn nc_pipelines_get_the_whole_answer() {
     let args = ["-N".to_owned(), "127.0.0.1".to_owned(), port];
 
     let run = pipe(&nc, &args, &[], b"size\r\ncount 20000\r\n".to_vec()).await;
+    // In the OpenBSD netcat `-N` means "close the sending side when the
+    // input ends", which is what this test needs. Apple's reads the next
+    // argument as a timeout and complains about it — the same name on a
+    // different tool, as with `logger` and `tftp` elsewhere in this suite.
+    if run.code != Some(0)
+        && (run.stderr.contains("invalid") || run.stderr.to_lowercase().contains("usage"))
+    {
+        eprintln!(
+            "skipping: this `nc` does not take `-N` the way the OpenBSD one does ({})",
+            run.stderr.trim()
+        );
+        return;
+    }
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     let seen = text(&run.stdout);
     assert!(seen.contains("Welcome nobody 80x24\r\nlab> "), "{seen}");

@@ -308,6 +308,7 @@ reveals the first one it meets, so they came out one a round:
 | macOS | a net-snmp build offers 13 v3 auth/privacy combinations | this one offers 7; which algorithms a distribution compiles in is its business, and net-snmp's own tools say which are supported |
 | macOS | an agent can answer a 1000-object GETBULK | the reply is one datagram past `maxdgram`, so it is never sent and the walk times out |
 | macOS | the `tftp` client takes `-m mode` | it ships BSD's, which takes neither `-m` nor `-c` and cannot be driven from a command line |
+| macOS | `nc -N` closes the sending side at end of input | Apple's netcat reads the next argument as a timeout and rejects the address |
 | macOS | a pseudo-terminal can stand in for a serial port | opening the far end of a pty pair by its path as a serial device gives ENOTTY, "Not a typewriter" |
 | Windows **and macOS** | a device's last words survive input it never read | Windows resets a socket closed while unread input sits in its buffer, and the reset discards what was already in flight the other way |
 | Linux | a port is bindable the instant its server stops | closing a socket and the port becoming free are not the same moment |
@@ -320,6 +321,13 @@ wire. Each is now asked by trying rather than assumed, and the rest of the
 workspace was searched for the same shape rather than waiting for it to turn
 up a fifth time: every other large buffer is either a receive buffer, an
 in-memory value, or sent over TCP, where size is not a limit.
+
+A theme runs through half of it: **"is the tool installed" was never the
+right question.** `logger`, `tftp`, `base64`, `nc` and `snmpd` are all
+present on macOS as different implementations wearing the same name, and
+each one answered a flag by doing something else with it. The guards now ask
+whether it is the tool the test was written against, and say which one they
+found when it is not.
 
 Two things are worth taking from that table rather than only fixing it.
 **The product was right every time** — what failed was a test demanding one
