@@ -275,8 +275,26 @@ async fn bulk_walk_across_several_hundred_oids() {
     let everything = oid("1.3.6.1");
 
     // SNMPv2c with GETBULK, at several bulk sizes.
+    //
+    // A bulk response carrying several hundred objects is one large
+    // datagram. Linux's loopback takes 64 KiB; macOS refuses anything over
+    // `net.inet.udp.maxdgram` — 9216 by default — with EMSGSIZE at the
+    // sender, so an agent there cannot answer the biggest asks at all and
+    // the walk times out waiting. That is the host's limit rather than this
+    // client's, and the smaller sizes still walk every object and exercise
+    // every path through the loop.
+    let big_datagrams = host_sends_datagram(16 * 1024).await;
+    let sizes: &[u32] = if big_datagrams {
+        &[1, 2, 7, 25, 100, 1000]
+    } else {
+        eprintln!(
+            "skipping the larger max-repetitions: this host will not send a datagram big \
+             enough to answer them"
+        );
+        &[1, 2, 7, 25]
+    };
     let expected = expected_walk(&view, true);
-    for max_repetitions in [1, 2, 7, 25, 100, 1000] {
+    for max_repetitions in sizes.iter().copied() {
         let mut config = ClientConfig::new(running.addr(), v2c());
         config.max_repetitions = max_repetitions;
         let mut client = Client::connect(config).await.unwrap();
@@ -964,4 +982,19 @@ async fn large_table_timings() {
         assert_eq!(table.len(), ROWS as usize);
         assert!(table.values().all(|row| row.len() == 5));
     }
+}
+
+/// Whether this host will send a UDP datagram of `bytes` at all.
+///
+/// Linux's loopback carries a 64 KiB datagram; macOS refuses anything over
+/// `net.inet.udp.maxdgram` — 9216 by default — with EMSGSIZE at the sender.
+/// Asked by trying, because the limit is a sysctl and not worth reading.
+async fn host_sends_datagram(bytes: usize) -> bool {
+    let Ok(socket) = UdpSocket::bind("127.0.0.1:0").await else {
+        return false;
+    };
+    let Ok(itself) = socket.local_addr() else {
+        return false;
+    };
+    socket.send_to(&vec![0u8; bytes], itself).await.is_ok()
 }
