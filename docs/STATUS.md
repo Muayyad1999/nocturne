@@ -288,11 +288,15 @@ of it:
 
 ### What the other two platforms did with the same suite
 
-Linux was green for a long time while macOS and Windows were not, which is
-the whole reason that matrix exists and is also the honest answer to "why do
-so many runs fail". Every failure found so far has been a *test* asserting
-one platform's habits rather than a defect in the code, and each run only
-reveals the first one it meets, so they came out one a round:
+**All three are green now**, along with both interface jobs, the desktop
+shell and the end-to-end suite. Getting there took thirteen rounds, because
+each run only reveals the first failure it meets, and the honest summary of
+those thirteen is this: **every single one was a test asserting one
+platform's habits, and not once was it a defect in the code.** That is worth
+stating plainly in both directions — the product was right every time, and
+the suite was quietly measuring Linux rather than Nocturne.
+
+Here is what they actually were:
 
 | | was asserted | what the platform actually does |
 |---|---|---|
@@ -329,13 +333,16 @@ each one answered a flag by doing something else with it. The guards now ask
 whether it is the tool the test was written against, and say which one they
 found when it is not.
 
-Two things are worth taking from that table rather than only fixing it.
-**The product was right every time** — what failed was a test demanding one
-operating system's answer. And **on Windows a refused connection and an
-unreachable host look more alike than they do on Linux**, so Nocturne will
-say "timed out" where Linux says "refused". That is the host's doing, it is
-not asserted away, and it is worth knowing when you are reading why a device
-did not answer.
+One consequence survives all the fixing and is worth carrying: **on Windows
+a refused connection and an unreachable host look more alike than they do on
+Linux**, so Nocturne will say "timed out" where Linux says "refused". That
+is the host's doing, it is not asserted away anywhere, and it is the one
+thing in this section that changes how you read a device that did not
+answer.
+
+The rest of it is a lesson about test suites rather than about networks: a
+test that passes only on the machine it was written on is not yet a test of
+the thing it names.
 
 ## Known gaps worth stating plainly
 
