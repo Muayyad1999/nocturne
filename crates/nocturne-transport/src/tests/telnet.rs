@@ -185,6 +185,22 @@ async fn many_sessions_run_concurrently() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_last_words_of_a_device_survive_input_it_never_reads() {
+    if cfg!(windows) {
+        // The scenario cannot be staged here. Windows resets a socket that
+        // is closed while unread data is still in its receive buffer, and a
+        // reset throws away what was already in flight the other way —
+        // including the "bye" this test exists to catch. The operating
+        // system destroys the evidence before the reader has a chance to be
+        // wrong about it. On a real network it is the *device* that decides
+        // this when it hangs up, and a switch is not Windows; what is being
+        // tested here is our reader, and it is tested on the platforms where
+        // the last words survive long enough to look at.
+        eprintln!(
+            "skipping: Windows resets a socket closed with unread input, which discards the \
+             device's last words before anything can read them"
+        );
+        return;
+    }
     let (server, lab) = server().await;
     for _ in 0..20 {
         let mut conn = connect(&params(server.local_addr())).await;

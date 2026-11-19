@@ -206,6 +206,16 @@ async fn tftp_hpa_downloads_and_uploads() {
     };
 
     let (ok, said) = run(client("get startup-config downloaded".to_owned())).await;
+    // Installed is not enough: macOS ships the BSD client, which has no
+    // `-m mode` and no `-c command` and cannot be driven from a command line
+    // at all. Asked by running it, rather than by starting another process
+    // that might sit waiting for input.
+    if !ok && (said.contains("illegal option") || said.to_lowercase().contains("usage:")) {
+        eprintln!(
+            "skipping: this `tftp` is the BSD client, which takes neither `-m` nor `-c`: {said}"
+        );
+        return;
+    }
     assert!(
         ok && !said.to_lowercase().contains("error"),
         "tftp get: {said}"
