@@ -280,7 +280,10 @@ async fn the_local_shell_runs_and_ends() {
         &app,
         json!({
             "transport": "local",
-            "local": {"program": "sh", "args": ["-c", "echo nocturne-is-here; exit 7"]},
+            "local": common::local_shell(
+                "echo nocturne-is-here; exit 7",
+                "echo nocturne-is-here & exit 7",
+            ),
         }),
     )
     .await
@@ -309,7 +312,7 @@ async fn a_local_shell_cannot_carry_a_break() {
         &app,
         json!({
             "transport": "local",
-            "local": {"program": "sh", "args": ["-c", "sleep 30"]},
+            "local": common::local_shell("sleep 30", "ping -n 31 127.0.0.1 > nul"),
             "title": "Local shell",
         }),
     )

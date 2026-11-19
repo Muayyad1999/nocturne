@@ -256,7 +256,10 @@ async fn a_log_name_is_built_from_the_title_and_can_name_nothing_else() {
                 json!({
                     "adhoc": {
                         "transport": "local",
-                        "local": {"program": "sh", "args": ["-c", "echo hi; sleep 0.2"]},
+                        "local": common::local_shell(
+                            "echo hi; sleep 0.2",
+                            "echo hi & ping -n 2 127.0.0.1 > nul",
+                        ),
                         "title": title,
                     },
                     "log": true,

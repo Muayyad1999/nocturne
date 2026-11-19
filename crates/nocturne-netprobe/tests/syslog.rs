@@ -351,7 +351,7 @@ fn logger_args(port: u16, extra: &[&str], text: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn interoperates_with_logger_over_udp() {
-    if support::require_program("logger").is_none() {
+    if support::require_networked_logger().is_none() {
         return;
     }
     let (_server, udp, _tcp, mut messages) = start().await;
@@ -420,7 +420,7 @@ async fn interoperates_with_logger_over_udp() {
 
 #[tokio::test]
 async fn interoperates_with_logger_over_tcp() {
-    if support::require_program("logger").is_none() {
+    if support::require_networked_logger().is_none() {
         return;
     }
     let (_server, _udp, tcp, mut messages) = start().await;

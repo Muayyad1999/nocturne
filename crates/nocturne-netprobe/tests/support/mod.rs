@@ -24,6 +24,39 @@ pub fn require_program(program: &str) -> Option<PathBuf> {
     found
 }
 
+/// A `logger` that can send to a network host, or `None` after saying why
+/// not.
+///
+/// Installed is not enough. util-linux's `logger` takes `-n host -P port`;
+/// the BSD one macOS ships has neither ("illegal option -- n") and can only
+/// write to the local log socket. What these tests are for is
+/// interoperability with the util-linux tool's wire output, so where that is
+/// not the tool installed they say so and pass, rather than failing for
+/// something no code in this repository controls.
+pub fn require_networked_logger() -> Option<PathBuf> {
+    let found = require_program("logger")?;
+    let usable = std::process::Command::new(&found)
+        .args(["--help"])
+        .output()
+        .map(|out| {
+            let text = String::from_utf8_lossy(&out.stdout).to_lowercase()
+                + &String::from_utf8_lossy(&out.stderr).to_lowercase();
+            // `-n` on its own is too short to look for safely; the long
+            // option only the util-linux tool has is the reliable tell.
+            text.contains("--server") || text.contains("--udp")
+        })
+        .unwrap_or(false);
+    if !usable {
+        eprintln!(
+            "skipping: `{}` cannot send to a network host — this is the BSD \
+             `logger`, not util-linux's",
+            found.display()
+        );
+        return None;
+    }
+    Some(found)
+}
+
 /// Whether the tests run as root.
 #[cfg(unix)]
 pub fn is_root() -> bool {

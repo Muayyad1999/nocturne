@@ -626,3 +626,21 @@ pub async fn scripted_on(
         devices,
     }
 }
+
+/// Parameters for a local-shell session that runs one command and stops.
+///
+/// The shell differs by platform and so does the way to run a single command
+/// — the product knows this (`default_program` is `$SHELL` or `/bin/sh` on
+/// Unix and `powershell.exe` on Windows), so a test that hard-codes `sh` is
+/// asserting something about the runner's PATH rather than about this code.
+/// A GitHub Windows runner happens to have Git for Windows' `sh.exe` on it,
+/// which is why only one of these ever failed there; depending on that is
+/// still a bet, and `cmd.exe` is on every Windows machine there is.
+pub fn local_shell(unix: &str, windows: &str) -> serde_json::Value {
+    let (program, flag, script) = if cfg!(unix) {
+        ("sh", "-c", unix)
+    } else {
+        ("cmd.exe", "/C", windows)
+    };
+    serde_json::json!({"program": program, "args": [flag, script]})
+}
