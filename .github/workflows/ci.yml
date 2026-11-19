@@ -24,9 +24,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Real peers for the interoperability tests (they skip cleanly when absent).
       - name: Install net-snmp, OpenSSH server and telnetd for interop tests
+        # A package mirror having a bad afternoon must not fail a build. The
+        # interoperability tests skip with a stated reason when their peers
+        # are missing — that is the whole point of writing them that way — so
+        # the worst case here is a run that checks slightly less, not a red
+        # tick that means nothing. Three tries first, because most of these
+        # failures are transient.
+        continue-on-error: true
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends snmpd snmp openssh-server sshpass inetutils-telnetd telnet
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+                 snmpd snmp openssh-server sshpass inetutils-telnetd telnet; then
+              exit 0
+            fi
+            echo "apt failed on attempt $attempt; retrying in 15s"
+            sleep 15
+          done
+          echo "could not install the interop peers: those tests will skip and say so"
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -99,7 +113,18 @@ jobs:
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
       - run: pnpm --dir ui install --frozen-lockfile
-      - run: pnpm --dir ui exec playwright install --with-deps chromium
+      - name: Install the browser the end-to-end tests drive
+        # `--with-deps` is apt underneath, so it fails the same way.
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm --dir ui exec playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "playwright install failed on attempt $attempt; retrying in 15s"
+            sleep 15
+          done
+          echo "the browser could not be installed"
+          exit 1
       - run: pnpm --dir ui build
       - run: cargo build -p nocturne-server
       - run: pnpm --dir ui e2e
@@ -121,10 +146,19 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Install the Linux WebView dependencies Tauri needs
+        # Unlike the interop peers these are needed to build at all, so a
+        # failure here is a real failure — but it is usually a transient one.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+                 libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf; then
+              exit 0
+            fi
+            echo "apt failed on attempt $attempt; retrying in 15s"
+            sleep 15
+          done
+          echo "the WebView dependencies could not be installed"
+          exit 1
       # Its `build.rs` embeds a built interface when there is one and a page
       # saying there is not when there is not, so this needs no `pnpm build`.
       - run: cargo clippy -p nocturne-desktop --all-targets -- -D warnings

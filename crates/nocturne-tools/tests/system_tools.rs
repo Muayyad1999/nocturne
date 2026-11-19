@@ -122,8 +122,15 @@ fn digests_match_coreutils() {
 
 #[test]
 fn base64_matches_coreutils() {
-    if run("base64", &["--version"], b"").is_none() {
-        eprintln!("SKIPPED: base64 (coreutils) is not installed");
+    // Installed is not the question — macOS has a `base64` too, the BSD one,
+    // which has no `-w` and wraps differently. What this test compares
+    // against is GNU's, so that is what it asks for: the version banner
+    // names it, and anything else is a different tool with the same name.
+    let banner = run("base64", &["--version"], b"")
+        .map(|out| String::from_utf8_lossy(&out).to_lowercase())
+        .unwrap_or_default();
+    if !(banner.contains("gnu") || banner.contains("coreutils")) {
+        eprintln!("SKIPPED: this `base64` is not GNU coreutils' (it said {banner:?})");
         return;
     }
     for len in [0, 1, 2, 3, 4, 57, 58, 76, 1000, 100_000] {
