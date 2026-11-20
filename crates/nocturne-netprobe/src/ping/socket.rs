@@ -235,6 +235,9 @@ enum Event {
         ttl: Option<u8>,
     },
     /// The network reported the echo undeliverable (Linux error queue).
+    /// Built only where there is one, so a build for anywhere else never
+    /// constructs it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Unreachable(String),
 }
 

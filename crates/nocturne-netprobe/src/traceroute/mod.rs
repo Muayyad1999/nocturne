@@ -158,6 +158,9 @@ struct ProbeResult {
 }
 
 impl ProbeResult {
+    /// A hop that said nothing. Used by the tests below, which a plain
+    /// build does not compile.
+    #[allow(dead_code)]
     const SILENT: ProbeResult = ProbeResult {
         address: None,
         rtt_ms: None,

@@ -38,6 +38,9 @@ impl Family {
         }
     }
 
+    // Only the Linux error-queue path asks this, so a build for anywhere
+    // else never reaches it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn is_v6(self) -> bool {
         self == Family::V6
     }
@@ -289,6 +292,11 @@ pub(crate) fn error_text_v6(kind: u8, code: u8) -> &'static str {
 }
 
 /// `true` when an ICMP error means "this is as far as the packet got because its TTL ran out".
+// Part of a complete decode of the ICMP table. Which rows anything reaches
+// depends on the platform — Linux reads them from the error queue, and
+// elsewhere they are exercised by the tests — so a plain build for another
+// target sees them unused without them being wrong to keep.
+#[allow(dead_code)]
 pub(crate) fn is_time_exceeded(family: Family, kind: u8) -> bool {
     match family {
         Family::V4 => kind == V4_TIME_EXCEEDED,
@@ -297,6 +305,11 @@ pub(crate) fn is_time_exceeded(family: Family, kind: u8) -> bool {
 }
 
 /// `true` for the ICMP error a closed UDP port answers with.
+// Part of a complete decode of the ICMP table. Which rows anything reaches
+// depends on the platform — Linux reads them from the error queue, and
+// elsewhere they are exercised by the tests — so a plain build for another
+// target sees them unused without them being wrong to keep.
+#[allow(dead_code)]
 pub(crate) fn is_port_unreachable(family: Family, kind: u8, code: u8) -> bool {
     match family {
         Family::V4 => kind == V4_UNREACHABLE && code == 3,
@@ -305,6 +318,11 @@ pub(crate) fn is_port_unreachable(family: Family, kind: u8, code: u8) -> bool {
 }
 
 /// The text for an error reported through the Linux error queue.
+// Part of a complete decode of the ICMP table. Which rows anything reaches
+// depends on the platform — Linux reads them from the error queue, and
+// elsewhere they are exercised by the tests — so a plain build for another
+// target sees them unused without them being wrong to keep.
+#[allow(dead_code)]
 pub(crate) fn error_text(family: Family, kind: u8, code: u8) -> &'static str {
     match family {
         Family::V4 => error_text_v4(kind, code),

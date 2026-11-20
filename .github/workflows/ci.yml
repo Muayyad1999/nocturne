@@ -43,6 +43,13 @@ jobs:
           echo "could not install the interop peers: those tests will skip and say so"
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      # And again without the tests. `--all-targets` compiles them, so
+      # anything reached only from a test does not look dead to it — which
+      # is how seven warnings reached somebody's first `cargo run` while CI
+      # stayed green. What this still cannot see is code that is dead only
+      # on another platform: that needs a lint over there, and the portability
+      # jobs run `cargo test` rather than clippy to keep them short.
+      - run: cargo clippy --workspace -- -D warnings
       - run: cargo test
 
   rust-portability:

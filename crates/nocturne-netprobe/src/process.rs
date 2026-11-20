@@ -18,6 +18,9 @@ const EXTRA_DIRS: &[&str] = &["/usr/sbin", "/sbin", "/usr/local/sbin", "/usr/bin
 /// Finds `program` in `PATH` or the usual system directories.
 pub(crate) fn find(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
+    // Mutated just below, but only on Unix, where the extra system
+    // directories are added.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
     #[cfg(unix)]
     dirs.extend(EXTRA_DIRS.iter().map(PathBuf::from));
