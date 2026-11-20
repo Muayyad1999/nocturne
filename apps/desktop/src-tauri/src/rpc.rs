@@ -17,6 +17,15 @@ pub fn internal(message: impl Into<String>) -> AppError {
 
 /// Call a backend method. Returns its result, or the backend's error.
 ///
+/// Note for whoever changes this shape: there is **no `{ok, result}`
+/// envelope** on this path. Tauri resolves the promise with the `Ok` value
+/// and rejects it with the serialised `Err`, and
+/// `ui/src/api/transports/tauri.ts` is written to that. The HTTP path in
+/// `nocturne-server` does use an envelope, because one reply has to carry
+/// both outcomes there. The two are not the same contract and a change here
+/// has to be made there as well — they were once out of step, with tests on
+/// both sides passing against the shape each imagined the other had.
+///
 /// A panic inside a handler becomes an `internal` error rather than taking
 /// the window down with it: one broken screen must not end the session.
 pub async fn call(app: &App, method: &str, params: Option<Value>) -> Result<Value, AppError> {

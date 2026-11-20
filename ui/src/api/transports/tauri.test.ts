@@ -11,19 +11,37 @@ afterEach(() => {
 });
 
 describe('tauri transport: calls', () => {
-  it('invokes the rpc command and unwraps the result', async () => {
+  // These mocks are the contract with `apps/desktop/src-tauri/src/rpc.rs`,
+  // so they have to be what Tauri really does with a
+  // `Result<Value, AppError>`: resolve with the `Ok` value as it is, reject
+  // with the serialised `Err`. They used to return a `{ok, result}` envelope
+  // that no Rust code ever built, which is why every call in the desktop
+  // application failed while both halves had passing tests.
+  it('invokes the rpc command and resolves with the result itself', async () => {
     const calls: unknown[] = [];
     mockIPC((command, payload) => {
       calls.push([command, payload]);
-      return { ok: true, result: { id: 'r1' } };
+      return { id: 'r1' };
     });
 
     await expect(createTauriTransport().request('devices.create', { name: 'core-sw-01' })).resolves.toEqual({ id: 'r1' });
     expect(calls).toEqual([['rpc', { method: 'devices.create', params: { name: 'core-sw-01' } }]]);
   });
 
+  it('passes a result that is a list or a bare value through untouched', async () => {
+    mockIPC(() => ['a', 'b']);
+    await expect(createTauriTransport().request('app.methods', undefined)).resolves.toEqual(['a', 'b']);
+    clearMocks();
+    mockIPC(() => null);
+    await expect(createTauriTransport().request('jobs.cancel', undefined)).resolves.toBeNull();
+  });
+
   it('turns an application error into an RpcError', async () => {
-    mockIPC(() => ({ ok: false, error: { code: 'conflict', message: 'that name is taken' } }));
+    mockIPC(() => {
+      // Tauri rejects with the serialised `AppError`: {code, message}.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw { code: 'conflict', message: 'that name is taken' };
+    });
     await expect(createTauriTransport().request('devices.create', {})).rejects.toMatchObject({
       name: 'RpcError',
       code: 'conflict',
