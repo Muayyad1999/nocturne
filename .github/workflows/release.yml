@@ -13,8 +13,49 @@ permissions:
   contents: write
 
 jobs:
+  # Three desktop jobs run at once and each used to create the release for
+  # the tag. One wins and the others are meant to find what it made — but
+  # they raced, and the Ubuntu one was refused with "Resource not accessible
+  # by integration" on create-a-release, so a tag shipped without its Linux
+  # packages. Making the release once, here, removes the race: the builders
+  # are given its id and only ever upload.
+  release:
+    name: The release the installers are uploaded to
+    runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.make.outputs.id }}
+    steps:
+      - id: make
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # A re-run must not make a second release for the same tag.
+          # `gh api` prints the 404 body on stdout, so "not empty" is not the
+          # same as "found" — only an id made of digits counts as one.
+          existing=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq .id 2>/dev/null || true)
+          case "$existing" in
+            '' | *[!0-9]*) existing='' ;;
+          esac
+          if [ -n "$existing" ]; then
+            echo "the release for $TAG already exists ($existing)"
+            echo "id=$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          body=$'See `docs/STATUS.md` for what is built and how it has been checked.\n\nThese installers are not signed yet, so Windows SmartScreen and macOS Gatekeeper will warn about them.'
+          id=$(gh api "repos/${{ github.repository }}/releases" \
+            -f tag_name="$TAG" \
+            -f name="Nocturne $TAG" \
+            -f body="$body" \
+            -F draft=true \
+            --jq .id)
+          echo "made the release for $TAG ($id)"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   desktop:
     name: Desktop installers (${{ matrix.os }})
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -57,14 +98,8 @@ jobs:
         with:
           projectPath: apps/desktop/src-tauri
           args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: Nocturne ${{ github.event.inputs.tag || github.ref_name }}
-          releaseDraft: true
-          releaseBody: |
-            See `docs/STATUS.md` for what is built and how it has been checked.
-
-            These installers are not signed yet, so Windows SmartScreen and
-            macOS Gatekeeper will warn about them.
+          # The release already exists; this only adds files to it.
+          releaseId: ${{ needs.release.outputs.id }}
 
   server:
     name: Server binary (${{ matrix.edition }}, ${{ matrix.os }})
