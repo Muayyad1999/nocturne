@@ -192,6 +192,9 @@ Methods added: `monitor.interfaces` (the whole table, one call, refetched on
 device belongs to. Nothing new was asked of the backend, and nothing was
 added to it.
 
+(Superseded for the rates: the screen now asks `topology.rates`, not
+`monitor.interfaces`. See "What the review found" below.)
+
 ### The four states of a rate, and how each one reads
 
 A direction of a link is in exactly one of four states, and they are four
@@ -256,6 +259,9 @@ Nothing is polled by this screen: the rates refetch on `monitor.interfaces`
 and `monitor.polled`, and a 15-second tick re-reckons the *ages* (time
 passing is not an event, so nothing would otherwise turn a live reading into
 a stale one while the map is open).
+
+Ages are reckoned on the **server's** clock (`serverNow` in `load.ts`), never
+the browser's: see "What the review found".
 
 ### What shows at which zoom
 
@@ -389,12 +395,10 @@ rounds of it. In order:
   to be. It errs towards *not* crying stale, which is the right way round,
   but only the backend can say what the real cadence is. `util_pct` itself
   could stay as it is; nothing here reads it any more.
-* **`monitor.interfaces` is asked for 5 000 rows to draw a dozen links.**
-  There is no "the rates for these (device, interface) pairs" query, and no
-  per-link one. On a campus-sized install that is the right trade (one call,
-  paged in SQL, cached by the query client and shared with the Monitoring
-  screen), but on a ten-thousand-port estate it is the wrong shape and the
-  screen will need either the field above or a narrower query.
+* ~~**`monitor.interfaces` is asked for 5 000 rows to draw a dozen links.**~~
+  Closed: `topology.rates` is the "rates for these (device, interface) pairs"
+  query this asked for. It was not merely the wrong shape on a large estate,
+  it was wrong: one call is the first 5 000 rows and nothing more.
 * **A terminal from a map cannot be offered honestly without the inventory.**
   Whether a device has a credential, an address or a command line is in
   `devices.list`, which this screen now reads for that alone (and for the
@@ -446,14 +450,68 @@ rounds of it. In order:
   and the screen shows a dash for what is missing, but it is worth knowing
   that a quiet link looks like `0.10%` and not like nothing.
 
+## What the review found (third pass)
+
+Eight defects, all in what the second pass added or left alone.
+
+* **The rates were the first 5 000 rows of monitoring's table, and the join
+  was done here.** `monitor.interfaces` returns at most 5 000 rows a call and
+  the screen made one call: on 150 access switches the ports of the last
+  sixty-odd had "no rate" although monitoring held current rates for them.
+  And the join compared names as text through a fifteen-entry table of
+  abbreviations in `graph.ts`, while the backend canonicalises with
+  `nocturne-drivers::ifname` (`TenGigE` → `TenGigabitEthernet`, `eth` →
+  `Ethernet`, `Tw`, `Fi`, …): every IOS XR port was lost. Both are fixed in
+  one place, in the backend: `topology.rates {ports}` is asked about the
+  ports the links end on (`ratePorts`), reads each device's rows to the end,
+  joins with `ifname` on both names, and answers under the spelling it was
+  asked with. `interfaceKey` and `LONG_FORMS` are gone; this screen compares
+  no interface names any more. (`shortInterface` stays: it abbreviates a
+  label and joins nothing.) This is the "narrower query" the list below asks
+  for.
+* **Staleness compared the server's timestamp with the browser's clock.** A
+  laptop four minutes fast greyed the whole map; one four minutes slow kept a
+  dead poll live. `topology.rates` and `topology.get` both say what time it
+  is on the server (`at`, `generated_at`); `serverNow` carries the latest of
+  those forward by how long ago it arrived (`dataUpdatedAt`), so the
+  browser's clock is only ever subtracted from itself. The stats line, the
+  panel's "Measured …" and the warnings band's "older than the limit" use the
+  same time. `TimeAgo` (the design system's) still reckons against the
+  browser's clock, here ("Data collected", "from a table collected") and on
+  every other screen: that wants a server-clock offset in `api/` or
+  `lib/time`, which is not this screen's to add.
+* **A second press while the first login was connecting dialled twice.**
+  `terminal.open` answers only once the device has been dialled, and
+  `terminal.list` — all the screen went by — has nothing until then. The
+  page now remembers which devices it is dialling (`sessionAction(existing,
+  dialling)` answers `wait`), the button shows it, the menu item says
+  "connecting…". `mutateAsync` rather than `mutate` with callbacks: a second
+  `mutate` drops the first one's per-call callbacks, which is also why only
+  the second session was ever docked.
+* **Closing a session from the map kept its xterm.** Hiding parks the
+  terminal for later; closing now calls `terminals.forget`, as the Terminal
+  screen and the lab's dock do.
+* **"Save as a new view…" used `window.prompt`**, which the macOS WebView
+  answers `null` without showing anything. `SaveViewDialog` now. Its Enter
+  saves, except the Enter that ends an input-method composition
+  (`isComposing`), which belongs to the word being typed.
+* **The export's Copy said "Copied" whatever the clipboard did.**
+* (Backend) a folded port-channel's speed was the sum of its two ends, so
+  every percentage on a bundle was wrong; it is the members' sum now, and
+  `speedFor` already preferred the link's own speed.
+
 ## State at hand-off
 
 * `pnpm --dir ui test`: green; 99 of them in this screen's five files
   (`graph.test.ts`, `search.test.ts`, `trace.test.ts`, and from this pass
-  `load.test.ts` and `session.test.ts`).
+  `load.test.ts` and `session.test.ts`). After the third pass: 117 in six
+  files — `dialogs.test.tsx` renders the two dialogs in happy-dom.
 * `pnpm --dir ui build` (whole-repo typecheck, then the bundle): clean. The
   screen is its own 73 kB chunk, 19 kB more than before this pass.
-* `tests/topology.spec.ts`: 24 tests against a real `nocturne-server` with the
+* `tests/topology.spec.ts`: 24 tests (31 after the third pass: the view
+  dialog, the clipboard refusing and accepting, a browser clock two hours
+  fast and two hours slow, a double press on Terminal, and a session closed
+  from the map) against a real `nocturne-server` with the
   demo campus lab really collected from *and really polled*: the five campus
   switches are read twice a simulated minute apart so the interface rates are
   real, EDGE and the ISP router are left unmonitored so some links honestly

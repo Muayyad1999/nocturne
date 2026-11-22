@@ -15,6 +15,7 @@ mod graph_tests;
 mod layout_tests;
 mod locating;
 mod paths;
+mod rates;
 mod rpc;
 
 /// An app with the core modules and this feature registered.
@@ -228,8 +229,12 @@ pub fn campus() -> Campus {
         interfaces[access_at(0)].push(trunk(&access_port, 1_000_000_000));
         interfaces[dist_at(0)].push(trunk(&dist_port, 1_000_000_000));
     }
+    // What a Port-channel row says about its own speed depends on who was
+    // asked: one end here repeats a member's speed and the other reports a
+    // figure that matches nothing. No sum, minimum or maximum of these two is
+    // the bundle's two gigabits, so only the members can give that answer.
     interfaces[access_at(0)].push(trunk("Port-channel1", 1_000_000_000));
-    interfaces[dist_at(0)].push(trunk("Port-channel10", 1_000_000_000));
+    interfaces[dist_at(0)].push(trunk("Port-channel10", 4_000_000_000));
 
     // An access point nobody manages, seen by CDP from one end only.
     neighbours[access_at(3)].push(neighbor_full(

@@ -356,6 +356,55 @@ export interface NeighborsParams {
 
 /** `topology.neighbors` {@link NeighborsParams} → {@link Neighbors} */
 
+// ------------------------------------------------------------------- rates
+
+/** One port `topology.rates` is asked about. */
+export interface RatePort {
+  device_id: string;
+  /** The interface, in any spelling of its name; normally a link end's own. */
+  interface: string;
+}
+
+/** `topology.rates` params: the ports whose rates are wanted. */
+export interface RatesParams {
+  ports: RatePort[];
+}
+
+/**
+ * What monitoring last measured on one of the ports asked about. A rate that
+ * could not be measured is left out; `0` is a measured zero.
+ */
+export interface PortRate {
+  device_id: string;
+  /** The name the port was asked for by, letter for letter. */
+  interface: string;
+  /** The name monitoring knows the port by, which may be spelled differently. */
+  name: string;
+  in_bps?: number;
+  out_bps?: number;
+  speed_bps?: number;
+  /** When the poll that produced the rates ran. */
+  at?: number;
+}
+
+/**
+ * `topology.rates` result: one entry for each port asked about that
+ * monitoring has a row for. The backend joins the names (a link end is
+ * canonical, monitoring keeps some devices' own spelling), so nothing here
+ * needs comparing as text.
+ */
+export interface Rates {
+  /**
+   * The server's clock when it answered. How old a reading is, is its `at`
+   * taken from this — never from the browser's clock, which may be minutes
+   * out.
+   */
+  at: number;
+  /** `false` when the monitor feature is not in this build. */
+  monitoring: boolean;
+  ports: PortRate[];
+}
+
 // -------------------------------------------------------------------- path
 
 /** `topology.path` params: device ids, names or IP addresses. */

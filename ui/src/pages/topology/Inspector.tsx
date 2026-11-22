@@ -18,7 +18,7 @@ import { LabPill, StatusPill } from '@/design/StatusPill';
 import { Skeleton } from '@/design/Skeleton';
 import { TimeAgo } from '@/design/TimeAgo';
 import { EMPTY, formatDuration, formatRate, plural } from '@/lib/format';
-import { formatRelative } from '@/lib/time';
+import { formatRelative, formatTimestamp } from '@/lib/time';
 import { evidence, nodeKindLabel } from './graph';
 import styles from './Inspector.module.css';
 import {
@@ -51,13 +51,21 @@ export interface InspectorProps {
    * button would have been.
    */
   terminal?: SessionOffer;
-  /** `show` when this device already has a session open. */
-  terminalAction?: 'open' | 'show';
+  /**
+   * `show` when this device already has a session open, `wait` while a login
+   * to it is on its way and a second press would be a second login.
+   */
+  terminalAction?: 'open' | 'show' | 'wait';
   onTerminal?: (node: Node) => void;
   /** How loaded the selected link is, if monitoring has measured anything. */
   load?: LinkLoad;
   /** What the load layer as a whole has to say for itself. */
   loadLayer?: LayerState;
+  /**
+   * The time on the server's clock (`serverNow`), which a reading's own time
+   * is taken from to say how old it is; `null` before the server has said.
+   */
+  now?: number | null;
 }
 
 export function Inspector(props: InspectorProps) {
@@ -167,6 +175,7 @@ function NodePanel({
             variant={terminal.ok ? 'primary' : 'secondary'}
             icon={TerminalSquare}
             disabled={!terminal.ok}
+            loading={terminalAction === 'wait'}
             {...(terminal.ok ? {} : { title: terminal.why })}
             onClick={() => onTerminal(node)}
           >
@@ -281,6 +290,7 @@ function LinkPanel({
   onSelectNode,
   load,
   loadLayer = 'ready',
+  now = null,
 }: InspectorProps & { link: Link }) {
   const how = evidence(link);
   const a = graph.nodes.find((node) => node.id === link.a.node);
@@ -345,6 +355,7 @@ function LinkPanel({
                   load={direction}
                   from={nameOf(direction.from)}
                   to={nameOf(direction.to)}
+                  now={now}
                 />
               ))}
             </ul>
@@ -353,8 +364,14 @@ function LinkPanel({
                 'Neither end of this link has a measured rate: monitoring has not read these ports, or the last interval could not be measured.'
               ) : (
                 <>
-                  Measured <TimeAgo at={load.at} />. Rates are worked out over the device's own
-                  clock, so a reboot is a gap and never a spike.
+                  {/* On the server's clock, like the bars: a reading the map
+                      calls current must not be "2h ago" in the panel. */}
+                  Measured{' '}
+                  <time dateTime={new Date(load.at).toISOString()} title={formatTimestamp(load.at)}>
+                    {formatRelative(load.at, now ?? undefined)}
+                  </time>
+                  . Rates are worked out over the device's own clock, so a reboot is a gap and
+                  never a spike.
                 </>
               )}
             </p>
@@ -426,7 +443,17 @@ function LinkPanel({
  * they are three different facts and the worst thing this panel could do is
  * make "nothing measured" look like "nothing moving".
  */
-function LoadRow({ load, from, to }: { load: DirectionLoad; from: string; to: string }) {
+function LoadRow({
+  load,
+  from,
+  to,
+  now,
+}: {
+  load: DirectionLoad;
+  from: string;
+  to: string;
+  now: number | null;
+}) {
   const band = loadBand(load);
   return (
     <li className={styles.loadRow} data-band={band} data-kind={load.kind} data-age={load.age.state}>
@@ -465,7 +492,7 @@ function LoadRow({ load, from, to }: { load: DirectionLoad; from: string; to: st
             and how often that port is supposed to be read.
           */}
           <span>
-            measured {formatRelative(load.at)}
+            measured {formatRelative(load.at, now ?? undefined)}
             {load.cadenceS != null && (
               <>, and this port is read about every {formatDuration(load.cadenceS * 1000)}</>
             )}
@@ -484,7 +511,7 @@ function layerHint(state: LayerState): string {
     case 'loading':
       return 'Reading the interface rates…';
     case 'nothing':
-      return 'Monitoring has not measured any interface yet, so no link has a load. Poll a device and the numbers appear.';
+      return 'Monitoring has not measured any port on this drawing yet, so no link has a load. Poll a device and the numbers appear.';
     case 'ready':
       return 'Neither end of this link is an interface monitoring has measured.';
   }

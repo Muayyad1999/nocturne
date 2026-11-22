@@ -14,7 +14,11 @@ use crate::model::{
     Confidence, DataAge, End, Filter, Graph, Group, GroupKind, Layer, Link, LinkKind, Node,
     NodeKind, SETTINGS_SECTION, Settings, Stats, Status, View, compress_ranges,
 };
-use crate::{endpoints, l3, manual, physical, views};
+use crate::{endpoints, l3, manual, paged, physical, rates, views};
+
+/// How many open alerts are asked for at a time: inside the two thousand
+/// `alerts.list` allows, which is what [`paged::rows`] needs.
+const ALERTS_PAGE: usize = 1_000;
 
 /// What to draw.
 #[derive(Clone, Debug)]
@@ -542,12 +546,21 @@ fn fold_aggregates(links: Vec<Link>, collected: &Collected) -> Vec<Link> {
             .collect();
         protocols.sort();
         protocols.dedup();
+        // The bundle can carry what its members can carry together. Summed
+        // here, where the members are still known: once folded, the link's
+        // two ends are the two aggregate interfaces, and each of those speaks
+        // for the whole bundle (or, on some platforms, for one member).
+        let speed_bps = members
+            .iter()
+            .map(|link| member_speed(collected, link))
+            .sum::<Option<u64>>();
         let mut folded = Link {
             a: End::with_interface(a_node.clone(), Some(a_aggregate.clone())),
             b: End::with_interface(b_node.clone(), Some(b_aggregate.clone())),
             kind: members[0].kind,
             confidence,
             status,
+            speed_bps,
             aggregate: Some(format!(
                 "{} \u{2194} {} ({count} members)",
                 ifname::short(&a_aggregate),
@@ -563,13 +576,31 @@ fn fold_aggregates(links: Vec<Link>, collected: &Collected) -> Vec<Link> {
     kept
 }
 
+/// How fast one member of a port-channel is: the slower of the speeds its two
+/// ports reported, or the one that was reported when only one end said. `None`
+/// when neither did, which leaves the whole bundle's sum unknown — a sum that
+/// skipped a member would be a capacity nobody reported, and every percentage
+/// worked out from it would be too high.
+fn member_speed(collected: &Collected, link: &Link) -> Option<u64> {
+    [&link.a, &link.b]
+        .into_iter()
+        .filter_map(|end| {
+            let name = end.interface.as_deref()?;
+            collected
+                .interface(&end.node, name)?
+                .speed_bps
+                .filter(|speed| *speed > 0)
+        })
+        .min()
+}
+
 /// Fill in what the collected interfaces (and the monitor, when it is in the
 /// build) know about each link.
 async fn decorate(app: &App, links: &mut [Link], collected: &Collected, config: &Settings) {
-    let utilisation = if config.use_monitor_utilisation {
-        monitor_utilisation(app).await
+    let monitored = if config.use_monitor_utilisation {
+        monitored_ports(app, links, collected).await
     } else {
-        BTreeMap::new()
+        None
     };
     for link in links.iter_mut() {
         let mut speeds: Vec<u64> = Vec::new();
@@ -590,16 +621,20 @@ async fn decorate(app: &App, links: &mut [Link], collected: &Collected, config: 
                     vlans = vlans_of(collected, &end.node, name, interface);
                 }
             }
-            if let Some(value) = utilisation.get(&(end.node.clone(), name.clone())) {
-                util = Some(util.map_or(*value, |known: f64| known.max(*value)));
+            if let Some(value) = monitored
+                .as_ref()
+                .and_then(|ports| ports.get(&end.node, name))
+                .and_then(|port| port.util_pct)
+            {
+                util = Some(util.map_or(value, |known: f64| known.max(value)));
             }
         }
-        if link.speed_bps.is_none() && !speeds.is_empty() {
-            link.speed_bps = Some(if link.aggregate.is_some() {
-                speeds.iter().sum()
-            } else {
-                speeds.into_iter().min().unwrap_or_default()
-            });
+        if link.speed_bps.is_none() {
+            // The slower end is what the link can carry. That is as true of a
+            // folded port-channel whose members did not all give a speed: its
+            // two ends are the two aggregate interfaces, each speaking for
+            // the same bundle, so adding them up would count it twice.
+            link.speed_bps = speeds.into_iter().min();
         }
         if link.util_pct.is_none() {
             link.util_pct = util;
@@ -649,16 +684,26 @@ fn vlans_of(
 /// in the build. Absent is "nobody is watching", not "none".
 async fn open_alerts(app: &App) -> BTreeMap<String, u32> {
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-    let Some(rows) =
-        optional_rpc(app, "alerts.list", json!({"state": "open", "limit": 2000})).await
-    else {
-        return counts;
+    // Read to the end: a count taken from the first page alone gives a device
+    // whose alerts are further down a clean card.
+    let rows = match paged::rows(app, "alerts.list", &json!({"state": "open"}), ALERTS_PAGE).await {
+        Ok(Some(rows)) => rows,
+        Ok(None) => return counts,
+        Err(err) => {
+            tracing::debug!(code = err.code, "topology: {}", err.message);
+            return counts;
+        }
     };
-    let rows = match rows.get("rows").and_then(Value::as_array) {
-        Some(rows) => rows.clone(),
-        None => rows.as_array().cloned().unwrap_or_default(),
-    };
+    // The pages are cut by offset, newest first: an alert that fires while
+    // they are being read moves every later row down one, and the last row of
+    // a page comes back as the first of the next. One alert, counted once.
+    let mut counted: BTreeSet<String> = BTreeSet::new();
     for row in rows {
+        if let Some(id) = row.get("id").and_then(Value::as_str)
+            && !counted.insert(id.to_string())
+        {
+            continue;
+        }
         if let Some(device_id) = row.get("device_id").and_then(Value::as_str) {
             *counts.entry(device_id.to_string()).or_default() += 1;
         }
@@ -666,27 +711,29 @@ async fn open_alerts(app: &App) -> BTreeMap<String, u32> {
     counts
 }
 
-/// `monitor.interfaces`, when the monitor feature is in the build.
-async fn monitor_utilisation(app: &App) -> BTreeMap<(String, String), f64> {
-    let mut by_interface = BTreeMap::new();
-    let Some(rows) = optional_rpc(app, "monitor.interfaces", json!({"limit": 5000})).await else {
-        return by_interface;
-    };
-    let rows = match rows.get("rows").and_then(Value::as_array) {
-        Some(rows) => rows.clone(),
-        None => rows.as_array().cloned().unwrap_or_default(),
-    };
-    for row in rows {
-        let (Some(device_id), Some(name), Some(util)) = (
-            row.get("device_id").and_then(Value::as_str),
-            row.get("name").and_then(Value::as_str),
-            row.get("util_pct").and_then(Value::as_f64),
-        ) else {
-            continue;
-        };
-        by_interface.insert((device_id.to_string(), ifname::long(name)), util);
+/// What monitoring last measured on the ports these links end on, when the
+/// monitor feature is in the build and answers. Utilisation is a decoration
+/// on the graph: a monitor that refuses costs the drawing a number, not the
+/// drawing.
+async fn monitored_ports(app: &App, links: &[Link], collected: &Collected) -> Option<rates::Ports> {
+    // The same ends `decorate` goes on to look up: a named port of a device
+    // whose interfaces were collected. Nothing else is worth a read.
+    let devices: BTreeSet<String> = links
+        .iter()
+        .flat_map(|link| [&link.a, &link.b])
+        .filter(|end| end.interface.is_some() && collected.interfaces.contains_key(&end.node))
+        .map(|end| end.node.clone())
+        .collect();
+    if devices.is_empty() {
+        return None;
     }
-    by_interface
+    match rates::read(app, &devices).await {
+        Ok(ports) => ports,
+        Err(err) => {
+            tracing::debug!(code = err.code, "topology: {}", err.message);
+            None
+        }
+    }
 }
 
 #[cfg(test)]

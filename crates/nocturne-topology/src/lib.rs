@@ -31,8 +31,10 @@ mod layout;
 mod locate;
 mod manual;
 mod model;
+mod paged;
 mod path;
 mod physical;
+mod rates;
 #[cfg(test)]
 mod scenarios;
 mod views;

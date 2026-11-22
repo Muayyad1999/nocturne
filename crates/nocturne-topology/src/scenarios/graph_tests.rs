@@ -398,11 +398,151 @@ async fn port_channel_members_fold_into_one_link_when_both_ends_have_one() {
             .any(|member| member.contains("Gi1/0/45"))
     );
     assert_eq!(link.confidence, Confidence::Confirmed);
-    // The member speeds add up to the aggregate's capacity.
+    // The member speeds add up to the aggregate's capacity: two members of
+    // one gigabit each, whatever the two Port-channel rows say of themselves
+    // (the fixture has them say 1 Gb/s and 4 Gb/s).
     assert_eq!(link.speed_bps, Some(2_000_000_000));
     let (near, far) = ports(link, &campus.access[0]);
     assert_eq!(near.as_deref(), Some("Port-channel1"));
     assert_eq!(far.as_deref(), Some("Port-channel10"));
+}
+
+/// What one end of a bundle reports: the speed of each of its member ports
+/// and of its Port-channel, either of which it may not say.
+#[derive(Clone, Copy)]
+struct BundleEnd {
+    member_bps: Option<u64>,
+    channel_bps: Option<u64>,
+}
+
+/// Two switches joined by `members` parallel links, with one Port-channel at
+/// each end; each end reports the speeds `ends` gives it. The first `silent`
+/// members have no speed collected at either end.
+async fn bundle_between(members: usize, ends: [BundleEnd; 2], silent: usize) -> Link {
+    let port_row = |name: &str, speed: Option<u64>| match speed {
+        Some(speed) => trunk(name, speed),
+        None => json!({"name": name, "mode": "trunk", "oper_up": true}),
+    };
+    let app = app();
+    let one = device(&app, "SW1", "10.0.0.1", "distribution", "HQ");
+    let two = device(&app, "SW2", "10.0.0.2", "distribution", "HQ");
+    for ((near, far), end) in [(&one, "SW2"), (&two, "SW1")].into_iter().zip(ends) {
+        let mut neighbours = Vec::new();
+        let mut interfaces = Vec::new();
+        for member in 1..=members {
+            let port = format!("TenGigabitEthernet1/0/{member}");
+            neighbours.push(neighbor(&port, far, &port, "lldp"));
+            let speed = end.member_bps.filter(|_| member > silent);
+            interfaces.push(port_row(&port, speed));
+        }
+        interfaces.push(port_row("Port-channel1", end.channel_bps));
+        store(
+            &app,
+            near,
+            vec![
+                (Kind::Neighbors, neighbours),
+                (Kind::Interfaces, interfaces),
+            ],
+        );
+    }
+    let graph = physical(&app).await;
+    let folded = between(&graph, &one, &two);
+    assert_eq!(folded.len(), 1, "{folded:#?}");
+    assert!(folded[0].aggregate.is_some(), "the members were folded");
+    folded[0].clone()
+}
+
+/// A bundle whose two ends report the same: `member_bps` for each member and
+/// `channel_bps` for the Port-channel itself.
+async fn bundle(members: usize, member_bps: u64, channel_bps: Option<u64>, silent: usize) -> Link {
+    let end = BundleEnd {
+        member_bps: Some(member_bps),
+        channel_bps,
+    };
+    bundle_between(members, [end, end], silent).await
+}
+
+#[tokio::test]
+async fn a_port_channel_is_as_fast_as_its_members_together_not_as_its_two_ends_added_up() {
+    // An SNMP-collected pair: each Port-channel reports the bundle's own
+    // 40 Gb/s. Adding the two ends up called this link 80 Gb/s, and 36 Gb/s
+    // on it — nine tenths of what it can carry — was drawn as 45 %.
+    let link = bundle(4, 10_000_000_000, Some(40_000_000_000), 0).await;
+    assert_eq!(link.speed_bps, Some(40_000_000_000));
+
+    // A CLI-collected pair whose Port-channel row repeats one member's speed:
+    // four gigabit members are four gigabits, not the two that adding the two
+    // ends gave.
+    let link = bundle(4, 1_000_000_000, Some(1_000_000_000), 0).await;
+    assert_eq!(link.speed_bps, Some(4_000_000_000));
+
+    // The members are enough: a Port-channel that says nothing of its own
+    // speed is still as fast as they are together.
+    let link = bundle(2, 1_000_000_000, None, 0).await;
+    assert_eq!(link.speed_bps, Some(2_000_000_000));
+}
+
+#[tokio::test]
+async fn a_port_channel_with_a_member_of_unknown_speed_is_not_given_a_partial_sum() {
+    // Three of four members have a speed. Thirty gigabits would be a capacity
+    // nobody reported, and every percentage worked out from it would be too
+    // high — so the bundle falls back to what its own Port-channel says, once
+    // and not once per end.
+    let link = bundle(4, 10_000_000_000, Some(40_000_000_000), 1).await;
+    assert_eq!(link.speed_bps, Some(40_000_000_000));
+
+    // And when the Port-channel says nothing either, the speed is unknown
+    // rather than a guess.
+    let link = bundle(4, 10_000_000_000, None, 1).await;
+    assert_eq!(link.speed_bps, None);
+}
+
+#[tokio::test]
+async fn a_member_carries_what_the_slower_of_its_two_ports_does() {
+    // One end's members report ten gigabits and the other's one (a
+    // gigabit optic in a ten-gigabit port): each member is a gigabit link,
+    // so two of them are two gigabits — not the twenty the faster end says,
+    // and not eleven.
+    let fast = BundleEnd {
+        member_bps: Some(10_000_000_000),
+        channel_bps: None,
+    };
+    let slow = BundleEnd {
+        member_bps: Some(1_000_000_000),
+        channel_bps: None,
+    };
+    for ends in [[fast, slow], [slow, fast]] {
+        let link = bundle_between(2, ends, 0).await;
+        assert_eq!(link.speed_bps, Some(2_000_000_000));
+    }
+
+    // An end that says nothing of its members' speed leaves the other end's
+    // word for it.
+    let mute = BundleEnd {
+        member_bps: None,
+        channel_bps: None,
+    };
+    let link = bundle_between(2, [mute, slow], 0).await;
+    assert_eq!(link.speed_bps, Some(2_000_000_000));
+}
+
+#[tokio::test]
+async fn a_port_channel_that_falls_back_on_its_own_word_takes_the_slower_end() {
+    // No member has a speed, so the bundle is as fast as its Port-channel
+    // rows say — and when the two disagree, as fast as the slower one: a
+    // percentage of the larger figure would make the link look emptier than
+    // one of its two ends says it is.
+    let end = |channel_bps| BundleEnd {
+        member_bps: None,
+        channel_bps: Some(channel_bps),
+    };
+    for ends in [
+        [end(40_000_000_000), end(20_000_000_000)],
+        [end(20_000_000_000), end(40_000_000_000)],
+    ] {
+        let link = bundle_between(4, ends, 0).await;
+        assert_eq!(link.speed_bps, Some(20_000_000_000));
+    }
 }
 
 #[tokio::test]

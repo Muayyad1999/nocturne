@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { IfStatus } from '@/api/types/monitor';
-import type { Link } from '@/api/types/topology';
+import type { Link, Node, PortRate, Rates } from '@/api/types/topology';
 import {
   busier,
   cadenceS,
   deviceIndex,
   freshness,
-  interfaceKey,
   layerState,
   linkLoad,
   loadBand,
@@ -14,6 +12,8 @@ import {
   loadLabel,
   loadSentence,
   rateIndex,
+  ratePorts,
+  serverNow,
   worthLabelling,
   staleAfterMs,
   UNKNOWN_CADENCE_S,
@@ -23,24 +23,29 @@ import {
 
 const NOW = 1_700_000_000_000;
 
-function row(extra: Partial<IfStatus> & Pick<IfStatus, 'device_id' | 'name'>): IfStatus {
+/**
+ * One port's answer from `topology.rates`. `name` is what monitoring calls
+ * the port; `interface` is the spelling it was asked for by, which is the
+ * link end's — the same word unless a test says otherwise. A `null` is a rate
+ * that was not measured, which the backend leaves out of the answer.
+ */
+function row(
+  extra: Pick<PortRate, 'device_id' | 'name'> & {
+    interface?: string;
+    in_bps?: number | null;
+    out_bps?: number | null;
+    speed_bps?: number | null;
+    at?: number;
+  },
+): PortRate {
+  const { in_bps, out_bps, speed_bps = 1_000_000_000, at = NOW - 10_000, ...rest } = extra;
   return {
-    device: extra.device_id,
-    description: '',
-    admin_up: true,
-    oper_up: true,
-    speed_bps: 1_000_000_000,
-    in_bps: null,
-    out_bps: null,
-    util_pct: null,
-    in_err_ps: null,
-    out_err_ps: null,
-    in_disc_ps: null,
-    out_disc_ps: null,
-    uplink: true,
-    lab: false,
-    at: NOW - 10_000,
-    ...extra,
+    interface: extra.name,
+    ...rest,
+    ...(in_bps == null ? {} : { in_bps }),
+    ...(out_bps == null ? {} : { out_bps }),
+    ...(speed_bps == null ? {} : { speed_bps }),
+    at,
   };
 }
 
@@ -60,7 +65,7 @@ function polled(extra: Partial<MonitoredDevice['monitor']> = {}): MonitoredDevic
   return { monitor: { enabled: true, snmp: true, interval_s: 60, ...extra } };
 }
 
-function context(rows: IfStatus[], extra: Partial<LoadContext> = {}): LoadContext {
+function context(rows: PortRate[], extra: Partial<LoadContext> = {}): LoadContext {
   return {
     deviceOf: new Map([
       ['n:a', 'dev-a'],
@@ -77,26 +82,91 @@ function context(rows: IfStatus[], extra: Partial<LoadContext> = {}): LoadContex
   };
 }
 
+function device(id: string, deviceId?: string): Node {
+  return {
+    id,
+    kind: deviceId ? 'switch' : 'host',
+    name: id,
+    ...(deviceId ? { device_id: deviceId } : {}),
+    lab: false,
+    status: 'up',
+    unmanaged: !deviceId,
+    x: 0,
+    y: 0,
+    pinned: false,
+  };
+}
+
 describe('joining a link to the ports that were measured', () => {
-  it('expands a short interface name so a rate is not lost on the way', () => {
-    expect(interfaceKey('Gi0/1')).toBe('gigabitethernet0/1');
-    expect(interfaceKey('GigabitEthernet0/1')).toBe('gigabitethernet0/1');
-    expect(interfaceKey('Te1/1/1')).toBe('tengigabitethernet1/1/1');
-    expect(interfaceKey('Po1')).toBe('port-channel1');
-    expect(interfaceKey('Vlan10')).toBe('vlan10');
+  it('asks about each port a link ends on once, and about nothing that is not a device’s port', () => {
+    const ports = ratePorts({
+      nodes: [device('n:b', 'dev-b'), device('n:a', 'dev-a'), device('u:ap'), device('h:laptop')],
+      links: [
+        link(),
+        // The same port of dev-a again, at the end of a second link.
+        link({ id: 'l2', a: { node: 'n:a', interface: 'GigabitEthernet0/1' }, b: { node: 'u:ap', interface: 'GigabitEthernet0' } }),
+        // An end with no interface named, and a host that is not a device.
+        link({ id: 'l3', a: { node: 'n:b' }, b: { node: 'h:laptop', interface: 'eth0' } }),
+      ],
+    });
+    expect(ports).toEqual([
+      { device_id: 'dev-a', interface: 'GigabitEthernet0/1' },
+      { device_id: 'dev-b', interface: 'GigabitEthernet0/2' },
+    ]);
+    expect(ratePorts(undefined)).toEqual([]);
   });
 
-  it('leaves a name that merely starts like a short form alone', () => {
-    // `get0` is not `GigabitEthernet0`, and a wrong expansion would join the
-    // rate of one port to a different one.
-    expect(interfaceKey('get0')).toBe('get0');
-    expect(interfaceKey('sfp-sfpplus1')).toBe('sfp-sfpplus1');
+  it('asks in the same order whatever order the drawing arrived in', () => {
+    // The list is the query's key: a different order would be a different
+    // question, asked again for the same drawing.
+    const nodes = [device('n:a', 'dev-a'), device('n:b', 'dev-b')];
+    const one = link();
+    const other = link({ id: 'l2', a: { node: 'n:b', interface: 'Vlan10' }, b: { node: 'n:a', interface: 'Vlan10' } });
+    expect(ratePorts({ nodes, links: [one, other] })).toEqual(
+      ratePorts({ nodes: [...nodes].reverse(), links: [other, one] }),
+    );
   });
 
-  it('finds a port whose name the two features spell differently', () => {
-    const load = linkLoad(link(), context([row({ device_id: 'dev-a', name: 'Gi0/1', out_bps: 1_000_000 })]));
-    expect(load.aToB.bps).toBe(1_000_000);
-    expect(load.aToB.read?.interface).toBe('Gi0/1');
+  it('finds a port monitoring spells its own way, and quotes monitoring’s name for it', () => {
+    // Two IOS XR routers: a link end is `TenGigabitEthernet0/0/0/1`, the
+    // rows monitoring keeps are `TenGigE0/0/0/1`. The backend joined them and
+    // answered under the spelling it was asked with.
+    const xr = link({
+      a: { node: 'n:a', interface: 'TenGigabitEthernet0/0/0/1' },
+      b: { node: 'n:b', interface: 'TenGigabitEthernet0/0/0/1' },
+    });
+    const answer = (deviceId: string, outBps: number) =>
+      row({
+        device_id: deviceId,
+        interface: 'TenGigabitEthernet0/0/0/1',
+        name: 'TenGigE0/0/0/1',
+        out_bps: outBps,
+        speed_bps: 10_000_000_000,
+      });
+    const load = linkLoad(xr, context([answer('dev-a', 4_000_000_000), answer('dev-b', 1_000_000_000)]));
+    expect(load.measured).toBe(true);
+    expect(load.aToB.pct).toBeCloseTo(40);
+    expect(load.bToA.pct).toBeCloseTo(10);
+    expect(load.aToB.read).toEqual({ deviceId: 'dev-a', interface: 'TenGigE0/0/0/1', sense: 'sent' });
+  });
+
+  it('compares no interface names itself: the answer for another spelling is another port’s', () => {
+    // Which two spellings are one port is the backend's to say, with the one
+    // function the whole project uses for it. A second opinion here is how
+    // `TenGigE` and `TenGigabitEthernet` came to be two ports.
+    const load = linkLoad(
+      link(),
+      context([row({ device_id: 'dev-a', interface: 'Gi0/1', name: 'Gi0/1', out_bps: 1_000_000 })]),
+    );
+    expect(load.measured).toBe(false);
+  });
+
+  it('keeps the ports of two devices apart when they have the same name', () => {
+    const index = rateIndex([
+      row({ device_id: 'dev-a', name: 'GigabitEthernet0/1', out_bps: 1 }),
+      row({ device_id: 'dev-b', name: 'GigabitEthernet0/1', out_bps: 2 }),
+    ]);
+    expect(index.size).toBe(2);
   });
 });
 
@@ -418,20 +488,88 @@ describe('which numbers earn their ink', () => {
 });
 
 describe('the layer as a whole', () => {
+  const answer = (extra: Partial<Rates> = {}): Rates => ({
+    at: NOW,
+    monitoring: true,
+    ports: [],
+    ...extra,
+  });
+
   it('says once that nothing is watching, rather than "no rate" on every link', () => {
-    expect(layerState({ rows: undefined, pending: false, failed: true })).toBe('absent');
-    expect(layerState({ rows: undefined, pending: true, failed: false })).toBe('loading');
-    expect(layerState({ rows: [], pending: false, failed: false })).toBe('nothing');
+    expect(layerState({ rates: undefined, pending: false, failed: true })).toBe('absent');
+    expect(layerState({ rates: undefined, pending: true, failed: false })).toBe('loading');
+    // A build without the monitor feature answers, and says so: that is not
+    // the same as monitoring being there and having measured nothing.
+    expect(layerState({ rates: answer({ monitoring: false }), pending: false, failed: false })).toBe(
+      'absent',
+    );
+    expect(layerState({ rates: answer(), pending: false, failed: false })).toBe('nothing');
     expect(
-      layerState({ rows: [row({ device_id: 'dev-a', name: 'Gi0/1' })], pending: false, failed: false }),
+      layerState({
+        rates: answer({ ports: [row({ device_id: 'dev-a', name: 'GigabitEthernet0/1' })] }),
+        pending: false,
+        failed: false,
+      }),
     ).toBe('ready');
   });
 
   it('joins only the nodes that are devices', () => {
-    const index = deviceIndex([
-      { id: 'n:a', kind: 'switch', name: 'A', device_id: 'dev-a', lab: false, status: 'up', unmanaged: false, x: 0, y: 0, pinned: false },
-      { id: 'h:1', kind: 'host', name: 'laptop', lab: false, status: 'unknown', unmanaged: true, x: 0, y: 0, pinned: false },
-    ]);
+    const index = deviceIndex([device('n:a', 'dev-a'), device('h:1')]);
     expect([...index]).toEqual([['n:a', 'dev-a']]);
+  });
+});
+
+describe('whose clock a reading is aged against', () => {
+  // A device polled every sixty seconds: a reading is current for 150 s.
+  const limit = staleAfterMs(60);
+
+  it('calls a five-second-old reading live however fast the browser’s clock runs', () => {
+    // The laptop is four minutes ahead of the server. The answer said NOW and
+    // arrived when the laptop's clock read four minutes later; the drawing is
+    // reckoning its ages one tick after that.
+    const skew = 240_000;
+    const now = serverNow([{ at: NOW, receivedAt: NOW + skew }], NOW + skew + 15_000);
+    expect(now).toBe(NOW + 15_000);
+    expect(freshness(NOW - 5_000, limit, now ?? Number.NaN)).toEqual({ state: 'live', ms: 20_000 });
+  });
+
+  it('lets a reading whose polling stopped go stale however slow the browser’s clock runs', () => {
+    // Four minutes behind, and the last poll was five minutes ago: against
+    // the laptop's clock that reading was one minute old, and live.
+    const skew = -240_000;
+    const now = serverNow([{ at: NOW, receivedAt: NOW + skew }], NOW + skew);
+    expect(freshness(NOW - 300_000, limit, now ?? Number.NaN)).toEqual({
+      state: 'stale',
+      ms: 300_000,
+    });
+  });
+
+  it('goes by the answer that arrived last, whichever one it is', () => {
+    const earlier = { at: NOW, receivedAt: 5_000 };
+    const later = { at: NOW + 60_000, receivedAt: 65_500 };
+    expect(serverNow([earlier, later], 70_500)).toBe(NOW + 65_000);
+    expect(serverNow([later, undefined, earlier], 70_500)).toBe(NOW + 65_000);
+  });
+
+  it('does not run backwards when the browser’s clock is put back', () => {
+    // Somebody corrects the laptop's clock while the page is open. Until the
+    // next answer arrives the time stands still; it never goes into the past.
+    expect(serverNow([{ at: NOW, receivedAt: 900_000 }], 100_000)).toBe(NOW);
+  });
+
+  it('has no time to give before the server has said one', () => {
+    expect(serverNow([], NOW)).toBeNull();
+    expect(serverNow([undefined], NOW)).toBeNull();
+    expect(serverNow([{ at: Number.NaN, receivedAt: 0 }], NOW)).toBeNull();
+  });
+
+  it('gives a reading with no time no age, rather than the age of now', () => {
+    const load = linkLoad(
+      link(),
+      context([{ device_id: 'dev-a', interface: 'GigabitEthernet0/1', name: 'GigabitEthernet0/1', out_bps: 5 }]),
+    );
+    expect(load.aToB.bps).toBe(5);
+    expect(load.aToB.at).toBeNull();
+    expect(load.aToB.age).toEqual({ state: 'unknown', ms: null });
   });
 });

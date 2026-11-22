@@ -40,7 +40,7 @@ import { useNavigate } from 'react-router';
 import { useRpc, useRpcMutation } from '@/api/hooks';
 import type { DeviceInput, DeviceRow, Job, JobStarted } from '@/api/types/core';
 import type { LabView } from '@/api/types/lab';
-import type { IfStatus, MonitorSettings } from '@/api/types/monitor';
+import type { MonitorSettings } from '@/api/types/monitor';
 import type { SessionInfo, TerminalOpenParams } from '@/api/types/terminal';
 import type {
   Algorithm,
@@ -51,6 +51,7 @@ import type {
   Located,
   Node,
   Position,
+  Rates,
   TopologySettings,
   Trace,
   View,
@@ -75,6 +76,7 @@ import { readStored, storageKey, writeStored } from '@/lib/storage';
 import { formatRelative } from '@/lib/time';
 import { useNow } from '@/lib/useNow';
 import { useTerminalLayout } from '@/pages/terminal/layout';
+import { terminals } from '@/pages/terminal/sessions';
 import { Canvas, type HostHighlight, type Selection } from './Canvas';
 import { ExportDialog } from './ExportDialog';
 import { HostPanel } from './HostPanel';
@@ -82,6 +84,7 @@ import { Inspector } from './Inspector';
 import { Legend } from './Legend';
 import { ManualLinks } from './ManualLinks';
 import { PathPanel } from './PathPanel';
+import { SaveViewDialog } from './SaveViewDialog';
 import { SessionDock } from './SessionDock';
 import { Warnings } from './Warnings';
 import { deviceIdsOf, facetsOf, overlapping, positionsOf, type Point } from './graph';
@@ -90,6 +93,8 @@ import {
   layerState,
   linkLoad,
   rateIndex,
+  ratePorts,
+  serverNow,
   type LinkLoad,
 } from './load';
 import { classify, matches, pathReference } from './search';
@@ -146,6 +151,18 @@ export default function TopologyPage() {
   const [showLoad, setShowLoad] = useState<boolean>(() => readStored(LOAD_KEY, isBoolean) ?? true);
   /** The session opened from the map, while its dock is up. */
   const [session, setSession] = useState<{ id: string; name: string; lab: boolean } | null>(null);
+  /**
+   * The devices a login is on its way to. `terminal.open` answers only once
+   * the device has been dialled, and until then nothing else on this screen
+   * knows a session is coming. The ref is what a press is checked against —
+   * two presses can land before React has rendered the first — and the state
+   * is the same set, for the buttons to show.
+   */
+  const dialling = useRef(new Set<string>());
+  const [diallingIds, setDiallingIds] = useState<ReadonlySet<string>>(new Set());
+  /** The device the last press asked for: the one whose session the dock is for. */
+  const wanted = useRef<string | null>(null);
+  const [naming, setNaming] = useState(false);
 
   const [panel, setPanel] = useState<Panel>('selection');
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -197,21 +214,26 @@ export default function TopologyPage() {
   });
 
   /*
-   * The live part. `monitor.interfaces` is the interface table monitoring
-   * keeps — one row per port, with the rates it last worked out from the
-   * device's own counters — and it is refetched when a poll says it has
-   * changed, which is what makes the lines on this map move by themselves.
-   * The whole table is asked for in one call rather than per link: a campus
-   * has more links than ports worth asking about one at a time, and the
-   * backend pages this query in SQL.
+   * The live part. `topology.rates` answers for the ports this drawing's
+   * links end on — the rates monitoring last worked out from each device's
+   * own counters — and it is asked again when a poll says they have changed,
+   * which is what makes the lines on this map move by themselves.
    *
-   * A build without the monitor feature answers `unknown_method`; the layer
+   * It is asked by port because monitoring's table cannot be read in one
+   * call: it has a row for every port of every monitored device and a call
+   * returns the first few thousand, so on a large network a port further
+   * down it looked exactly like one nobody had measured. The backend reads
+   * each device's rows to the end, and it is also where a link end's name
+   * and monitoring's name for the same port are told to be the same.
+   *
+   * A build without the monitor feature says so in its answer; the layer
    * then says so once instead of drawing every link as "no rate".
    */
-  const interfaces = useRpc<IfStatus[]>(
-    'monitor.interfaces',
-    { limit: 5000, sort: 'device' },
-    { invalidateOn: ['monitor.interfaces', 'monitor.polled'] },
+  const ports = useMemo(() => ratePorts(graph.data), [graph.data]);
+  const rates = useRpc<Rates>(
+    'topology.rates',
+    { ports },
+    { enabled: Boolean(graph.data), invalidateOn: ['monitor.interfaces', 'monitor.polled'] },
   );
   /**
    * The inventory, for two questions the drawing cannot answer itself: how
@@ -284,13 +306,34 @@ export default function TopologyPage() {
   // The clock that ages a reading. Nothing is fetched on this tick: a rate
   // goes stale because time passed, and no event says so.
   //
+  // The time is the *server's*: every reading was stamped there, and this
+  // browser's clock may be minutes away from it in either direction, which
+  // turned a whole map stale or kept a dead poll looking alive. Each answer
+  // that carries the server's time is a fix on it, and the browser's clock
+  // only says how long ago the latest of them arrived.
+  //
   // `useNow` floors to its own interval so that it is stable between ticks,
   // which puts it up to fifteen seconds *behind* — and a reading taken two
   // seconds ago then read "measured in 11s", a measurement from the future.
-  // The tick is the signal to re-reckon; the instant it is reckoned against
-  // is the real one, taken once per tick.
+  // The tick is the signal to re-reckon; the instant it is reckoned from is
+  // read fresh, once per tick and once per answer.
   const tick = useNow(AGE_TICK_MS);
-  const now = useMemo(() => Math.max(tick, Date.now()), [tick]);
+  const ratesAt = rates.data?.at;
+  const ratesReceivedAt = rates.dataUpdatedAt;
+  const graphAt = graph.data?.generated_at;
+  const graphReceivedAt = graph.dataUpdatedAt;
+  const now = useMemo(
+    () =>
+      serverNow(
+        [
+          ratesAt === undefined ? undefined : { at: ratesAt, receivedAt: ratesReceivedAt },
+          graphAt === undefined ? undefined : { at: graphAt, receivedAt: graphReceivedAt },
+        ],
+        Date.now(),
+      ),
+    // `tick` is not read, and is the point: it is what makes this run again.
+    [tick, ratesAt, ratesReceivedAt, graphAt, graphReceivedAt],
+  );
 
   const deviceById = useMemo(
     () => new Map((devices.data ?? []).map((device) => [device.id, device])),
@@ -298,17 +341,17 @@ export default function TopologyPage() {
   );
 
   const loadLayer = layerState({
-    rows: interfaces.data,
-    pending: interfaces.isPending,
-    failed: interfaces.isError,
+    rates: rates.data,
+    pending: rates.isPending,
+    failed: rates.isError,
   });
 
   /** Every link's load, by link id, or `null` when there is no layer to draw. */
   const loads = useMemo<ReadonlyMap<string, LinkLoad> | null>(() => {
-    if (loadLayer !== 'ready' || !data) return null;
+    if (loadLayer !== 'ready' || !data || now == null) return null;
     const context = {
       deviceOf: deviceIndex(data.nodes),
-      rates: rateIndex(interfaces.data),
+      rates: rateIndex(rates.data?.ports),
       devices: deviceById,
       monitoring: monitorSettings.data,
       now,
@@ -316,7 +359,7 @@ export default function TopologyPage() {
     const byLink = new Map<string, LinkLoad>();
     for (const link of data.links) byLink.set(link.id, linkLoad(link, context));
     return byLink;
-  }, [loadLayer, data, interfaces.data, deviceById, monitorSettings.data, now]);
+  }, [loadLayer, data, rates.data, deviceById, monitorSettings.data, now]);
 
   /** The newest measurement anywhere in the drawing, for the "as of" line. */
   const loadAt = useMemo(() => {
@@ -501,17 +544,38 @@ export default function TopologyPage() {
       toast.error(`No terminal on ${node.name}`, { description: offer.why });
       return;
     }
-    const existing = sessionOn(sessions.data, offer.deviceId);
-    if (existing && existing.state !== 'closed') {
+    const deviceId = offer.deviceId;
+    wanted.current = deviceId;
+    const existing = sessionOn(sessions.data, deviceId);
+    const action = sessionAction(existing, dialling.current.has(deviceId));
+    if (action === 'show' && existing) {
       setSession({ id: existing.id, name: node.name, lab: existing.lab });
       return;
     }
-    openSession.mutate(
-      { device_id: offer.deviceId, cols: OPEN_COLS, rows: OPEN_ROWS },
-      {
-        onSuccess: (info) => setSession({ id: info.id, name: node.name, lab: info.lab }),
-      },
-    );
+    // A login to this device is already on its way; its dock opens when it
+    // lands. Dialling again would be a second login on the device.
+    if (action === 'wait') return;
+
+    dialling.current.add(deviceId);
+    setDiallingIds(new Set(dialling.current));
+    // `mutateAsync`, not `mutate` with callbacks: a second `mutate` (another
+    // device, while this one is still connecting) drops the callbacks of the
+    // first, and this login would then never be taken off the list.
+    void openSession
+      .mutateAsync({ device_id: deviceId, cols: OPEN_COLS, rows: OPEN_ROWS })
+      .then((info) => {
+        // The dock holds one session: the one that was asked for last, not
+        // whichever device happened to answer last.
+        if (wanted.current === deviceId) {
+          setSession({ id: info.id, name: node.name, lab: info.lab });
+        }
+      })
+      // The mutation has already told the user why it failed.
+      .catch(() => undefined)
+      .finally(() => {
+        dialling.current.delete(deviceId);
+        setDiallingIds(new Set(dialling.current));
+      });
   };
 
   /**
@@ -539,6 +603,10 @@ export default function TopologyPage() {
       if (!sure) return;
     }
     setSession(null);
+    // The session is over, so its terminal goes too. Hiding the dock parks
+    // the xterm for later; closing has no later, and a parked terminal that
+    // nothing will ever write to again is its scrollback kept until a reload.
+    terminals.forget(session.id);
     closeSession.mutate({ session_id: session.id });
   };
 
@@ -603,19 +671,24 @@ export default function TopologyPage() {
     );
   };
 
-  const saveCurrentView = (asNew: boolean) => {
-    const name = asNew ? window.prompt('Name for this view')?.trim() : (current?.name ?? 'Default');
-    if (asNew && !name) return;
+  /**
+   * Saves what is on screen as a view: over the current one, or — given a
+   * name — as a new one. The name comes from this screen's own dialog
+   * (`SaveViewDialog`), never from `window.prompt`: the macOS WebView does
+   * not implement it and answers "cancelled" without showing anything.
+   */
+  const saveCurrentView = (newName?: string) => {
     saveView.mutate(
       {
-        ...(asNew ? {} : { id: viewId }),
-        name: name ?? 'Default',
+        ...(newName === undefined ? { id: viewId } : {}),
+        name: newName ?? current?.name ?? 'Default',
         layer: layer ?? data?.layer ?? 'physical',
         ...(filter ? { filter } : {}),
         include_endpoints: endpoints ?? current?.include_endpoints ?? false,
       },
       {
         onSuccess: (view) => {
+          setNaming(false);
           setViewId(view.id);
           writeStored(VIEW_KEY, view.id);
           setLayer(null);
@@ -702,12 +775,12 @@ export default function TopologyPage() {
       }),
     ),
     { type: 'separator' },
-    { label: 'Save as a new view…', icon: Save, onSelect: () => saveCurrentView(true) },
+    { label: 'Save as a new view…', icon: Save, onSelect: () => setNaming(true) },
     {
       label: `Save changes to “${current?.name ?? 'this view'}”`,
       icon: Save,
       disabled: !current,
-      onSelect: () => saveCurrentView(false),
+      onSelect: () => saveCurrentView(),
     },
     {
       label: 'Delete this view…',
@@ -743,6 +816,7 @@ export default function TopologyPage() {
   const nodeMenu = (node: Node): MenuEntry[] => {
     const offer = offerFor(node);
     const existing = offer.ok ? sessionOn(sessions.data, offer.deviceId) : null;
+    const action = offer.ok ? sessionAction(existing, diallingIds.has(offer.deviceId)) : 'open';
     return [
       { type: 'label', label: node.name },
       {
@@ -750,12 +824,14 @@ export default function TopologyPage() {
         // and the whole sentence in the side panel. Disabled and unexplained
         // teaches nobody anything; this at least says which thing is missing.
         label: offer.ok
-          ? sessionAction(existing) === 'show'
+          ? action === 'show'
             ? 'Show the session'
-            : 'Terminal'
+            : action === 'wait'
+              ? 'Terminal — connecting…'
+              : 'Terminal'
           : `Terminal — ${offer.brief}`,
         icon: TerminalSquare,
-        disabled: !offer.ok,
+        disabled: !offer.ok || action === 'wait',
         onSelect: () => terminal(node),
       },
       {
@@ -976,6 +1052,7 @@ export default function TopologyPage() {
         <Warnings
           graph={data}
           staleAfterHours={settings.data?.stale_after_hours}
+          now={now}
           onRefresh={refresh}
           refreshing={collect.isPending || Boolean(collectJob)}
         />
@@ -1037,7 +1114,7 @@ export default function TopologyPage() {
                 {showLoad && (
                   <span className={styles.statsLoad} data-testid="load-as-of">
                     {' · '}
-                    {loadLayer === 'ready' && loadAt != null
+                    {loadLayer === 'ready' && loadAt != null && now != null
                       ? `load measured ${formatRelative(loadAt, now)}`
                       : loadLayer === 'ready' || loadLayer === 'nothing'
                         ? 'no link rates measured yet'
@@ -1111,12 +1188,14 @@ export default function TopologyPage() {
                   selectedNode?.device_id
                     ? sessionOn(sessions.data, selectedNode.device_id)
                     : null,
+                  selectedNode?.device_id ? diallingIds.has(selectedNode.device_id) : false,
                 )}
                 onTerminal={terminal}
                 {...(selectedLink && loads?.get(selectedLink.id)
                   ? { load: loads.get(selectedLink.id) }
                   : {})}
                 loadLayer={loadLayer}
+                now={now}
               />
             )}
 
@@ -1152,6 +1231,12 @@ export default function TopologyPage() {
         </div>
       </div>
 
+      <SaveViewDialog
+        open={naming}
+        onClose={() => setNaming(false)}
+        onSave={saveCurrentView}
+        saving={saveView.isPending}
+      />
       <ExportDialog open={exporting} onClose={() => setExporting(false)} params={params} />
       <ManualLinks open={drawing} onClose={() => setDrawing(false)} graph={data} />
     </Page>

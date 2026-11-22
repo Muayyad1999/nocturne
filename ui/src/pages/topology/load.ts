@@ -2,12 +2,16 @@
  * How loaded each link is — the one thing The Dude puts on a line that this
  * drawing did not have.
  *
- * The numbers are monitoring's own: `monitor.interfaces` returns, per port,
- * the rate in and the rate out as the poller last worked them out from the
- * device's counters over the *device's* uptime (`nocturne-monitor::rates`), so
- * a reboot is a gap and never a spike. Nothing here measures anything; it
- * joins those rows to the ends of a link and decides what may honestly be
- * drawn. Four different facts, four different answers:
+ * The numbers are monitoring's own: per port, the rate in and the rate out as
+ * the poller last worked them out from the device's counters over the
+ * *device's* uptime (`nocturne-monitor::rates`), so a reboot is a gap and
+ * never a spike. They arrive through `topology.rates`, which is asked about
+ * exactly the ports this drawing's links end on and answers under the
+ * spelling it was asked with — which two spellings of an interface are one
+ * port is decided there, by the function the whole backend uses for it, and
+ * never here. Nothing here measures anything; it puts those answers on the
+ * ends of a link and decides what may honestly be drawn. Four different
+ * facts, four different answers:
  *
  * * **no rate** — monitoring has no measurement for this port (never polled,
  *   the poll failed, or the interval could not be measured). Nothing is drawn
@@ -21,6 +25,9 @@
  *   percentage is not invented.
  * * **stale** — the measurement is older than this device's own measurement
  *   cadence allows, so it is drawn grey and labelled, never as if it were now.
+ *   "Older" is reckoned on the server's clock, the one the measurement was
+ *   stamped with (`serverNow`): a laptop four minutes fast would otherwise
+ *   grey the whole map, and one four minutes slow keep a dead poll alive.
  *
  * Direction matters because a link is rarely symmetrical: each direction is
  * read from the *sending* port's `out_bps` where that port is monitored, and
@@ -29,10 +36,9 @@
  * which one a number came from is carried along and shown in the panel.
  */
 
-import type { IfStatus, MonitorSettings } from '@/api/types/monitor';
-import type { Link, Node } from '@/api/types/topology';
+import type { MonitorSettings } from '@/api/types/monitor';
+import type { Graph, Link, Node, PortRate, RatePort, Rates } from '@/api/types/topology';
 import { EMPTY, formatPercent, formatRate } from '@/lib/format';
-import { LONG_FORMS } from './graph';
 
 // ------------------------------------------------------------------ the index
 
@@ -45,47 +51,53 @@ export interface RateSample {
   outBps: number | null;
   speedBps: number | null;
   /** When the poll that produced it ran. */
-  at: number;
+  at: number | null;
 }
 
 export type RateIndex = ReadonlyMap<string, RateSample>;
 
 /**
- * An interface name reduced to something two features can be joined on.
- * Both sides promise canonical names (`GigabitEthernet0/1`), but a device
- * that answers `Gi0/1` to one reader and the long form to another would
- * silently lose every rate on the drawing, so a short form is expanded back
- * before the comparison rather than trusted.
+ * A port, as one string. The interface is taken letter for letter: the
+ * backend answers under the spelling it was asked with, so the spelling a
+ * link end has is the only one this screen ever needs to know.
  */
-export function interfaceKey(name: string): string {
-  const text = name.trim().toLowerCase().replaceAll(' ', '');
-  for (const [long, short] of LONG_FORMS) {
-    if (text.startsWith(long)) return text;
-    if (text.startsWith(short) && !text.startsWith(long)) {
-      const rest = text.slice(short.length);
-      // `Gi0/1` expands; `gigabit…` was caught above, and a name that merely
-      // begins with the same letters as a short form (`get0`) is left alone.
-      if (rest === '' || /^[\d[]/.test(rest)) return long + rest;
+function keyOf(deviceId: string, name: string): string {
+  return `${deviceId}\u0000${name}`;
+}
+
+/**
+ * The ports to ask `topology.rates` about: every link end that is an
+ * interface of a device, once. In a fixed order, because the list is the
+ * question's identity — the same drawing must ask the same question however
+ * its links happened to be ordered.
+ */
+export function ratePorts(graph: Pick<Graph, 'nodes' | 'links'> | undefined): RatePort[] {
+  if (!graph) return [];
+  const deviceOf = deviceIndex(graph.nodes);
+  const ports = new Map<string, RatePort>();
+  for (const link of graph.links) {
+    for (const end of [link.a, link.b]) {
+      const deviceId = deviceOf.get(end.node);
+      if (!deviceId || !end.interface) continue;
+      ports.set(keyOf(deviceId, end.interface), { device_id: deviceId, interface: end.interface });
     }
   }
-  return text;
+  return [...ports.entries()]
+    .sort(([one], [other]) => (one < other ? -1 : one > other ? 1 : 0))
+    .map(([, port]) => port);
 }
 
-function keyOf(deviceId: string, name: string): string {
-  return `${deviceId}\u0000${interfaceKey(name)}`;
-}
-
-/** Every measured port, by device and interface. Later rows win, as SQL ordered them. */
-export function rateIndex(rows: readonly IfStatus[] | undefined): RateIndex {
+/** Every port that was answered for, by device and by the name it was asked with. */
+export function rateIndex(ports: readonly PortRate[] | undefined): RateIndex {
   const index = new Map<string, RateSample>();
-  for (const row of rows ?? []) {
-    index.set(keyOf(row.device_id, row.name), {
-      deviceId: row.device_id,
-      name: row.name,
-      inBps: row.in_bps,
-      outBps: row.out_bps,
-      speedBps: row.speed_bps,
-      at: row.at,
+  for (const port of ports ?? []) {
+    index.set(keyOf(port.device_id, port.interface), {
+      deviceId: port.device_id,
+      name: port.name,
+      inBps: port.in_bps ?? null,
+      outBps: port.out_bps ?? null,
+      speedBps: port.speed_bps ?? null,
+      at: port.at ?? null,
     });
   }
   return index;
@@ -141,10 +153,53 @@ export interface Age {
   ms: number | null;
 }
 
+/**
+ * How old a reading is. `at` and `now` have to be on the same clock, and `at`
+ * is the server's: pass `serverNow`, not the browser's `Date.now()`.
+ */
 export function freshness(at: number | null, limitMs: number, now: number): Age {
-  if (at == null || !Number.isFinite(at)) return { state: 'unknown', ms: null };
+  if (at == null || !Number.isFinite(at) || !Number.isFinite(now)) {
+    return { state: 'unknown', ms: null };
+  }
   const ms = Math.max(0, now - at);
   return { state: ms > limitMs ? 'stale' : 'live', ms };
+}
+
+/**
+ * A moment the server named — the `at` of an answer — and what the browser's
+ * own clock read when that answer arrived.
+ */
+export interface ServerMoment {
+  at: number;
+  receivedAt: number;
+}
+
+/**
+ * What time it is on the server, or `null` before it has said.
+ *
+ * Every timestamp on this screen was stamped by the server, and the browser's
+ * clock is somebody's laptop: it can be minutes out either way. So the two
+ * are never compared. The server's last word on the time is carried forward
+ * by how long ago it arrived, and the browser's clock is only ever asked how
+ * long that was — a difference between two of its own readings, in which
+ * being wrong by four minutes cancels out.
+ *
+ * `moments` are the answers that carry a time; the one that arrived last
+ * wins. A clock put back while the page is open would make that difference
+ * negative: the time then stands still until the next answer rather than
+ * going into the past.
+ */
+export function serverNow(
+  moments: readonly (ServerMoment | undefined)[],
+  browserNow: number,
+): number | null {
+  let latest: ServerMoment | undefined;
+  for (const moment of moments) {
+    if (!moment || !Number.isFinite(moment.at) || !Number.isFinite(moment.receivedAt)) continue;
+    if (!latest || moment.receivedAt > latest.receivedAt) latest = moment;
+  }
+  if (!latest) return null;
+  return latest.at + Math.max(0, browserNow - latest.receivedAt);
 }
 
 // ----------------------------------------------------------------- one direction
@@ -204,6 +259,7 @@ export interface LoadContext {
   /** Device id → how it is monitored, from `devices.list`. */
   devices: ReadonlyMap<string, MonitoredDevice>;
   monitoring: Pick<MonitorSettings, 'cli_interval_s'> | undefined;
+  /** The time on the server's clock (`serverNow`), which the readings were stamped with. */
   now: number;
 }
 
@@ -290,9 +346,9 @@ function direction(from: EndRef, to: EndRef, link: Link, context: LoadContext): 
 
 /**
  * What a rate is a percentage *of*. The link's own speed first — the backend
- * worked that out from both ends and sums the members of a port-channel —
- * then the sending port's own, then the receiving port's. `null` means the
- * question has no answer, not that it is slow.
+ * worked that out from both ends, and for a port-channel from its members
+ * added together — then the sending port's own, then the receiving port's.
+ * `null` means the question has no answer, not that it is slow.
  */
 function speedFor(link: Link, from: EndRef, to: EndRef): number | null {
   const candidates = [link.speed_bps, from.sample?.speedBps, to.sample?.speedBps];
@@ -459,7 +515,7 @@ export function worthLabelling(load: DirectionLoad, detail: LoadDetail): boolean
 /**
  * Whether there are rates to draw at all, which is not the same question as
  * whether a particular link has one. A build without the monitor feature
- * answers `unknown_method`; drawing every link as "no rate" in that case
+ * says so (`monitoring: false`); drawing every link as "no rate" in that case
  * would be true but useless, so the layer says once that nothing is watching
  * and draws nothing.
  */
@@ -468,18 +524,19 @@ export type LayerState =
   | 'absent'
   /** The first answer has not arrived yet. */
   | 'loading'
-  /** Monitoring is there and has measured nothing at all yet. */
+  /** Monitoring is there and has measured none of this drawing's ports yet. */
   | 'nothing'
   | 'ready';
 
 export function layerState(query: {
-  rows: readonly IfStatus[] | undefined;
+  rates: Rates | undefined;
   pending: boolean;
   failed: boolean;
 }): LayerState {
   if (query.failed) return 'absent';
-  if (query.rows === undefined) return query.pending ? 'loading' : 'absent';
-  return query.rows.length === 0 ? 'nothing' : 'ready';
+  if (query.rates === undefined) return query.pending ? 'loading' : 'absent';
+  if (!query.rates.monitoring) return 'absent';
+  return query.rates.ports.length === 0 ? 'nothing' : 'ready';
 }
 
 /** What the layer says about itself, under the drawing. */

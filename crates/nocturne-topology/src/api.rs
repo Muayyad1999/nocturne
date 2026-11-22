@@ -14,7 +14,7 @@ use crate::model::{
     Algorithm, Confidence, DEFAULT_VIEW, Filter, Graph, Layer, LinkKind, Node, Position,
     SETTINGS_SECTION, Settings, Status, View,
 };
-use crate::{history, layout, locate, manual, path, views};
+use crate::{history, layout, locate, manual, path, rates, views};
 
 /// How long to wait for the dust to settle before redrawing.
 const DEBOUNCE: Duration = Duration::from_secs(1);
@@ -415,6 +415,11 @@ pub fn init(builder: &mut AppBuilder) {
                 warnings,
             })
         },
+    );
+
+    router.add(
+        "topology.rates",
+        |app: App, params: rates::Params| async move { rates::rates(&app, params).await },
     );
 
     router.add(

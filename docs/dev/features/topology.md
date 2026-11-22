@@ -29,6 +29,7 @@ struct Link { id, a: End, b: End,
     kind: lldp|cdp|mndp|subnet|lab|manual|mac,       // how we know
     confidence: confirmed|one_sided|inferred,        // both ends report it | only one end | derived
     status: up|down|unknown, speed_bps?, util_pct?,  // from collected interfaces / monitor metrics when present
+                                                     // speed: the slower end; a folded port-channel: its members added up
     vlans?: String, aggregate?: String,              // trunk allowed list, port-channel name
     label? }
 struct End { node, interface? /* canonical name */, ip? }
@@ -41,7 +42,14 @@ Building rules:
   same link from both ends merge (`confirmed`); match remote devices to
   inventory by collected hostname/sysName, management address, or chassis
   MAC — never by name similarity. Member links of a port-channel are folded
-  into one link with `aggregate` (and a count) when both ends agree.
+  into one link with `aggregate` (and a count) when both ends agree. The
+  folded link's `speed_bps` is what its members can carry together: the sum
+  over the members of the slower of each member's two ports. It is never the
+  two ends added up — the two ends are the two aggregate interfaces, and each
+  already speaks for the whole bundle (or, on some platforms, for one
+  member). When a member's speed was not collected the sum is not known, and
+  the link takes the smaller of what the two aggregate interfaces report, or
+  no speed at all.
   Neighbours not in the inventory become `unmanaged` nodes (one per distinct
   chassis/name), which the UI offers to add. Lab links come from the lab
   feature (`labs.links` RPC if present) and are authoritative for lab nodes.
@@ -56,6 +64,15 @@ Building rules:
   than 24 h (setting) contributes links marked in `warnings`/`stale_devices`.
 * Manual links and annotations fill what discovery cannot see (unmanaged
   switches, WAN circuits): `topology.manual.save/delete`.
+* What other features know is asked for by name and read **to the end**.
+  `monitor.interfaces` (for `util_pct` and `topology.rates`) and
+  `alerts.list` (for `Node.alerts`) page by offset and answer with at most a
+  few thousand rows a call; the first page alone would make a port further
+  down the table look unmeasured and a device further down look quiet.
+  Monitoring's rows are read per device, for the devices the links end on. A
+  row an offset cursor returns twice because the list moved between pages is
+  taken once (an alert by `id`, a port by name). A build without the feature
+  (`unknown_method`) is carried on without.
 
 ## Layout
 
@@ -76,6 +93,7 @@ neighbours without moving pinned ones.
 |---|---|
 | `topology.views` / `.view_save` / `.view_delete` | named views `{id, name, layer, filter, include_endpoints}` |
 | `topology.neighbors` | `{device_id}` → the device's links with both ends resolved (the device page's "connected to" table) |
+| `topology.rates` | `{ports: [{device_id, interface}]}` → `{at, monitoring: bool, ports: [{device_id, interface, name, in_bps?, out_bps?, speed_bps?, at?}]}` — what monitoring last measured on the ports asked about (the map asks about the ports its links end on, and draws the link load from the answer). One entry per port monitoring has a row for, under the `interface` spelling it was **asked with**; `name` is monitoring's own. The join is made here, with `ifname` on both names: a link end is always canonical (`TenGigabitEthernet0/0/0/1`) while monitoring keeps the device's spelling for profiles with `interface_names: verbatim` (`TenGigE0/0/0/1`), so a caller comparing the two as text loses the port. The canonical form finds a port spelled differently; it does not merge two: a port is looked up by the name monitoring keeps first, and by canonical form only when exactly one of the device's ports has it, so `Ethernet0` on a device that also has `eth0` is answered with its own row, and a spelling that could mean either is not answered. A rate that could not be measured is absent, never `0`. Top-level `at` is the server's clock when it answered: a reading's age is its own `at` taken from that, never from the caller's clock. `monitoring: false` means the monitor feature is not in the build (no rates to be had), which is not the same as nothing having been measured (`monitoring: true`, `ports: []`); any other refusal by the monitor is this method's error |
 | `topology.path` | `{from, to}` (device ids, names or IP addresses) → `{hops: [{node, device_id?, in_interface?, out_interface?, via: route|arp|mac|connected, detail}], complete: bool, stopped_because?}` — walks collected routing tables (longest prefix match), then ARP and MAC tables for the last hop; stops honestly ("no route data collected for R3") instead of guessing |
 | `locate.host` | `{query}` (IP, MAC, or hostname) → `{mac?, ip?, vendor?, locations: [{device_id, device, interface, vlan?, kind: access|trunk|uplink, seen_at}], best?: index, how: [..]}` — "which switch port is this plugged into": resolve IP→MAC through collected ARP tables, find the MAC in MAC tables, prefer the port with no network neighbour (the edge), report the trunk sightings as the path |
 | `topology.changes` | `{since}` → links and nodes that appeared/disappeared between stored snapshots (a snapshot of the physical graph is stored whenever it changes after a collect) |
@@ -90,7 +108,14 @@ Hand-built collected data (`collect::store`) for: a three-tier campus with
 LLDP on both ends, CDP on one end only, a port-channel, an unmanaged
 neighbour, hostname vs FQDN vs chassis-MAC matching, interface-name forms
 (`Gi0/1` vs `GigabitEthernet0/1`), duplicate reports; L3 view with shared
-/24s, /30s, loopbacks, secondary addresses; endpoints; staleness. Layout:
+/24s, /30s, loopbacks, secondary addresses; endpoints; staleness. A
+port-channel's speed for bundles whose aggregate interfaces report the whole
+bundle, one member, or nothing, and whose two ends disagree. `topology.rates` against a stand-in
+`monitor.interfaces` that keeps the real one's paging contract: a port whose
+device sorts past the first five thousand rows, a device with more rows than
+a page, the IOS XR and other spellings `ifname` rewrites, two ports of one
+device with one canonical form, a build without monitoring, a monitor that
+fails, a table that never ends. Layout:
 determinism, no overlapping nodes, pinned nodes do not move, a 500-node graph
 lays out in under a second. Path: connected, static, default route, ECMP
 (report the first with a note), missing data stops. `locate.host` across a

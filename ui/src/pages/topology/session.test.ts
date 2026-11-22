@@ -180,3 +180,22 @@ describe('the session a device already has', () => {
     expect(sessionAction(null)).toBe('open');
   });
 });
+
+describe('a press while the first login is still connecting', () => {
+  it('waits for the login that is on its way instead of dialling the device again', () => {
+    // `terminal.open` answers only once the device has been dialled, and
+    // until then `terminal.list` knows of no session: going by the list
+    // alone, a second press three seconds into an SSH login is a first one.
+    expect(sessionAction(null, true)).toBe('wait');
+    // The same for a device whose only session is a closed one.
+    expect(sessionAction(session({ state: 'closed' }), true)).toBe('wait');
+  });
+
+  it('goes to the session as soon as there is one, whatever is still in flight', () => {
+    expect(sessionAction(session(), true)).toBe('show');
+  });
+
+  it('dials when nothing is on its way', () => {
+    expect(sessionAction(null, false)).toBe('open');
+  });
+});

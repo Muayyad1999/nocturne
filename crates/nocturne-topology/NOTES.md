@@ -17,6 +17,7 @@ plus `inventory`; **no device access at all**. A "Refresh" in the UI is a
 | `layout.rs` | layered / force / radial, all deterministic |
 | `views.rs`, `manual.rs`, `history.rs` | saved views and positions, drawn links, snapshots |
 | `path.rs`, `locate.rs` | the two questions that walk the collected tables |
+| `rates.rs`, `paged.rs` | monitoring's rates for the ports links end on; reading another feature's list to its end |
 | `export/` | svg, drawio, mermaid, dot, json |
 | `api.rs` | the RPC surface and the debounced `topology.changed` watcher |
 
@@ -45,6 +46,37 @@ plus `inventory`; **no device access at all**. A "Refresh" in the UI is a
   (`Port-channel*`/`Bundle-Ether*`/`bond*`/`ae*`) at each end that is not
   itself a link end. Otherwise the members stay separate — the collected
   `Interface` has no membership list, and honest beats tidy.
+* **A folded link's speed is its members', added up** — computed in
+  `fold_aggregates`, where the members are still known. It used to be the sum
+  of the link's two ends, which for a folded link are the two aggregate
+  interfaces: a 4 x 10G bundle whose Port-channels each report 40 Gb/s came
+  out as 80 Gb/s and every percentage on it was halved. What a Port-channel
+  row says of its own speed is not dependable either way (the bundle over
+  SNMP, one member in some CLI output), so it is only the fallback, and then
+  the smaller end, once.
+* **The join to monitoring is made here** (`rates.rs`), not by the screen. A
+  link end is always `ifname::long`; monitoring keeps a device's own spelling
+  for `interface_names: verbatim` profiles. Both names go through
+  `ifname::long` (lower-cased, which is `ifname::same` as a map key) and the
+  answer is keyed by the spelling that was asked with. The screen had its own
+  table of fifteen abbreviations for this and lost every IOS XR port.
+  The canonical form finds a port; it must not merge two. SONiC has `eth0`
+  (management) and `Ethernet0` (front panel), both `Ethernet0` to `ifname`,
+  and joined on that alone the uplink got the management port's rates. So the
+  lookup is by monitoring's own name first, and by canonical form only when
+  one port of the device has it; an ambiguous spelling is left unanswered.
+  (`Collected::interface` still takes the first `ifname::same` match — the
+  collected side of the same ambiguity is not handled.)
+* **Another feature's list is read to its end** (`paged.rs`). One call of
+  `monitor.interfaces` is at most 5 000 rows and of `alerts.list` 2 000; what
+  is past that looked like "not measured" and "no alerts". The page size asked
+  for is inside the callee's clamp on purpose: a page is only known to be the
+  last when it is shorter than what was asked for. A callee that never stops
+  returning full pages is refused after 200 of them rather than followed.
+  An offset cursor repeats a row when the list moves between two pages (an
+  alert fires, a device is polled again), so a row is taken once: an alert by
+  its `id`, a port by its name. A row that moved the other way and was never
+  returned cannot be seen from here.
 * **L3**: an address that appears on more than one device is an HSRP/VRRP
   virtual address: dropped, with a warning. Loopbacks and /32s never make
   links. Two interfaces in a subnet → a link (which covers /30 and /31);

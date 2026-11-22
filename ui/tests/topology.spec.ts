@@ -486,6 +486,64 @@ test.describe('arranging it', () => {
   });
 });
 
+test.describe('named views', () => {
+  test('a new view is named in the application’s own dialog, not the browser’s', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    // What the macOS WebView does with `window.prompt`: it shows nothing and
+    // answers `null`. A screen that asks for a name that way saves nothing
+    // there and says nothing about it.
+    await page.addInitScript(() => {
+      window.prompt = () => null;
+    });
+    await openTopology(page);
+
+    const openDialog = async () => {
+      await page.getByRole('button', { name: 'Default', exact: true }).click();
+      await page
+        .getByRole('menu', { name: 'Views' })
+        .getByRole('menuitem', { name: 'Save as a new view…' })
+        .click();
+    };
+    const dialog = page.getByRole('dialog', { name: 'Save as a new view' });
+
+    // Backing out saves nothing.
+    await openDialog();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel('Name', { exact: true }).fill('Abandoned');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    expect((await rpc<{ name: string }[]>('topology.views')).map((view) => view.name)).not.toContain(
+      'Abandoned',
+    );
+
+    // A view with no name cannot be saved; one with a name is, by Enter.
+    await openDialog();
+    const name = dialog.getByLabel('Name', { exact: true });
+    await expect(name).toHaveValue('');
+    await expect(dialog.getByRole('button', { name: 'Save view' })).toBeDisabled();
+    await name.fill('  Core and distribution  ');
+    await name.press('Enter');
+
+    await expect(page.getByText('Saved the view “Core and distribution”')).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(dialog).toHaveCount(0);
+    // It is the view being looked at, and the backend has it under that name.
+    await expect(
+      page.getByRole('button', { name: 'Core and distribution', exact: true }),
+    ).toBeVisible();
+    const saved = (await rpc<{ id: string; name: string }[]>('topology.views')).find(
+      (view) => view.name === 'Core and distribution',
+    );
+    expect(saved, 'the view is stored, with the name trimmed').toBeTruthy();
+    if (saved) await rpc('topology.view_delete', { id: saved.id });
+
+    expect(console_.messages).toEqual([]);
+  });
+});
+
 test.describe('the questions worth asking', () => {
   test('a path ends where the collected data runs out, and says why', async ({ page }) => {
     const console_ = watchConsole(page);
@@ -601,6 +659,57 @@ test.describe('taking it away', () => {
     expect(console_.messages).toEqual([]);
   });
 
+  test('a clipboard that refuses is said to have refused, never answered with “Copied”', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    // A WebView that will not let a page write to the clipboard, which is
+    // also what a browser does outside a secure context.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: () =>
+            Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError')),
+        },
+      });
+    });
+    await openTopology(page);
+
+    await page.getByRole('button', { name: 'Export this drawing' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Export this drawing' });
+    await expect(dialog.getByText(/<svg xmlns=/).first()).toBeVisible({ timeout: 20_000 });
+    await dialog.getByRole('button', { name: 'Copy', exact: true }).click();
+
+    await expect(page.getByText('Could not copy to the clipboard')).toBeVisible();
+    await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
+
+    await page.keyboard.press('Escape');
+    expect(console_.messages).toEqual([]);
+  });
+
+  test('a clipboard that takes it holds exactly the text that was on screen', async ({
+    page,
+    context,
+  }) => {
+    const console_ = watchConsole(page);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await openTopology(page);
+
+    await page.getByRole('button', { name: 'Export this drawing' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Export this drawing' });
+    await dialog.getByRole('combobox', { name: 'Format' }).selectOption('mermaid');
+    await expect(dialog.getByText(/graph TD/).first()).toBeVisible({ timeout: 20_000 });
+    await dialog.getByRole('button', { name: 'Copy', exact: true }).click();
+
+    await expect(page.getByText('Copied', { exact: true })).toBeVisible();
+    const exported = await rpc<{ text: string }>('topology.export', { format: 'mermaid' });
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(exported.text);
+
+    await page.keyboard.press('Escape');
+    expect(console_.messages).toEqual([]);
+  });
+
   test('the links drawn by hand are listed apart from what was discovered', async ({ page }) => {
     const console_ = watchConsole(page);
     await openTopology(page);
@@ -682,6 +791,28 @@ function loadOf(page: Page, linkId: string) {
 /** Zoom to 100 %, where both directions' numbers are drawn. */
 async function zoomToFull(page: Page): Promise<void> {
   await page.getByRole('button', { name: /Reset to 100%/ }).click();
+}
+
+/**
+ * Puts the browser's clock `skewMs` away from the server's, as a laptop that
+ * has not synchronised for a while is. Only `Date` moves: timers keep running
+ * at their own pace, which is what a wrong clock is like.
+ */
+async function skewBrowserClock(page: Page, skewMs: number): Promise<void> {
+  await page.addInitScript((skew) => {
+    const Real = Date;
+    class Skewed extends Real {
+      constructor(...parts: unknown[]) {
+        if (parts.length === 0) super(Real.now() + skew);
+        else super(...(parts as [number]));
+      }
+
+      static override now(): number {
+        return Real.now() + skew;
+      }
+    }
+    window.Date = Skewed as unknown as DateConstructor;
+  }, skewMs);
 }
 
 /** Selects one link by its id, whatever it looks like. */
@@ -845,6 +976,75 @@ test.describe('the load on the lines', () => {
     expect(console_.messages, backend.log()).toEqual([]);
   });
 
+  test('a browser whose clock runs two hours fast still draws current readings as current', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    const graph = await rpc<GraphAnswer>('topology.get', {});
+    const idOf = (name: string) => graph.nodes.find((entry) => entry.name === name)?.id;
+    const ds1 = idOf('Campus/DS1');
+    const as1 = idOf('Campus/AS1');
+    const link = graph.links.find(
+      (entry) =>
+        (entry.a.node === ds1 && entry.b.node === as1) ||
+        (entry.a.node === as1 && entry.b.node === ds1),
+    );
+    expect(link, 'the fixture must have a DS1–AS1 link').toBeTruthy();
+    if (!link) return;
+
+    // DS1 and AS1 are read every half hour, so their readings — minutes old —
+    // are current for an hour and a quarter. Two hours of skew is past that:
+    // reckoned against this browser's clock, every reading on the map is old.
+    await skewBrowserClock(page, 2 * 3_600_000);
+    await openTopology(page);
+
+    const drawn = loadOf(page, link.id);
+    await expect(drawn.bars).toHaveCount(2);
+    await expect(drawn.group.locator('path[data-age="live"]')).toHaveCount(2);
+    await expect(drawn.group.locator('path[data-age="stale"]')).toHaveCount(0);
+
+    // And the words agree with the bars: minutes ago, not hours.
+    await expect(page.getByTestId('load-as-of')).toContainText(
+      /load measured (just now|\d+[sm] ago)/,
+    );
+    await selectLink(page, link.id);
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await expect(panel.getByText(/Measured (just now|\d+[sm] ago)/)).toBeVisible();
+    await expect(panel.getByText('Stale')).toHaveCount(0);
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('a browser whose clock runs two hours slow does not keep a stale reading current', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    const graph = await rpc<GraphAnswer>('topology.get', {});
+    const ds2 = graph.nodes.find((entry) => entry.name === 'Campus/DS2');
+    const edge = graph.nodes.find((entry) => entry.name === 'Campus/EDGE');
+    const link = graph.links.find(
+      (entry) =>
+        (entry.a.node === ds2?.id && entry.b.node === edge?.id) ||
+        (entry.a.node === edge?.id && entry.b.node === ds2?.id),
+    );
+    expect(link, 'the fixture must have an EDGE–DS2 link').toBeTruthy();
+    if (!link) return;
+
+    // To a clock two hours behind, DS2's last reading has not happened yet,
+    // and a reading from the future never gets old.
+    await skewBrowserClock(page, -2 * 3_600_000);
+    await openTopology(page);
+
+    await expect
+      .poll(async () => loadOf(page, link.id).group.locator('path[data-age="stale"]').count(), {
+        message: 'waiting for DS2’s reading to pass its own cadence on the server’s clock',
+        timeout: 150_000,
+      })
+      .toBeGreaterThan(0);
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
   test('says when the load was measured, and can be switched off', async ({ page }) => {
     const console_ = watchConsole(page);
     await openTopology(page);
@@ -933,6 +1133,92 @@ test.describe('a session from the map', () => {
     await expect(panel.getByRole('button', { name: 'Show the session' })).toBeVisible();
     await panel.getByRole('button', { name: 'Show the session' }).click();
     expect(await rpc<unknown[]>('terminal.list')).toHaveLength(1);
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('asking twice while the first login is still connecting opens one session, not two', async ({
+    page,
+  }) => {
+    const console_ = watchConsole(page);
+    // A device that takes its time to log in, as a real switch over SSH does:
+    // `terminal.open` answers only once the device has been dialled. It is
+    // held back here so that the second press lands while the first is still
+    // on its way.
+    let dialled = 0;
+    await page.route('**/api/rpc', async (route) => {
+      const call = route.request().postDataJSON() as { method?: string } | null;
+      if (call?.method === 'terminal.open') {
+        dialled += 1;
+        await new Promise((done) => setTimeout(done, 2_000));
+      }
+      await route.continue();
+    });
+    await openTopology(page);
+
+    await node(page, 'Campus/AS2').click();
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await panel.getByRole('button', { name: 'Terminal' }).click();
+
+    // Nothing has come back yet, so the impatient second press — from the
+    // other place the action lives, which no disabled button protects.
+    await node(page, 'Campus/AS2').click({ button: 'right' });
+    await page
+      .getByRole('menu', { name: 'Actions for Campus/AS2' })
+      .getByRole('menuitem', { name: /^Terminal/ })
+      .click({ force: true });
+    await page.keyboard.press('Escape');
+
+    await expect(page.getByRole('region', { name: 'Terminal on Campus/AS2' })).toBeVisible({
+      timeout: 60_000,
+    });
+    // One login on the switch, holding one VTY line.
+    await expect
+      .poll(async () => (await rpc<unknown[]>('terminal.list')).length, { timeout: 10_000 })
+      .toBe(1);
+    expect(dialled).toBe(1);
+    await expect(panel.getByRole('button', { name: 'Show the session' })).toBeVisible();
+
+    expect(console_.messages, backend.log()).toEqual([]);
+  });
+
+  test('closing the session from the map lets go of its terminal as well', async ({ page }) => {
+    const console_ = watchConsole(page);
+    await openTopology(page);
+
+    await node(page, 'Campus/AS2').click();
+    const panel = page.getByRole('complementary', { name: 'Selection' });
+    await panel.getByRole('button', { name: 'Terminal' }).click();
+    const dock = page.getByRole('region', { name: 'Terminal on Campus/AS2' });
+    await expect(dock).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.xterm')).toHaveCount(1);
+
+    await dock.getByRole('button', { name: 'Close the session on Campus/AS2' }).click();
+    await page
+      .getByRole('dialog', { name: 'Close the session on Campus/AS2?' })
+      .getByRole('button', { name: 'Close session' })
+      .click();
+    await expect(dock).toHaveCount(0);
+
+    // The session is over, so nothing will ever be written to its terminal
+    // again: the xterm, its scrollback and the element it was parked in go
+    // with it rather than waiting off screen for a reload.
+    await expect(page.locator('.xterm')).toHaveCount(0);
+    await expect
+      .poll(async () =>
+        (await rpc<{ state: string }[]>('terminal.list')).filter(
+          (session) => session.state !== 'closed',
+        ).length,
+      )
+      .toBe(0);
+
+    // Hiding is not closing: a session that is only put away keeps its
+    // terminal, and comes back with what was on it.
+    await panel.getByRole('button', { name: 'Terminal' }).click();
+    await expect(dock).toBeVisible({ timeout: 60_000 });
+    await dock.getByRole('button', { name: 'Hide the terminal, leaving the session open' }).click();
+    await expect(dock).toHaveCount(0);
+    await expect(page.locator('.xterm')).toHaveCount(1);
 
     expect(console_.messages, backend.log()).toEqual([]);
   });

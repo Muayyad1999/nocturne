@@ -141,7 +141,21 @@ export function sessionOn(
   return mine.find((session) => session.state !== 'closed') ?? mine[0] ?? null;
 }
 
-/** What the button says: opening one, or going back to the one that is open. */
-export function sessionAction(existing: SessionInfo | null): 'open' | 'show' {
-  return existing && existing.state !== 'closed' ? 'show' : 'open';
+/**
+ * What a press does: open a session, go back to the one that is open, or
+ * wait for the login that is already on its way.
+ *
+ * `dialling` is whether this screen has a `terminal.open` for the device in
+ * flight. The backend answers that call only once the device has been
+ * dialled — seconds, over SSH — and until it does `terminal.list` knows of no
+ * session, so going by `existing` alone a second press in that gap is a first
+ * one: two logins on the switch, one of them holding a VTY line nobody is
+ * looking at.
+ */
+export function sessionAction(
+  existing: SessionInfo | null,
+  dialling = false,
+): 'open' | 'show' | 'wait' {
+  if (existing && existing.state !== 'closed') return 'show';
+  return dialling ? 'wait' : 'open';
 }

@@ -544,15 +544,6 @@ export function shortInterface(name: string | undefined): string {
   return name;
 }
 
-/**
- * The same table in lower case, long form first, for going the other way:
- * `load.ts` joins a link's interface names to monitoring's own and has to
- * expand a short name rather than miss the rate on that port.
- */
-export const LONG_FORMS: readonly (readonly [long: string, short: string])[] = SHORT_FORMS.map(
-  ([long, short]) => [long.toLowerCase(), short.toLowerCase()] as const,
-);
-
 /** The extent of everything drawn, for the Viewport's fit. */
 export function sceneBounds(nodes: readonly Node[]): Bounds | null {
   if (nodes.length === 0) return null;

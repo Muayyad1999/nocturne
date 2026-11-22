@@ -24,16 +24,23 @@ export interface WarningsProps {
   graph: Graph;
   /** How old the data may be before it is called stale (hours, from settings). */
   staleAfterHours: number | undefined;
+  /**
+   * The time on the server's clock, which is the one the data was stamped
+   * with (`serverNow`); `null` before the server has said what it is.
+   */
+  now: number | null;
   onRefresh: () => void;
   refreshing: boolean;
 }
 
-export function Warnings({ graph, staleAfterHours, onRefresh, refreshing }: WarningsProps) {
+export function Warnings({ graph, staleAfterHours, now, onRefresh, refreshing }: WarningsProps) {
   const [open, setOpen] = useState(false);
   const warnings = graph.warnings;
   const oldest = graph.data_age.oldest_at;
   const limit = (staleAfterHours ?? 24) * 3_600_000;
-  const old = oldest !== undefined && Date.now() - oldest > limit;
+  // Against the server's clock, never the browser's: `oldest` is the server's
+  // timestamp, and the two clocks need not agree.
+  const old = oldest !== undefined && now != null && now - oldest > limit;
 
   if (warnings.length === 0 && !old) return null;
 
@@ -56,7 +63,7 @@ export function Warnings({ graph, staleAfterHours, onRefresh, refreshing }: Warn
         {old && oldest !== undefined && (
           <p className={styles.age} title={formatTimestamp(oldest)}>
             <Icon icon={Clock} size={14} />
-            The oldest data here was collected {formatRelative(oldest)}
+            The oldest data here was collected {formatRelative(oldest, now ?? undefined)}
             {graph.stats.stale_devices > 0 && (
               <>
                 {' '}

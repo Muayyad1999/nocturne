@@ -78,8 +78,17 @@ export function ExportDialog({ open, onClose, params }: ExportDialogProps) {
             disabled={!exported.data}
             onClick={async () => {
               if (!exported.data) return;
-              await copyText(exported.data.text);
-              toast.success('Copied');
+              // The clipboard can refuse — no secure context, a WebView that
+              // denies it — and "Copied" over an unchanged clipboard is how
+              // yesterday's text ends up pasted into a change document.
+              if (await copyText(exported.data.text)) {
+                toast.success('Copied');
+              } else {
+                toast.error('Could not copy to the clipboard', {
+                  description:
+                    'Nothing was copied. Download the file, or select the text below and copy it with the keyboard.',
+                });
+              }
             }}
           >
             Copy
