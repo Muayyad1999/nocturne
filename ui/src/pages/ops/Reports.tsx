@@ -15,7 +15,7 @@
  */
 
 import { FileDown, FileText, Printer, Save, Trash2 } from 'lucide-react';
-import { useRef, useState, type RefObject } from 'react';
+import { useState } from 'react';
 import type { Format, ReportKind, ReportKindInfo } from '@/api/types/ops';
 import { Badge } from '@/design/Badge';
 import { Button } from '@/design/Button';
@@ -44,6 +44,7 @@ import {
 import styles from './Reports.module.css';
 import opsStyles from './Ops.module.css';
 import { PERIODS, instant, periodChoice, reportCoverage } from './ops';
+import { usePrintFrame } from './PrintFrame';
 import { UnavailableNote } from './Unavailable';
 
 const FORMATS: readonly { value: Format; label: string }[] = [
@@ -68,7 +69,7 @@ export function ReportsTab() {
   const [until, setUntil] = useState(() => Date.now());
   const [openSaved, setOpenSaved] = useState<string | null>(null);
   const [author] = useAuthor();
-  const frame = useRef<HTMLIFrameElement>(null);
+  const { printDocument, printFrame } = usePrintFrame();
 
   const info = kinds.data?.kinds.find((entry) => entry.id === kind);
   const wantsPeriod = info?.period ?? false;
@@ -91,6 +92,8 @@ export function ReportsTab() {
   }
 
   const shown = openSaved !== null ? saved.data : report.data;
+  // A kept report is in the format it was kept in, whatever the selector says.
+  const printable = (openSaved !== null ? saved.data?.format : format) === 'html';
   const coverage = openSaved === null && report.data ? reportCoverage(report.data) : null;
 
   return (
@@ -169,12 +172,14 @@ export function ReportsTab() {
             </>
           )}
           <ToolbarSpacer />
-          {format === 'html' && (
+          {printable && (
             <Button
               variant="ghost"
               icon={Printer}
               disabled={!shown}
-              onClick={() => frame.current?.contentWindow?.print()}
+              onClick={() => {
+                if (shown) printDocument(shown.content);
+              }}
             >
               Print
             </Button>
@@ -224,7 +229,7 @@ export function ReportsTab() {
         )}
 
         {openSaved !== null ? (
-          <SavedReportView id={openSaved} frame={frame} onBack={() => setOpenSaved(null)} />
+          <SavedReportView id={openSaved} onBack={() => setOpenSaved(null)} />
         ) : (
           <>
             {coverage && (
@@ -277,7 +282,7 @@ export function ReportsTab() {
                     generated {formatDateTime(instant(report.data.generated_at))}
                   </span>
                 </p>
-                <Preview content={report.data.content} format={format} title={report.data.title} frame={frame} />
+                <Preview content={report.data.content} format={format} title={report.data.title} />
               </>
             )}
           </>
@@ -303,6 +308,7 @@ export function ReportsTab() {
         </Panel>
         <SavedReports openSaved={openSaved} onOpen={setOpenSaved} />
       </aside>
+      {printFrame}
     </div>
   );
 }
@@ -338,42 +344,17 @@ function KindRow({
   );
 }
 
-function Preview({
-  content,
-  format,
-  title,
-  frame,
-}: {
-  content: string;
-  format: Format;
-  title: string;
-  frame: RefObject<HTMLIFrameElement | null>;
-}) {
+function Preview({ content, format, title }: { content: string; format: Format; title: string }) {
   if (format === 'html') {
     // Self-contained, with no scripts, so it is shown exactly as it prints —
-    // in a frame with scripting off.
-    return (
-      <iframe
-        ref={frame}
-        className={styles.frame}
-        title={`${title} (preview)`}
-        sandbox="allow-modals"
-        srcDoc={content}
-      />
-    );
+    // in a frame that is allowed nothing. Such a frame cannot be asked to
+    // print either; that is what `PrintFrame.tsx` is for.
+    return <iframe className={styles.frame} title={`${title} (preview)`} sandbox="" srcDoc={content} />;
   }
   return <CodeBlock code={content} title={title} maxHeight={520} wrap={format === 'markdown'} />;
 }
 
-function SavedReportView({
-  id,
-  frame,
-  onBack,
-}: {
-  id: string;
-  frame: RefObject<HTMLIFrameElement | null>;
-  onBack: () => void;
-}) {
+function SavedReportView({ id, onBack }: { id: string; onBack: () => void }) {
   const saved = useSavedReport(id);
   if (saved.isPending) return <Skeleton shape="block" height={320} />;
   if (saved.isError) {
@@ -408,12 +389,7 @@ function SavedReportView({
           ))}
         </div>
       )}
-      <Preview
-        content={report.content}
-        format={(report.format as Format) ?? 'markdown'}
-        title={report.title}
-        frame={frame}
-      />
+      <Preview content={report.content} format={(report.format as Format) ?? 'markdown'} title={report.title} />
     </>
   );
 }

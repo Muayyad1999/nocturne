@@ -257,6 +257,13 @@ the author of that backend module; field names are the backend's
 * Numbers: `lib/format.ts` owns bytes (`1.2 GiB`), rates (`940 Mb/s`),
   durations (`3d 4h`), percentages, counts with thin-space grouping; never
   format inline.
+* Locale: never hand `navigator.language` to an `Intl` constructor. WebKitGTK
+  reports the process locale there — `"C"` on a Linux desktop with `LANG`
+  unset, `C`, `C.UTF-8` or `POSIX` — and `Intl` throws a RangeError on it.
+  `lib/locale.ts` owns this: `environmentLocale()` is the environment's
+  locale as a tag `Intl` accepts (English when there is none), and a library
+  that reads `navigator` itself is imported behind `repairNavigatorLocale()`,
+  evaluated first (uPlot: `design/TimeSeriesChart/uplot.ts`).
 * Every interactive element is reachable and operable by keyboard, has an
   accessible name, and a visible focus state.
 

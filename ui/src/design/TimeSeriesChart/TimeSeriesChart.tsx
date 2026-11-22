@@ -7,8 +7,6 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react';
-import uPlot from 'uplot';
-import 'uplot/dist/uPlot.min.css';
 import { cx } from '@/lib/cx';
 import { formatCompact, formatCount, type Numeric } from '@/lib/format';
 import { formatDate, formatDateTime, formatTime } from '@/lib/time';
@@ -19,6 +17,7 @@ import { Table, type TableColumn } from '../Table';
 import { useTokens } from '../theme';
 import type { StatusTone } from '../tone';
 import styles from './TimeSeriesChart.module.css';
+import uPlot from './uplot';
 
 /** A slot of the categorical palette (`--series-1` … `--series-8`). */
 export type SeriesSlot = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;

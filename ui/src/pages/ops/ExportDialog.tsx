@@ -9,11 +9,13 @@
  *
  * HTML is shown in a sandboxed frame rather than as source, because the point
  * of the HTML form is that it prints — and a self-contained document with no
- * scripts is exactly what is safe to put in a frame with scripting off.
+ * scripts is exactly what is safe to put in a frame with scripting off. That
+ * frame allows nothing, so it cannot be asked to print either: Print hands
+ * the same text to a frame made for it (`PrintFrame.tsx`).
  */
 
 import { Copy, Download, Printer } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import type { Format } from '@/api/types/ops';
 import { Button } from '@/design/Button';
 import { CodeBlock } from '@/design/CodeBlock';
@@ -26,6 +28,7 @@ import { copyText } from '@/lib/clipboard';
 import { formatBytes, plural } from '@/lib/format';
 import { download, useRendered, type ExportMethod } from './data';
 import styles from './Export.module.css';
+import { usePrintFrame } from './PrintFrame';
 
 const FORMATS: readonly { value: Format; label: string; about: string }[] = [
   { value: 'markdown', label: 'Markdown', about: 'For a ticket, a wiki or a pull request.' },
@@ -46,7 +49,7 @@ export interface ExportDialogProps {
 
 export function ExportDialog({ open, onClose, title, description, method, params }: ExportDialogProps) {
   const [format, setFormat] = useState<Format>('markdown');
-  const frame = useRef<HTMLIFrameElement>(null);
+  const { printDocument, printFrame } = usePrintFrame();
   const rendered = useRendered(method, open ? { ...params, format } : null);
   const about = FORMATS.find((entry) => entry.value === format)?.about ?? '';
   const document_ = rendered.data;
@@ -68,7 +71,9 @@ export function ExportDialog({ open, onClose, title, description, method, params
               variant="secondary"
               icon={Printer}
               disabled={!document_}
-              onClick={() => frame.current?.contentWindow?.print()}
+              onClick={() => {
+                if (document_) printDocument(document_.content);
+              }}
             >
               Print
             </Button>
@@ -123,7 +128,6 @@ export function ExportDialog({ open, onClose, title, description, method, params
             </p>
             {format === 'html' ? (
               <iframe
-                ref={frame}
                 className={styles.frame}
                 title={`${document_.title} (preview)`}
                 sandbox=""
@@ -139,6 +143,7 @@ export function ExportDialog({ open, onClose, title, description, method, params
             )}
           </>
         )}
+        {printFrame}
       </div>
     </Dialog>
   );

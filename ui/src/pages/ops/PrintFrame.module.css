@@ -1,0 +1,10 @@
+/* Printed, never looked at. Kept in the layout at no size rather than
+   `display: none`, so the document inside is laid out like any other before
+   it is asked to print. */
+.frame {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+}

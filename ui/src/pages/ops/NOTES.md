@@ -24,6 +24,8 @@ Notes.tsx          runbooks, with `[[device]]` links as the backend resolved the
 Audit.tsx          the record: filterable, linked, not editable
 Jobs.tsx           the full history, with one job's log in a drawer
 ExportDialog.tsx   a rendered document before it becomes a file
+PrintFrame.tsx     printing that document without giving it this page's origin
+printFrame.js      the one script the print frame runs (a file: see below)
 ```
 
 Methods used: `incidents.*` (list, get, create, update, delete, note, link,
@@ -86,6 +88,26 @@ Events: `incidents.changed`, `handover.changed`, `notes.changed`,
   be read" are different documents and must not read alike. HTML output is
   previewed in a sandboxed frame rather than as source — it is self-contained
   with no scripts, and the point of that format is that it prints.
+* **Print does not go through the preview.** The preview frame is allowed
+  nothing, so its `print()` cannot be reached from this page (a SecurityError
+  in every engine), and `allow-same-origin` — which would make it reachable —
+  would put a document made from device data on the application's origin.
+  `usePrintFrame` hands the same text to a second, hidden frame that has an
+  origin of its own and one script, `printFrame.js`, which takes the document
+  in a message, parses it where nothing runs, and prints itself. That script
+  is a file because the application's policy only runs scripts from its own
+  address, and it is imported `?url&no-inline` because the build would
+  otherwise turn a file that small into a `data:` address, which is not.
+  `tests/print.spec.ts` prints a document that tries to run script and shows
+  that it cannot, on screen or in the print frame. The export dialog and the
+  Reports tab both print this way, and neither preview is allowed anything.
+* **A print job ends with its frame.** The export dialog stays mounted while
+  it is closed, so what `usePrintFrame` remembers outlives what it renders. A
+  job kept across that would be handed a new frame when the dialog came back
+  and print again, unasked. The frame therefore reports leaving the document
+  and the job goes with it. On the Reports tab, Print is offered for what is
+  on screen — a kept report is in the format it was kept in, whatever the
+  selector says.
 * **The audit tab does not mask anything.** A secret must never reach the
   trail; masking one here would hide the defect in whichever feature wrote it
   while leaving the secret in the database, in `audit.search`'s answer and in
