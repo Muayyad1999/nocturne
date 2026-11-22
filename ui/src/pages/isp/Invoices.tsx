@@ -2,11 +2,19 @@
  * The invoices: drafted, issued, voided and reissued.
  *
  * An invoice is a document, and what has happened to it as a document
- * (`state`) is not the same question as whether it has been paid (`status`,
- * which the engine derives from the recorded payments and the clock at read
- * time). Both are shown, because an issued invoice that is overdue and an
- * issued invoice that is not due yet are the same document in two different
- * situations.
+ * (`state`) is not the same question as whether it has been settled
+ * (`status`, which the engine derives from the recorded payments, the credit
+ * notes and the business's calendar at read time). Both are shown, because
+ * an issued invoice that is overdue and an issued invoice that is not due
+ * yet are the same document in two different situations.
+ *
+ * Money columns sort within a currency, never across them: the list mixes
+ * currencies unless one is chosen, and 3 000 dinars is not more than 25
+ * dollars (`money.ts: moneySortKey`).
+ *
+ * The period filter is a month of the business's calendar, and an invoice
+ * is in it when its own period — read in the calendar the invoice was
+ * written in — is part of that month.
  *
  * `isp.invoices` is paged but, unlike the customers, carries no count of what
  * matches, so paging here is "a full page means there may be more" rather
@@ -28,12 +36,12 @@ import { ErrorState } from '@/design/ErrorState';
 import { Select } from '@/design/Select';
 import { Table, type TableColumn } from '@/design/Table';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
-import { formatCount } from '@/lib/format';
-import { formatDate } from '@/lib/time';
-import { overdueText, recentMonths, statusWords, windowOf } from './billing-rows';
-import { useInvoices, useSummary } from './data';
+import { dueText, invoicePeriod, pageText, statusWords } from './billing-rows';
+import { dayText, monthQuery, periodInMonth, recentMonths } from './calendar';
+import { useCalendar, useInvoices, useSummary } from './data';
 import { Amount } from './Figures';
 import { InvoiceDrawer } from './InvoiceDrawer';
+import { formatMoney, moneySortKey } from './money';
 import { PaymentDialog } from './PaymentDialog';
 import { RunDialog } from './RunDialog';
 import styles from './isp.module.css';
@@ -52,22 +60,30 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
   const [offset, setOffset] = useState(0);
   const [paying, setPaying] = useState(false);
 
-  const months = useMemo(() => recentMonths(Date.now()), []);
-  const window = month === '' ? null : windowOf(month);
+  const calendar = useCalendar();
+  const months = useMemo(() => recentMonths(Date.now(), calendar), [calendar]);
+  const window = month === '' ? null : monthQuery(month, calendar);
   const params = useMemo(
     () => ({
       ...(state === '' ? {} : { state: state as InvoiceState }),
       ...(currency === '' ? {} : { currency }),
-      ...(window ? { since: window.start, until: window.end } : {}),
+      // The month's own bounds, so that the page is this month's invoices.
+      // A neighbouring month's, written under another offset, come with
+      // them and are narrowed out below, each by its own calendar.
+      ...(window ? { since: window.since, until: window.until } : {}),
       limit: PAGE,
       ...(offset === 0 ? {} : { cursor: String(offset) }),
     }),
-    [state, currency, window?.start, window?.end, offset],
+    [state, currency, window?.since, window?.until, offset],
   );
 
   const invoices = useInvoices(params);
   const summary = useSummary();
-  const rows = invoices.data ?? [];
+  // The page as the engine sent it decides whether there is another one;
+  // what is shown is the part of it that belongs to the month.
+  const page = invoices.data ?? [];
+  const rows = month === '' ? page : page.filter((row) => periodInMonth(row, month));
+  const today = { now: Date.now(), offset: calendar };
   const openId = search.get('invoice');
   const runOpen = search.get('run') !== null;
 
@@ -119,18 +135,14 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
       header: 'Period',
       width: 230,
       sortValue: (row) => row.period_start,
-      cell: (row) => (
-        <span className={styles.amount}>
-          {formatDate(row.period_start)} → {formatDate(row.period_end)}
-        </span>
-      ),
+      cell: (row) => <span className={styles.amount}>{invoicePeriod(row)}</span>,
     },
     {
       id: 'total',
       header: 'Total',
       width: 130,
       align: 'right',
-      sortValue: (row) => row.total.minor,
+      sortValue: (row) => moneySortKey(row.total),
       cell: (row) => <Amount money={row.total} />,
     },
     {
@@ -138,14 +150,26 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
       header: 'Paid',
       width: 130,
       align: 'right',
-      cell: (row) => <Amount money={row.paid} muted />,
+      sortValue: (row) => moneySortKey(row.paid),
+      // What was credited is under what was paid, as its own figure and in
+      // its own words — never added to it, because a write-off is not money
+      // that arrived — so that total, less both, visibly is what is
+      // outstanding. An invoice nothing was written off on shows no line.
+      cell: (row) => (
+        <span className={styles.amount}>
+          <Amount money={row.paid} muted />
+          {row.credited.minor !== 0 && (
+            <span className={styles.rowSub}>{formatMoney(row.credited)} credited</span>
+          )}
+        </span>
+      ),
     },
     {
       id: 'outstanding',
       header: 'Outstanding',
       width: 130,
       align: 'right',
-      sortValue: (row) => row.outstanding.minor,
+      sortValue: (row) => moneySortKey(row.outstanding),
       cell: (row) => <Amount money={row.outstanding} />,
     },
     {
@@ -165,9 +189,9 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
       width: 150,
       cell: (row) => (
         <span className={styles.rowSub}>
-          {overdueText(row)}
+          {dueText(row, today)}
           {row.due_at !== null && (
-            <span className={styles.rowSub}>{formatDate(row.due_at)}</span>
+            <span className={styles.rowSub}>{dayText(row.due_at, row.utc_offset_minutes)}</span>
           )}
         </span>
       ),
@@ -254,7 +278,15 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
             <EmptyState
               icon={CreditCard}
               size="compact"
-              title={state === '' && month === '' ? 'No invoices yet' : 'No invoice matches these filters'}
+              title={
+                page.length > 0
+                  ? // Only after the calendar was changed: every invoice the
+                    // engine sent for this page was written for another month.
+                    'No invoice on this page is in that month'
+                  : state === '' && month === ''
+                    ? 'No invoices yet'
+                    : 'No invoice matches these filters'
+              }
               description="Billing a period drafts one invoice per customer out of what their subscriptions say they agreed to. It previews first, and nothing is written until you say so."
               action={
                 <Button variant="primary" icon={Play} onClick={() => setParam('run', '1')}>
@@ -265,11 +297,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
           }
         />
         <div className={styles.paging}>
-          <span className={styles.count}>
-            {rows.length === 0
-              ? 'nothing on this page'
-              : `${formatCount(offset + 1)}–${formatCount(offset + rows.length)}`}
-          </span>
+          <span className={styles.count}>{pageText(offset, page.length, rows.length)}</span>
           <ToolbarSpacer />
           <Button
             size="sm"
@@ -280,7 +308,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
           </Button>
           <Button
             size="sm"
-            disabled={rows.length < PAGE || invoices.isFetching}
+            disabled={page.length < PAGE || invoices.isFetching}
             onClick={() => setOffset(offset + PAGE)}
           >
             Next

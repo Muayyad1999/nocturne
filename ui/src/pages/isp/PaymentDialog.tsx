@@ -32,11 +32,11 @@ import { Select } from '@/design/Select';
 import { Textarea } from '@/design/Textarea';
 import { toast } from '@/design/Toast';
 import { formatCount } from '@/lib/format';
-import { formatDate } from '@/lib/time';
-import { dayStart } from './billing-rows';
 import { AmountField } from './AmountField';
-import { useCurrencies, useCustomers, useInvoices, useRecordPayment } from './data';
-import { digitsOf, formatMoney, parseAmount, plainAmount } from './money';
+import { dayStart, dayText, offsetName } from './calendar';
+import { useCalendar, useCurrencies, useCustomers, useInvoices, useRecordPayment } from './data';
+import { digitsOf, formatMoney, parseAmount, quotedRate } from './money';
+import { useOnOpen } from './opening';
 import styles from './isp.module.css';
 
 /** How many customers the picker holds. Beyond this, use the customer's own page. */
@@ -61,6 +61,7 @@ export function PaymentDialog({
   defaultCurrency,
 }: PaymentDialogProps) {
   const currencies = useCurrencies();
+  const calendar = useCalendar();
   const record = useRecordPayment();
   const reset = record.reset;
 
@@ -90,8 +91,10 @@ export function PaymentDialog({
   const chosenInvoice =
     invoice ?? theirInvoices.data?.find((row) => row.id === invoiceId) ?? null;
 
-  useEffect(() => {
-    if (!open) return;
+  // As it opens and not again (`opening.ts`): the invoice this was opened on
+  // is read again while the payment is being recorded, and comes back
+  // changed before the answer does.
+  useOnOpen(open, () => {
     setCustomer(customerId ?? null);
     setInvoiceId(invoice?.id ?? '');
     setAmount('');
@@ -103,7 +106,7 @@ export function PaymentDialog({
     setRate('');
     setSwapped(false);
     reset();
-  }, [open, customerId, invoice, defaultCurrency, reset]);
+  });
 
   // Without an explicit choice, a payment is in the currency of the invoice
   // it settles, or of the customer's account.
@@ -117,11 +120,16 @@ export function PaymentDialog({
   const parsed = digits === undefined ? null : parseAmount(amount, currency, digits);
   const needsRate = chosenInvoice !== null && currency !== '' && currency !== chosenInvoice.currency;
   const rateValid = /^[1-9]\d*$/.test(rate.trim());
+  // The day the money changed hands, in the business's calendar. A date that
+  // was typed and cannot be read is not "now".
+  const paidAt = dayStart(at, calendar);
+  const dateUnread = at.trim() !== '' && paidAt === null;
   const ready =
     customer !== null &&
     parsed?.ok === true &&
     parsed.amount.minor > 0 &&
     method.trim() !== '' &&
+    !dateUnread &&
     (!needsRate || rateValid);
 
   const submit = () => {
@@ -135,7 +143,7 @@ export function PaymentDialog({
       method: method.trim(),
       ...(reference.trim() === '' ? {} : { reference: reference.trim() }),
       ...(note.trim() === '' ? {} : { note: note.trim() }),
-      ...(dayStart(at) === null ? {} : { at: dayStart(at) ?? undefined }),
+      ...(paidAt === null ? {} : { at: paidAt }),
       ...(needsRate ? { conversion: { from, to, rate: Number(rate.trim()) } } : {}),
     };
     record.mutate(input, {
@@ -221,7 +229,7 @@ export function PaymentDialog({
                 ...openInvoices.map((row) => ({
                   value: row.id,
                   label: `${row.number ?? 'draft'} · ${formatMoney(row.outstanding)} outstanding · due ${
-                    row.due_at === null ? 'unset' : formatDate(row.due_at)
+                    row.due_at === null ? 'unset' : dayText(row.due_at, row.utc_offset_minutes)
                   }`,
                 })),
               ]}
@@ -258,11 +266,17 @@ export function PaymentDialog({
                 The invoice is in {chosenInvoice.currency} and this payment is in {currency}, so the
                 rate you were given is recorded on the payment and never looked up again.{' '}
                 {rateValid
-                  ? `1 ${swapped ? currency : chosenInvoice.currency} = ${plainAmount(
-                      Number(rate.trim()),
-                      0,
-                    )} minor units of ${swapped ? chosenInvoice.currency : currency}.`
-                  : 'Enter it the way it was quoted to you.'}
+                  ? `As quoted: ${
+                      quotedRate(
+                        swapped ? currency : chosenInvoice.currency,
+                        swapped ? chosenInvoice.currency : currency,
+                        rate,
+                        currencies.data ?? [],
+                      ) ?? ''
+                    }, entered in minor units of ${swapped ? chosenInvoice.currency : currency}.`
+                  : `Enter it the way it was quoted to you, in minor units of ${
+                      swapped ? chosenInvoice.currency : currency
+                    }.`}
               </>
             }
           >
@@ -302,7 +316,21 @@ export function PaymentDialog({
           </Field>
         </div>
 
-        <Field label="When the money changed hands" hint="Leave it empty for now.">
+        <Field
+          label="When the money changed hands"
+          error={
+            dateUnread
+              ? calendar === null
+                ? 'The business’s calendar is not known, so a date cannot be read. Leave it empty for now.'
+                : 'That is not a date.'
+              : undefined
+          }
+          hint={
+            calendar === null
+              ? 'Leave it empty for now.'
+              : `Leave it empty for now. A day of the business’s calendar (${offsetName(calendar)}); today is ${dayText(Date.now(), calendar)}.`
+          }
+        >
           <Input type="date" value={at} onChange={(event) => setAt(event.target.value)} />
         </Field>
 

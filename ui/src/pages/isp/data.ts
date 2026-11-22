@@ -1,15 +1,23 @@
 /**
  * Everything these screens read and write.
  *
- * Three events keep them current, and the feature publishes nothing on a
+ * Four events keep them current, and the feature publishes nothing on a
  * read: `isp.changed {kinds}` after a customer, tariff, subscription or link
  * is saved, `isp.invoices.changed` after an invoice is drafted, issued,
- * voided or edited, and `isp.payments.changed` after a payment is recorded or
- * voided. Every list here is invalidated by all three rather than by the one
- * that looks relevant: a payment changes an invoice's derived status, an
- * issued invoice changes the arrears, and a new subscription changes what a
- * run would bill. Nothing polls — a ledger does not change because a second
- * went by.
+ * voided or edited, `isp.payments.changed` after a payment is recorded or
+ * voided, and `isp.credits.changed` after a credit note is issued, set
+ * against an invoice or voided. Every list here is invalidated by all four
+ * rather than by the one that looks relevant: a payment or a credit note
+ * changes an invoice's derived status, an issued invoice changes the
+ * arrears, and a new subscription changes what a run would bill. Nothing
+ * polls — a ledger does not change because a second went by.
+ *
+ * A fifth event is the core's: `settings.changed`. The `isp` section holds
+ * the business's calendar, which decides what is overdue and where a month
+ * begins, so a change to it re-reads the ledger ({@link useSettingsWatch}).
+ * The calendar itself is read with {@link useCalendar}: every date these
+ * screens type or show goes through it (`calendar.ts`), never through the
+ * browser's zone.
  *
  * The ISP feature is only in the paid edition, so this build may not have it
  * at all: {@link useIspInstalled} asks `app.methods` once (the answer is
@@ -30,12 +38,24 @@
  *   rather than a refetch.
  */
 
-import { useHasMethod, useRpc, useRpcMutation, type UseRpcOptions } from '@/api/hooks';
-import type { DeviceRow } from '@/api/types/core';
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  invalidateMethods,
+  useEvent,
+  useHasMethod,
+  useRpc,
+  useRpcMutation,
+  type UseRpcOptions,
+} from '@/api/hooks';
+import type { DeviceRow, SettingsSetParams } from '@/api/types/core';
 import type {
+  AllocateCreditParams,
   AmendParams,
   Arrears,
   CapacityParams,
+  CreditInput,
+  CreditNote,
+  CreditsParams,
   CurrencyRow,
   CustomerDetail,
   CustomerInput,
@@ -50,6 +70,8 @@ import type {
   Invoice,
   InvoicesParams,
   InvoiceView,
+  IspSettings,
+  IssuedCredit,
   IssueParams,
   Link,
   LinkCapacity,
@@ -80,12 +102,25 @@ import type {
   TariffRow,
   UsageParams,
   UsageReport,
+  VoidCreditParams,
   VoidParams,
   VoidPaymentParams,
 } from '@/api/types/isp';
+import { isOffset, type Offset } from './calendar';
 
-/** Every topic that can make anything on these screens out of date. */
-export const CHANGED = ['isp.changed', 'isp.invoices.changed', 'isp.payments.changed'];
+/**
+ * Every topic that can make anything on these screens out of date.
+ *
+ * `isp.credits.changed` is here although the engine follows each credit
+ * event with one on an older topic: a screen that shows credit notes follows
+ * the topic that is about them, rather than depending on the second event.
+ */
+export const CHANGED = [
+  'isp.changed',
+  'isp.invoices.changed',
+  'isp.payments.changed',
+  'isp.credits.changed',
+];
 
 /** Method prefixes a mutation invalidates: the whole feature, for the reason above. */
 const INVALIDATES = ['isp.'];
@@ -99,6 +134,57 @@ const live: UseRpcOptions = { invalidateOn: CHANGED };
  */
 export function useIspInstalled(): boolean | undefined {
   return useHasMethod('isp.customers');
+}
+
+// ------------------------------------------------------------------- settings
+
+/** The settings section the engine declares (`api.rs: SETTINGS_SECTION`). */
+export const SETTINGS_SECTION = 'isp';
+
+/** The ISP settings, read with the core's `settings.get`. */
+export function useIspSettings() {
+  return useRpc<IspSettings>(
+    'settings.get',
+    { section: SETTINGS_SECTION },
+    { invalidateOn: ['settings.changed'] },
+  );
+}
+
+/**
+ * Saves some of the ISP settings (`settings.set` merges key by key). The
+ * ledger is re-read afterwards as well as the settings: the calendar decides
+ * which invoices are overdue and the payment terms decide nothing already
+ * issued, but the screen cannot know which key was written.
+ */
+export function useSaveIspSettings() {
+  return useRpcMutation<IspSettings, SettingsSetParams>('settings.set', {
+    invalidates: ['settings.', ...INVALIDATES],
+    errorToast: false,
+  });
+}
+
+/**
+ * The business's calendar: its offset from UTC in minutes, or `null` while
+ * the setting has not been read or does not hold a calendar. With `null`
+ * there is no date to show and none to accept — the helpers in `calendar.ts`
+ * answer with nothing rather than fall back to the browser's zone.
+ */
+export function useCalendar(): Offset {
+  const minutes = useIspSettings().data?.utc_offset_minutes;
+  return isOffset(minutes) ? minutes : null;
+}
+
+/**
+ * Re-reads the ledger when the ISP settings change, from this window or
+ * another. Mounted once by each ISP route; a list's own `invalidateOn`
+ * cannot do it, because `settings.changed` is every section's event and a
+ * change of theme is no reason to read the invoices again.
+ */
+export function useSettingsWatch(): void {
+  const queryClient = useQueryClient();
+  useEvent<{ section?: string }>('settings.changed', (payload) => {
+    if (payload.section === SETTINGS_SECTION) void invalidateMethods(queryClient, INVALIDATES);
+  });
 }
 
 // ------------------------------------------------------------------ reference
@@ -212,8 +298,8 @@ export function useDeleteLink() {
 
 // ------------------------------------------------------------------- invoices
 
-export function useInvoices(params: InvoicesParams) {
-  return useRpc<InvoiceView[]>('isp.invoices', params, live);
+export function useInvoices(params: InvoicesParams, enabled = true) {
+  return useRpc<InvoiceView[]>('isp.invoices', params, { ...live, enabled });
 }
 
 export function useInvoice(id: string | null) {
@@ -296,6 +382,34 @@ export function useRecordPayment() {
 
 export function useVoidPayment() {
   return useRpcMutation<Payment, VoidPaymentParams>('isp.payment.void', {
+    invalidates: INVALIDATES,
+    errorToast: false,
+  });
+}
+
+// --------------------------------------------------------------- credit notes
+
+export function useCredits(params: CreditsParams, enabled = true) {
+  return useRpc<CreditNote[]>('isp.credits', params, { ...live, enabled });
+}
+
+export function useIssueCredit() {
+  return useRpcMutation<IssuedCredit, CreditInput>('isp.credit.issue', {
+    invalidates: INVALIDATES,
+    errorToast: false,
+  });
+}
+
+/** Sets a note that is on the account against one invoice. Once only. */
+export function useAllocateCredit() {
+  return useRpcMutation<IssuedCredit, AllocateCreditParams>('isp.credit.allocate', {
+    invalidates: INVALIDATES,
+    errorToast: false,
+  });
+}
+
+export function useVoidCredit() {
+  return useRpcMutation<CreditNote, VoidCreditParams>('isp.credit.void', {
     invalidates: INVALIDATES,
     errorToast: false,
   });

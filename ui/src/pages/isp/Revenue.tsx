@@ -12,6 +12,13 @@
  * which carries the rates it used, the moment they are from, and whether
  * minor units were rounded away. It is shown underneath the ledger, labelled
  * a conversion, never instead of it.
+ *
+ * A rate is typed in minor units of the second currency, because that is
+ * what fits in an integer, and read back with the point where that currency
+ * puts it (`money.ts: quotedRate`): 108 is "1 EUR = 1.08 USD", not 108
+ * dollars to the euro.
+ *
+ * A month in the window control is a month of the business's calendar.
  */
 
 import { ArrowLeftRight, Calculator } from 'lucide-react';
@@ -25,11 +32,10 @@ import { Panel } from '@/design/Panel';
 import { Select } from '@/design/Select';
 import { Skeleton } from '@/design/Skeleton';
 import { plural } from '@/lib/format';
-import { formatDate, formatDateTime } from '@/lib/time';
-import { recentMonths, windowOf } from './billing-rows';
-import { useCurrencies, useRevenue } from './data';
+import { dayTimeText, monthWindow, periodText, recentMonths } from './calendar';
+import { useCalendar, useCurrencies, useRevenue } from './data';
 import { Figures, Words } from './Figures';
-import { conversionCaption, formatMoney, plainAmount } from './money';
+import { conversionCaption, formatMoney, quotedRate } from './money';
 import styles from './isp.module.css';
 
 const DAY = 86_400_000;
@@ -44,7 +50,8 @@ interface Rate {
 }
 
 export function Revenue() {
-  const months = useMemo(() => recentMonths(Date.now(), 12), []);
+  const calendar = useCalendar();
+  const months = useMemo(() => recentMonths(Date.now(), calendar, 12), [calendar]);
   const [window, setWindow] = useState('30d');
   const [target, setTarget] = useState('');
   const [rates, setRates] = useState<Rate[]>([]);
@@ -54,9 +61,9 @@ export function Revenue() {
     const now = Date.now();
     if (window === '30d') return { since: now - 30 * DAY, until: now + 1 };
     if (window === '12m') return { since: now - 365 * DAY, until: now + 1 };
-    const month = windowOf(window);
+    const month = monthWindow(window, calendar);
     return month ? { since: month.start, until: month.end } : { since: now - 30 * DAY, until: now + 1 };
-  }, [window]);
+  }, [window, calendar]);
 
   const currencies = useCurrencies();
   const revenue = useRevenue({ ...span, ...(convert ? { convert } : {}) });
@@ -127,7 +134,8 @@ export function Revenue() {
         {revenue.data && (
           <>
             <p className={styles.quiet}>
-              {formatDate(revenue.data.since)} to {formatDate(revenue.data.until)}
+              {periodText(revenue.data.since, revenue.data.until, calendar)}, days of the
+              business’s calendar
             </p>
             <div className={styles.stats}>
               <div className={styles.statGroup}>
@@ -177,9 +185,10 @@ export function Revenue() {
                           key={code}
                           label={`1 ${first} = ? minor units of ${second}`}
                           hint={
-                            /^[1-9]\d*$/.test((entry?.rate ?? '').trim())
-                              ? `as quoted: 1 ${first} = ${plainAmount(Number(entry?.rate), 0)} ${second}`
-                              : 'a whole number, as it was quoted to you'
+                            quotedRate(first, second, entry?.rate ?? '', currencies.data ?? []) ===
+                            null
+                              ? 'a whole number, as it was quoted to you'
+                              : `as quoted: ${quotedRate(first, second, entry?.rate ?? '', currencies.data ?? [])}`
                           }
                         >
                           <div className={styles.rateRow}>
@@ -250,6 +259,7 @@ function ConvertedFigure({
   converted: Converted;
   currencies: Parameters<typeof conversionCaption>[1];
 }) {
+  const calendar = useCalendar();
   return (
     <div className={styles.card} data-basis="conversion">
       <p className={styles.cardTitle}>
@@ -259,7 +269,7 @@ function ConvertedFigure({
       <p className={styles.quiet}>
         {conversionCaption(converted, currencies)} Of{' '}
         {converted.of.map((money) => formatMoney(money)).join(' and ')}, at{' '}
-        {formatDateTime(converted.at)}.
+        {dayTimeText(converted.at, calendar)}.
         {converted.exact ? '' : ' Minor units were rounded away in the conversion.'}
       </p>
     </div>

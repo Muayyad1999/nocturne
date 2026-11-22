@@ -6,8 +6,15 @@
  * neither has this screen.
  *
  * The first band is "not yet due", and it is not coloured as late, because it
- * is not. A customer with nothing due yet has `oldest_days: null`, which is
- * written as a sentence rather than as nought days.
+ * is not. A customer with nothing overdue has `oldest_days: null`, which is
+ * written as a sentence rather than as nought days. What is overdue, and by
+ * how many days, is the engine's reading in the business's calendar.
+ *
+ * Beside the debts, and never taken off them, is what stands in customers'
+ * favour: invoices settled beyond their total. It has its own card per
+ * currency, because a customer who owes on one invoice and is in credit on
+ * another should not be chased as if the credit did not exist — and because
+ * nobody has set the one against the other.
  *
  * And nothing here cuts anybody off. Arrears are a record: `nocturne-isp` has
  * no write path to a device, so the screen says who is behind and leaves the
@@ -16,7 +23,7 @@
 
 import { Banknote } from 'lucide-react';
 import { Link } from 'react-router';
-import type { AgedReport } from './ageing';
+import type { AgedReport, FavourReport } from './ageing';
 import type { Bucket } from '@/api/types/isp';
 import { Badge } from '@/design/Badge';
 import { EmptyState } from '@/design/EmptyState';
@@ -25,9 +32,17 @@ import { Panel } from '@/design/Panel';
 import { ProgressBar } from '@/design/ProgressBar';
 import { Skeleton } from '@/design/Skeleton';
 import { plural } from '@/lib/format';
-import { formatDateTime } from '@/lib/time';
-import { bucketMeaning, bucketTone, byCurrency, oldestText, oldestTone, BOOKKEEPING_NOTE } from './ageing';
-import { useArrears } from './data';
+import {
+  bucketMeaning,
+  bucketTone,
+  byCurrency,
+  inFavour,
+  oldestText,
+  oldestTone,
+  BOOKKEEPING_NOTE,
+} from './ageing';
+import { dayTimeText } from './calendar';
+import { useArrears, useCalendar } from './data';
 import { Amount, Words } from './Figures';
 import { STATE_WORDS } from './records';
 import styles from './isp.module.css';
@@ -41,6 +56,7 @@ export interface ArrearsProps {
 
 export function Arrears({ customerId, compact = false }: ArrearsProps) {
   const arrears = useArrears(customerId);
+  const calendar = useCalendar();
 
   if (arrears.isError) {
     return (
@@ -64,8 +80,11 @@ export function Arrears({ customerId, compact = false }: ArrearsProps) {
   }
 
   const reports = byCurrency(arrears.data);
+  // On a customer's own page their balance already says what is in their
+  // favour; here it is the report's second half.
+  const favour = compact ? [] : inFavour(arrears.data);
 
-  if (reports.length === 0) {
+  if (reports.length === 0 && favour.length === 0) {
     const nothing = (
       <EmptyState
         icon={Banknote}
@@ -81,12 +100,21 @@ export function Arrears({ customerId, compact = false }: ArrearsProps) {
     <>
       {!compact && (
         <p className={styles.note}>
-          {BOOKKEEPING_NOTE} <span className={styles.quiet}>As of {formatDateTime(arrears.data.as_of)}.</span>
+          {BOOKKEEPING_NOTE}{' '}
+          <span className={styles.quiet}>As of {dayTimeText(arrears.data.as_of, calendar)}.</span>
+        </p>
+      )}
+      {reports.length === 0 && (
+        <p className={styles.note}>
+          <Words>nothing is owed: no issued invoice is short</Words>
         </p>
       )}
       <div className={styles.cards}>
         {reports.map((report) => (
           <CurrencyCard key={report.currency} report={report} compact={compact} />
+        ))}
+        {favour.map((report) => (
+          <FavourCard key={report.currency} report={report} />
         ))}
       </div>
       {!compact && <p className={styles.quiet}>{arrears.data.note}</p>}
@@ -122,7 +150,7 @@ function CurrencyCard({ report, compact }: { report: AgedReport; compact: boolea
             <div className={styles.statGroup}>
               <span className={styles.statLabel}>Overdue</span>
               <Amount money={aged.overdue} className={styles.statValue} />
-              <span className={styles.quiet}>past the due date</span>
+              <span className={styles.quiet}>the due day is over</span>
             </div>
           </div>
         )}
@@ -171,6 +199,51 @@ function CurrencyCard({ report, compact }: { report: AgedReport; compact: boolea
             </tbody>
           </table>
         )}
+      </div>
+    </Panel>
+  );
+}
+
+/** What stands in customers' favour in one currency. Beside the debts, never off them. */
+function FavourCard({ report }: { report: FavourReport }) {
+  return (
+    <Panel title={`In customers’ favour, in ${report.currency}`} padding="none">
+      <div className={styles.panelBody}>
+        <div className={styles.stats}>
+          <div className={styles.statGroup}>
+            <span className={styles.statLabel}>Settled beyond the total</span>
+            <Amount money={report.total} className={styles.statValue} />
+            <span className={styles.quiet}>
+              paid or credited past what an invoice charged; not taken off anything owed
+            </span>
+          </div>
+        </div>
+        <table className={styles.lines}>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>In their favour</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.customers.map((row) => (
+              <tr key={`${row.customer_id}-${row.overpaid.currency}`}>
+                <td>
+                  <Link to={`/isp/customer/${row.customer_id}`}>{row.customer_name}</Link>
+                  <span className={styles.lineSubtitle}>
+                    {plural(row.invoices, 'invoice')} ·{' '}
+                    <Badge tone={STATE_WORDS[row.state].tone} variant="outline">
+                      {STATE_WORDS[row.state].label}
+                    </Badge>
+                  </span>
+                </td>
+                <td>
+                  <Amount money={row.overpaid} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </Panel>
   );

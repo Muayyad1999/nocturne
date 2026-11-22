@@ -5,9 +5,10 @@
  * same reason: a screenshot of an empty ledger proves nothing. In the picture
  * there is a customer billed in dinars and one billed in dollars, an overdue
  * invoice and one not yet due, a draft with a pro-rated line, a payment taken
- * in dinars against a dollar invoice, a suspended account, a customer whose
- * interface nobody has ever collected, and a link whose sold megabits are set
- * against what it can carry.
+ * in dinars against a dollar invoice, a credit note written against that
+ * invoice and another on a customer's account, a suspended account, a
+ * customer whose interface nobody has ever collected, and a link whose sold
+ * megabits are set against what it can carry.
  *
  * These are written to `tests/shots/isp/<night|day>/` and are not compared
  * against anything: they exist to be looked at before a change ships.
@@ -68,6 +69,20 @@ test.beforeAll(async () => {
   // Twenty more, so the list looks like a list and the seeded three are
   // still in the picture: fifty to a page, ordered by name in the engine.
   await seedManyCustomers(rpc, 20);
+  // Credit notes, so the pictures show what one does to a figure: one
+  // against the dollar invoice, and one on the dinar customer's account,
+  // where it reduces nothing yet.
+  await rpc('isp.credit.issue', {
+    customer_id: seeded.tigris,
+    invoice_id: seeded.openInvoice,
+    amount: { currency: 'USD', text: '100.00' },
+    reason: 'Four days without service after the storm',
+  });
+  await rpc('isp.credit.issue', {
+    customer_id: seeded.zagros,
+    amount: { currency: 'IQD', minor: 9_000 },
+    reason: 'Router swap took a week',
+  });
 });
 
 test.afterAll(async () => {
@@ -109,11 +124,21 @@ for (const theme of THEMES) {
     await expect(page.getByRole('table', { name: 'Invoices' })).toContainText('2026-0001');
     await shoot(page, theme, 'invoices');
 
-    // An issued invoice: frozen, part paid, with the rate the dinar payment
-    // was taken at.
+    // An issued invoice: frozen, part paid, part credited — the four figures
+    // that add up, the rate the dinar payment was taken at, and the note.
     await page.getByRole('table', { name: 'Invoices' }).getByRole('button', { name: '2026-0002' }).click();
-    await expect(page.getByRole('dialog', { name: '2026-0002' })).toBeVisible();
+    const issued = page.getByRole('dialog', { name: '2026-0002' });
+    await expect(issued.getByRole('group', { name: 'Credit notes' })).toContainText('CN-2026-0001');
     await shoot(page, theme, 'invoice-issued');
+
+    // Issuing another: what a credit note is, the cap, and what it would leave.
+    await issued.getByRole('button', { name: 'Issue a credit note…' }).click();
+    const crediting = page.getByRole('dialog', { name: 'Issue a credit note' });
+    await crediting.getByLabel('Amount to credit').fill('25.00');
+    await crediting.getByLabel('Reason').fill('Goodwill');
+    await expect(crediting).toContainText('would still be outstanding');
+    await shoot(page, theme, 'credit-issue');
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Close' }).click();
 
     // A draft: editable, with the arithmetic of its part period on the line.
@@ -159,6 +184,14 @@ for (const theme of THEMES) {
     await expect(page.getByRole('table', { name: 'Payments' })).toContainText('R-1002');
     await shoot(page, theme, 'payments');
 
+    // ------------------------------------------------------- the credit notes
+    await openIsp(page, theme, 'credits');
+    await expect(page.getByRole('table', { name: 'Credit notes' })).toContainText('CN-2026-0002');
+    await expect(page.getByRole('table', { name: 'Credit notes' })).toContainText(
+      'against invoice 2026-0002',
+    );
+    await shoot(page, theme, 'credits');
+
     // ------------------------------------------------------------ the arrears
     await openIsp(page, theme, 'arrears');
     await expect(page.getByRole('region', { name: 'Owed in IQD' })).toBeVisible();
@@ -178,6 +211,11 @@ for (const theme of THEMES) {
     await openIsp(page, theme, 'plans');
     await expect(page.getByRole('table', { name: 'Tariffs' })).toContainText('Home 10');
     await shoot(page, theme, 'plans');
+
+    // ----------------------------------------------------------- the settings
+    await openIsp(page, theme, 'settings');
+    await expect(page.getByRole('region', { name: /The business.s calendar/ })).toBeVisible();
+    await shoot(page, theme, 'settings');
 
     // ----------------------------------------- narrow, with the dock open
     await page.setViewportSize({ width: 1280, height: 720 });

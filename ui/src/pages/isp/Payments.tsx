@@ -4,7 +4,8 @@
  *
  * A payment is never deleted. One recorded in error is **voided** with its
  * own reason, and both records stay — which is also why an invoice with a
- * recorded payment cannot be voided until the payment is.
+ * recorded payment cannot be voided until the payment is. A credit note is
+ * not a payment and is not in this list: nothing was received.
  *
  * Three figures are shown and they are three different facts: the amount that
  * was handed over, the rate it was taken at (when the currencies differed,
@@ -14,6 +15,10 @@
  * `isp.payments` carries the customer's id and not their name, so the names
  * come from a page of customers and a row shows the id when the name is not
  * in it (see `NOTES.md`).
+ *
+ * The list mixes currencies, so "Received" sorts within a currency and never
+ * across them, and the day a payment is listed under is a day of the
+ * business's calendar.
  */
 
 import { HandCoins } from 'lucide-react';
@@ -32,10 +37,10 @@ import { Textarea } from '@/design/Textarea';
 import { toast } from '@/design/Toast';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { formatCount } from '@/lib/format';
-import { formatDate } from '@/lib/time';
-import { useCurrencies, useCustomers, usePayments, useVoidPayment } from './data';
+import { dayText } from './calendar';
+import { useCalendar, useCurrencies, useCustomers, usePayments, useVoidPayment } from './data';
 import { Amount, Words } from './Figures';
-import { rateText } from './money';
+import { moneySortKey, rateText } from './money';
 import { PaymentDialog } from './PaymentDialog';
 import styles from './isp.module.css';
 
@@ -61,6 +66,7 @@ export function Payments() {
   const payments = usePayments(params);
   const customers = useCustomers({ limit: NAMES });
   const currencies = useCurrencies();
+  const calendar = useCalendar();
   const rows = payments.data ?? [];
 
   const names = useMemo(() => {
@@ -76,7 +82,7 @@ export function Payments() {
       required: true,
       width: 120,
       sortValue: (row) => row.at,
-      cell: (row) => <span className={styles.amount}>{formatDate(row.at)}</span>,
+      cell: (row) => <span className={styles.amount}>{dayText(row.at, calendar)}</span>,
     },
     {
       id: 'customer',
@@ -94,7 +100,7 @@ export function Payments() {
       header: 'Received',
       width: 140,
       align: 'right',
-      sortValue: (row) => row.amount.minor,
+      sortValue: (row) => moneySortKey(row.amount),
       cell: (row) => <Amount money={row.amount} muted={row.state === 'void'} />,
     },
     {
@@ -211,7 +217,7 @@ export function Payments() {
               icon={HandCoins}
               size="compact"
               title="No payments recorded"
-              description="A payment is what was actually received. Nothing else moves what an invoice says is outstanding."
+              description="A payment is what was actually received, and nothing else marks an invoice paid. An amount that was written off instead is a credit note, which is not listed here: it is not money."
               action={
                 <Button variant="primary" icon={HandCoins} onClick={() => setRecording(true)}>
                   Record a payment…

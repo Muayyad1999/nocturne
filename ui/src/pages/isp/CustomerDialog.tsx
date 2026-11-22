@@ -19,7 +19,7 @@
  * are shown.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { Customer, CustomerInput } from '@/api/types/isp';
 import { Button } from '@/design/Button';
 import { Dialog } from '@/design/Dialog';
@@ -30,6 +30,7 @@ import { TagInput } from '@/design/TagInput';
 import { Textarea } from '@/design/Textarea';
 import { toast } from '@/design/Toast';
 import { useCurrencies, useDeviceNames, useSaveCustomer } from './data';
+import { useOnOpen } from './opening';
 import styles from './isp.module.css';
 
 export interface CustomerDialogProps {
@@ -83,13 +84,13 @@ export function CustomerDialog({ open, customer, onClose, onCreated }: CustomerD
   const [draft, setDraft] = useState<Draft>(() => draftOf(customer));
 
   // Filled when it opens, so a second customer never inherits the first
-  // one's half-typed fields — or the refusal the first one got.
-  useEffect(() => {
-    if (open) {
-      setDraft(draftOf(customer));
-      reset();
-    }
-  }, [open, customer, reset]);
+  // one's half-typed fields — or the refusal the first one got. As it opens
+  // and not again (`opening.ts`): on a customer's own page the customer is
+  // read again while the save is still reporting back.
+  useOnOpen(open, () => {
+    setDraft(draftOf(customer));
+    reset();
+  });
 
   const editing = customer !== null;
   const nameMissing = draft.name.trim() === '';

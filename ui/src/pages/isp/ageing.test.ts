@@ -6,6 +6,7 @@ import {
   bucketMeaning,
   bucketTone,
   byCurrency,
+  inFavour,
   oldestText,
   oldestTone,
 } from './ageing';
@@ -65,6 +66,23 @@ const ARREARS: Arrears = {
       invoices: 1,
     },
   ],
+  overpaid: [money('IQD', 5_000), money('USD', 2_000)],
+  customers_overpaid: [
+    {
+      customer_id: 'c1',
+      customer_name: 'Zagros Net',
+      state: 'active',
+      overpaid: money('IQD', 5_000),
+      invoices: 1,
+    },
+    {
+      customer_id: 'c3',
+      customer_name: 'Goodwill Gulnar',
+      state: 'active',
+      overpaid: money('USD', 2_000),
+      invoices: 2,
+    },
+  ],
   note: 'one aged report per currency, and no total across them',
 };
 
@@ -83,10 +101,11 @@ describe('ageing what is owed', () => {
     expect(reports).toHaveLength(2);
   });
 
-  it('says nothing is due yet rather than nought days late', () => {
-    expect(oldestText(null)).toBe('Nothing due yet');
+  it('says nothing is overdue rather than nought days late, and does not claim nothing is due', () => {
+    // `null` is the engine's "nothing of theirs is overdue" — which includes
+    // an invoice that falls due today, so "nothing due yet" would be false.
+    expect(oldestText(null)).toBe('Nothing overdue');
     expect(oldestTone(null)).toBe('info');
-    expect(oldestText(0)).toBe('Due today');
     expect(oldestText(1)).toBe('1 day overdue');
     expect(oldestText(38)).toBe('38 days overdue');
     expect(oldestTone(38)).toBe('warn');
@@ -100,10 +119,10 @@ describe('ageing what is owed', () => {
     expect(bucketTone({ from_days: 61, to_days: 90 })).toBe('crit');
     expect(bucketTone({ from_days: 91, to_days: null })).toBe('crit');
     expect(bucketMeaning({ from_days: 91, to_days: null })).toBe(
-      'More than 90 days past the due date.',
+      'More than 90 days past the due day.',
     );
     expect(bucketMeaning({ from_days: 0, to_days: 30 })).toBe(
-      'Between 1 and 30 days past the due date.',
+      'Between 1 and 30 days past the due day.',
     );
   });
 
@@ -112,6 +131,23 @@ describe('ageing what is owed', () => {
     expect(anythingOverdue(byCurrency({ ...ARREARS, by_currency: [report('IQD', 149_000, 0)] }))).toBe(
       false,
     );
+  });
+
+  it('keeps what is in customers’ favour beside what is owed, per currency, and nets nothing', () => {
+    const favour = inFavour(ARREARS);
+    expect(favour.map((entry) => [entry.currency, entry.total.minor])).toEqual([
+      ['IQD', 5_000],
+      ['USD', 2_000],
+    ]);
+    expect(favour[0]?.customers.map((row) => row.customer_name)).toEqual(['Zagros Net']);
+    expect(favour[1]?.customers.map((row) => row.customer_name)).toEqual(['Goodwill Gulnar']);
+    // Zagros owes 149 000 and is 5 000 in credit: both stand. 144 000 is a
+    // figure nobody allocated, and it is nowhere.
+    const everything = JSON.stringify([byCurrency(ARREARS), favour]);
+    expect(everything).not.toContain('144000');
+    expect(byCurrency(ARREARS)[0]?.report.total.minor).toBe(149_000);
+    // Nothing overpaid is no report, not a report of zero.
+    expect(inFavour({ overpaid: [], customers_overpaid: [] })).toEqual([]);
   });
 
   it('says what Nocturne does about arrears, which is to write them down', () => {

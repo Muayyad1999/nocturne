@@ -27,6 +27,12 @@
  * * **A division is reported as one.** {@link divide} does integer division
  *   in `BigInt` and says whether it was exact, so "margin per megabit" can
  *   be shown without quietly losing minor units.
+ * * **A column of money is ordered within a currency, never across them.**
+ *   `3000` minor units of `IQD` is about two dollars and `2500` of `USD` is
+ *   twenty-five, so comparing the bare numbers ranks every dinar invoice
+ *   above every dollar one. {@link moneySortKey} orders by currency first
+ *   and by amount inside it; the specification's rule that nothing converts
+ *   silently names a sort alongside a total and a chart.
  */
 
 import type {
@@ -231,7 +237,10 @@ export function currencyHint(row: CurrencyRow | undefined): string {
  * of `to` are known; without them it is stated as what it is, in minor units,
  * rather than written as if it were whole dinars.
  */
-export function rateText(rate: Conversion, currencies: readonly CurrencyRow[] = []): string {
+export function rateText(
+  rate: Pick<Conversion, 'from' | 'to' | 'rate'>,
+  currencies: readonly CurrencyRow[] = [],
+): string {
   const digits = digitsOf(currencies, rate.to);
   return digits === undefined
     ? `1 ${rate.from} = ${plainAmount(rate.rate, 0)} minor units of ${rate.to}`
@@ -241,6 +250,50 @@ export function rateText(rate: Conversion, currencies: readonly CurrencyRow[] = 
         digits,
         text: plainAmount(rate.rate, digits),
       })}${NBSP}${rate.to}`;
+}
+
+/**
+ * A rate being typed, read back the way {@link rateText} writes a stored
+ * one — or `null` while what is in the field is not a rate.
+ *
+ * The field takes minor units of the second currency, because that is what
+ * fits in an integer; echoing the bare number beside the currency code
+ * ("1 EUR = 108 USD" for a rate of 1.08) states the rate a hundredfold. So
+ * the echo puts the point where the second currency puts it, and says
+ * "minor units of" only when the table of currencies has not answered and
+ * the point cannot be placed.
+ */
+export function quotedRate(
+  from: string,
+  to: string,
+  typed: string,
+  currencies: readonly CurrencyRow[] = [],
+): string | null {
+  const text = typed.trim();
+  if (!/^[1-9]\d*$/.test(text)) return null;
+  const rate = Number(text);
+  if (!Number.isSafeInteger(rate)) return null;
+  return rateText({ from: from as Conversion['from'], to: to as Conversion['to'], rate }, currencies);
+}
+
+/** Wide enough for any amount a JavaScript number can hold exactly. */
+const SORT_WIDTH = 17;
+const SORT_OFFSET = 10n ** 16n;
+
+/**
+ * What a money column sorts by: the currency, then the amount within it.
+ *
+ * A string, so that the table's own rule for a missing value still applies
+ * (a link with no cost recorded goes last in both directions). The amount is
+ * shifted to be positive and padded to one width, so that the order of the
+ * strings is the order of the amounts, negatives included; amounts in
+ * different currencies are never compared with each other at all, because
+ * the code in front of them already differs.
+ */
+export function moneySortKey(money: Money | null | undefined): string | null {
+  if (money == null) return null;
+  const shifted = BigInt(Math.trunc(money.minor)) + SORT_OFFSET;
+  return `${money.currency} ${shifted.toString().padStart(SORT_WIDTH, '0')}`;
 }
 
 /**

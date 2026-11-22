@@ -13,7 +13,15 @@
  * off.
  */
 
-import type { CustomerState, Period, SubscriptionRow, Unit } from '@/api/types/isp';
+import type {
+  CustomerState,
+  Link,
+  LinkInput,
+  MoneyInput,
+  Period,
+  SubscriptionRow,
+  Unit,
+} from '@/api/types/isp';
 import type { StatusTone } from '@/design/tone';
 import { formatCount } from '@/lib/format';
 
@@ -88,3 +96,84 @@ export const AGREED_NOTE =
 export const AMEND_NOTE =
   'Amending ends these terms and starts new ones from the date you give. ' +
   'Invoices already issued on the old terms are untouched and still say what they said.';
+
+/** What the link dialog holds when it is saved. */
+export interface LinkForm {
+  name: string;
+  description: string;
+  tower: string;
+  deviceId: string;
+  iface: string;
+  /** The capacity field as typed: a whole number, or empty for none. */
+  capacity: string;
+  /** The cost as parsed, or `null` when the field is empty. */
+  cost: MoneyInput | null;
+  costPeriod: Period;
+}
+
+/**
+ * The parameters of `isp.link.save` for a form.
+ *
+ * `isp.link.save` keeps whatever a save leaves out — that is how a save of
+ * the name alone leaves the capacity alone — so an emptied field cannot be
+ * sent as an absent one: the dialog would say "updated", reopen with the old
+ * figure, and the margin would go on subtracting a cost that somebody had
+ * removed. Taking a figure off a link that has one is therefore said
+ * outright: `capacity_mbit: 0`, and `clear_cost: true`. A new link, or one
+ * that never had the figure, sends neither.
+ */
+export function linkInput(form: LinkForm, existing: Link | null): LinkInput {
+  const capacity = form.capacity.trim();
+  return {
+    ...(existing ? { id: existing.id } : {}),
+    name: form.name.trim(),
+    description: form.description.trim(),
+    tower: form.tower.trim(),
+    device_id: form.deviceId.trim(),
+    interface: form.iface.trim(),
+    ...(capacity !== ''
+      ? { capacity_mbit: Number(capacity) }
+      : existing && existing.capacity_mbit !== 0
+        ? { capacity_mbit: 0 }
+        : {}),
+    cost_period: form.costPeriod,
+    ...(form.cost !== null
+      ? { cost_per_mbit: form.cost }
+      : existing?.cost_per_mbit
+        ? { clear_cost: true }
+        : {}),
+  };
+}
+
+/**
+ * A whole number between `min` and `max` from a settings field, or `null`.
+ * Digits only: no sign, no point and no thousands separator, so nothing is
+ * read as a different number than the one that was typed.
+ */
+export function parseWholeNumber(text: string, min: number, max: number): number | null {
+  if (!/^\d+$/.test(text.trim())) return null;
+  const value = Number(text.trim());
+  return Number.isSafeInteger(value) && value >= min && value <= max ? value : null;
+}
+
+/**
+ * The arrears report's band edges, `30, 60, 90`, or `null` when the text is
+ * not a list of whole days greater than zero, each larger than the one
+ * before. The engine would sort and de-duplicate a list that was not; it is
+ * refused here instead, so that what is saved is what was typed.
+ */
+export function parseBands(text: string): number[] | null {
+  const parts = text
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+  if (parts.length === 0) return null;
+  const bands: number[] = [];
+  for (const part of parts) {
+    const days = parseWholeNumber(part, 1, 36_500);
+    const last = bands[bands.length - 1];
+    if (days === null || (last !== undefined && days <= last)) return null;
+    bands.push(days);
+  }
+  return bands;
+}

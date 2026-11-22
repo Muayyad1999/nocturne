@@ -4,10 +4,19 @@
  *
  * `isp.customer.get` answers with all of it in one read — the customer, their
  * subscriptions with a monthly-equivalent figure, their last invoices with
- * the payments against each, their balance per currency, and their
- * used-against-sold row. Two more reads sit beside it: their payments
- * (including money on account, which belongs to no invoice) and their own
- * aged arrears.
+ * the payments and credit notes against each, their balance per currency,
+ * and their used-against-sold row. Three more reads sit beside it: their
+ * payments (including money on account, which belongs to no invoice), their
+ * credit notes (including the ones on the account) and their own aged
+ * arrears.
+ *
+ * The balance is four figures and none is netted against another: what is
+ * owed, money received on account, credit notes on the account (which is
+ * not money and reduces nothing until a note is set against an invoice),
+ * and what stands in their favour on invoices settled beyond their total.
+ *
+ * Every date here is a day of the business's calendar (`calendar.ts`), and a
+ * date on an invoice is a day of the calendar that invoice was written in.
  *
  * The account state is changed from here, and what that does is said plainly
  * before it is done: it records a decision and sends nothing to a device.
@@ -16,10 +25,10 @@
  * (`crates/nocturne-isp/tests/boundaries.rs`).
  */
 
-import { ArrowLeft, FilePlus2, HandCoins, Pencil, Plus } from 'lucide-react';
+import { ArrowLeft, FilePlus2, HandCoins, Pencil, Plus, ReceiptText } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import type { Payment, SubscriptionRow } from '@/api/types/isp';
+import type { CreditNote, Payment, SubscriptionRow } from '@/api/types/isp';
 import { Badge } from '@/design/Badge';
 import { Button } from '@/design/Button';
 import { confirm } from '@/design/Dialog';
@@ -34,9 +43,9 @@ import { destination } from '@/app/destinations';
 import { usePageHeader } from '@/app/Header';
 import { Page } from '@/app/Page';
 import { formatCount, plural } from '@/lib/format';
-import { formatDate, formatDateTime } from '@/lib/time';
 import { Arrears } from './Arrears';
-import { monthWindow, overdueText, statusWords } from './billing-rows';
+import { dueText, invoicePeriod, statusWords } from './billing-rows';
+import { dayText, dayTimeText, monthOf, previousMonth } from './calendar';
 import {
   basisText,
   coverageWords,
@@ -47,8 +56,12 @@ import {
   soldText,
   usageText,
 } from './coverage';
+import { AllocateCreditDialog, CreditDialog, VoidCreditDialog } from './CreditDialogs';
+import { CreditNoteList } from './CreditNoteList';
 import { CustomerDialog } from './CustomerDialog';
 import {
+  useCalendar,
+  useCredits,
   useCustomer,
   useDeviceNames,
   useDraftInvoice,
@@ -56,6 +69,7 @@ import {
   useIspInstalled,
   usePayments,
   useSetCustomerState,
+  useSettingsWatch,
 } from './data';
 import { Amount, Figures, Words } from './Figures';
 import { InvoiceDrawer } from './InvoiceDrawer';
@@ -89,6 +103,9 @@ function Customer({ id }: { id: string }) {
   const navigate = useNavigate();
   const detail = useCustomer(id === '' ? null : id, 50);
   const payments = usePayments(id === '' ? { limit: 1 } : { customer_id: id, limit: 200 });
+  const credits = useCredits({ customer_id: id, limit: 200 }, id !== '');
+  const calendar = useCalendar();
+  useSettingsWatch();
   const devices = useDeviceNames();
   const setState = useSetCustomerState();
   const draft = useDraftInvoice();
@@ -100,7 +117,10 @@ function Customer({ id }: { id: string }) {
     row: null,
   });
   const [paying, setPaying] = useState(false);
+  const [crediting, setCrediting] = useState(false);
   const [voiding, setVoiding] = useState<Payment | null>(null);
+  const [voidingCredit, setVoidingCredit] = useState<CreditNote | null>(null);
+  const [allocating, setAllocating] = useState<CreditNote | null>(null);
   const [openInvoice, setOpenInvoice] = useState<string | null>(null);
 
   const customer = detail.data?.customer;
@@ -139,13 +159,16 @@ function Customer({ id }: { id: string }) {
   const { balance, subscriptions, invoices, usage } = detail.data;
   const state = STATE_WORDS[customer.state];
 
-  const draftThisMonth = () => {
-    const now = new Date();
-    // Last whole month: a window has to be one whole period of a
-    // subscription's kind or nothing is charged for it.
-    const window = monthWindow(now.getUTCFullYear(), now.getUTCMonth() - 1);
+  // Last whole month of the business's calendar: a window has to be one
+  // whole period of a subscription's kind or nothing is charged for it. The
+  // month is named and the engine works out where it begins and ends.
+  const lastMonth = calendar === null ? null : previousMonth(monthOf(Date.now(), calendar));
+  const today = { now: Date.now(), offset: calendar };
+
+  const draftLastMonth = () => {
+    if (lastMonth === null) return;
     draft.mutate(
-      { customer_id: customer.id, period_start: window.start, period_end: window.end },
+      { customer_id: customer.id, month: lastMonth },
       {
         onSuccess: (drafted) => {
           setOpenInvoice(drafted.invoice.id);
@@ -173,8 +196,16 @@ function Customer({ id }: { id: string }) {
         <Button icon={Plus} onClick={() => setSelling({ open: true, row: null })}>
           Sell a plan…
         </Button>
-        <Button icon={FilePlus2} loading={draft.isPending} onClick={draftThisMonth}>
+        <Button
+          icon={FilePlus2}
+          loading={draft.isPending}
+          disabled={lastMonth === null}
+          onClick={draftLastMonth}
+        >
           Draft last month's invoice
+        </Button>
+        <Button icon={ReceiptText} onClick={() => setCrediting(true)}>
+          Issue a credit note…
         </Button>
         <Button variant="primary" icon={HandCoins} onClick={() => setPaying(true)}>
           Record a payment…
@@ -255,7 +286,7 @@ function Customer({ id }: { id: string }) {
                         </ul>
                       ),
                   },
-                  { label: 'Added', value: formatDateTime(customer.created_at) },
+                  { label: 'Added', value: dayTimeText(customer.created_at, calendar) },
                 ]}
               />
               {customer.notes !== '' && <p className={styles.note}>{customer.notes}</p>}
@@ -305,11 +336,32 @@ function Customer({ id }: { id: string }) {
                   <span className={styles.quiet}>received, not yet against an invoice</span>
                 </div>
                 <div className={styles.statGroup}>
+                  <span className={styles.statLabel}>Credit on account</span>
+                  <Figures totals={balance.credit_on_account} empty="no credit note on the account" />
+                  <span className={styles.quiet}>
+                    credit notes, not money: it reduces nothing until a note is set against an
+                    invoice
+                  </span>
+                </div>
+                <div className={styles.statGroup}>
+                  <span className={styles.statLabel}>In their favour</span>
+                  <Figures totals={balance.overpaid} empty="nothing overpaid" />
+                  {balance.invoices_overpaid > 0 && (
+                    <span className={styles.quiet}>
+                      {plural(balance.invoices_overpaid, 'invoice')} settled beyond{' '}
+                      {balance.invoices_overpaid === 1 ? 'its total' : 'their totals'}; not taken
+                      off what they owe
+                    </span>
+                  )}
+                </div>
+                <div className={styles.statGroup}>
                   <span className={styles.statLabel}>Oldest due</span>
                   {balance.oldest_due_at === null ? (
-                    <Words>nothing is due yet</Words>
+                    <Words>nothing owed has a due date</Words>
                   ) : (
-                    <span className={styles.statValue}>{formatDate(balance.oldest_due_at)}</span>
+                    <span className={styles.statValue}>
+                      {dayText(balance.oldest_due_at, calendar)}
+                    </span>
                   )}
                 </div>
               </div>
@@ -381,11 +433,11 @@ function Customer({ id }: { id: string }) {
                     <td>
                       {row.state === 'active' ? (
                         <Badge tone="ok" variant="outline">
-                          since {formatDate(row.started_at)}
+                          since {dayText(row.started_at, calendar)}
                         </Badge>
                       ) : (
                         <Badge tone="idle" variant="outline">
-                          ended {formatDate(row.ended_at)}
+                          ended {dayText(row.ended_at, calendar)}
                         </Badge>
                       )}
                     </td>
@@ -507,12 +559,12 @@ function Customer({ id }: { id: string }) {
                       <span className={styles.lineSubtitle}>
                         {plural(invoice.lines.length, 'line')} ·{' '}
                         {plural(invoice.payments.length, 'payment')}
+                        {invoice.credits.length > 0 &&
+                          ` · ${plural(invoice.credits.length, 'credit note')}`}
                       </span>
                     </td>
                     <td>
-                      <span className={styles.amount}>
-                        {formatDate(invoice.period_start)} → {formatDate(invoice.period_end)}
-                      </span>
+                      <span className={styles.amount}>{invoicePeriod(invoice)}</span>
                     </td>
                     <td>
                       <Amount money={invoice.total} />
@@ -524,7 +576,7 @@ function Customer({ id }: { id: string }) {
                       <Badge tone={statusWords(invoice.status).tone} variant="outline">
                         {statusWords(invoice.status).label}
                       </Badge>
-                      <span className={styles.lineSubtitle}>{overdueText(invoice)}</span>
+                      <span className={styles.lineSubtitle}>{dueText(invoice, today)}</span>
                     </td>
                   </tr>
                 ))}
@@ -532,7 +584,48 @@ function Customer({ id }: { id: string }) {
             </table>
             <p className={styles.quiet}>
               The newest {formatCount(invoices.length)} of theirs. A status is worked out from the
-              recorded payments and the clock: nothing but a payment moves it.
+              recorded payments, the credit notes and the business’s calendar: a payment or a
+              credit note moves it, and nothing else does.
+            </p>
+          </div>
+        </Panel>
+
+        <Panel
+          title="Credit notes"
+          padding="none"
+          actions={
+            <Button size="sm" icon={Plus} onClick={() => setCrediting(true)}>
+              Issue a credit note
+            </Button>
+          }
+        >
+          <div className={styles.panelBody}>
+            {credits.isError ? (
+              <ErrorState
+                size="compact"
+                title="Their credit notes could not be read"
+                error={credits.error}
+                onRetry={() => void credits.refetch()}
+              />
+            ) : credits.isPending ? (
+              <Skeleton shape="block" height={60} />
+            ) : (
+              <CreditNoteList
+                credits={credits.data}
+                calendar={calendar}
+                standing
+                invoiceNumber={(invoiceId) =>
+                  invoices.find((invoice) => invoice.id === invoiceId)?.number
+                }
+                onOpenInvoice={setOpenInvoice}
+                onVoid={setVoidingCredit}
+                onAllocate={setAllocating}
+                empty="nothing has been credited to them — no amount they owed has been written off"
+              />
+            )}
+            <p className={styles.quiet}>
+              A credit note is an amount they no longer owe, with its reason: a document, not
+              money. Nothing here records a refund.
             </p>
           </div>
         </Panel>
@@ -562,7 +655,7 @@ function Customer({ id }: { id: string }) {
                         {formatMoney(payment.amount)} by {payment.method}
                       </span>
                       <span className={styles.lineSubtitle}>
-                        {formatDate(payment.at)}
+                        {dayText(payment.at, calendar)}
                         {payment.reference === '' ? '' : ` · ${payment.reference}`}
                         {payment.state === 'void' ? ` · void: ${payment.void_reason}` : ''}
                       </span>
@@ -610,6 +703,14 @@ function Customer({ id }: { id: string }) {
         defaultCurrency={customer.currency}
       />
       <VoidPaymentDialog payment={voiding} onClose={() => setVoiding(null)} />
+      <CreditDialog
+        open={crediting}
+        onClose={() => setCrediting(false)}
+        customerId={customer.id}
+        currency={customer.currency}
+      />
+      <VoidCreditDialog credit={voidingCredit} onClose={() => setVoidingCredit(null)} />
+      <AllocateCreditDialog credit={allocating} onClose={() => setAllocating(null)} />
       <InvoiceDrawer invoiceId={openInvoice} onClose={() => setOpenInvoice(null)} />
     </Page>
   );

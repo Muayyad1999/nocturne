@@ -8,9 +8,18 @@
  * customers, and there is no function in this module that merges two of them.
  *
  * The other thing this module exists for is the difference between *owed* and
- * *overdue*. An invoice with no due date yet, or one whose date has not
- * passed, is money owed and nobody is late: `oldest_days` is `null`, which is
- * neither `0` nor a dash. {@link oldestText} writes that as a sentence.
+ * *overdue*. An invoice with no due date, or one whose due day is not over,
+ * is money owed and nobody is late: `oldest_days` is `null`, which is
+ * neither `0` nor a dash. {@link oldestText} writes that as a sentence. How
+ * late something is, is the engine's count — whole days past the due day in
+ * the business's calendar, `1` throughout the day after it — and is only
+ * read here, never worked out again from a date and the browser's clock.
+ *
+ * A third thing is kept beside the debts and never mixed into them: what
+ * stands in customers' **favour** on invoices settled beyond their total
+ * ({@link inFavour}). Somebody chasing a debt should see that the customer
+ * is in credit elsewhere; nobody has set the one against the other, so no
+ * figure here nets them.
  *
  * None of this disconnects anybody. Arrears are a thing to know, and
  * `nocturne-isp` has no write path to a device at all
@@ -18,7 +27,14 @@
  * can be read as a threat to cut a customer off.
  */
 
-import type { Arrears, Bucket, CurrencyArrears, CustomerArrears } from '@/api/types/isp';
+import type {
+  Arrears,
+  Bucket,
+  CurrencyArrears,
+  CustomerArrears,
+  CustomerOverpaid,
+  Money,
+} from '@/api/types/isp';
 import type { StatusTone } from '@/design/tone';
 import { plural } from '@/lib/format';
 
@@ -42,6 +58,26 @@ export function byCurrency(arrears: Arrears): AgedReport[] {
   }));
 }
 
+export interface FavourReport {
+  currency: string;
+  /** What stands in customers' favour in this currency. Not taken off any debt. */
+  total: Money;
+  /** Largest first, as the backend ordered them. */
+  customers: CustomerOverpaid[];
+}
+
+/**
+ * What customers have been settled beyond, per currency — one report each,
+ * like the debts, and with no function here that takes one from the other.
+ */
+export function inFavour(arrears: Pick<Arrears, 'overpaid' | 'customers_overpaid'>): FavourReport[] {
+  return arrears.overpaid.map((total) => ({
+    currency: total.currency,
+    total,
+    customers: arrears.customers_overpaid.filter((row) => row.overpaid.currency === total.currency),
+  }));
+}
+
 /**
  * How to colour an age band. The first band is not late at all, so it is
  * never a warning; past ninety days is the one worth a colour that stops
@@ -55,18 +91,18 @@ export function bucketTone(bucket: Pick<Bucket, 'from_days' | 'to_days'>): Statu
 
 /** The band's own label, as the backend wrote it, with what it means. */
 export function bucketMeaning(bucket: Pick<Bucket, 'from_days' | 'to_days'>): string {
-  if (bucket.from_days < 0) return 'Owed, and not late: the due date has not passed yet.';
-  if (bucket.to_days === null) return `More than ${bucket.from_days - 1} days past the due date.`;
-  return `Between ${Math.max(1, bucket.from_days)} and ${bucket.to_days} days past the due date.`;
+  if (bucket.from_days < 0) return 'Owed, and not late: the due day is not over yet.';
+  if (bucket.to_days === null) return `More than ${bucket.from_days - 1} days past the due day.`;
+  return `Between ${Math.max(1, bucket.from_days)} and ${bucket.to_days} days past the due day.`;
 }
 
 /**
  * How late a customer's oldest unpaid invoice is. `null` is not zero: nothing
- * of theirs is due yet, which is a different sentence.
+ * of theirs is overdue — which includes an invoice that falls due today, so
+ * the sentence does not claim that nothing is due.
  */
 export function oldestText(oldest_days: number | null): string {
-  if (oldest_days === null) return 'Nothing due yet';
-  if (oldest_days === 0) return 'Due today';
+  if (oldest_days === null) return 'Nothing overdue';
   return `${plural(oldest_days, 'day')} overdue`;
 }
 

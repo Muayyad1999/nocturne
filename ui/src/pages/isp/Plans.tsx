@@ -27,6 +27,7 @@ import { formatCount, plural } from '@/lib/format';
 import { useDeleteLink, useDeleteTariff, useDeviceNames, useLinks, useTariffs } from './data';
 import { Amount, Words } from './Figures';
 import { LinkDialog } from './LinkDialog';
+import { moneySortKey } from './money';
 import { PERIOD_WORDS, UNIT_WORDS } from './records';
 import { rateText } from './coverage';
 import { TariffDialog } from './TariffDialog';
@@ -77,7 +78,7 @@ export function Plans() {
       header: 'Price',
       width: 150,
       align: 'right',
-      sortValue: (row) => row.price.minor,
+      sortValue: (row) => moneySortKey(row.price),
       cell: (row) => (
         <span className={styles.amount}>
           <Amount money={row.price} />
@@ -90,7 +91,7 @@ export function Plans() {
       header: 'One period',
       width: 160,
       align: 'right',
-      sortValue: (row) => row.period_price.minor,
+      sortValue: (row) => moneySortKey(row.period_price),
       cell: (row) => (
         <span className={styles.amount}>
           <Amount money={row.period_price} />

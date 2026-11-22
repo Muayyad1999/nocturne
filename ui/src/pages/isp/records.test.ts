@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import type { Link } from '@/api/types/isp';
 import {
   AGREED_NOTE,
   AMEND_NOTE,
+  linkInput,
+  parseBands,
+  parseWholeNumber,
   PERIOD_WINDOW,
   PERIOD_WORDS,
   STATE_WORDS,
   termsText,
   UNIT_WORDS,
+  type LinkForm,
 } from './records';
 
 describe('what an account state is called', () => {
@@ -60,5 +65,87 @@ describe('what a plan says', () => {
   it('says why a tariff change does not move what somebody pays', () => {
     expect(AGREED_NOTE).toContain('own copy');
     expect(AMEND_NOTE).toContain('already issued');
+  });
+});
+
+describe('saving a link', () => {
+  const stored: Link = {
+    id: 'l1',
+    name: 'Uplink A',
+    description: 'The feed to Tower A',
+    device_id: null,
+    interface: null,
+    tower: 'Tower A',
+    capacity_mbit: 100,
+    cost_per_mbit: { currency: 'USD', minor: 400, digits: 2, text: '4.00' },
+    cost_period: 'monthly',
+    created_at: 1,
+    updated_at: 1,
+  };
+  const form = (over: Partial<LinkForm> = {}): LinkForm => ({
+    name: 'Uplink A',
+    description: 'The feed to Tower A',
+    tower: 'Tower A',
+    deviceId: '',
+    iface: '',
+    capacity: '100',
+    cost: { currency: 'USD', minor: 400 },
+    costPeriod: 'monthly',
+    ...over,
+  });
+
+  it('says outright that an emptied cost is to be taken off the link', () => {
+    // Leaving `cost_per_mbit` out keeps the stored 4.00 — the dialog said
+    // "updated", reopened with the old figure, and the margin went on
+    // subtracting a cost that had been removed.
+    const input = linkInput(form({ cost: null }), stored);
+    expect(input.clear_cost).toBe(true);
+    expect('cost_per_mbit' in input).toBe(false);
+  });
+
+  it('says outright that an emptied capacity is to be taken off the link', () => {
+    const input = linkInput(form({ capacity: '  ' }), stored);
+    expect(input.capacity_mbit).toBe(0);
+  });
+
+  it('sends a figure that is still there as that figure, and never both a cost and its removal', () => {
+    const input = linkInput(form({ capacity: '250', cost: { currency: 'USD', minor: 350 } }), stored);
+    expect(input.capacity_mbit).toBe(250);
+    expect(input.cost_per_mbit).toEqual({ currency: 'USD', minor: 350 });
+    expect('clear_cost' in input).toBe(false);
+    expect(input.id).toBe('l1');
+  });
+
+  it('clears nothing on a new link, or on one that never had the figure', () => {
+    const fresh = linkInput(form({ capacity: '', cost: null }), null);
+    expect('clear_cost' in fresh).toBe(false);
+    expect('capacity_mbit' in fresh).toBe(false);
+    expect('id' in fresh).toBe(false);
+    const bare = linkInput(form({ capacity: '', cost: null }), {
+      ...stored,
+      capacity_mbit: 0,
+      cost_per_mbit: null,
+    });
+    expect('clear_cost' in bare).toBe(false);
+    expect('capacity_mbit' in bare).toBe(false);
+  });
+});
+
+describe('a setting typed as text', () => {
+  it('is a whole number in range, or it is not saved as something else', () => {
+    expect(parseWholeNumber('14', 0, 3650)).toBe(14);
+    expect(parseWholeNumber(' 0 ', 0, 3650)).toBe(0);
+    for (const bad of ['', '-1', '1.5', '14 days', '1,000', '3651', '1e3']) {
+      expect(parseWholeNumber(bad, 0, 3650), bad).toBeNull();
+    }
+  });
+
+  it('reads the arrears bands as rising whole days, and refuses a list the engine would rearrange', () => {
+    expect(parseBands('30, 60, 90')).toEqual([30, 60, 90]);
+    expect(parseBands('7,14')).toEqual([7, 14]);
+    expect(parseBands('45')).toEqual([45]);
+    for (const bad of ['', '0, 30', '60, 30', '30, 30', '30, x', '30; 60', '1.5']) {
+      expect(parseBands(bad), bad).toBeNull();
+    }
   });
 });

@@ -15,6 +15,12 @@
  *
  * The price must be in the customer's own currency — the engine refuses
  * anything else, since every invoice of theirs is in it.
+ *
+ * The date a plan starts, or new terms take over, is a day of the business's
+ * calendar and is sent as that day's first moment there (`calendar.ts`). A
+ * billing month begins at the same midnight, so a plan that "starts on the
+ * 1st" is in force for the whole of that month and for none of the one
+ * before — which it was not while the date was read in the browser's zone.
  */
 
 import { useEffect, useState } from 'react';
@@ -26,9 +32,15 @@ import { Input } from '@/design/Input';
 import { Select } from '@/design/Select';
 import { Textarea } from '@/design/Textarea';
 import { toast } from '@/design/Toast';
-import { dayStart } from './billing-rows';
 import { AmountField } from './AmountField';
-import { useAmendSubscription, useCreateSubscription, useCurrencies, useTariffs } from './data';
+import { dayStart, dayText, offsetName } from './calendar';
+import {
+  useAmendSubscription,
+  useCalendar,
+  useCreateSubscription,
+  useCurrencies,
+  useTariffs,
+} from './data';
 import { digitsOf, formatMoney, parseAmount } from './money';
 import { AGREED_NOTE, AMEND_NOTE, PERIOD_WORDS } from './records';
 import styles from './isp.module.css';
@@ -52,6 +64,7 @@ export function SubscriptionDialog({
 }: SubscriptionDialogProps) {
   const tariffs = useTariffs();
   const currencies = useCurrencies();
+  const calendar = useCalendar();
   const create = useCreateSubscription();
   const amend = useAmendSubscription();
   const amending = subscription !== null;
@@ -82,13 +95,18 @@ export function SubscriptionDialog({
   const digits = digitsOf(currencies.data ?? [], currency);
   const parsedPrice = price.trim() === '' || digits === undefined ? null : parseAmount(price, currency, digits);
   const mbitValid = mbit.trim() === '' || /^[1-9]\d*$/.test(mbit.trim());
+  const at = dayStart(from, calendar);
+  // A date that was typed and cannot be read is not "now": without the
+  // business's calendar there is no telling which instant the day begins at.
+  const dateUnread = from.trim() !== '' && at === null;
   const ready =
     mbitValid &&
     parsedPrice?.ok !== false &&
+    !dateUnread &&
     (amending ? mbit.trim() !== '' || price.trim() !== '' : tariffId !== '');
 
   const submit = () => {
-    const at = dayStart(from);
+    if (dateUnread) return;
     if (amending) {
       amend.mutate(
         {
@@ -250,11 +268,22 @@ export function SubscriptionDialog({
 
         <Field
           label={amending ? 'The new terms start' : 'Starts'}
-          hint={
+          error={
+            dateUnread
+              ? calendar === null
+                ? 'The business’s calendar is not known, so a date cannot be read. Leave it empty for now.'
+                : 'That is not a date.'
+              : undefined
+          }
+          hint={`${
             amending
               ? 'The old terms end on this date and the new ones start. Leave it empty for now.'
               : 'Leave it empty for now. A plan that started mid-month is pro-rated on the invoice, with the arithmetic on the line.'
-          }
+          }${
+            calendar === null
+              ? ''
+              : ` A day of the business’s calendar (${offsetName(calendar)}), from its first moment; today is ${dayText(Date.now(), calendar)}.`
+          }`}
         >
           <Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
         </Field>

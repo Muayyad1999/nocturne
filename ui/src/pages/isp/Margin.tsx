@@ -32,7 +32,7 @@ import { formatCount } from '@/lib/format';
 import { rateText } from './coverage';
 import { useLinks, useMargin } from './data';
 import { Amount, Figures, Words } from './Figures';
-import { divide } from './money';
+import { divide, moneySortKey } from './money';
 import styles from './isp.module.css';
 
 export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
@@ -61,7 +61,7 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
     header: 'Bandwidth a month',
     width: 160,
     align: 'right',
-    sortValue: (row) => row.cost?.minor ?? null,
+    sortValue: (row) => moneySortKey(row.cost),
     cell: (row) =>
       row.cost === null ? (
         <Words title="No wholesale cost per megabit is recorded, so there is no margin to work out — not a margin of zero.">
@@ -81,7 +81,7 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
     header: 'Margin',
     width: 170,
     align: 'right',
-    sortValue: (row) => row.margin?.minor ?? null,
+    sortValue: (row) => moneySortKey(row.margin),
     cell: (row) =>
       row.margin === null ? (
         <Words>no figure</Words>

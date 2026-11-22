@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Converted, CurrencyRow, Money } from '@/api/types/isp';
+import { sortRows, type SortableColumn } from '@/design/Table/sort';
 import {
   amountText,
   conversionCaption,
@@ -9,8 +10,10 @@ import {
   formatMoney,
   formatTotals,
   moneyLike,
+  moneySortKey,
   parseAmount,
   plainAmount,
+  quotedRate,
   rateText,
   totalsLine,
 } from './money';
@@ -179,6 +182,29 @@ describe('what a screen says about a currency and a rate', () => {
     expect(rateText(rate)).toBe('1 USD = 1320 minor units of IQD');
   });
 
+  it('reads a typed rate back with the point where the second currency puts it', () => {
+    const currencies: CurrencyRow[] = [
+      ...CURRENCIES,
+      { code: 'EUR', digits: 2, scale: 100, name: 'Euro', thousand_minor_units: '10.00' },
+    ];
+    // The field takes minor units of the second currency: 108 is 1.08
+    // dollars to the euro. Echoing "1 EUR = 108 USD" states it a hundredfold.
+    expect(quotedRate('EUR', 'USD', '108', currencies)).toBe('1 EUR = 1.08\u00a0USD');
+    expect(quotedRate('EUR', 'USD', '108', currencies)).not.toMatch(/108\s*USD/);
+    // A thousandfold for a three-digit currency; right as typed for one with none.
+    expect(quotedRate('USD', 'JOD', '709', currencies)).toBe('1 USD = 0.709\u00a0JOD');
+    expect(quotedRate('USD', 'IQD', ' 1320 ', currencies)).toBe('1 USD = 1\u2009320\u00a0IQD');
+    // Until the table of currencies has answered the point cannot be placed,
+    // so the unit is said instead of guessed at.
+    expect(quotedRate('EUR', 'USD', '108')).toBe('1 EUR = 108 minor units of USD');
+  });
+
+  it('has nothing to read back while what is typed is not a rate', () => {
+    for (const bad of ['', '0', '1.08', '-5', 'abc', '1,320', '99999999999999999999']) {
+      expect(quotedRate('EUR', 'USD', bad, CURRENCIES), bad).toBeNull();
+    }
+  });
+
   it('labels a converted figure as a conversion and names its rates', () => {
     const converted: Converted = {
       basis: 'conversion',
@@ -193,5 +219,87 @@ describe('what a screen says about a currency and a rate', () => {
     expect(caption).toContain('conversion');
     expect(caption).toContain('1 USD = 1 320 IQD');
     expect(caption).toContain('not the ledger');
+  });
+});
+
+describe('sorting a column of money', () => {
+  interface Row {
+    name: string;
+    total: Money | null;
+  }
+  // The table's own sort, with the column defined the way the screens
+  // define theirs.
+  const columns: SortableColumn<Row>[] = [
+    { id: 'total', sortValue: (row) => moneySortKey(row.total) },
+  ];
+  const iqd = (minor: number): Money => ({ currency: 'IQD', minor, digits: 0, text: String(minor) });
+  const usd = (minor: number): Money => ({
+    currency: 'USD',
+    minor,
+    digits: 2,
+    text: plainAmount(minor, 2),
+  });
+  const rows: Row[] = [
+    { name: '3 000 dinars', total: iqd(3_000) },
+    { name: '25 dollars', total: usd(2_500) },
+    { name: 'one Jordanian dinar', total: JOD_ONE },
+    { name: '150 000 dinars', total: iqd(150_000) },
+    { name: '5 dollars in their favour', total: usd(-500) },
+    { name: '1 234 dollars', total: usd(123_400) },
+    { name: 'nine dollars', total: usd(900) },
+  ];
+  const names = (direction: 'asc' | 'desc', list: readonly Row[] = rows) =>
+    sortRows(list, columns, { columnId: 'total', direction }).map((row) => row.name);
+
+  it('never ranks an amount in one currency against an amount in another', () => {
+    // By bare minor units, 3 000 dinars (about two dollars) would sit above
+    // 25.00 dollars, and every dinar invoice above every dollar one.
+    const descending = names('desc');
+    for (const currency of ['IQD', 'JOD', 'USD']) {
+      const positions = descending
+        .map((name, index) => ({ name, index }))
+        .filter(({ name }) => rows.find((row) => row.name === name)?.total?.currency === currency)
+        .map(({ index }) => index);
+      // Each currency's rows are together: no other currency's row between them.
+      expect(Math.max(...positions) - Math.min(...positions), currency).toBe(positions.length - 1);
+    }
+  });
+
+  it('orders by amount within a currency, in both directions, negatives included', () => {
+    expect(names('asc')).toEqual([
+      '3 000 dinars',
+      '150 000 dinars',
+      'one Jordanian dinar',
+      '5 dollars in their favour',
+      'nine dollars',
+      '25 dollars',
+      '1 234 dollars',
+    ]);
+    expect(names('desc')).toEqual([
+      '1 234 dollars',
+      '25 dollars',
+      'nine dollars',
+      '5 dollars in their favour',
+      'one Jordanian dinar',
+      '150 000 dinars',
+      '3 000 dinars',
+    ]);
+  });
+
+  it('keeps a row with no figure last in both directions', () => {
+    const withMissing: Row[] = [{ name: 'no cost recorded', total: null }, ...rows];
+    expect(names('asc', withMissing).at(-1)).toBe('no cost recorded');
+    expect(names('desc', withMissing).at(-1)).toBe('no cost recorded');
+    expect(moneySortKey(undefined)).toBeNull();
+  });
+
+  it('orders the largest amounts a ledger can hold without losing a digit', () => {
+    const big: Row[] = [
+      { name: 'limit', total: usd(1_000_000_000_000_000) },
+      { name: 'limit less one', total: usd(999_999_999_999_999) },
+      { name: 'minus limit', total: usd(-1_000_000_000_000_000) },
+      { name: 'nothing', total: usd(0) },
+    ];
+    expect(names('asc', big)).toEqual(['minus limit', 'nothing', 'limit less one', 'limit']);
   });
 });

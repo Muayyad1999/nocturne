@@ -1,7 +1,7 @@
 /**
  * ISP (`nocturne-isp`): subscribers, bandwidth and money — customers,
- * tariffs, subscriptions, invoices, payments, arrears, used-against-sold,
- * oversubscription and margin.
+ * tariffs, subscriptions, invoices, payments, credit notes, arrears,
+ * used-against-sold, oversubscription and margin.
  *
  * These types mirror the backend's parameter and result structs exactly:
  * field names are the backend's (`snake_case`), timestamps are milliseconds
@@ -10,7 +10,7 @@
  * null. Backend source: `crates/nocturne-isp`. Specification:
  * `docs/dev/features/isp.md`.
  *
- * Five things about this surface decide how the screens have to be built.
+ * Six things about this surface decide how the screens have to be built.
  * They are not stylistic.
  *
  * 1. **Money is {@link Money}: whole minor units with a currency.** `minor`
@@ -32,9 +32,12 @@
  *    refused with `conflict`. A wrong invoice is voided (with a reason) and
  *    reissued: `isp.invoice.reissue` gives back the void original and a fresh
  *    draft that `replaces` it. {@link InvoiceStatus} (`part_paid`, `paid`,
- *    `overdue`) is *derived* from the payments and the clock at read time —
- *    there is no paid flag to set, and nothing but a recorded payment moves
- *    it.
+ *    `credited`, `overdue`) is *derived* from the payments, the credit notes
+ *    and the business's calendar at read time — there is no paid flag to
+ *    set. Two documents move it and nothing else does: a recorded
+ *    {@link Payment} (money that arrived) and a {@link CreditNote} (an
+ *    amount written off, with its reason). `total − paid − credited` is
+ *    `outstanding`, always, and the two are never added into one figure.
  * 4. **No usage figure is not a usage of zero.** On a
  *    {@link UsedAgainstSold} row, `used` is null unless
  *    `coverage === 'measured'`, and {@link Coverage} says which of the
@@ -45,6 +48,16 @@
  *    decision and returns `device_changed: false`; suspending the service is
  *    something a person does on the router. A screen must not imply
  *    otherwise.
+ * 6. **A day is the business's day, never the browser's.**
+ *    {@link IspSettings.utc_offset_minutes} is the business's calendar: a
+ *    fixed offset from UTC. A date somebody types `Y-M-D` is the instant
+ *    `Date.UTC(Y, M-1, D) - utc_offset_minutes * 60000`, and an instant is
+ *    shown by adding `utc_offset_minutes * 60000` and reading the UTC fields
+ *    — with the setting for anything new, and with the invoice's **own**
+ *    {@link Invoice.utc_offset_minutes} for the dates on an existing invoice.
+ *    A month is named (`month: "2025-10"`) rather than computed, and whether
+ *    an invoice is overdue is read from `status` and `days_overdue`, never
+ *    worked out again from `due_at` and the browser's clock.
  */
 
 // ---------------------------------------------------------------- vocabulary
@@ -97,15 +110,29 @@ export type InvoiceState = 'draft' | 'issued' | 'void';
  */
 export type InvoiceStatus =
   | 'draft'
+  /**
+   * Issued, nothing paid, and its due day is not over — or it comes to
+   * nothing and was never owed, which no payment settled either.
+   */
   | 'issued'
+  /** Something paid, something left, and its due day is not over. */
   | 'part_paid'
+  /** Payments alone cover the total, whatever was credited besides. */
   | 'paid'
+  /**
+   * Nothing more is owed, and it took a credit note to get there. Kept
+   * apart from `paid`: a write-off is not money that arrived.
+   */
+  | 'credited'
+  /** Something left, and its due day is over in the business's calendar. */
   | 'overdue'
   | 'void';
 
 export type LineKind = 'subscription' | 'adjustment';
 
 export type PaymentState = 'recorded' | 'void';
+
+export type CreditState = 'issued' | 'void';
 
 /**
  * Why there is, or is not, a figure. Everything but `measured` means there is
@@ -143,6 +170,16 @@ export interface IspSettings {
   usage_window_hours: number;
   /** Put in front of an invoice number: `ACME-2026-0001`. */
   invoice_number_prefix: string;
+  /**
+   * The business's calendar: how far its clock is ahead of UTC, in minutes
+   * (east positive, `-720..=840`; `180` for Baghdad, `0` by default). A fixed
+   * offset, not a zone: daylight saving is not modelled. It decides where a
+   * month begins, which day a due date is, when that day is over, and which
+   * year a number is counted in. `settings.set` takes any value; while it is
+   * out of range every method that bills, ages or reads an invoice answers
+   * `invalid` with a message naming this setting.
+   */
+  utc_offset_minutes: number;
 }
 
 // --------------------------------------------------------------------- money
@@ -375,7 +412,20 @@ export interface Balance {
   outstanding: Totals;
   /** Received and not yet against an invoice, as it was received. */
   on_account: Totals;
+  /**
+   * Credit notes standing against the account rather than one invoice. Not
+   * money — nobody can be paid out of it — and it reduces nothing until a
+   * note is set against an invoice (`isp.credit.allocate`).
+   */
+  credit_on_account: Totals;
+  /**
+   * Settled beyond the total of an issued invoice (paid more than it
+   * charged, or credited after it was paid). It stands in the customer's
+   * favour and is **not** taken off `outstanding`: show both.
+   */
+  overpaid: Totals;
   invoices_outstanding: number;
+  invoices_overpaid: number;
   oldest_due_at: number | null;
   note: string;
 }
@@ -546,8 +596,15 @@ export interface LinkInput {
   device_id?: string;
   interface?: string;
   tower?: string;
+  /** `0` takes the capacity off again: there is then no ratio to show. */
   capacity_mbit?: number;
   cost_per_mbit?: MoneyInput;
+  /**
+   * Take the wholesale cost off the link, which leaves no margin to work out
+   * (not a cost of nothing). Leaving `cost_per_mbit` out only keeps what is
+   * stored; sending both is refused (`invalid`).
+   */
+  clear_cost?: boolean;
   cost_period?: Period;
 }
 
@@ -598,6 +655,13 @@ export interface Invoice {
   state: InvoiceState;
   period_start: number;
   period_end: number;
+  /**
+   * The calendar this invoice was written in: the business's offset from UTC
+   * when it was drafted. Its period, its lines' periods, its issue date and
+   * its due date are days of *that* calendar for as long as it exists, so
+   * show them with this and not with the setting as it is now.
+   */
+  utc_offset_minutes: number;
   lines: InvoiceLine[];
   total: Money;
   issued_at: number | null;
@@ -614,19 +678,33 @@ export interface Invoice {
 }
 
 /**
- * An invoice with what the payments say about it. The invoice's own fields are
- * flattened in and are untouched; everything derived is beside them.
+ * An invoice with what the payments and the credit notes say about it. The
+ * invoice's own fields are flattened in and are untouched; everything derived
+ * is beside them. `total − paid − credited = outstanding`.
  */
 export interface InvoiceView extends Invoice {
   status: InvoiceStatus;
   /** Recorded against it, in its own currency. */
   paid: Money;
-  /** Negative when it has been overpaid. */
+  /**
+   * Written off against it by issued credit notes. Kept apart from `paid`:
+   * the two answer different questions, and a figure that adds them cannot
+   * say how much money came in.
+   */
+  credited: Money;
+  /** Negative when it is settled beyond its total: in the customer's favour. */
   outstanding: Money;
-  /** Days past its due date, when it is issued, due and short. */
+  /**
+   * Whole days past its due day, only while `status` is `overdue`: `1`
+   * throughout the day after it fell due. Null for every other status — a
+   * paid invoice long past its date included — so it says nothing about
+   * whether the date has passed.
+   */
   days_overdue: number | null;
   /** Newest first. Void payments are here too, with `state: "void"`. */
   payments: Payment[];
+  /** Newest first. Void credit notes are here too, with `state: "void"`. */
+  credits: CreditNote[];
 }
 
 /** `isp.invoices` params. */
@@ -634,7 +712,12 @@ export interface InvoicesParams {
   customer_id?: string;
   state?: InvoiceState;
   currency?: CurrencyCode | string;
-  /** Invoices whose period ends at or after this moment. */
+  /**
+   * Invoices whose period ends **after** this moment. With `until`, the two
+   * select periods that overlap `[since, until)`: a period is half-open, so
+   * one month's bounds list that month and not the one before, which ends
+   * exactly where it begins.
+   */
   since?: number;
   /** Invoices whose period starts before this moment. */
   until?: number;
@@ -643,14 +726,32 @@ export interface InvoicesParams {
   cursor?: string;
 }
 
+/**
+ * How a billing period is named: a month of the business's calendar, or two
+ * instants. Exactly one way — both, neither or half of the second is
+ * `invalid`. Naming the month is the way that cannot go wrong: the engine
+ * knows where the business's midnight is, and a browser does not.
+ */
+export type PeriodParams =
+  | {
+      /** `"2025-10"`: from the first moment of the 1st to the first of the next month. */
+      month: string;
+      period_start?: undefined;
+      period_end?: undefined;
+    }
+  | {
+      month?: undefined;
+      /** Taken at their word: they have to be instants of the business's calendar. */
+      period_start: number;
+      period_end: number;
+    };
+
 /** `isp.invoice.draft` params. */
-export interface DraftParams {
+export type DraftParams = PeriodParams & {
   customer_id: string;
-  period_start: number;
-  period_end: number;
   /** Make a draft with no lines, to add them by hand. */
   allow_empty?: boolean;
-}
+};
 
 /** A subscription this invoice deliberately does not charge for. */
 export interface Skipped {
@@ -673,7 +774,12 @@ export interface DraftedInvoice {
 /** `isp.invoice.issue` params. */
 export interface IssueParams {
   id: string;
-  /** Default: issued + `payment_terms_days`. Never before it was issued. */
+  /**
+   * Default: issued + `payment_terms_days` whole days. Read as a **day** of
+   * the invoice's own calendar: any instant of the day meant, which may be
+   * the day of issue and may not be a day before it. The invoice is overdue
+   * once that day is over, not at this instant.
+   */
   due_at?: number;
   /**
    * For entering an invoice that already exists on paper (a migration). It
@@ -682,7 +788,12 @@ export interface IssueParams {
   issued_at?: number;
 }
 
-/** `isp.invoice.void` and `isp.invoice.reissue` params. The reason is required. */
+/**
+ * `isp.invoice.void` and `isp.invoice.reissue` params. The reason is
+ * required. Both are refused (`conflict`) while a recorded payment or an
+ * issued credit note stands against the invoice: each is voided first, with
+ * its own reason.
+ */
 export interface VoidParams {
   id: string;
   reason: string;
@@ -711,16 +822,14 @@ export interface LineRemoveParams {
 }
 
 /** `isp.invoice.run` params: bill a period. Previews unless `dry_run: false`. */
-export interface RunParams {
-  period_start: number;
-  period_end: number;
-  /** Only these customers; every active one by default. */
+export type RunParams = PeriodParams & {
+  /** Only these customers; every active one by default, however many. */
   customer_ids?: string[];
   /** Nothing is written unless this is explicitly `false`. Default true. */
   dry_run?: boolean;
   /** Issue each draft as it is made instead of leaving it to be checked. */
   issue?: boolean;
-}
+};
 
 export interface RunRow {
   customer_id: string;
@@ -730,18 +839,37 @@ export interface RunRow {
   total: Money;
   lines: number;
   skipped_subscriptions: Skipped[];
+  /**
+   * Why a draft the run was asked to issue is still a draft, when it is.
+   * The invoice exists; it was not issued, and this is the reason.
+   */
+  not_issued: string | null;
 }
 
 export interface RunSkip {
   customer_id: string;
   /** e.g. nothing to bill, or that period is already invoiced. */
   reason: string;
+  /**
+   * The subscriptions that were in force and could not be charged, each with
+   * its own reason. Empty when nothing of theirs was in force, or when they
+   * were left out for another reason (already billed).
+   */
+  skipped_subscriptions: Skipped[];
 }
 
 export interface RunResult {
   period_start: number;
   period_end: number;
+  /** The calendar the period was read in. */
+  utc_offset_minutes: number;
   dry_run: boolean;
+  /**
+   * How many customers the run looked at. Every one of them is in `invoices`
+   * or in `skipped`: the two always add up to this.
+   */
+  considered: number;
+  /** How many invoices the run made (or would make), issued ones included. */
   drafted: number;
   issued: number;
   invoices: RunRow[];
@@ -749,6 +877,8 @@ export interface RunResult {
   skipped: RunSkip[];
   /** What the run comes to, per currency. Never one number. */
   totals: Totals;
+  /** Anything about the run as a whole that did not go as asked. */
+  warnings: string[];
   note: string;
 }
 
@@ -828,6 +958,106 @@ export interface VoidPaymentParams {
   reason: string;
 }
 
+// --------------------------------------------------------------- credit notes
+
+/**
+ * An amount a customer no longer owes, as a document: a service that was not
+ * delivered, a goodwill gesture, an invoice wrong in a way nobody wants to
+ * void. It stands beside the invoice's figures and never rewrites them. It is
+ * **not money** — `isp.revenue` and `isp.payments` do not see it — and it is
+ * not a refund: nothing here says money went back out.
+ */
+export interface CreditNote {
+  id: string;
+  /** Its own sequence, visibly not an invoice number: `CN-2026-0001`. */
+  number: string;
+  customer_id: string;
+  /**
+   * The invoice it stands against. Null credits the account, and reduces
+   * nothing until it is set against an invoice (`isp.credit.allocate`).
+   */
+  invoice_id: string | null;
+  /** Always in the currency the customer is billed in. */
+  amount: Money;
+  /** Required: why this stopped being owed. */
+  reason: string;
+  note: string;
+  /** When the credit was agreed. */
+  at: number;
+  /**
+   * When a note issued on the account was set against `invoice_id`. Null for
+   * one issued against its invoice in the first place, and for one still on
+   * the account.
+   */
+  allocated_at: number | null;
+  state: CreditState;
+  void_reason: string;
+  voided_at: number | null;
+  recorded_at: number;
+}
+
+/** `isp.credits` params. Newest first. */
+export interface CreditsParams {
+  customer_id?: string;
+  invoice_id?: string;
+  /** Agreed at or after this moment. */
+  since?: number;
+  /** Agreed before this moment. */
+  until?: number;
+  state?: CreditState;
+  /** Default 100, at most 2,000. */
+  limit?: number;
+  cursor?: string;
+}
+
+/**
+ * `isp.credit.issue` params.
+ *
+ * `amount` is more than nothing and in the customer's own currency — no
+ * money moves, so there is no rate and no conversion. Against an invoice
+ * (issued, theirs) the notes may not come to more than its **total**; that
+ * cap is not what is left outstanding, so an invoice already paid can still
+ * be credited, which leaves the customer in credit and says so in
+ * `warnings`. Leave `invoice_id` out to credit the account.
+ */
+export interface CreditInput {
+  customer_id: string;
+  invoice_id?: string;
+  amount: MoneyInput;
+  /** Required. */
+  reason: string;
+  note?: string;
+  /** When it was agreed; now by default. */
+  at?: number;
+}
+
+/** Result of `isp.credit.issue` and `isp.credit.allocate`. */
+export interface IssuedCredit {
+  credit: CreditNote;
+  /** The invoice as it now reads, when the note stands against one. */
+  invoice: InvoiceView | null;
+  /** e.g. the invoice is now settled beyond its total, or the note is on the account. */
+  warnings: string[];
+}
+
+/**
+ * `isp.credit.allocate` params: set a note that is on the account against
+ * one issued invoice of the same customer, under the same cap as a note
+ * issued against it. Once only — moving a note is a void, with its reason,
+ * and a new note. Whole notes only.
+ */
+export interface AllocateCreditParams {
+  /** The credit note. */
+  id: string;
+  invoice_id: string;
+}
+
+/** `isp.credit.void` params. The reason is required; the debt comes back. */
+export interface VoidCreditParams {
+  id: string;
+  reason: string;
+}
+
 // -------------------------------------------------------------------- arrears
 
 /** One age band of what is owed, in one currency. */
@@ -861,8 +1091,23 @@ export interface CustomerArrears {
   customer_name: string;
   state: CustomerState;
   outstanding: Money;
-  /** Days overdue of their oldest unpaid invoice; null when nothing is due yet. */
+  /**
+   * Days overdue of their oldest unpaid invoice, counted exactly as an
+   * invoice's own `days_overdue`; null when nothing of theirs is overdue
+   * (which includes an invoice that falls due today).
+   */
   oldest_days: number | null;
+  invoices: number;
+}
+
+/** What stands in one customer's favour, in one currency. */
+export interface CustomerOverpaid {
+  customer_id: string;
+  /** `(deleted customer)` when the ledger outlived the record. */
+  customer_name: string;
+  state: CustomerState;
+  overpaid: Money;
+  /** How many of their invoices are settled beyond their total. */
   invoices: number;
 }
 
@@ -875,6 +1120,13 @@ export interface Arrears {
   by_currency: CurrencyArrears[];
   /** Worst first within each currency. One row per customer per currency. */
   customers: CustomerArrears[];
+  /**
+   * Settled beyond the total of an issued invoice, per currency: it stands
+   * in customers' favour and is **not** taken off any figure above.
+   */
+  overpaid: Totals;
+  /** Who is in credit, largest first within each currency. */
+  customers_overpaid: CustomerOverpaid[];
   note: string;
 }
 
@@ -1127,7 +1379,11 @@ export interface Summary {
 
 /** `isp.changed`: records a screen should refetch. */
 export interface IspChanged {
-  /** Some of `customers`, `tariffs`, `subscriptions`, `links`. */
+  /**
+   * Some of `customers`, `tariffs`, `subscriptions`, `links` — and `credits`
+   * when a credit note on the account was issued or voided, which moves a
+   * balance and no invoice.
+   */
   kinds: string[];
 }
 
@@ -1149,6 +1405,20 @@ export interface IspPaymentsChanged {
   change: 'recorded' | 'voided';
   ids: string[];
   customer_ids: string[];
+  invoice_ids: string[];
+}
+
+/**
+ * `isp.credits.changed`. Each of these is also followed by an
+ * `isp.invoices.changed {change: "updated"}` naming the invoice the note
+ * stands against, or by `isp.changed {kinds: ["credits"]}` for a note on the
+ * account.
+ */
+export interface IspCreditsChanged {
+  change: 'issued' | 'allocated' | 'voided';
+  ids: string[];
+  customer_ids: string[];
+  /** Empty for a note on the account. */
   invoice_ids: string[];
 }
 
@@ -1188,6 +1458,10 @@ export interface IspPaymentsChanged {
  * | `isp.payments` | {@link PaymentsParams} | {@link Payment}[] |
  * | `isp.payment.record` | {@link PaymentInput} | {@link RecordedPayment} |
  * | `isp.payment.void` | {@link VoidPaymentParams} | {@link Payment} |
+ * | `isp.credits` | {@link CreditsParams} | {@link CreditNote}[] |
+ * | `isp.credit.issue` | {@link CreditInput} | {@link IssuedCredit} |
+ * | `isp.credit.allocate` | {@link AllocateCreditParams} | {@link IssuedCredit} |
+ * | `isp.credit.void` | {@link VoidCreditParams} | {@link CreditNote} |
  * | `isp.arrears` | {@link ArrearsParams} | {@link Arrears} |
  * | `isp.revenue` | {@link RevenueParams} | {@link Revenue} |
  * | `isp.usage` | {@link UsageParams} | {@link UsageReport} |
@@ -1195,8 +1469,11 @@ export interface IspPaymentsChanged {
  * | `isp.margin` | {@link MarginParams} | {@link Margin}[] |
  *
  * The events: `isp.changed` ({@link IspChanged}), `isp.invoices.changed`
- * ({@link IspInvoicesChanged}) and `isp.payments.changed`
- * ({@link IspPaymentsChanged}).
+ * ({@link IspInvoicesChanged}), `isp.payments.changed`
+ * ({@link IspPaymentsChanged}) and `isp.credits.changed`
+ * ({@link IspCreditsChanged}). The settings (section `isp`,
+ * {@link IspSettings}) are read and saved with the core's `settings.get` and
+ * `settings.set`, which publishes `settings.changed {section, value}`.
  *
  * Error codes worth handling by name: `invalid` (the request is wrong — a
  * float amount, an unknown currency, a missing rate), `conflict` (it clashes
@@ -1233,6 +1510,10 @@ export type IspMethod =
   | 'isp.payments'
   | 'isp.payment.record'
   | 'isp.payment.void'
+  | 'isp.credits'
+  | 'isp.credit.issue'
+  | 'isp.credit.allocate'
+  | 'isp.credit.void'
   | 'isp.arrears'
   | 'isp.revenue'
   | 'isp.usage'

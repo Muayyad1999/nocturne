@@ -7,10 +7,14 @@
  * what somebody wrote down, and without it there is no ratio at all (not a
  * ratio of zero). The **wholesale cost of a megabit** is what makes a margin
  * possible, and the margin is only ever worked out in that cost's currency.
+ *
+ * Either figure can be taken off again by emptying its field: a capacity or
+ * a cost written down in error must not go on feeding a ratio or a margin
+ * (`records.ts: linkInput`).
  */
 
 import { useEffect, useState } from 'react';
-import type { Link, LinkInput, Period } from '@/api/types/isp';
+import type { Link, Period } from '@/api/types/isp';
 import { Button } from '@/design/Button';
 import { Dialog } from '@/design/Dialog';
 import { Field } from '@/design/Field';
@@ -21,6 +25,7 @@ import { toast } from '@/design/Toast';
 import { AmountField } from './AmountField';
 import { useCurrencies, useDeviceNames, useSaveLink } from './data';
 import { digitsOf, parseAmount } from './money';
+import { linkInput } from './records';
 import styles from './isp.module.css';
 
 export interface LinkDialogProps {
@@ -60,22 +65,29 @@ export function LinkDialog({ open, link, onClose }: LinkDialogProps) {
   }, [open, link, reset]);
 
   const digits = digitsOf(currencies.data ?? [], currency);
-  const parsedCost = cost.trim() === '' || digits === undefined ? null : parseAmount(cost, currency, digits);
+  const costTyped = cost.trim() !== '';
+  const parsedCost = !costTyped || digits === undefined ? null : parseAmount(cost, currency, digits);
   const capacityValid = capacity.trim() === '' || /^[1-9]\d*$/.test(capacity.trim());
-  const ready = name.trim() !== '' && capacityValid && parsedCost?.ok !== false;
+  // A typed cost has to have been read before the link is saved: an emptied
+  // field takes the cost off the link, and a figure that merely could not be
+  // read yet (the currencies still loading) must not be taken for one.
+  const ready =
+    name.trim() !== '' && capacityValid && (!costTyped || parsedCost?.ok === true);
 
   const submit = () => {
-    const input: LinkInput = {
-      ...(link ? { id: link.id } : {}),
-      name: name.trim(),
-      description: description.trim(),
-      tower: tower.trim(),
-      device_id: deviceId.trim(),
-      interface: iface.trim(),
-      ...(capacity.trim() === '' ? {} : { capacity_mbit: Number(capacity.trim()) }),
-      cost_period: costPeriod,
-      ...(parsedCost?.ok ? { cost_per_mbit: parsedCost.amount.input } : {}),
-    };
+    const input = linkInput(
+      {
+        name,
+        description,
+        tower,
+        deviceId,
+        iface,
+        capacity,
+        cost: parsedCost?.ok ? parsedCost.amount.input : null,
+        costPeriod,
+      },
+      link,
+    );
     save.mutate(input, {
       onSuccess: (saved) => {
         toast.success(saved.created ? `${saved.link.name} was added` : `${saved.link.name} was updated`);
@@ -167,7 +179,7 @@ export function LinkDialog({ open, link, onClose }: LinkDialogProps) {
 
         <Field
           label="Capacity in Mbit/s"
-          hint="What it can carry, as you know it. Leave it empty and there is no ratio to show — not a ratio of zero."
+          hint="What it can carry, as you know it. Empty, there is no ratio to show — not a ratio of zero — unless the interface’s own speed is known."
           error={capacityValid ? undefined : 'A whole number, greater than zero.'}
         >
           <Input
@@ -187,7 +199,7 @@ export function LinkDialog({ open, link, onClose }: LinkDialogProps) {
           currency={currency}
           onCurrencyChange={setCurrency}
           currencies={currencies.data ?? []}
-          hint="Leave it empty and there is no margin to work out. The margin is only ever in this currency."
+          hint="Empty, the link has no wholesale cost and there is no margin to work out — not a margin against a cost of nothing. The margin is only ever in this currency."
         />
 
         <Field label="That cost is per">

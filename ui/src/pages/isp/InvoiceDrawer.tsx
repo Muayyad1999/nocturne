@@ -1,29 +1,38 @@
 /**
- * One invoice: its lines, its settlement, its payments, and the four things
- * that may be done to it.
+ * One invoice: its lines, its settlement, its payments, its credit notes,
+ * and what may be done to it.
  *
  * The lifecycle is the backend's and this drawer only offers what the
  * document's state allows (`billing-rows.ts: invoiceActions`), because every
- * other button could only produce a `conflict`:
+ * other button could only produce a refusal:
  *
  * * a **draft** can have lines added and removed, and can be issued;
  * * an **issued** invoice is frozen — no line, no total, no currency ever
- *   changes again — and can take payments;
+ *   changes again. It can take payments while something is owed on it, and
+ *   credit notes while less than its total has been credited;
  * * a wrong invoice is **voided with a reason** and **reissued**, which
  *   leaves the void original readable, keeps its number, and hands back a
  *   fresh draft that `replaces` it, so the trail shows what happened;
- * * an invoice with a payment recorded against it cannot be voided at all,
- *   and the reason is said here rather than found out by trying.
+ * * an invoice with a payment or a credit note standing against it cannot
+ *   be voided at all, and the reason is said here rather than found out by
+ *   trying.
  *
- * Nothing marks an invoice paid. `status`, `paid` and `outstanding` are
- * derived from the recorded payments at read time, so the only way to move
- * them is to record a payment.
+ * Nothing marks an invoice paid. `status`, `paid`, `credited` and
+ * `outstanding` are derived at read time from two kinds of document: a
+ * recorded payment, which is money that arrived, and a credit note, which is
+ * an amount written off with its reason. The four figures are shown together
+ * so that they can be seen to add up, and the two kinds are never merged.
+ *
+ * The dates on an invoice — its period, when it was issued, when it falls
+ * due — are days of the calendar the invoice was **written in**
+ * (`utc_offset_minutes` on the invoice), not of the browser's zone and not
+ * of the setting as it is now. Whether it is overdue is the engine's answer.
  */
 
-import { Ban, Plus, RefreshCw, Send, Trash2 } from 'lucide-react';
+import { Ban, Plus, ReceiptText, RefreshCw, Send, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import type { InvoiceView } from '@/api/types/isp';
+import type { CreditNote, InvoiceView } from '@/api/types/isp';
 import { Badge } from '@/design/Badge';
 import { Button } from '@/design/Button';
 import { Dialog } from '@/design/Dialog';
@@ -35,18 +44,22 @@ import { KeyValue } from '@/design/KeyValue';
 import { Skeleton } from '@/design/Skeleton';
 import { Textarea } from '@/design/Textarea';
 import { toast } from '@/design/Toast';
-import { formatDate, formatDateTime } from '@/lib/time';
 import { AmountField } from './AmountField';
 import {
-  dayStart,
+  dueText,
   invoiceActions,
+  invoicePeriod,
   lineSubtitle,
-  overdueText,
+  settlement,
   statusWords,
   voidBlockedReason,
 } from './billing-rows';
+import { dayStart, dayText, dayTimeText, offsetName } from './calendar';
+import { CreditDialog, VoidCreditDialog } from './CreditDialogs';
+import { CreditNoteList } from './CreditNoteList';
 import {
   useAddLine,
+  useCalendar,
   useCurrencies,
   useInvoice,
   useIssueInvoice,
@@ -75,11 +88,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: InvoiceDrawerProps) {
       size="lg"
       title={invoice.data?.number ?? (invoice.isPending ? 'Invoice' : 'Draft invoice')}
       description={
-        invoice.data
-          ? `${invoice.data.customer_name} · ${formatDate(invoice.data.period_start)} to ${formatDate(
-              invoice.data.period_end,
-            )}`
-          : undefined
+        invoice.data ? `${invoice.data.customer_name} · ${invoicePeriod(invoice.data)}` : undefined
       }
     >
       {invoice.isError && (
@@ -106,7 +115,7 @@ export function InvoiceDrawer({ invoiceId, onClose }: InvoiceDrawerProps) {
   );
 }
 
-type Asking = 'none' | 'issue' | 'void' | 'reissue' | 'line';
+type Asking = 'none' | 'issue' | 'void' | 'reissue' | 'line' | 'credit';
 
 function Body({
   invoice,
@@ -118,10 +127,15 @@ function Body({
   onPay: () => void;
 }) {
   const [asking, setAsking] = useState<Asking>('none');
+  const [voidingCredit, setVoidingCredit] = useState<CreditNote | null>(null);
   const actions = invoiceActions(invoice);
   const blocked = voidBlockedReason(invoice);
   const removeLine = useRemoveLine();
   const words = statusWords(invoice.status);
+  // The setting, for what happened to the invoice afterwards; the invoice's
+  // own offset, for the dates it was written with.
+  const calendar = useCalendar();
+  const own = invoice.utc_offset_minutes;
 
   return (
     <div className={styles.sections}>
@@ -144,7 +158,7 @@ function Body({
           },
           {
             label: 'Period',
-            value: `${formatDate(invoice.period_start)} → ${formatDate(invoice.period_end)}`,
+            value: invoicePeriod(invoice),
             mono: true,
           },
           {
@@ -153,7 +167,7 @@ function Body({
               invoice.issued_at === null ? (
                 <Words>not issued yet</Words>
               ) : (
-                formatDateTime(invoice.issued_at)
+                dayTimeText(invoice.issued_at, own)
               ),
             mono: invoice.issued_at !== null,
           },
@@ -163,17 +177,27 @@ function Body({
               invoice.due_at === null ? (
                 <Words>no due date</Words>
               ) : (
-                `${formatDate(invoice.due_at)} · ${overdueText(invoice)}`
+                `${dayText(invoice.due_at, own)} · ${dueText(invoice, {
+                  now: Date.now(),
+                  offset: calendar,
+                })}`
               ),
           },
-          { label: 'Total', value: <Amount money={invoice.total} /> },
-          { label: 'Paid', value: <Amount money={invoice.paid} muted /> },
-          { label: 'Outstanding', value: <Amount money={invoice.outstanding} /> },
+          // Said only when the two differ, which is after the setting was
+          // changed: these dates are then not days of today's calendar.
+          ...(calendar !== null && calendar !== own
+            ? [
+                {
+                  label: 'Calendar',
+                  value: `written in ${offsetName(own)}; its dates stay days of that calendar, though the business’s is now ${offsetName(calendar)}`,
+                },
+              ]
+            : []),
           ...(invoice.state === 'void'
             ? [
                 {
                   label: 'Voided',
-                  value: `${formatDateTime(invoice.voided_at)} — ${invoice.void_reason}`,
+                  value: `${dayTimeText(invoice.voided_at, calendar)} — ${invoice.void_reason}`,
                 },
               ]
             : []),
@@ -257,7 +281,38 @@ function Body({
         </tfoot>
       </table>
 
+      {/* The sum, in the order it is done: total, less paid, less credited.
+          Only an issued invoice is owed: a draft has not been asked for and
+          a void one has been withdrawn, so neither has anything outstanding
+          to state. */}
+      {invoice.state === 'issued' && (
+        <div role="group" aria-label="Settlement">
+          <KeyValue
+            items={settlement(invoice).map((figure) => ({
+              label: figure.label,
+              value: (
+                <>
+                  <Amount money={figure.money} muted={figure.muted} />
+                  <span className={styles.rowSub}>{figure.note}</span>
+                </>
+              ),
+            }))}
+          />
+        </div>
+      )}
+
       <Payments invoice={invoice} />
+
+      {(invoice.state === 'issued' || invoice.credits.length > 0) && (
+        <div role="group" aria-label="Credit notes">
+          <CreditNoteList
+            credits={invoice.credits}
+            calendar={calendar}
+            empty="no credit note stands against this invoice — nothing has been written off"
+            onVoid={setVoidingCredit}
+          />
+        </div>
+      )}
 
       {blocked && <p className={styles.warning}>{blocked}</p>}
 
@@ -275,6 +330,11 @@ function Body({
         {actions.pay && (
           <Button variant="primary" onClick={onPay}>
             Record a payment…
+          </Button>
+        )}
+        {actions.credit && (
+          <Button icon={ReceiptText} onClick={() => setAsking('credit')}>
+            Issue a credit note…
           </Button>
         )}
         {actions.reissue && (
@@ -301,18 +361,29 @@ function Body({
         onClose={() => setAsking('none')}
       />
       <LineDialog open={asking === 'line'} invoice={invoice} onClose={() => setAsking('none')} />
+      <CreditDialog
+        open={asking === 'credit'}
+        onClose={() => setAsking('none')}
+        customerId={invoice.customer_id}
+        invoice={invoice}
+      />
+      <VoidCreditDialog credit={voidingCredit} onClose={() => setVoidingCredit(null)} />
     </div>
   );
 }
 
 function Payments({ invoice }: { invoice: InvoiceView }) {
   const currencies = useCurrencies();
+  const calendar = useCalendar();
   if (invoice.payments.length === 0) {
     return (
       <p className={styles.note}>
         <Words>
-          no payment is recorded against this invoice — nothing but a recorded payment can move
-          what it says is outstanding
+          {invoice.state === 'draft'
+            ? 'a draft takes no payment: it is issued first'
+            : invoice.state === 'void'
+              ? 'no payment was recorded against this invoice before it was withdrawn'
+              : 'no payment is recorded against this invoice — what it says is outstanding moves only with a recorded payment or a credit note'}
         </Words>
       </p>
     );
@@ -333,7 +404,7 @@ function Payments({ invoice }: { invoice: InvoiceView }) {
                 {formatMoney(payment.amount)} by {payment.method}
               </span>
               <span className={styles.lineSubtitle}>
-                {formatDateTime(payment.at)}
+                {dayTimeText(payment.at, calendar)}
                 {payment.reference === '' ? '' : ` · ${payment.reference}`}
                 {payment.state === 'void' ? ` · void: ${payment.void_reason}` : ''}
               </span>
@@ -380,9 +451,19 @@ function IssueDialog({
     }
   }, [open, reset]);
 
+  // An invoice's due and issue dates are days of the calendar it was drafted
+  // in, and the engine reads them in that one — so the invoice's own offset,
+  // not the setting, in the rare case the setting changed while it was a
+  // draft. The engine takes any instant of the day meant; this sends its
+  // first moment.
+  const own = invoice.utc_offset_minutes;
+  const dueAt = dayStart(due, own);
+  const issuedAt = dayStart(issued, own);
+  const unreadable =
+    (due.trim() !== '' && dueAt === null) || (issued.trim() !== '' && issuedAt === null);
+
   const submit = () => {
-    const dueAt = dayStart(due);
-    const issuedAt = dayStart(issued);
+    if (unreadable) return;
     issue.mutate(
       {
         id: invoice.id,
@@ -411,7 +492,12 @@ function IssueDialog({
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={issue.isPending} onClick={submit}>
+          <Button
+            variant="primary"
+            loading={issue.isPending}
+            disabled={unreadable}
+            onClick={submit}
+          >
             Issue it
           </Button>
         </>
@@ -421,7 +507,9 @@ function IssueDialog({
         {issue.error && <p className={styles.error}>{issue.error.message}</p>}
         <Field
           label="Due date"
-          hint="Leave it empty for your payment terms (Settings → ISP). It may not fall before the invoice is issued."
+          hint={`Leave it empty for your payment terms (ISP → Settings). It may be the day of issue and not a day before it, and the invoice is overdue only once that day is over. A day of the invoice’s calendar (${offsetName(
+            own,
+          )}); today is ${dayText(Date.now(), own)}.`}
         >
           <Input type="date" value={due} onChange={(event) => setDue(event.target.value)} />
         </Field>

@@ -19,6 +19,13 @@
  *   window is not billed at all, because nothing here works out what a part
  *   of a monthly period costs on its own. Those are not zeroes, and each one
  *   says what to do instead.
+ *
+ * The period is a month of the **business's** calendar and it is sent by
+ * name (`month: "2026-10"`): the engine knows where the business's midnight
+ * is and resolves it, so two operators in two time zones bill the same
+ * instants, and a plan that starts on the 1st is not caught by the month
+ * before. The dates shown are what the engine answered with, in the calendar
+ * it says it read them in.
  */
 
 import { Play } from 'lucide-react';
@@ -30,9 +37,9 @@ import { Field } from '@/design/Field';
 import { Select } from '@/design/Select';
 import { toast } from '@/design/Toast';
 import { formatCount, plural } from '@/lib/format';
-import { formatDate } from '@/lib/time';
-import { recentMonths, runHasWork, runOutcome, windowOf } from './billing-rows';
-import { useCustomers, usePreviewRun, useRunBilling } from './data';
+import { runCountsText, runHasWork, runOutcome } from './billing-rows';
+import { monthWindow, offsetName, periodText, recentMonths } from './calendar';
+import { useCalendar, useCustomers, usePreviewRun, useRunBilling } from './data';
 import { Amount, Figures, Words } from './Figures';
 import { totalsLine } from './money';
 import styles from './isp.module.css';
@@ -46,8 +53,11 @@ export interface RunDialogProps {
 }
 
 export function RunDialog({ open, onClose }: RunDialogProps) {
-  const months = useMemo(() => recentMonths(Date.now()), []);
-  const [month, setMonth] = useState(months[1]?.value ?? months[0]?.value ?? '');
+  const calendar = useCalendar();
+  const months = useMemo(() => recentMonths(Date.now(), calendar), [calendar]);
+  // Last month by default: the one that has just ended is the one to bill.
+  const [chosen, setMonth] = useState('');
+  const month = chosen !== '' ? chosen : (months[1]?.value ?? months[0]?.value ?? '');
   const [result, setResult] = useState<RunResult | null>(null);
 
   const preview = usePreviewRun();
@@ -69,21 +79,19 @@ export function RunDialog({ open, onClose }: RunDialogProps) {
     resetRun();
   }, [open, resetPreview, resetRun]);
 
-  const window = windowOf(month);
+  // Only to say which days the month is: what is sent is the month's name.
+  const window = monthWindow(month, calendar);
   const outcome = result ? runOutcome(result) : null;
   const error = preview.error ?? run.error;
   const name = (id: string) => names.get(id) ?? id;
 
   const askPreview = () => {
-    if (!window) return;
-    preview.mutate(
-      { period_start: window.start, period_end: window.end, dry_run: true },
-      { onSuccess: setResult },
-    );
+    if (month === '') return;
+    preview.mutate({ month, dry_run: true }, { onSuccess: setResult });
   };
 
   const write = (issue: boolean) => {
-    if (!window) return;
+    if (month === '') return;
     void (async () => {
       const totals = result ? totalsLine(result.totals) : '';
       const ok = await confirm(
@@ -102,7 +110,7 @@ export function RunDialog({ open, onClose }: RunDialogProps) {
       );
       if (!ok) return;
       run.mutate(
-        { period_start: window.start, period_end: window.end, dry_run: false, issue },
+        { month, dry_run: false, issue },
         {
           onSuccess: (written) => {
             setResult(written);
@@ -126,7 +134,7 @@ export function RunDialog({ open, onClose }: RunDialogProps) {
           <Button
             icon={Play}
             loading={preview.isPending}
-            disabled={window === null}
+            disabled={month === ''}
             onClick={askPreview}
           >
             {result === null ? 'Preview' : 'Preview again'}
@@ -153,9 +161,9 @@ export function RunDialog({ open, onClose }: RunDialogProps) {
         <Field
           label="Period"
           hint={
-            window
-              ? `${formatDate(window.start)} up to, but not including, ${formatDate(window.end)}. A subscription is only billed when the window is one whole period of its kind — a monthly plan needs 28 to 31 days.`
-              : 'Choose a month.'
+            window && calendar !== null
+              ? `${periodText(window.start, window.end, calendar)}, days of the business’s calendar (${offsetName(calendar)}). A subscription is only billed when the window is one whole period of its kind — a monthly plan needs 28 to 31 days.`
+              : 'A month of the business’s calendar.'
           }
         >
           <Select
@@ -179,13 +187,13 @@ export function RunDialog({ open, onClose }: RunDialogProps) {
               <Figures totals={outcome.totals} layout="inline" empty="nothing at all" />
             </div>
             <p className={styles.quiet}>
-              {plural(outcome.invoices, 'customer')} would be billed
-              {outcome.skipped > 0 ? `, ${formatCount(outcome.skipped)} left out` : ''}
-              {outcome.skippedSubscriptions > 0
-                ? `, and ${plural(outcome.skippedSubscriptions, 'subscription')} not charged on an invoice that was still drafted`
-                : ''}
-              .
+              {outcome.period} in {offsetName(result.utc_offset_minutes)}. {runCountsText(outcome)}
             </p>
+            {outcome.warnings.map((warning) => (
+              <p key={warning} className={styles.warning}>
+                {warning}
+              </p>
+            ))}
           </div>
         )}
 
@@ -206,6 +214,11 @@ export function RunDialog({ open, onClose }: RunDialogProps) {
                       <span className={styles.lineDescription}>{name(row.customer_id)}</span>
                       {row.number !== null && (
                         <span className={styles.lineSubtitle}>invoice {row.number}</span>
+                      )}
+                      {row.not_issued !== null && (
+                        <span className={styles.lineSubtitle}>
+                          still a draft, not issued: {row.not_issued}
+                        </span>
                       )}
                       {row.skipped_subscriptions.map((skipped) => (
                         <span key={skipped.subscription_id} className={styles.lineSubtitle}>
