@@ -13,13 +13,21 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-      "freezePrototype": true
+      "freezePrototype": false
     }
   },
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
-    "targets": ["deb", "rpm", "appimage", "msi", "nsis", "dmg", "app"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage",
+      "msi",
+      "nsis",
+      "dmg",
+      "app"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Network operations, from the terminal to the change window.",
     "longDescription": "Nocturne is one application for the daily work of a network engineer: terminal sessions, discovery, monitoring, versioned configuration backups, safe configuration changes with approval and rollback, topology, IP address management, a virtual lab, and an assistant that can use all of it.",
@@ -33,7 +41,10 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
       }
     }
   }

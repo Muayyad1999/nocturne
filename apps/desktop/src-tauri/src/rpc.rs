@@ -111,3 +111,46 @@ mod tests {
         assert!(call(&app, "app.methods", None).await.is_err() || true);
     }
 }
+
+/// Why `freezePrototype` is off, checked so that turning it on means reading
+/// this first.
+#[cfg(test)]
+mod prototype_freezing {
+    /// Tauri can freeze `Object.prototype` against prototype pollution. It is
+    /// off here, deliberately, and the reason is `@xterm/xterm`.
+    ///
+    /// xterm vendors VS Code's `keyCodes.ts`, which declares
+    /// `export namespace KeyCodeUtils { export function toString(…) }`. A
+    /// TypeScript namespace compiles to `e.toString = t` on a plain object,
+    /// and with `Object.prototype` frozen the inherited `toString` is
+    /// non-writable — so in a module, which is always strict, that assignment
+    /// throws. The Terminal screen died on it with "Cannot assign to read
+    /// only property 'toString'", in the installed application only: a
+    /// browser does not freeze anything, so twenty end-to-end tests passed
+    /// against the same bundle.
+    ///
+    /// What is given up is one layer of defence in depth, and it is worth
+    /// being plain that it is a loss. What it is not is the thing holding
+    /// this application up: the window loads no remote code (`script-src
+    /// 'self'`, no `eval`), there is exactly one way into the backend, and
+    /// `rpc.rs` above is that door — whatever the interface does or is made
+    /// to do, the backend's own rules decide what happens. Prototype
+    /// pollution would need a gadget in our own code that merges untrusted
+    /// input into an object; freezing would have been a second net under
+    /// that, not the first.
+    ///
+    /// It was one assignment in the whole bundle. If xterm stops doing it,
+    /// or the dependency goes, turn this back on and delete the test.
+    #[test]
+    fn is_off_on_purpose_because_xterm_assigns_to_an_inherited_property() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let frozen = config["app"]["security"]["freezePrototype"].as_bool();
+        assert_eq!(
+            frozen,
+            Some(false),
+            "`freezePrototype` is off because `@xterm/xterm` assigns to an inherited \
+             `toString`; read the note above this test before changing it"
+        );
+    }
+}
