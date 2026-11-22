@@ -143,6 +143,20 @@ offered.
 | `search_notes` | the team's runbooks | `notes.list` |
 | `validate_profile` | check a device-type profile the model drafted; returns problems. Saving is the user's click, never a tool. | `profiles.validate` |
 | `explain_terminal` | last lines of the terminal session in context | `terminal.snapshot` |
+| `qos_status` | per-class traffic, drops and queue depth on an interface or a device; says when the read is unverified or the interval could not be measured | `monitor.qos` |
+| `top_talkers` | who is filling a link: flows by source, destination, conversation, application, interface or DSCP, with what the answer covers | `flows.top` |
+| `log_bursts`, `log_context` | repeated messages folded into one row; what else happened around a moment (log lines, alerts, changes) | `logs.bursts`, `logs.around` |
+| `list_detections` | recent detections with the records each was decided from | `detections.recent`, `detections.list` |
+| `service_checks` | service checks and their state | `checks.list` |
+| `list_incidents`, `get_incident` | open and past incidents, a timeline | `incidents.list/get` |
+| `handover_summary` | what happened in a period, every item a real record | `handover.generate` |
+| `list_evidence`, `get_evidence` | captured evidence (already redacted) | `evidence.list/get` |
+| `discovery_results`, `start_discovery` | what a scan found and what is not in the inventory yet; starting a scan of a range **always asks first** | the discovery feature's read methods; its scan method |
+| `automation_runs` | saved tasks and how their last runs went (read-only: running one stays a person's click) | the automation feature's list and history methods |
+| `list_snippets` | the saved command snippets, to suggest one | `terminal.snippets.list` |
+| `acknowledge_alert` | acknowledge an alert with a note — **always asks first** | `alerts.ack` |
+| `reserve_address` | record an address as reserved in IPAM — **always asks first** | the IPAM feature's reserve method |
+| `isp_overview`, `isp_customers`, `isp_invoices` | ISP edition only, and only when `isp_access` is on: revenue and arrears figures, customers with plan and balance, invoices | `isp.summary`, `isp.customers`, `isp.invoices` |
 
 `propose_change` is the heart of "configure with a single prompt": the model
 never sends configuration to a device; it writes the intent, the change
@@ -151,6 +165,22 @@ answer comes back as a change the UI renders as a card (diff, risk, Approve
 & apply). In `draft` autonomy the model's last step is to say what it
 prepared and why; in `lab`/`low_risk` it may call `apply_change` and report
 the verification result.
+
+**Tools that write a record.** `acknowledge_alert`, `reserve_address` and
+`start_discovery` change something that is not a device. They wait for
+`ai.approve` every time, whatever `confirm_reads` says, the card shows
+exactly what will be written, and the write is audited as the assistant's
+with the chat id. Nothing else here writes: the assistant does not add to an
+incident's timeline, does not capture evidence, does not run automation and
+does not type into a terminal (`terminal.snippets.send` and `terminal.input*`
+are on the never-reachable list).
+
+**The ISP ledger is other people's data.** The ISP tools are offered only
+when the build has the feature *and* the `isp_access` setting is on (it is
+off by default, and the setting says that customer records would be sent to
+the configured model). Even then a customer is a name, an id, a plan and a
+balance: phone numbers, addresses, e-mail and notes are never put in front
+of a model. No ISP tool writes.
 
 Small-context models (`context_window` < 16k) get a core subset
 (`list_devices`, `get_device`, `run_commands`, `get_config`,
@@ -168,6 +198,7 @@ engine — declare the section only if absent):
   max_steps: 40,                     // tool calls per turn
   turn_timeout_s: 900,
   result_rows: 50, result_chars: 8000,
+  isp_access: false,                 // ISP edition: may the model see the customer ledger (never contact details)
   system_prompt_extra: "" }          // the team's own standing instructions (naming conventions, change windows…)
 ```
 
