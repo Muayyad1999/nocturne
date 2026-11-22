@@ -1,0 +1,28 @@
+[package]
+name = "nocturne-detect"
+description = "A short, fixed catalogue of detections that need two sources put side by side."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The core only. Every other feature is reached by method name and by the
+# events it publishes, so this crate builds and is tested without them.
+nocturne-app.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+nocturne-app = { workspace = true, features = ["testing"] }
+pretty_assertions.workspace = true
+# A master password lives in the key file, so the vault tests need a directory.
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
