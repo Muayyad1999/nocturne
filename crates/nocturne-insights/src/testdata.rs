@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use nocturne_app::model::Device;
 use nocturne_app::store::Store;
-use nocturne_drivers::hier::{ConfigTree, Syntax};
+use nocturne_drivers::hier::Syntax;
 use nocturne_drivers::model::{
     ArpEntry, Counters, Facts, Interface, MacEntry, Neighbor, Route, Vlan,
 };
@@ -169,14 +169,14 @@ impl Config {
     /// A configuration parsed outside the cache (tests, and the one-off
     /// comparison `unsaved_config` makes).
     pub fn parsed(version_id: i64, taken_at: i64, syntax: Syntax, text: &str) -> Config {
-        let tree = ConfigTree::parse(text, syntax);
-        let sections = crate::world::interface_sections(&tree);
+        let parsed = crate::world::Parsed::of(text, syntax);
         Config {
             version_id,
             taken_at,
             syntax,
-            tree: Arc::new(tree),
-            sections: Arc::new(sections),
+            tree: parsed.tree,
+            sections: parsed.sections,
+            closed: parsed.closed,
         }
     }
 }

@@ -2,7 +2,8 @@
 //!
 //! 500 devices with 48 interfaces each, cabled into a tree, with
 //! configurations, VLANs, neighbours, facts, two generations of interface and
-//! MAC data, and polled metrics — then one full scan, timed.
+//! MAC data, a QoS policy on every uplink, and polled metrics including the
+//! per-class QoS series — then one full scan, timed.
 
 mod common;
 
@@ -71,8 +72,14 @@ fn configuration(hostname: &str) -> String {
          vlan 10\n name users\n\
          vlan 20\n name voice\n"
     );
+    // A queueing policy, attached to the uplink below, so the QoS
+    // configuration checks have something to walk on every device.
     text.push_str(
-        "interface GigabitEthernet1/0/48\n switchport mode trunk\n switchport trunk allowed vlan 10,20\n",
+        "policy-map UPLINK-OUT\n class VOICE\n  priority percent 20\n class VIDEO\n  bandwidth \
+         percent 30\n class class-default\n  fair-queue\n",
+    );
+    text.push_str(
+        "interface GigabitEthernet1/0/48\n switchport mode trunk\n switchport trunk allowed vlan 10,20\n service-policy output UPLINK-OUT\n",
     );
     for index in 1..PORTS {
         text.push_str(&format!(
@@ -80,7 +87,9 @@ fn configuration(hostname: &str) -> String {
             if index.is_multiple_of(2) { 10 } else { 20 }
         ));
     }
-    text.push_str("line vty 0 4\n transport input ssh\n access-class 10 in\n");
+    // The listing closes the way a device closes it: without its `end` a
+    // configuration counts as cut off, and the QoS checks do not judge it.
+    text.push_str("line vty 0 4\n transport input ssh\n access-class 10 in\n!\nend\n");
     text
 }
 
@@ -219,6 +228,26 @@ async fn a_scan_of_five_hundred_devices_is_well_under_a_second() {
                 }
             }
         }
+        // Per-class QoS series for the uplink's policy, in the format
+        // monitoring writes them (`docs/dev/spec-qos.md`): three classes,
+        // every one below the drop threshold.
+        for class in ["VOICE", "VIDEO", "class-default"] {
+            let instance = format!("GigabitEthernet1/0/{PORTS}|out|UPLINK-OUT/{class}");
+            for (metric, value) in [
+                ("qos.queue_drop_ps", 0.5),
+                ("qos.drop_ps", 0.5),
+                ("qos.drop_pct", 0.1),
+                ("qos.bps", 2_000_000.0),
+            ] {
+                let series = app.store().series_id(id, metric, &instance).unwrap();
+                // Up to the moment the fixture is built: a class whose
+                // samples stop is not evaluated, and building 500 devices
+                // on a busy machine takes a while.
+                for step in 0..12 {
+                    samples.push((series, now - (44 - step * 4) * 60_000, value));
+                }
+            }
+        }
         app.store().samples_insert(&samples).unwrap();
     }
     let built = built.elapsed();
@@ -320,6 +349,31 @@ async fn a_scan_of_five_hundred_devices_is_well_under_a_second() {
 
     assert_eq!(first.devices, DEVICES);
     assert!(first.checks_run > 20);
+
+    // The QoS checks did their work on every device rather than skipping it:
+    // a scan that is fast because a check declined to look proves nothing.
+    let coverage = app
+        .rpc("insights.coverage", json!({}))
+        .await
+        .expect("coverage");
+    let of = |check: &str| -> Value {
+        coverage["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .find(|entry| entry["check"] == check)
+            .unwrap_or_else(|| panic!("no coverage for {check}"))
+            .clone()
+    };
+    for check in [
+        "qos_policy_missing",
+        "qos_policy_unattached",
+        "qos_class_dropping",
+    ] {
+        assert_eq!(of(check)["evaluated"], DEVICES, "{check}");
+        // …and the fleet is clean, so anything found would be a false positive.
+        assert_eq!(of(check)["findings"], 0, "{check}");
+    }
     assert!(
         warm.as_millis() < BUDGET_MS,
         "a warm scan took {} ms, over the {BUDGET_MS} ms budget",

@@ -290,6 +290,8 @@ export interface InsightsThresholds {
   backup_age_days: number;
   /** Collected data older than this is not used for cross-device checks. Default 168. */
   stale_data_hours: number;
+  /** Packets a second a QoS class must drop, sustained, before it is reported. Default 10. */
+  qos_drop_ps: number;
   /** Addresses that must move between the same two ports before it counts as a flap. Default 3. */
   mac_flap_min_macs: number;
   /** Devices of one model needed before a version majority means anything. Default 3. */

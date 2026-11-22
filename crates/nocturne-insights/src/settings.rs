@@ -74,6 +74,11 @@ pub struct Thresholds {
     pub cpu_pct: f64,
     pub memory_pct: f64,
     pub temperature_c: f64,
+    /// Packets a second a QoS class must be dropping to count as dropping:
+    /// congestion drops where the device reports them apart, every drop
+    /// where it does not. The same figure as monitoring's built-in rule, so
+    /// an alert and an insight about one class agree on what "dropping" is.
+    pub qos_drop_ps: f64,
     /// A metric must stay over its threshold for this long to count as sustained.
     pub sustained_minutes: u32,
     /// How far back the metric and log history is read.
@@ -108,6 +113,7 @@ impl Default for Thresholds {
             cpu_pct: 85.0,
             memory_pct: 90.0,
             temperature_c: 65.0,
+            qos_drop_ps: 10.0,
             sustained_minutes: 15,
             history_hours: 24,
             backup_age_days: 7,

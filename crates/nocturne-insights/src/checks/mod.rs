@@ -18,6 +18,7 @@ pub mod fleet;
 pub mod l2;
 pub mod l3;
 pub mod physical;
+pub mod qos;
 pub mod security;
 
 use nocturne_drivers::model::Interface;

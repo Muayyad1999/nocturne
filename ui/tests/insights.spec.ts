@@ -401,7 +401,7 @@ test('a scan finds the planted duplex mismatch and shows what it was decided fro
 
   // And the scan's age is now on screen in two places.
   await expect(page.getByRole('contentinfo')).toContainText('Scanned');
-  await expect(band(page)).toContainText('34 checks over 3 devices');
+  await expect(band(page)).toContainText('37 checks over 3 devices');
 
   expect(console.messages).toEqual([]);
 });
@@ -625,7 +625,7 @@ test('the findings and the coverage survive a reload, and the command palette ca
   // The scan itself takes milliseconds, so what is waited for is its outcome:
   // the toast, which names the coverage rather than claiming success.
   await expect(page.getByRole('region', { name: 'Notifications' })).toContainText(
-    '34 checks over 3 devices',
+    '37 checks over 3 devices',
     { timeout: 30_000 },
   );
 

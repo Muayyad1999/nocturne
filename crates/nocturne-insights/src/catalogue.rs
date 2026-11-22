@@ -546,6 +546,81 @@ pub static CHECKS: &[Check] = &[
         default_enabled: true,
         run: checks::fleet::high_temperature,
     },
+    // --------------------------------------------------------------- qos
+    Check {
+        id: "qos_policy_missing",
+        title: "Service policy names a policy-map that is not defined",
+        category: Category::Config,
+        severity: Severity::Medium,
+        needs: &["running configuration"],
+        description: "An interface, or a class of another policy, references a policy-map that \
+            the same configuration does not define, so the QoS it was meant to apply is not \
+            there. Reads IOS-style MQC only: `service-policy input|output` under an interface \
+            and `service-policy` inside a class, against `policy-map` sections. It cannot see a \
+            policy the platform supplies without printing it: references from `control-plane`, \
+            templates and wireless profiles are not judged, and AutoQoS names are never called \
+            missing. A device normally refuses such a line, so on hardware a finding usually \
+            means the stored configuration is not the whole of what the device runs.",
+        not_evaluated: "No stored configuration; one in a grammar this does not read (IOS-style \
+            only) — typed QoS policies (`policy-map type qos`, as NX-OS and EOS write them) or \
+            an IOS XR configuration (`end-policy-map`, `end-policy`); or one that is not whole — \
+            an interface-only or section capture (no `hostname` line) has attachments and no \
+            definitions, and a listing that stops before its closing `end` is missing whatever \
+            it did not print.",
+        default_enabled: true,
+        run: checks::qos::qos_policy_missing,
+    },
+    Check {
+        id: "qos_policy_unattached",
+        title: "Policy-map attached nowhere",
+        category: Category::Hygiene,
+        // Info on purpose: estates that push one template to every router
+        // define a policy per circuit speed and attach the one that fits, so
+        // this is true of most of their devices.
+        severity: Severity::Info,
+        needs: &["running configuration"],
+        description: "A policy-map that no `service-policy` line anywhere in the configuration \
+            names: left over, or written and never attached — in which case the QoS it describes \
+            is not in effect. A child policy referenced from a class counts as used, as does any \
+            other mention after `service-policy` (control-plane, a template, an NHRP group). \
+            Policies the platform generates (`AutoQos-…`, `system-cpp-policy`) are not reported. \
+            It cannot see a policy that RADIUS or a controller applies by name; IOS-style MQC \
+            only.",
+        not_evaluated: "No stored configuration; one in a grammar this does not read (IOS-style \
+            only) — typed QoS policies or an IOS XR configuration; one that is not whole (no \
+            `hostname` line, or no closing `end`: IOS prints policy-maps before interfaces, so a \
+            listing cut short has the definitions without the attachments); or a device whose \
+            sessions RADIUS authorises (a virtual template, a dynamic template, `ip subscriber`, \
+            `aaa authorization network`) and can give a policy by name.",
+        default_enabled: true,
+        run: checks::qos::qos_policy_unattached,
+    },
+    Check {
+        id: "qos_class_dropping",
+        title: "QoS class dropping packets",
+        category: Category::Capacity,
+        severity: Severity::Medium,
+        needs: &[
+            "`qos.queue_drop_ps` samples (monitoring)",
+            "`qos.drop_ps` samples where the device has no separate congestion counter",
+        ],
+        description: "A class of a QoS policy kept dropping packets for most of a long stretch \
+            that runs up to now, with its drop rate, the share of offered packets it lost and \
+            the hour it is worst in. Where the device counts congestion (queue) drops apart, \
+            only those count: a policer that drops is the policy working, and a class with no \
+            queue is not reported. Where a device records no congestion counter — one drop \
+            counter for both, or no class with a queue — the finding says so and is low \
+            severity. Only samples since the last hole in a series are judged, so a read that \
+            failed for a while is not counted as time spent dropping. On a hierarchical policy a \
+            parent class counts its children's drops, so a congested child can appear together \
+            with its parent.",
+        not_evaluated: "No QoS samples for the device — its device type has no QoS read, \
+            monitoring is not polling it, the read has never succeeded, or no policy is attached \
+            — none inside the window, or samples that stop before now because the read is \
+            failing; and a drop threshold that is not above zero.",
+        default_enabled: true,
+        run: checks::qos::qos_class_dropping,
+    },
 ];
 
 #[cfg(test)]

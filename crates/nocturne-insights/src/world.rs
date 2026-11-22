@@ -54,6 +54,12 @@ pub struct Config {
     pub tree: Arc<ConfigTree>,
     /// Canonical interface name → index into `tree.roots`.
     pub(crate) sections: Arc<HashMap<String, usize>>,
+    /// The listing runs to the `end` line an IOS-style device closes a
+    /// configuration with. The tree cannot say: its parser drops that line
+    /// as display. A check that reasons from what is *absent* needs it, for
+    /// a listing that stops early is missing things it never had a chance
+    /// to print.
+    pub closed: bool,
 }
 
 impl Config {
@@ -272,38 +278,61 @@ pub fn canonical(name: &str) -> String {
     ifname::long(name).to_ascii_lowercase()
 }
 
+/// What parsing a stored configuration yields, shared between scans.
+#[derive(Clone)]
+pub(crate) struct Parsed {
+    pub(crate) tree: Arc<ConfigTree>,
+    pub(crate) sections: Arc<HashMap<String, usize>>,
+    pub(crate) closed: bool,
+}
+
+impl Parsed {
+    pub(crate) fn of(text: &str, syntax: Syntax) -> Parsed {
+        let tree = ConfigTree::parse(text, syntax);
+        Parsed {
+            sections: Arc::new(interface_sections(&tree)),
+            tree: Arc::new(tree),
+            closed: closes_with_end(text),
+        }
+    }
+}
+
+/// Is the last line of the listing `end`, at the left margin? Blank lines
+/// and `!` separators after it are display, as they are everywhere else in
+/// the listing. An indented `end` is a line of some section, not the close.
+pub(crate) fn closes_with_end(text: &str) -> bool {
+    text.lines().map(str::trim_end).rfind(|line| {
+        let content = line.trim_start();
+        !content.is_empty() && !content.starts_with('!')
+    }) == Some("end")
+}
+
 /// Parsed configurations, kept between scans. A campus has hundreds of
 /// configurations and a scan runs after every collection; re-parsing them all
 /// each time is the single most expensive thing this feature could do.
 #[derive(Default)]
 pub struct ConfigCache {
-    trees: Mutex<HashMap<i64, (Arc<ConfigTree>, Arc<HashMap<String, usize>>)>>,
+    trees: Mutex<HashMap<i64, Parsed>>,
 }
 
 impl ConfigCache {
     /// At most this many parsed configurations are kept (a few MB).
     const CAPACITY: usize = 2_000;
 
-    fn get_or_parse(
-        &self,
-        version_id: i64,
-        syntax: Syntax,
-        text: &str,
-    ) -> (Arc<ConfigTree>, Arc<HashMap<String, usize>>) {
+    fn get_or_parse(&self, version_id: i64, syntax: Syntax, text: &str) -> Parsed {
         let cached = self.trees.lock().get(&version_id).cloned();
         if let Some(found) = cached {
             return found;
         }
-        let tree = Arc::new(ConfigTree::parse(text, syntax));
-        let sections = Arc::new(interface_sections(&tree));
+        let parsed = Parsed::of(text, syntax);
         let mut trees = self.trees.lock();
         // Configuration versions are append-only, so eviction can be crude:
         // what matters is that memory stays bounded.
         if trees.len() >= Self::CAPACITY {
             trees.clear();
         }
-        trees.insert(version_id, (tree.clone(), sections.clone()));
-        (tree, sections)
+        trees.insert(version_id, parsed.clone());
+        parsed
     }
 }
 
@@ -542,7 +571,7 @@ fn config_of(
     // The lookup is in a scope of its own: holding the cache's lock across the
     // read that fills it would deadlock on itself.
     let cached = cache.trees.lock().get(&version.id).cloned();
-    let (tree, sections) = match cached {
+    let parsed = match cached {
         Some(found) => found,
         None => {
             let (_, text) = app.store().config_get(version.id)?;
@@ -553,8 +582,9 @@ fn config_of(
         version_id: version.id,
         taken_at: version.taken_at,
         syntax,
-        tree,
-        sections,
+        tree: parsed.tree,
+        sections: parsed.sections,
+        closed: parsed.closed,
     })
 }
 
@@ -576,7 +606,7 @@ mod tests {
 
     #[test]
     fn interface_sections_are_found_by_any_spelling() {
-        let tree = ConfigTree::parse(
+        let parsed = Parsed::of(
             "interface GigabitEthernet0/1\n switchport mode trunk\ninterface Vlan10\n ip address 10.0.0.1 255.255.255.0\n",
             Syntax::Ios,
         );
@@ -584,8 +614,9 @@ mod tests {
             version_id: 1,
             taken_at: 0,
             syntax: Syntax::Ios,
-            sections: Arc::new(interface_sections(&tree)),
-            tree: Arc::new(tree),
+            sections: parsed.sections,
+            tree: parsed.tree,
+            closed: parsed.closed,
         };
         assert!(config.interface("Gi0/1").is_some());
         assert!(config.interface("gigabitethernet 0/1").is_some());
@@ -596,12 +627,41 @@ mod tests {
     #[test]
     fn the_cache_parses_a_configuration_once_and_stays_bounded() {
         let cache = ConfigCache::default();
-        let (first, _) = cache.get_or_parse(1, Syntax::Ios, "hostname SW1\n");
-        let (again, _) = cache.get_or_parse(1, Syntax::Ios, "hostname OTHER\n");
-        assert!(Arc::ptr_eq(&first, &again), "the parse is reused");
+        let first = cache.get_or_parse(1, Syntax::Ios, "hostname SW1\n");
+        let again = cache.get_or_parse(1, Syntax::Ios, "hostname OTHER\n");
+        assert!(Arc::ptr_eq(&first.tree, &again.tree), "the parse is reused");
         for version in 0..ConfigCache::CAPACITY as i64 + 5 {
             cache.get_or_parse(version + 10, Syntax::Ios, "hostname SW\n");
         }
         assert!(cache.trees.lock().len() <= ConfigCache::CAPACITY);
+    }
+
+    #[test]
+    fn a_listing_is_closed_only_when_its_last_line_is_end() {
+        // What a device prints after the last section: `!`, `end`, and
+        // sometimes a blank line before the prompt comes back.
+        assert!(closes_with_end("hostname SW1\n!\nend\n"));
+        assert!(closes_with_end("hostname SW1\r\n!\r\nend\r\n\r\n"));
+        assert!(closes_with_end("hostname SW1\nend\n!\n"));
+        // Stopped early, at any point.
+        assert!(!closes_with_end(
+            "hostname SW1\npolicy-map WAN\n class VOICE\n"
+        ));
+        assert!(!closes_with_end("hostname SW1\n!\n"));
+        assert!(!closes_with_end(""));
+        // A word that merely starts or ends that way is not the line, and
+        // neither is the word inside a section.
+        assert!(!closes_with_end("hostname SW1\nend-policy-map\n"));
+        assert!(!closes_with_end("hostname SW1\n description the end\n"));
+        assert!(!closes_with_end("hostname SW1\nmacro name LEAVE\n end\n"));
+        // The cache remembers it with the tree.
+        let cache = ConfigCache::default();
+        assert!(
+            cache
+                .get_or_parse(1, Syntax::Ios, "hostname SW1\nend\n")
+                .closed
+        );
+        assert!(!cache.get_or_parse(2, Syntax::Ios, "hostname SW1\n").closed);
+        assert!(cache.get_or_parse(1, Syntax::Ios, "ignored: cached").closed);
     }
 }

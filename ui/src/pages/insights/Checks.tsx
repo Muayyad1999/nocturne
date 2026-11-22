@@ -109,6 +109,12 @@ const THRESHOLDS: {
     hint: 'Collected data older than this is not used for cross-device checks: comparing two ends of a link means comparing them as they were at about the same time.',
   },
   {
+    key: 'qos_drop_ps',
+    label: 'QoS drops',
+    unit: 'packets a second',
+    hint: 'Packets a second a QoS class must drop, for the sustained time, before it is reported. A class that drops now and then is doing its job.',
+  },
+  {
     key: 'mac_flap_min_macs',
     label: 'MAC flapping',
     unit: 'addresses',
@@ -153,6 +159,7 @@ const CHECK_THRESHOLDS: Record<string, (keyof InsightsThresholds)[]> = {
   high_memory: ['memory_pct', 'sustained_minutes'],
   high_temperature: ['temperature_c', 'sustained_minutes'],
   no_recent_backup: ['backup_age_days'],
+  qos_class_dropping: ['qos_drop_ps', 'sustained_minutes', 'history_hours'],
   mac_flapping: ['mac_flap_min_macs'],
   software_inconsistent: ['software_min_group'],
   unsaved_config: ['saved_pair_window_minutes'],

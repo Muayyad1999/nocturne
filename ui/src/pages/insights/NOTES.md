@@ -39,7 +39,7 @@ Events: `insights.changed`, `jobs.changed`, `settings.changed`,
   was not examined, so `CoverageBand` sits above all three views: the number of
   checks and devices, the age of the scan, four tiles (findings / evaluated /
   not evaluated / checks off) and the engine's own top reasons. The Coverage
-  view behind it accounts for all 34 checks. The band is one landmark named
+  view behind it accounts for all 37 checks. The band is one landmark named
   "Coverage of the last scan" in every state it can be in, including the error
   and the never-scanned ones.
 * **Five answers, five words, in one place.** `insight.ts` owns

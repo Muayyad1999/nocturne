@@ -78,6 +78,93 @@ pub fn summarise(
     })
 }
 
+/// As [`summarise`], but each instance is summarised over its latest
+/// *unbroken* run only: the samples from the last hole longer than `hole_ms`
+/// onwards.
+///
+/// A failed read writes no sample, so a series with a hole in it says nothing
+/// about the time the hole covers. Counting the samples on both sides as one
+/// stretch would claim "over the threshold for fifty minutes" on the strength
+/// of ten measured ones. The sample that ends a hole is kept: it is a rate
+/// over the interval that ended when it was taken, and the run starts there.
+pub fn summarise_unbroken(
+    store: &Store,
+    device_id: &str,
+    metric: &str,
+    since: i64,
+    threshold: f64,
+    hole_ms: i64,
+) -> AppResult<Vec<Series>> {
+    store.with(|conn| {
+        let mut statement = conn.prepare_cached(
+            "WITH recent AS (
+                 SELECT s.instance AS instance, m.ts AS ts, m.value AS value,
+                        m.ts - LAG(m.ts) OVER (PARTITION BY s.id ORDER BY m.ts) AS gap
+                 FROM series s JOIN samples m ON m.series_id = s.id
+                 WHERE s.device_id = ?1 AND s.metric = ?2 AND m.ts >= ?3
+             ),
+             resumed AS (
+                 SELECT instance, MAX(ts) AS at FROM recent WHERE gap > ?5 GROUP BY instance
+             )
+             SELECT r.instance, COUNT(*), MIN(r.ts), MAX(r.ts), AVG(r.value), MAX(r.value),
+                    SUM(CASE WHEN r.value >= ?4 THEN 1 ELSE 0 END)
+             FROM recent r LEFT JOIN resumed h ON h.instance = r.instance
+             WHERE h.at IS NULL OR r.ts >= h.at
+             GROUP BY r.instance",
+        )?;
+        let rows = statement.query_map(
+            params![device_id, metric, since, threshold, hole_ms],
+            |row| {
+                Ok(Series {
+                    instance: row.get(0)?,
+                    points: row.get::<_, i64>(1)?.max(0) as u32,
+                    first_at: row.get(2)?,
+                    last_at: row.get(3)?,
+                    avg: row.get(4)?,
+                    max: row.get(5)?,
+                    over: row.get::<_, i64>(6)?.max(0) as u32,
+                })
+            },
+        )?;
+        rows.collect()
+    })
+}
+
+/// One series from `since` on, or `None` when it has no sample there — for
+/// the figures quoted beside a finding, which have to cover the stretch the
+/// finding was decided over and not a different one.
+pub fn summarise_one(
+    store: &Store,
+    device_id: &str,
+    metric: &str,
+    instance: &str,
+    since: i64,
+) -> AppResult<Option<Series>> {
+    store.with(|conn| {
+        let mut statement = conn.prepare_cached(
+            "SELECT COUNT(*), MIN(m.ts), MAX(m.ts), AVG(m.value), MAX(m.value)
+             FROM series s JOIN samples m ON m.series_id = s.id
+             WHERE s.device_id = ?1 AND s.metric = ?2 AND s.instance = ?3 AND m.ts >= ?4",
+        )?;
+        // An aggregate over no rows is one row of NULLs, not no row.
+        statement.query_row(params![device_id, metric, instance, since], |row| {
+            let points = row.get::<_, i64>(0)?.max(0) as u32;
+            if points == 0 {
+                return Ok(None);
+            }
+            Ok(Some(Series {
+                instance: instance.to_string(),
+                points,
+                first_at: row.get(1)?,
+                last_at: row.get(2)?,
+                avg: row.get(3)?,
+                max: row.get(4)?,
+                over: 0,
+            }))
+        })
+    })
+}
+
 /// How often each instance of a metric changed value in the window — for
 /// `if.oper`, which is 1 or 0, that is the number of up/down transitions.
 pub fn transitions(
@@ -181,6 +268,78 @@ mod tests {
         let present = present(&store).unwrap();
         assert!(present.contains(&("dev1".to_string(), "if.util_pct".to_string())));
         assert!(!present.contains(&("dev1".to_string(), "cpu.pct".to_string())));
+    }
+
+    #[test]
+    fn a_hole_in_a_series_starts_the_summary_again_after_it() {
+        let minute = 60_000;
+        let store = store_with(&[
+            // Three samples, forty minutes of nothing, three more.
+            ("qos.queue_drop_ps", "holed", 0, 90.0),
+            ("qos.queue_drop_ps", "holed", 5 * minute, 90.0),
+            ("qos.queue_drop_ps", "holed", 10 * minute, 90.0),
+            ("qos.queue_drop_ps", "holed", 50 * minute, 20.0),
+            ("qos.queue_drop_ps", "holed", 55 * minute, 30.0),
+            ("qos.queue_drop_ps", "holed", 60 * minute, 2.0),
+            // The same six, evenly spread: no hole.
+            ("qos.queue_drop_ps", "whole", 0, 90.0),
+            ("qos.queue_drop_ps", "whole", 12 * minute, 90.0),
+            ("qos.queue_drop_ps", "whole", 24 * minute, 90.0),
+            ("qos.queue_drop_ps", "whole", 36 * minute, 20.0),
+            ("qos.queue_drop_ps", "whole", 48 * minute, 30.0),
+            ("qos.queue_drop_ps", "whole", 60 * minute, 2.0),
+        ]);
+        let mut runs =
+            summarise_unbroken(&store, "dev1", "qos.queue_drop_ps", 0, 10.0, 15 * minute).unwrap();
+        runs.sort_by(|a, b| a.instance.cmp(&b.instance));
+        assert_eq!(runs.len(), 2);
+
+        let holed = &runs[0];
+        assert_eq!(
+            (holed.points, holed.first_at, holed.last_at),
+            (3, 50 * minute, 60 * minute),
+            "only what follows the hole, starting with the sample that ended it"
+        );
+        assert_eq!((holed.over, holed.max), (2, 30.0));
+        assert_eq!(holed.span_minutes(), 10);
+
+        let whole = &runs[1];
+        assert_eq!((whole.points, whole.span_minutes(), whole.over), (6, 60, 5));
+
+        // A gap of exactly the allowed length is not a hole.
+        let exact =
+            summarise_unbroken(&store, "dev1", "qos.queue_drop_ps", 0, 10.0, 40 * minute).unwrap();
+        assert!(exact.iter().all(|series| series.points == 6));
+        // The window is honoured before holes are looked for.
+        let late = summarise_unbroken(
+            &store,
+            "dev1",
+            "qos.queue_drop_ps",
+            55 * minute,
+            10.0,
+            15 * minute,
+        )
+        .unwrap();
+        assert!(late.iter().all(|series| series.points <= 2));
+        assert!(
+            summarise_unbroken(&store, "dev1", "cpu.pct", 0, 10.0, minute)
+                .unwrap()
+                .is_empty()
+        );
+
+        // One series from a moment on: the figures quoted beside a run.
+        let after = summarise_one(&store, "dev1", "qos.queue_drop_ps", "holed", 50 * minute)
+            .unwrap()
+            .expect("three samples");
+        assert_eq!((after.points, after.max), (3, 30.0));
+        assert!((after.avg - 52.0 / 3.0).abs() < 1e-9);
+        for (instance, since) in [("holed", 61 * minute), ("absent", 0)] {
+            assert_eq!(
+                summarise_one(&store, "dev1", "qos.queue_drop_ps", instance, since).unwrap(),
+                None,
+                "{instance}: nothing measured is not a measurement of nothing"
+            );
+        }
     }
 
     #[test]
