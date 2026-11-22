@@ -3748,6 +3748,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nocturne-detect"
+version = "0.1.0"
+dependencies = [
+ "nocturne-app",
+ "parking_lot",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nocturne-discovery"
 version = "0.1.0"
 dependencies = [
@@ -3956,20 +3970,26 @@ dependencies = [
 name = "nocturne-ops"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "csv",
  "futures",
+ "hex",
+ "nocturne-ai",
  "nocturne-app",
  "nocturne-drivers",
+ "nocturne-transport",
  "parking_lot",
  "pretty_assertions",
  "regex",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
