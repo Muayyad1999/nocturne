@@ -87,6 +87,32 @@ mod tests {
         assert!(json["message"].is_string());
     }
 
+    /// The success half of the contract with
+    /// `ui/src/api/transports/tauri.ts`.
+    ///
+    /// The error half is asserted above — it serialises to `{code, message}`
+    /// and Tauri rejects the promise with it. This is the other half, and it
+    /// is the one that was wrong: the transport reads whatever this resolves
+    /// with *as the result*, so anything added around it breaks every screen
+    /// in the application at once. It did, and both sides had passing tests
+    /// because each was checked against its own idea of the other.
+    #[tokio::test]
+    async fn a_result_is_passed_through_with_nothing_wrapped_around_it() {
+        let app = nocturne_suite::start(AppConfig::in_memory()).unwrap();
+        for (method, params) in [
+            ("app.info", serde_json::Value::Null),
+            ("devices.list", serde_json::Value::Null),
+            ("app.methods", serde_json::Value::Null),
+        ] {
+            let direct = app.rpc(method, params.clone()).await.unwrap();
+            let through = call(&app, method, Some(params)).await.unwrap();
+            assert_eq!(
+                through, direct,
+                "`{method}` came back changed. This must be the method's own result and                  nothing else: `ui/src/api/transports/tauri.ts` takes what Tauri resolves                  with and uses it as the result, with no envelope. The HTTP path in                  `nocturne-server` does wrap, and that is a different contract."
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_panicking_method_does_not_take_the_window_down() {
         let mut builder = nocturne_suite::AppBuilder::new(AppConfig::in_memory()).unwrap();
