@@ -25,7 +25,7 @@ Audit.tsx          the record: filterable, linked, not editable
 Jobs.tsx           the full history, with one job's log in a drawer
 ExportDialog.tsx   a rendered document before it becomes a file
 PrintFrame.tsx     printing that document without giving it this page's origin
-printFrame.js      the one script the print frame runs (a file: see below)
+printSelf.js       the one script the print frame runs (a file: see below)
 ```
 
 Methods used: `incidents.*` (list, get, create, update, delete, note, link,
@@ -93,7 +93,7 @@ Events: `incidents.changed`, `handover.changed`, `notes.changed`,
   in every engine), and `allow-same-origin` — which would make it reachable —
   would put a document made from device data on the application's origin.
   `usePrintFrame` hands the same text to a second, hidden frame that has an
-  origin of its own and one script, `printFrame.js`, which takes the document
+  origin of its own and one script, `printSelf.js`, which takes the document
   in a message, parses it where nothing runs, and prints itself. That script
   is a file because the application's policy only runs scripts from its own
   address, and it is imported `?url&no-inline` because the build would
@@ -202,3 +202,16 @@ Events: `incidents.changed`, `handover.changed`, `notes.changed`,
 * **There is no shared device picker** (the page spec names one). The new
   incident dialog uses a `Combobox` plus chips; the Changes screen built its
   own as well. Two implementations of the same control are one too many.
+
+## File names
+
+Two files in one directory must not differ only in case once the extension
+is taken off: `Evidence.tsx` beside `evidence.ts`, or `PrintFrame.tsx`
+beside `printFrame.js`. On Linux each import finds its own file; on Windows
+and macOS `./Evidence` finds whichever the filesystem offers first, and the
+build or the tests fail there on an export that "is not a function" — which
+is how the print frame's tests failed on Windows while passing here. A
+component keeps its own name; the React-free module beside it is named for
+what it does (`comparison.ts` beside `Compare.tsx`). Run
+`./scripts/check-case-collisions.sh` before calling work in this directory
+finished: it also looks at files that are not committed yet.

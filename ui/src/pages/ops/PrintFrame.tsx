@@ -10,7 +10,7 @@
  * `allow-same-origin` would make that call work, by putting a document made
  * from device data on the application's own origin. It is not used. The
  * document is printed by a second frame instead, which also has an origin of
- * its own and is allowed one script, ours (`printFrame.js`): the frame says
+ * its own and is allowed one script, ours (`printSelf.js`): the frame says
  * it is ready, is sent the document, and prints itself. The frame starts
  * empty, so the document never passes through a parser that could run
  * anything in it, and its policy below allows no script but that one file
@@ -26,7 +26,10 @@ import { toast } from '@/design/Toast';
 import styles from './PrintFrame.module.css';
 // `no-inline`: a file this small would otherwise be built into a `data:`
 // address, which is not the application's own and so is refused by its policy.
-import scriptPath from './printFrame.js?url&no-inline';
+// Named for what it does and not `printFrame.js`: on Windows and macOS an
+// import of `./PrintFrame` finds a file of that name first, whatever its
+// case, and this module's exports were "not a function" there.
+import scriptPath from './printSelf.js?url&no-inline';
 
 /**
  * What the print frame may do: run its script and open the print dialog
