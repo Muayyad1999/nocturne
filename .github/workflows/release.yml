@@ -31,10 +31,16 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          # A re-run must not make a second release for the same tag.
-          # `gh api` prints the 404 body on stdout, so "not empty" is not the
-          # same as "found" — only an id made of digits counts as one.
-          existing=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq .id 2>/dev/null || true)
+          # A re-run must not make a second release for the same tag. The
+          # release made here is a draft, and `releases/tags/<tag>` only
+          # answers for a published one, so the draft a first run made was
+          # invisible to the second and a duplicate appeared. The list
+          # includes drafts for a token that may write.
+          #
+          # `gh api` prints an error body on stdout, so "not empty" is not
+          # the same as "found" — only an id made of digits counts as one.
+          existing=$(gh api "repos/${{ github.repository }}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -n 1 || true)
           case "$existing" in
             '' | *[!0-9]*) existing='' ;;
           esac

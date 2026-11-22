@@ -55,6 +55,12 @@ jobs:
       # other step here — and the desktop crate is linted in its own job.
       - run: cargo clippy -- -D warnings
       - run: cargo test
+      # The ISP edition is the same build with one feature on, and nothing
+      # above turns it on: a clash between its methods or settings and the
+      # rest of the suite would only show on a release tag, after the free
+      # installers had already been uploaded.
+      - run: cargo clippy -p nocturne-suite -p nocturne-server --features isp --all-targets -- -D warnings
+      - run: cargo test -p nocturne-suite --features isp
 
   rust-portability:
     name: Rust — build and test (${{ matrix.os }})
@@ -174,3 +180,6 @@ jobs:
       # saying there is not when there is not, so this needs no `pnpm build`.
       - run: cargo clippy -p nocturne-desktop --all-targets -- -D warnings
       - run: cargo test -p nocturne-desktop
+      # And the ISP edition of the shell, which is a different product name
+      # and identifier over the same code with one feature on.
+      - run: cargo clippy -p nocturne-desktop --features isp --all-targets -- -D warnings
