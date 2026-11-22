@@ -9,11 +9,12 @@
 
 #![allow(dead_code)] // each test binary uses a different part of this.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nocturne_app::testing::{self, Lab};
-use nocturne_app::util::now_ms;
+use nocturne_app::util::{new_id, now_ms};
 use nocturne_app::{App, AppError, AppResult};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -32,6 +33,13 @@ pub struct With {
     pub ipam: bool,
     pub logs: bool,
     pub locate: bool,
+    /// `terminal.list`, `terminal.snapshot`, `terminal.logs.list` and
+    /// `terminal.logs.read`, over real sessions on the fake devices.
+    pub terminal: bool,
+    /// `topology.export`.
+    pub topology: bool,
+    /// `metrics.query_many`, over the core's sample store.
+    pub metrics: bool,
 }
 
 impl With {
@@ -48,6 +56,9 @@ impl With {
             ipam: true,
             logs: true,
             locate: true,
+            terminal: true,
+            topology: true,
+            metrics: true,
         }
     }
 
@@ -84,6 +95,14 @@ pub struct Fixture {
     pub slow: Mutex<HashSet<String>>,
     /// Methods that answer with something ops cannot read.
     pub malformed: Mutex<HashSet<String>>,
+    /// Methods that do not answer until the test lets them.
+    pub held: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    /// The drawing `topology.export` returns.
+    pub topology_svg: Mutex<String>,
+    /// What `metrics.query_many` answers instead of reading the store.
+    pub metrics_answer: Mutex<Option<Value>>,
+    /// The session logs `terminal.logs.*` serve: the index row and the text.
+    pub session_logs: Mutex<Vec<(Value, String)>>,
 }
 
 impl Fixture {
@@ -97,6 +116,21 @@ impl Fixture {
 
     pub fn garble(&self, method: &str) {
         self.malformed.lock().insert(method.to_string());
+    }
+
+    /// Make `method` wait, once it has been called, until [`Fixture::release`].
+    pub fn hold(&self, method: &str) {
+        self.held
+            .lock()
+            .insert(method.to_string(), Arc::new(tokio::sync::Notify::new()));
+    }
+
+    pub fn release(&self, method: &str) {
+        if let Some(held) = self.held.lock().remove(method) {
+            // A permit, so that a call which has not started waiting yet
+            // goes straight through when it does.
+            held.notify_one();
+        }
     }
 
     pub fn called(&self, method: &str) -> usize {
@@ -131,6 +165,10 @@ async fn gate(app: &App, method: &str, params: &Value) -> AppResult<Option<Value
     if fixture.slow.lock().contains(method) {
         // Longer than any budget in this crate.
         tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+    let held = fixture.held.lock().get(method).cloned();
+    if let Some(held) = held {
+        held.notified().await;
     }
     if fixture.malformed.lock().contains(method) {
         return Ok(Some(json!({"something": "else entirely"})));
@@ -320,7 +358,281 @@ pub async fn lab(names: &[&str], with: With) -> Lab {
             Ok(located)
         });
     }
+    builder.state(Terminal::default());
+    if with.terminal {
+        stub!(builder, "terminal.list", |app, _params| {
+            Ok(Value::Array(
+                app.state::<Terminal>()
+                    .sessions
+                    .lock()
+                    .iter()
+                    .map(|session| session.info())
+                    .collect(),
+            ))
+        });
+        stub!(builder, "terminal.snapshot", |app, params| {
+            let id = params["session_id"].as_str().unwrap_or_default();
+            let session = app
+                .state::<Terminal>()
+                .get(id)
+                .ok_or_else(|| AppError::not_found(format!("terminal session `{id}`")))?;
+            let lines = session.lines();
+            let wanted = params["lines"].as_u64().unwrap_or(200) as usize;
+            let text = lines[lines.len().saturating_sub(wanted)..].join("\n");
+            // The real feature hides the device's secrets itself before it
+            // answers. This one never does, which is the case ops has to be
+            // able to stand: whatever is hidden in what it stores, it hid.
+            Ok(json!({
+                "lines": if text.is_empty() { 0 } else { text.split('\n').count() },
+                "text": text,
+                "redacted": false,
+            }))
+        });
+        stub!(builder, "terminal.logs.list", |app, params| {
+            let words: Vec<String> = params["query"]
+                .as_str()
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::to_lowercase)
+                .collect();
+            Ok(Value::Array(
+                app.state::<Fixture>()
+                    .session_logs
+                    .lock()
+                    .iter()
+                    .map(|(row, _)| row.clone())
+                    .filter(|row| {
+                        let haystack = format!("{} {}", row["title"], row["name"]).to_lowercase();
+                        words.iter().all(|word| haystack.contains(word))
+                    })
+                    .collect(),
+            ))
+        });
+        stub!(builder, "terminal.logs.read", |app, params| {
+            let name = params["name"].as_str().unwrap_or_default();
+            let logs = app.state::<Fixture>().session_logs.lock().clone();
+            let (_, text) = logs
+                .into_iter()
+                .find(|(row, _)| row["name"] == json!(name))
+                .ok_or_else(|| AppError::not_found(format!("session log `{name}`")))?;
+            let size = text.len();
+            let offset = (params["offset"].as_u64().unwrap_or(0) as usize).min(size);
+            let limit = params["limit"].as_u64().unwrap_or(256 * 1024) as usize;
+            let mut end = (offset + limit).min(size);
+            // Like the real read: whole lines while more of the file follows.
+            if end < size {
+                end = text[offset..end]
+                    .rfind('\n')
+                    .map_or(end, |newline| offset + newline + 1);
+            }
+            Ok(json!({
+                "text": text[offset..end],
+                "size": size,
+                "eof": end >= size,
+                "next_offset": end,
+                "redacted": false,
+            }))
+        });
+    }
+    if with.topology {
+        stub!(builder, "topology.export", |app, params| {
+            let format = params["format"].as_str().unwrap_or_default().to_string();
+            Ok(json!({
+                "format": format,
+                "filename": format!("topology-physical.{format}"),
+                "text": app.state::<Fixture>().topology_svg.lock().clone(),
+            }))
+        });
+    }
+    if with.metrics {
+        stub!(builder, "metrics.query_many", |app, params| {
+            if let Some(canned) = app.state::<Fixture>().metrics_answer.lock().clone() {
+                return Ok(canned);
+            }
+            // As `nocturne-monitor` answers: the store's own buckets, and
+            // only the ones that have something in them.
+            let since = params["since"].as_i64().unwrap_or(0);
+            let until = params["until"].as_i64().unwrap_or_else(now_ms);
+            let step = params["step_s"].as_i64().unwrap_or(60).max(1);
+            let max_points = ((until - since) / (step * 1000)).clamp(2, 5_000) as usize;
+            let mut answers = Vec::new();
+            for wanted in params["series"].as_array().cloned().unwrap_or_default() {
+                let device_id = wanted["device_id"].as_str().unwrap_or_default();
+                let metric = wanted["metric"].as_str().unwrap_or_default();
+                let instance = wanted["instance"].as_str().unwrap_or_default();
+                let series = app.store().series_id(device_id, metric, instance)?;
+                let points: Vec<Value> = app
+                    .store()
+                    .samples_query(series, since, until, max_points)?
+                    .into_iter()
+                    .map(|point| json!([point.ts, point.avg]))
+                    .collect();
+                answers.push(json!({
+                    "device_id": device_id,
+                    "metric": metric,
+                    "instance": instance,
+                    "points": points,
+                    "step_s": step,
+                    "rollup": "raw",
+                }));
+            }
+            Ok(Value::Array(answers))
+        });
+    }
     testing::lab(builder, names).await
+}
+
+// ------------------------------------------------- a terminal on the fake device
+
+/// The sessions the stand-in for the terminal feature holds. Each is a real
+/// connection to one of the lab's fake devices, opened through the core as
+/// the terminal feature opens its own: what a snapshot returns is what that
+/// device printed.
+#[derive(Default)]
+pub struct Terminal {
+    sessions: Mutex<Vec<Arc<Session>>>,
+}
+
+impl Terminal {
+    fn get(&self, id: &str) -> Option<Arc<Session>> {
+        self.sessions
+            .lock()
+            .iter()
+            .find(|session| session.id == id)
+            .cloned()
+    }
+}
+
+pub struct Session {
+    pub id: String,
+    pub title: String,
+    pub device_id: String,
+    pub peer: String,
+    opened_at: i64,
+    writer: nocturne_transport::ConnectionWriter,
+    received: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Session {
+    /// What `terminal.list` says about it, field for field what
+    /// `nocturne-terminal`'s `SessionInfo` serialises to.
+    fn info(&self) -> Value {
+        json!({
+            "id": self.id,
+            "title": self.title,
+            "kind": "sim",
+            "device_id": self.device_id,
+            "lab": true,
+            "opened_at": self.opened_at,
+            "state": "open",
+            "close_reason": null,
+            "closed_at": null,
+            "cols": 200,
+            "rows": 50,
+            "info": {"kind": "sim", "peer": self.peer, "server_banner": null, "kex": null,
+                     "cipher": null, "mac": null, "host_key_algorithm": null,
+                     "host_key_fingerprint": null, "legacy_crypto": false, "via": []},
+            "bytes_in": self.received.lock().len(),
+            "bytes_out": 0,
+            "logging": null,
+            "log_error": null,
+        })
+    }
+
+    /// Everything the device has printed, as the lines a person read.
+    pub fn lines(&self) -> Vec<String> {
+        let mut screen = nocturne_drivers::term::Screen::new();
+        screen.feed(&self.received.lock());
+        screen.finish()
+    }
+
+    fn at_a_prompt(&self) -> bool {
+        self.lines().last().is_some_and(|line| {
+            let line = line.trim_end();
+            line.ends_with('#') || line.ends_with('>') || line.ends_with(':')
+        })
+    }
+
+    /// Wait until the device has printed something more than the `had`
+    /// bytes it had, has stopped printing, and is waiting for input. Without
+    /// "something more" a busy machine could find the old prompt unchanged
+    /// three times before the device had even read the line.
+    async fn settle(&self, had: usize) {
+        let mut quiet = 0;
+        let mut seen = usize::MAX;
+        for _ in 0..5_000 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let now = self.received.lock().len();
+            quiet = if now > had && now == seen && self.at_a_prompt() {
+                quiet + 1
+            } else {
+                0
+            };
+            seen = now;
+            if quiet >= 3 {
+                return;
+            }
+        }
+        panic!(
+            "the fake device never came back to a prompt; it printed:\n{}",
+            self.lines().join("\n")
+        );
+    }
+
+    /// Type a line and wait for the device to answer it.
+    pub async fn enter(&self, line: &str) {
+        let had = self.received.lock().len();
+        self.writer
+            .send(format!("{line}\n").into_bytes())
+            .await
+            .expect("the session is open");
+        self.settle(had).await;
+    }
+}
+
+/// Open a terminal session to the lab device called `name`, in enable mode.
+pub async fn open_session(lab: &Lab, name: &str) -> Arc<Session> {
+    open_session_as(lab, name, name).await
+}
+
+/// [`open_session`] under a title of the caller's choosing, as a session
+/// opened by hand has: the terminal calls it what the person typed.
+pub async fn open_session_as(lab: &Lab, name: &str, title: &str) -> Arc<Session> {
+    let app = &lab.app;
+    let device = nocturne_app::inventory::get(app, &lab.id(name)).expect("the device");
+    let connection =
+        nocturne_app::connect::open(app, &device, &nocturne_app::connect::OpenOptions::default())
+            .await
+            .expect("a connection to the fake device");
+    let peer = connection.info().peer.clone();
+    let (writer, mut reader) = connection.split();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let sink = received.clone();
+    tokio::spawn(async move {
+        while let Some(output) = reader.recv().await {
+            match output {
+                nocturne_transport::Output::Data(bytes) => sink.lock().extend_from_slice(&bytes),
+                nocturne_transport::Output::Closed { .. } => break,
+            }
+        }
+    });
+    let session = Arc::new(Session {
+        id: new_id(),
+        title: title.to_string(),
+        device_id: device.id.clone(),
+        peer,
+        opened_at: now_ms(),
+        writer,
+        received,
+    });
+    app.state::<Terminal>()
+        .sessions
+        .lock()
+        .push(session.clone());
+    session.settle(0).await;
+    session.enter("enable").await;
+    session.enter("ena").await;
+    session
 }
 
 pub fn fixture(app: &App) -> std::sync::Arc<Fixture> {

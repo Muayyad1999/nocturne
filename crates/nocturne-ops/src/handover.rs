@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::configs::{self, ConfigChange};
+use crate::evidence;
 use crate::incidents;
 use crate::model::{HandoverHead, SavedHandover};
 use crate::reach;
@@ -26,6 +27,7 @@ use crate::refs::{AlertRef, ChangeRef, DeviceRef, Devices, JobRef, Period};
 use crate::render::{Cell, Document, Format, Section, Table, missing};
 use crate::settings;
 use crate::sources::{self, Reason, Unavailable};
+use crate::text;
 use crate::timefmt::{self, Zone};
 
 const WHAT: &str = "handover";
@@ -279,6 +281,14 @@ pub async fn generate(app: &App, params: &GenerateParams) -> AppResult<Value> {
         Err(err) => sections.failed("jobs_failed", err.message),
     }
 
+    // Our own records again: what was captured during the shift. The items
+    // themselves, with their ids and hashes, not their content — a handover
+    // is read in two minutes and points at what there is to read.
+    match evidence::captured_in(app, period) {
+        Ok(captured) => sections.set("evidence", json!({"captured": captured})),
+        Err(err) => sections.failed("evidence", err.message),
+    }
+
     sections.set("notes", json!(""));
     sections.set("unavailable", serde_json::to_value(&sections.unavailable)?);
     sections.set("generated_at", json!(now));
@@ -400,6 +410,7 @@ pub struct SaveParams {
 }
 
 pub async fn save(app: &App, params: SaveParams) -> AppResult<Value> {
+    text::prose("a handover's notes", &params.notes)?;
     let from_document = params
         .handover
         .as_ref()
@@ -553,6 +564,9 @@ fn markdown() -> Format {
 }
 
 pub async fn export(app: &App, params: &ExportParams) -> AppResult<Value> {
+    if let Some(notes) = &params.notes {
+        text::prose("a handover's notes", notes)?;
+    }
     let zone = Zone::resolve(params.utc_offset_minutes)?;
     let (period, data, notes) = match &params.id {
         Some(id) => {
@@ -884,6 +898,60 @@ pub fn document(data: &Value, period: Period, notes: &str, zone: &Zone, now: i64
             .map(|job| format!("{} — {}", string(job, "title"), string(job, "error")))
             .collect(),
     ));
+
+    // -------- evidence
+    match data.get("evidence") {
+        // A handover saved before evidence existed has no such section, and
+        // that is not the same as a shift in which nothing was captured.
+        None => {}
+        Some(Value::Null) => {
+            document.section(unavailable_section(data, "Evidence captured", "evidence"));
+        }
+        Some(_) => {
+            let mut table = Table::new(&[
+                ("captured_at", "Captured"),
+                ("kind", "Kind"),
+                ("title", "Evidence"),
+                ("device", "Device"),
+                ("from", "Source"),
+                ("incidents", "Attached to"),
+                ("sha256", "SHA-256"),
+                ("id", "Id"),
+            ]);
+            for item in array(data, "/evidence/captured") {
+                let source = item.get("source").cloned().unwrap_or(Value::Null);
+                let device = match (
+                    string(&source, "device").as_str(),
+                    source["lab"] == Value::Bool(true),
+                ) {
+                    ("", _) => Cell::unknown(),
+                    (name, true) => Cell::text(format!("{name} (lab)")),
+                    (name, false) => Cell::text(name),
+                };
+                table.push(vec![
+                    Cell::maybe(
+                        item.get("captured_at")
+                            .and_then(Value::as_i64)
+                            .map(|at| Cell::time(zone, at)),
+                    ),
+                    Cell::text(string(&item, "kind")),
+                    Cell::text(string(&item, "title")),
+                    device,
+                    Cell::text(string(&source, "from")),
+                    Cell::count(
+                        item.get("incident_ids")
+                            .and_then(Value::as_array)
+                            .map_or(0, Vec::len),
+                    ),
+                    Cell::text(string(&item, "sha256")),
+                    Cell::text(string(&item, "id")),
+                ]);
+            }
+            document.section(Section::table("Evidence captured", table).with_note(
+                "What was kept during the shift, by its id and the hash of what is stored. The content is in the item, redacted; it is not copied into the handover.",
+            ));
+        }
+    }
     document
 }
 
@@ -1076,5 +1144,53 @@ mod tests {
             .unwrap();
         assert_eq!(alerts["kind"], "unavailable");
         assert_eq!(alerts["reason"], "not_installed");
+    }
+
+    #[test]
+    fn evidence_that_was_never_looked_for_is_not_reported_as_none_captured() {
+        let zone = Zone::resolve(Some(0)).unwrap();
+        let period = Period { since: 0, until: 1 };
+        let render = |data: &Value| document(data, period, "", &zone, 1).render(Format::Markdown);
+
+        // Saved before evidence existed: there is no such section, and the
+        // document does not make one up to say it is empty.
+        let before = render(&generated());
+        assert!(!before.contains("Evidence captured"), "{before}");
+
+        // Looked for and not readable: said, with the reason.
+        let mut unreadable = generated();
+        unreadable["evidence"] = Value::Null;
+        unreadable["unavailable"] = json!([
+            {"section": "evidence", "reason": "failed", "message": "the table could not be read"},
+        ]);
+        let unreadable = render(&unreadable);
+        assert!(
+            unreadable
+                .contains("## Evidence captured\n\n*Not available — the table could not be read*"),
+            "{unreadable}"
+        );
+
+        // Looked for and nothing there: an empty table, which is a fact.
+        let mut none = generated();
+        none["evidence"] = json!({"captured": []});
+        let none = render(&none);
+        assert!(none.contains("## Evidence captured\n"), "{none}");
+        assert!(!none.contains("Not available — the table"), "{none}");
+
+        // And one item: by its id and hash, with the lab mark on its device.
+        let mut one = generated();
+        one["evidence"] = json!({"captured": [{
+            "id": "e1", "kind": "terminal", "title": "show interfaces", "captured_at": 60_000,
+            "source": {"from": "terminal.snapshot", "device": "SW1", "lab": true},
+            "sha256": "ab".repeat(32), "incident_ids": ["i1", "i2"],
+        }]});
+        let one = render(&one);
+        assert!(
+            one.contains(&format!(
+                "| 1970-01-01 00:01 | terminal | show interfaces | SW1 (lab) | terminal.snapshot | 2 | {} | e1 |",
+                "ab".repeat(32)
+            )),
+            "{one}"
+        );
     }
 }

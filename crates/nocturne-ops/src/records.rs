@@ -1,11 +1,15 @@
 //! The feature's own tables.
 //!
-//! Incidents, saved handovers, saved reports and notes are records: a body
+//! Incidents, saved handovers, saved reports, notes and evidence are records: a body
 //! (the whole thing as JSON), a head (what a list shows), a sort key, one
 //! facet and a search text. They sit in separate columns so that a list never
 //! parses bodies (timelines, report contents) and a search filters in SQL.
 //! What a record refers to (`device:<id>`, `alert:<id>`, …) is kept in a
 //! second table, which makes "which records mention this" an index lookup.
+//!
+//! A change that reads a record before writing it — or that moves two
+//! records together, as attaching evidence to an incident does — runs inside
+//! [`transaction`], so that two writers cannot lose each other's work.
 
 use nocturne_app::store::Store;
 use nocturne_app::{AppError, AppResult};
@@ -39,6 +43,9 @@ pub enum Kind {
     Handover,
     Report,
     Note,
+    /// What an evidence item is and where it came from. Its text is not
+    /// here: see `evidence.rs`.
+    Evidence,
 }
 
 impl Kind {
@@ -48,6 +55,7 @@ impl Kind {
             Kind::Handover => "handover",
             Kind::Report => "report",
             Kind::Note => "note",
+            Kind::Evidence => "evidence",
         }
     }
 }
@@ -129,6 +137,86 @@ fn read_body(conn: &Connection, kind: Kind, id: &str) -> rusqlite::Result<Option
     .optional()
 }
 
+/// The records as one step sees them: everything read and written through
+/// it is committed together or not at all.
+pub struct Tx<'a> {
+    conn: &'a Connection,
+}
+
+impl Tx<'_> {
+    pub fn body(&self, kind: Kind, id: &str) -> AppResult<Option<String>> {
+        Ok(read_body(self.conn, kind, id)?)
+    }
+
+    /// Insert or replace a record together with its links.
+    pub fn put(&self, kind: Kind, record: &Record) -> AppResult<()> {
+        Ok(put(self.conn, kind, record)?)
+    }
+
+    pub fn delete(&self, kind: Kind, id: &str) -> AppResult<bool> {
+        Ok(remove(self.conn, kind, id)?)
+    }
+
+    /// The ids of the records of `kind` that refer to `target`.
+    pub fn linked(&self, kind: Kind, target: &str) -> AppResult<Vec<String>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT id FROM ops_links WHERE kind = ?1 AND target = ?2 ORDER BY id",
+        )?;
+        let ids = statement
+            .query_map(params![kind.as_str(), target], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(ids)
+    }
+
+    pub fn count(&self, kind: Kind) -> AppResult<u64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM ops_records WHERE kind = ?1",
+            params![kind.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// For a module whose own table has to move in the same step.
+    pub fn conn(&self) -> &Connection {
+        self.conn
+    }
+}
+
+/// Run `work` as one transaction: whatever it reads cannot change under it,
+/// and an error from it undoes everything it wrote.
+///
+/// The store is one connection behind a lock, held for the whole call. So
+/// `work` must not wait for anything and must not go back to the store by
+/// another road: gather what another feature has to say first, then come here.
+pub fn transaction<T>(store: &Store, work: impl FnOnce(&Tx<'_>) -> AppResult<T>) -> AppResult<T> {
+    let mut refused: Option<AppError> = None;
+    let outcome = store.transaction(|conn| {
+        work(&Tx { conn }).map_err(|err| {
+            refused = Some(err);
+            // Only its being an error matters: it makes the store roll back.
+            // The caller gets `refused`, never this.
+            rusqlite::Error::QueryReturnedNoRows
+        })
+    });
+    match refused {
+        Some(err) => Err(err),
+        None => outcome,
+    }
+}
+
+fn remove(conn: &Connection, kind: Kind, id: &str) -> rusqlite::Result<bool> {
+    conn.execute(
+        "DELETE FROM ops_links WHERE kind = ?1 AND id = ?2",
+        params![kind.as_str(), id],
+    )?;
+    let removed = conn.execute(
+        "DELETE FROM ops_records WHERE kind = ?1 AND id = ?2",
+        params![kind.as_str(), id],
+    )?;
+    Ok(removed > 0)
+}
+
 /// Insert or replace a record together with its links.
 pub fn save(store: &Store, kind: Kind, record: &Record) -> AppResult<()> {
     store.transaction(|tx| put(tx, kind, record))
@@ -152,17 +240,7 @@ pub fn head(store: &Store, kind: Kind, id: &str) -> AppResult<Option<String>> {
 }
 
 pub fn delete(store: &Store, kind: Kind, id: &str) -> AppResult<bool> {
-    store.transaction(|tx| {
-        tx.execute(
-            "DELETE FROM ops_links WHERE kind = ?1 AND id = ?2",
-            params![kind.as_str(), id],
-        )?;
-        let removed = tx.execute(
-            "DELETE FROM ops_records WHERE kind = ?1 AND id = ?2",
-            params![kind.as_str(), id],
-        )?;
-        Ok(removed > 0)
-    })
+    store.transaction(|tx| remove(tx, kind, id))
 }
 
 /// Read a record, change it and store it again in one transaction, so that
@@ -175,20 +253,16 @@ pub fn update<T>(
     what: &str,
     change: impl FnOnce(&str) -> AppResult<(Option<Record>, T)>,
 ) -> AppResult<T> {
-    store.transaction(|tx| {
-        let Some(body) = read_body(tx, kind, id)? else {
-            return Ok(Err(AppError::not_found(format!("{what} `{id}`"))));
-        };
-        Ok(match change(&body) {
-            Ok((record, value)) => {
-                if let Some(record) = record {
-                    put(tx, kind, &record)?;
-                }
-                Ok(value)
-            }
-            Err(err) => Err(err),
-        })
-    })?
+    transaction(store, |tx| {
+        let body = tx
+            .body(kind, id)?
+            .ok_or_else(|| AppError::not_found(format!("{what} `{id}`")))?;
+        let (record, value) = change(&body)?;
+        if let Some(record) = record {
+            tx.put(kind, &record)?;
+        }
+        Ok(value)
+    })
 }
 
 fn parse_cursor(cursor: &str) -> AppResult<(i64, String)> {
@@ -462,6 +536,43 @@ mod tests {
                 ("open".to_string(), 1),
                 ("resolved".to_string(), 1)
             ]
+        );
+    }
+
+    #[test]
+    fn a_refused_transaction_undoes_what_it_had_already_written() {
+        let store = store();
+        save(&store, Kind::Note, &record("n", 1, "", "old", &[])).unwrap();
+
+        let refused = transaction(&store, |tx| {
+            tx.put(Kind::Note, &record("n", 2, "", "new", &["device:d9"]))?;
+            tx.put(Kind::Evidence, &record("e", 1, "", "", &["incident:i"]))?;
+            assert_eq!(tx.linked(Kind::Evidence, "incident:i")?, ["e"]);
+            Err::<(), _>(AppError::conflict("the second half cannot be done"))
+        })
+        .unwrap_err();
+        // The caller sees its own refusal, not the store's.
+        assert_eq!(refused.code, "conflict");
+        assert_eq!(
+            body(&store, Kind::Note, "n").unwrap().as_deref(),
+            Some("body-n"),
+            "the first write went with the second"
+        );
+        assert_eq!(body(&store, Kind::Evidence, "e").unwrap(), None);
+        assert!(by_link(&store, "device:d9").is_empty());
+
+        // The same step, allowed to finish, stores both.
+        transaction(&store, |tx| {
+            tx.put(Kind::Evidence, &record("e", 1, "", "", &["incident:i"]))?;
+            assert_eq!(tx.count(Kind::Evidence)?, 1);
+            assert!(tx.delete(Kind::Note, "n")?);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(body(&store, Kind::Note, "n").unwrap(), None);
+        assert_eq!(
+            body(&store, Kind::Evidence, "e").unwrap().as_deref(),
+            Some("body-e")
         );
     }
 

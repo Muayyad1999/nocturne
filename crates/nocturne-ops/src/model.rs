@@ -117,6 +117,11 @@ pub enum EntryKind {
     /// in the specification's list of kinds, and deliberately added: a
     /// timeline with a hole in it has to be able to say where the hole is.
     Gap,
+    /// An evidence item attached to the incident, at the time it was
+    /// captured. The entry holds a reference and the item's title, never its
+    /// text. Without a reference it is a tombstone: the item was deleted,
+    /// and the entry says when.
+    Evidence,
 }
 
 impl EntryKind {
@@ -129,6 +134,7 @@ impl EntryKind {
             EntryKind::Status => "status",
             EntryKind::Log => "log",
             EntryKind::Gap => "gap",
+            EntryKind::Evidence => "evidence",
         }
     }
 }

@@ -143,6 +143,7 @@ pub fn save(app: &App, params: SaveParams) -> AppResult<Value> {
     if params.title.trim().is_empty() {
         return Err(AppError::invalid("a note needs a title"));
     }
+    text::prose("a note's body", &params.body)?;
     let now = now_ms();
     let existing = match &params.id {
         Some(id) => Some(load(app, id)?),

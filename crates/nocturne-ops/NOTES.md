@@ -1,8 +1,9 @@
 # nocturne-ops: working notes
 
 Task: the operations record — overview, incidents, shift handover, reports,
-notes, global search, audit view.
-Spec: `docs/dev/features/ops.md`; conventions: `docs/dev/features/README.md`.
+notes, evidence, global search, audit view.
+Spec: `docs/dev/features/ops.md`; evidence: `docs/dev/spec-capture.md`;
+conventions: `docs/dev/features/README.md`.
 
 Cargo (always; the target directory is shared with other agents):
 
@@ -22,7 +23,11 @@ to touch. No git commands.
 src/lib.rs        init(): settings, state, own tables, routers
 src/settings.rs   the `ops` section (cache, budgets, windows, limits)
 src/model.rs      Incident / Entry / Provenance / Note / SavedHandover / SavedReport
-src/records.rs    own tables (ops_records, ops_links): facet + search + link filtering in SQL
+src/records.rs    own tables (ops_records, ops_links): facet + search + link filtering in SQL,
+                  and `transaction` — several records read and written as one step
+src/evidence.rs   evidence items: the five ways to make one, list/get/rename, attach/detach,
+                  delete with tombstones, the appendix of a review; bodies in ops_evidence_bodies
+src/redact.rs     the redactor every piece of evidence passes before it is stored
 src/sources.rs    every other feature ops reads, and the Gap/Unavailable vocabulary
 src/refs.rs       Period, Ref, DeviceRef/AlertRef/ChangeRef/InsightRef/JobRef, Devices
 src/configs.rs    configuration movement read from the core's snapshot table
@@ -36,15 +41,17 @@ src/notes.rs      notes with `[[device name]]` resolution
 src/search.rs     the global search fan-out
 src/audit.rs      the core's audit trail, filtered and joined
 src/render.rs     one document model -> markdown / csv / html / json
-src/text.rs       escaping (html, markdown, csv formulas), excerpts, slugs
+src/text.rs       escaping (html, markdown, csv formulas, code fences, control characters),
+                  excerpts, slugs, the 64 KiB cap on free text
 src/timefmt.rs    one fixed UTC offset per document, durations
 tests/common/     the lab: core + ops + stubs for the features ops gathers from
-tests/{overview,incidents,handover,reports,notes_search,absent}.rs
+tests/common/     … and a stand-in for the terminal that holds a real connection to the
+                  fake device (`open_session`), `topology.export`, `metrics.query_many`
+tests/{overview,incidents,handover,reports,notes_search,absent,evidence}.rs
 ui/src/api/types/ops.ts
 ```
 
-95 tests (58 unit, 37 integration through `App::rpc`), clippy clean with
-`-D warnings`, `cargo fmt --check` clean, no `unsafe`.
+Clippy clean with `-D warnings`, `cargo fmt --check` clean, no `unsafe`.
 
 ## Decisions
 
@@ -102,6 +109,95 @@ ui/src/api/types/ops.ts
 - This crate has no method that reaches a device, and no dependency that
   could: it reads the core store, the inventory, the job list and other
   features' RPC.
+
+## Evidence: decisions
+
+- **What an item is and what it contains are stored apart.** The item
+  (title, source, hash, the incidents it is on) is a record like the others,
+  so paging, the kind facet, word search and "which items are about this
+  device / on this incident" are the record store's. The body is one row of
+  `ops_evidence_bodies`, read by `evidence.get` and by an export and by
+  nothing else.
+- **`records::update` got its callers, and a sibling.** Every incident
+  mutation goes through `incidents::modify` (read, change, write in one
+  transaction). `records::transaction` is the same thing for a step that
+  moves two records — an item and an incident — and rolls back whatever it
+  wrote when it is refused half way. The store is one connection behind a
+  lock, so nothing inside a transaction waits: `update`, `link` and `sync`
+  gather from other features first, on a copy, and re-apply their change to
+  the incident as it is when they get the lock.
+- **The redactor is the engine's parts, put together again here.** The
+  assistant builds the same thing for a chat and the terminal has the
+  transcript handling; features do not link, so `redact.rs` is a third copy
+  of the construction (not of any rule). It belongs in the core — which
+  already depends on `nocturne-ai` and owns the profiles and the vault — as
+  one function all three would call. Until then, what is here differs from
+  a chat's redactor in three deliberate ways, each found by a test on a real
+  session of the fake device:
+  - a device type's pattern is applied **one line at a time**. On a whole
+    transcript `linux.yaml`'s pattern for `password: value` reads the
+    device's `Password:` prompt, crosses the line break and takes `SW1#show`
+    for the password;
+  - a **placeholder is never cut in two**. The engine applies its rules in
+    sequence to the same text, and the same pattern finds `secret: value`
+    inside `<secret:1>`, leaving `<secret:<secret:2>` (and a table entry
+    `"1>"`). Placeholders are set aside while rules run, and a pattern that
+    can match inside one gets a pass of its own;
+  - what follows a prompt or a session log's timestamp is offered to the
+    rules **as the start of a line**, because `evidence.add_text` gets text
+    that has not been through the terminal's own transcript handling.
+- **What a second reading of the redactor found, each with a test that
+  failed first** (`redact.rs`, `tests/evidence.rs`):
+  - a key **cut off in a session log** was left standing: every line of a
+    log has a timestamp in front, and a line with one is not "only base64".
+    The timestamp is set aside before the question is asked, and a cut-off
+    key is hidden towards the edge that cut it past the odd line that is
+    something else (a pager's `--More--`);
+  - a key of **several lines inside one string** — a chart's label, the
+    text of a drawing — was searched a line at a time and never seen whole;
+  - a drawing was cut at every `>`, so a vault value with a `>` in it,
+    standing in an attribute, was in two pieces and found in neither. A
+    drawing is now taken apart as a parser takes it (`pieces`): text,
+    quoted attribute values, comments, CDATA. Each is read as the text it
+    stands for, so a rule that takes a quoted value whole sees the quote
+    and not `&quot;`; names of elements and attributes are never touched
+    (a rule that took `stroke-width` for a password would otherwise unmake
+    the drawing); and it is gone through twice, so a value recognised late
+    is hidden where it stood earlier;
+  - `<secret:4294967295>` printed by a device set the engine's counter to
+    its last value and the next placeholder overflowed it (a panic in a
+    debug build, numbering from zero again in a release one);
+  - a chart's `metric` and `instance`, the session's name and its far end
+    were stored as given while everything beside them was redacted.
+- **What a client names is stored, so it is bounded.** `add_text`'s
+  `session_id` is kept whether or not the session can be found; it now has
+  to be shaped like an id. What a chart or a drawing was asked for is part
+  of the item's head (lists, events, handovers), so it is at most 64 KiB
+  (`params_bytes`), refused before the other feature is asked.
+- **A document does not fall over a source's numbers.** A gap between two
+  sample times is computed saturating and `timefmt::duration` formats
+  `i64::MAX`: a series with times at the ends of the number line is kept
+  and exported.
+- **In CSV, everything that is somebody's words is guarded**, not only the
+  lines of an exhibit: its title, its facts, and the paragraphs and list
+  items of the document (`text::cell_line`). `text::visible` also shows
+  direction overrides (U+202A–202E, U+2066–2069, U+200E/F, U+061C), which
+  are not control characters to Unicode and do the same job.
+- **Only stored credentials are "what the vault knows".** `Vault` has no way
+  to list what it holds, so a webhook URL's token or a model provider's key
+  is hidden only where a rule recognises it. A core redactor could know all
+  of it.
+- **Stored configurations are not read to prime the redactor** (a chat's
+  does, once per chat): it would cost megabytes of regex per capture.
+- **A drawing in a document is an image.** In HTML an `<img>` with a `data:`
+  address, where a browser runs nothing; in Markdown, CSV and JSON it is not
+  rendered at all. The stored SVG is what `topology.export` returned and is
+  never placed into a page as markup by this crate.
+- **`lab` for a drawing errs towards saying so.** An item is labelled
+  without being opened, and a saved view's filter is the topology feature's
+  to know.
+- **Not built:** the assistant cannot write evidence (the timeline is kept
+  by the engine and by people); nothing stores pixels or files.
 
 ## Discarded from the half-written crate
 

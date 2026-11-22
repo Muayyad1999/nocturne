@@ -1,8 +1,9 @@
-//! The operations record: overview, incidents, shift handover, reports, notes
-//! and a global search.
+//! The operations record: overview, incidents, shift handover, reports, notes,
+//! evidence and a global search.
 //!
 //! Specification: `docs/dev/features/ops.md` (conventions:
-//! `docs/dev/features/README.md`).
+//! `docs/dev/features/README.md`); evidence is specified in
+//! `docs/dev/spec-capture.md`.
 //!
 //! Nothing here changes a device. Every number is a view over a record that
 //! already exists — alerts, changes, jobs, the audit trail, configuration
@@ -13,6 +14,7 @@
 
 pub mod audit;
 pub mod configs;
+pub mod evidence;
 pub mod handover;
 pub mod incidents;
 pub mod model;
@@ -20,6 +22,7 @@ pub mod notes;
 pub mod overview;
 pub mod reach;
 pub mod records;
+pub mod redact;
 pub mod refs;
 pub mod render;
 pub mod reports;
@@ -55,11 +58,13 @@ pub fn init(builder: &mut AppBuilder) {
     // than failing on the first incident.
     records::ensure_schema(builder.store())
         .expect("the operations record's own tables can be created");
+    evidence::ensure_schema(builder.store()).expect("the table of evidence bodies can be created");
     overview::register(builder);
     incidents::register(builder);
     handover::register(builder);
     reports::register(builder);
     notes::register(builder);
+    evidence::register(builder);
     search::register(builder);
     audit::register(builder);
 }

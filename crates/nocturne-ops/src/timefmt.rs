@@ -74,7 +74,9 @@ impl Zone {
 
 /// A duration in its two largest units: `45 s`, `1 min 30 s`, `1 h 12 min`, `2 d 3 h`.
 pub fn duration(ms: i64) -> String {
-    let seconds = (ms.max(0) + 500) / 1000;
+    // Saturating: a gap between two times another feature sent can be as
+    // long as the number line, and a document is not to fall over it.
+    let seconds = ms.max(0).saturating_add(500) / 1000;
     let (days, hours, minutes, secs) = (
         seconds / 86_400,
         seconds % 86_400 / 3_600,
@@ -147,5 +149,8 @@ mod tests {
         assert_eq!(duration(3_601_000), "1 h");
         assert_eq!(duration(183_600_000), "2 d 3 h");
         assert_eq!(duration(-5), "0 s");
+        // The longest there is, and the shortest: neither is a reason to stop.
+        assert_eq!(duration(i64::MAX), "106751991167 d 7 h");
+        assert_eq!(duration(i64::MIN), "0 s");
     }
 }

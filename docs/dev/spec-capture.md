@@ -30,6 +30,19 @@ struct Evidence { id, kind: terminal | log | text | topology | chart,
     body: Text(String) | Svg(String) | Chart { series: [..], coverage } }   // not in list results
 ```
 
+On the wire `body` is a tagged object: `{type: "text", text}`, `{type:
+"svg", svg}` or `{type: "chart", series, coverage}`. `series` is exactly what
+the monitor returned. `coverage` is worked out here, because
+`metrics.query_many` gives none: `{since, until, points, series: [{device_id,
+device, lab, metric, instance, points, first_at?, last_at?, longest_gap_ms?,
+step_s?, rollup?}]}` — counts and times, never a percentage (a bucket
+narrower than the poll interval would make one a lie).
+
+This section is the design. The contract as built — every parameter, every
+refusal and its `details`, real examples — is in
+[`features/ops.md`](features/ops.md) under "Evidence (contract)"; where the
+two differ, that one is right.
+
 | Method | Params → Result |
 |---|---|
 | `evidence.capture_terminal` | `{session_id, lines?: 200, title?}` → `Evidence` — ops asks `terminal.snapshot` and `terminal.list` itself; the client never supplies the text |
@@ -39,41 +52,66 @@ struct Evidence { id, kind: terminal | log | text | topology | chart,
 | `evidence.add_text` | `{text, title, session_id?, device_id?, note?}` → `Evidence` — for text the person holds (a selection). Redacted on arrival; its source is `operator`, and it says so wherever it is shown |
 | `evidence.list` | `{kind?, device_id?, incident_id?, query?, limit?: 50, cursor?}` → `{items: [Evidence without body], next_cursor?}` |
 | `evidence.get` | `{id}` → `Evidence` |
-| `evidence.rename` | `{id, title}` |
-| `evidence.attach` / `evidence.detach` | `{id, incident_id}` — a timeline entry of kind `evidence` at the capture time, holding a reference, never the text |
-| `evidence.delete` | `{id}` — an item an incident refers to leaves a tombstone there ("evidence deleted on <date>"), not a hole |
+| `evidence.rename` | `{id, title}` → `Evidence` without body — the new title is redacted like the first one, and the timeline entries that point at the item follow it |
+| `evidence.attach` / `evidence.detach` | `{id, incident_id, author?}` → `Evidence` without body — a timeline entry of kind `evidence` at the capture time, holding a reference, never the text; attaching twice is one attachment |
+| `evidence.delete` | `{id, author?}` → `{deleted: true, tombstones: [incident_id]}` — an item an incident refers to leaves a tombstone there ("evidence deleted on <date>"), not a hole |
+
+The capture methods, `add_text` and `get` answer with the `Evidence` and its
+body; `list`, `rename`, `attach` and `detach` without it.
 
 Event: `evidence.changed`.
 
 Rules:
 
-* **Redacted, always.** Text passes the same redactor a model's input does
+* **Redacted, always.** Text passes the redactor a model's input does
   (`nocturne-ai`'s rules, the device type's own secret patterns, the values
-  the vault knows) before it is stored. There is no parameter that stores it
-  raw. What was replaced is not recoverable from the item.
+  of the stored credentials) before it is stored, and then some, because an
+  item is kept and passed around: a value recognised once is hidden
+  everywhere else in the item; a private key cut off by the edge of a
+  selection or carrying a timestamp on every line is hidden from either
+  end; in a drawing only the text is changed, so it stays a drawing. The
+  title, the note, a session's title and peer, and the names in a chart go
+  through it too. There is no parameter that stores anything raw. What was
+  replaced is not recoverable from the item.
 * **Provenance is recorded by the engine, not typed by a person.** What a
   capture method stores is what the source method returned, hashed as
   stored. `add_text` cannot claim that: it is labelled as supplied by the
   operator.
-* **Limits, stated.** 256 KiB of text, 2 MiB of SVG, 20,000 points, 5,000
-  items; past a limit the call is refused with what to do, nothing is
-  truncated silently.
+* **Limits, stated.** 256 KiB of text (measured as stored, after
+  redaction), 2 MiB of SVG, 20,000 points, 5,000 items; 1 to 10,000 lines of
+  a session and at most 262,144 bytes of a log in one capture; a title of
+  200 characters, a note of 1,000; 64 KiB for what a chart or a drawing was
+  asked for. Past a limit the call is refused with what to do and
+  `details: {limit, max, actual}`; nothing is truncated silently.
+* **A stored drawing is not sanitised** — it is what the source returned,
+  hashed as stored — so its safety is in how it is shown: only ever as an
+  `<img>` on a `data:` or `blob:` address, never as markup, never in a frame
+  or a new window. Stored text can hold escape sequences: it is shown as
+  preformatted text and never written into the terminal emulator.
 * The body lives in its own table, not in the incident and not in the
   document collection (an incident is rewritten whole on every save and its
   search text concatenates its timeline).
 * Every mutation is audited with ids, counts and the hash — never the text.
 * A lab device's evidence is labelled lab.
 * Absent features: `capture_terminal` without the terminal feature is
-  `unavailable` with the reason; nothing is invented.
+  `unavailable` with the reason, and so is a capture whose source does not
+  answer in 20 seconds or answers with something that is not what was asked
+  for; nothing is invented and nothing is stored. `add_text` keeps a
+  `session_id` only when it is shaped like one.
 
 With evidence available the free-text fields stop being the only place for
-device output: `incidents.note`, a note's body and the handover's notes are
-capped at 64 KiB, and the refusal points at evidence.
+device output: `incidents.note`, an incident's summary, impact, root cause
+and state-change notes, a note's body and the handover's notes are capped at
+64 KiB, and the refusal points at evidence.
 
-`incidents.export` gains an Evidence appendix (preformatted and escaped for
-the format, with device, time, line count and hash), and
-`handover.generate` gains an `evidence` section listing what was captured in
-the period — real records with ids, like every other section.
+`incidents.export` gains an appendix, "Appendix: evidence" (preformatted and
+escaped for the format, with device, time, line count and hash; at most
+4 MiB of evidence in one document, with what was left out listed; a drawing
+embedded only in HTML, as an image), and `handover.generate` gains an
+`evidence` section, `{captured: [..]}`, listing what was captured in the
+period — real records with ids, like every other section. In CSV every cell
+a spreadsheet would run as a formula is guarded, in evidence and in reports
+alike.
 
 Incident mutations (`note`, `update`, `link`, `sync`, `attach`) read and
 write inside one transaction: a note added while a link is gathering its

@@ -10,6 +10,11 @@
 //! descriptions, alert titles — passes through [`crate::text`] on the way
 //! out, so a device called `<script>` is inert in the HTML and cannot break
 //! out of a Markdown table cell.
+//!
+//! Evidence is the one place where device output is put into a document
+//! whole, as it was printed ([`Body::Exhibits`]). It is shown preformatted
+//! and is escaped for each format separately, because what breaks out of a
+//! `<pre>` is not what breaks out of a code fence or a spreadsheet cell.
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -185,6 +190,31 @@ pub enum Body {
     List(Vec<String>),
     /// The section exists but the source behind it does not.
     Missing(Unavailable),
+    /// Evidence: each item with what is known about it and its content.
+    Exhibits(Vec<Exhibit>),
+}
+
+/// One evidence item in a document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Exhibit {
+    pub title: String,
+    /// Where it came from, when, how much there is and its hash, in order.
+    pub facts: Vec<(String, String)>,
+    pub content: Content,
+}
+
+/// What an exhibit shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Content {
+    /// Text exactly as it is stored, line for line. Written by a device, so
+    /// by whoever has its console.
+    Pre(String),
+    /// A standalone SVG drawing.
+    Drawing(String),
+    /// Numbers.
+    Table(Table),
+    /// The content is not in this document, and why.
+    Omitted(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,6 +259,14 @@ impl Section {
         }
     }
 
+    pub fn exhibits(heading: &str, exhibits: Vec<Exhibit>) -> Section {
+        Section {
+            heading: heading.to_string(),
+            note: None,
+            body: Body::Exhibits(exhibits),
+        }
+    }
+
     pub fn with_note(mut self, note: impl Into<String>) -> Section {
         self.note = Some(note.into());
         self
@@ -238,6 +276,7 @@ impl Section {
         match &self.body {
             Body::Table(table) => table.rows.len(),
             Body::List(items) => items.len(),
+            Body::Exhibits(exhibits) => exhibits.len(),
             Body::Text(_) | Body::Missing(_) => 0,
         }
     }
@@ -316,28 +355,7 @@ impl Document {
                 Body::Table(table) if table.is_empty() => {
                     out.push_str("Nothing in this period.\n");
                 }
-                Body::Table(table) => {
-                    let titles: Vec<String> = table
-                        .columns
-                        .iter()
-                        .map(|column| text::md(&column.title))
-                        .collect();
-                    out.push_str(&format!("| {} |\n", titles.join(" | ")));
-                    out.push_str(&format!(
-                        "|{}|\n",
-                        table
-                            .columns
-                            .iter()
-                            .map(|_| "---")
-                            .collect::<Vec<_>>()
-                            .join("|")
-                    ));
-                    for row in &table.rows {
-                        let cells: Vec<String> =
-                            row.iter().map(|cell| text::md(&cell.text)).collect();
-                        out.push_str(&format!("| {} |\n", cells.join(" | ")));
-                    }
-                }
+                Body::Table(table) => markdown_table(&mut out, table),
                 Body::Text(paragraphs) if paragraphs.is_empty() => {
                     out.push_str("Nothing written.\n");
                 }
@@ -362,6 +380,42 @@ impl Document {
                         text::md(&unavailable.message)
                     ));
                 }
+                Body::Exhibits(exhibits) if exhibits.is_empty() => {
+                    out.push_str("Nothing attached.\n");
+                }
+                Body::Exhibits(exhibits) => {
+                    for (index, exhibit) in exhibits.iter().enumerate() {
+                        if index > 0 {
+                            out.push('\n');
+                        }
+                        out.push_str(&format!("### {}\n\n", text::md(&exhibit.title)));
+                        for (name, value) in &exhibit.facts {
+                            out.push_str(&format!(
+                                "- **{}:** {}\n",
+                                text::md(name),
+                                text::md(value)
+                            ));
+                        }
+                        out.push('\n');
+                        match &exhibit.content {
+                            Content::Pre(content) => {
+                                out.push_str(&text::fenced(content));
+                            }
+                            Content::Drawing(svg) => out.push_str(&format!(
+                                "*A drawing of {} bytes. Markdown cannot show it safely: export \
+                                 this document as HTML, or open the item in Nocturne.*\n",
+                                svg.len()
+                            )),
+                            Content::Table(table) if table.is_empty() => {
+                                out.push_str("No points.\n");
+                            }
+                            Content::Table(table) => markdown_table(&mut out, table),
+                            Content::Omitted(why) => {
+                                out.push_str(&format!("*Not included — {}*\n", text::md(why)));
+                            }
+                        }
+                    }
+                }
             }
         }
         out
@@ -381,7 +435,9 @@ impl Document {
         };
         write(vec![self.title.clone()]);
         for (name, value) in &self.meta {
-            write(vec![name.clone(), value.clone()]);
+            // A fact in the header can be a device's name or a filter
+            // somebody typed.
+            write(vec![name.clone(), text::cell_line(value)]);
         }
         for section in &self.sections {
             write(Vec::new());
@@ -402,14 +458,17 @@ impl Document {
                         write(row.iter().map(spreadsheet_safe).collect());
                     }
                 }
+                // Prose is written by a person, and a person pastes. A
+                // paragraph or an item that a spreadsheet would run is
+                // quoted out like a line of device output.
                 Body::Text(paragraphs) => {
                     for paragraph in paragraphs {
-                        write(vec![text::one_line(paragraph)]);
+                        write(vec![text::cell_line(&text::one_line(paragraph))]);
                     }
                 }
                 Body::List(items) => {
                     for item in items {
-                        write(vec![text::one_line(item)]);
+                        write(vec![text::cell_line(&text::one_line(item))]);
                     }
                 }
                 Body::Missing(unavailable) => {
@@ -417,6 +476,50 @@ impl Document {
                         "not available".to_string(),
                         unavailable.message.clone(),
                     ]);
+                }
+                Body::Exhibits(exhibits) => {
+                    for exhibit in exhibits {
+                        write(Vec::new());
+                        // A title is what a person or a session's name made
+                        // it, and a fact can be a device's name: neither
+                        // gets to be a formula.
+                        write(vec![text::cell_line(&text::one_line(&exhibit.title))]);
+                        for (name, value) in &exhibit.facts {
+                            write(vec![name.clone(), text::cell_line(&text::one_line(value))]);
+                        }
+                        match &exhibit.content {
+                            // One line of output to a row, in one cell, so
+                            // that nothing a device printed chooses its own
+                            // column.
+                            Content::Pre(content) => {
+                                for line in content.lines() {
+                                    write(vec![text::cell_line(line)]);
+                                }
+                            }
+                            Content::Drawing(svg) => write(vec![
+                                "not included".to_string(),
+                                format!("a drawing of {} bytes", svg.len()),
+                            ]),
+                            Content::Table(table) => {
+                                write(
+                                    table
+                                        .columns
+                                        .iter()
+                                        .map(|column| column.title.clone())
+                                        .collect(),
+                                );
+                                for row in &table.rows {
+                                    write(row.iter().map(spreadsheet_safe).collect());
+                                }
+                            }
+                            Content::Omitted(why) => {
+                                write(vec![
+                                    "not included".to_string(),
+                                    text::cell_line(&text::one_line(why)),
+                                ]);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -457,22 +560,7 @@ impl Document {
                 Body::Table(table) if table.is_empty() => {
                     out.push_str("<p class=\"empty\">Nothing in this period.</p>\n");
                 }
-                Body::Table(table) => {
-                    out.push_str("<table>\n<thead>\n<tr>");
-                    for column in &table.columns {
-                        out.push_str(&format!("<th>{}</th>", text::html(&column.title)));
-                    }
-                    out.push_str("</tr>\n</thead>\n<tbody>\n");
-                    for row in &table.rows {
-                        out.push_str("<tr>");
-                        for cell in row {
-                            let class = if cell.numeric { " class=\"n\"" } else { "" };
-                            out.push_str(&format!("<td{class}>{}</td>", text::html(&cell.text)));
-                        }
-                        out.push_str("</tr>\n");
-                    }
-                    out.push_str("</tbody>\n</table>\n");
-                }
+                Body::Table(table) => html_table(&mut out, table),
                 Body::Text(paragraphs) if paragraphs.is_empty() => {
                     out.push_str("<p class=\"empty\">Nothing written.</p>\n");
                 }
@@ -496,6 +584,51 @@ impl Document {
                         "<p class=\"missing\">Not available — {}</p>\n",
                         text::html(&unavailable.message)
                     ));
+                }
+                Body::Exhibits(exhibits) if exhibits.is_empty() => {
+                    out.push_str("<p class=\"empty\">Nothing attached.</p>\n");
+                }
+                Body::Exhibits(exhibits) => {
+                    for exhibit in exhibits {
+                        out.push_str(&format!(
+                            "<article class=\"exhibit\">\n<h3>{}</h3>\n<dl class=\"meta\">\n",
+                            text::html(&exhibit.title)
+                        ));
+                        for (name, value) in &exhibit.facts {
+                            out.push_str(&format!(
+                                "<dt>{}</dt><dd>{}</dd>\n",
+                                text::html(name),
+                                text::html(value)
+                            ));
+                        }
+                        out.push_str("</dl>\n");
+                        match &exhibit.content {
+                            Content::Pre(content) => out.push_str(&format!(
+                                "<pre>{}</pre>\n",
+                                text::html(&text::visible(content))
+                            )),
+                            // As an image a drawing is a picture and nothing
+                            // else: a browser runs no script and fetches
+                            // nothing for an `<img>`, whatever the SVG says.
+                            Content::Drawing(svg) => {
+                                use base64::Engine as _;
+                                out.push_str(&format!(
+                                    "<img class=\"drawing\" alt=\"{}\" src=\"data:image/svg+xml;base64,{}\">\n",
+                                    text::html(&exhibit.title),
+                                    base64::engine::general_purpose::STANDARD.encode(svg)
+                                ));
+                            }
+                            Content::Table(table) if table.is_empty() => {
+                                out.push_str("<p class=\"empty\">No points.</p>\n");
+                            }
+                            Content::Table(table) => html_table(&mut out, table),
+                            Content::Omitted(why) => out.push_str(&format!(
+                                "<p class=\"missing\">Not included — {}</p>\n",
+                                text::html(why)
+                            )),
+                        }
+                        out.push_str("</article>\n");
+                    }
                 }
             }
             out.push_str("</section>\n");
@@ -528,32 +661,7 @@ impl Document {
                 match &section.body {
                     Body::Table(table) => {
                         object.insert("kind".into(), json!("table"));
-                        object.insert(
-                            "columns".into(),
-                            Value::Array(
-                                table
-                                    .columns
-                                    .iter()
-                                    .map(|column| json!({"key": column.key, "title": column.title}))
-                                    .collect(),
-                            ),
-                        );
-                        object.insert(
-                            "rows".into(),
-                            Value::Array(
-                                table
-                                    .rows
-                                    .iter()
-                                    .map(|row| {
-                                        let mut fields = Map::new();
-                                        for (column, cell) in table.columns.iter().zip(row) {
-                                            fields.insert(column.key.clone(), cell.value.clone());
-                                        }
-                                        Value::Object(fields)
-                                    })
-                                    .collect(),
-                            ),
-                        );
+                        json_table(&mut object, table);
                     }
                     Body::Text(paragraphs) => {
                         object.insert("kind".into(), json!("text"));
@@ -568,6 +676,13 @@ impl Document {
                         object.insert("reason".into(), json!(unavailable.reason));
                         object.insert("message".into(), json!(unavailable.message));
                     }
+                    Body::Exhibits(exhibits) => {
+                        object.insert("kind".into(), json!("evidence"));
+                        object.insert(
+                            "items".into(),
+                            Value::Array(exhibits.iter().map(json_exhibit).collect()),
+                        );
+                    }
                 }
                 Value::Object(object)
             })
@@ -580,19 +695,113 @@ impl Document {
     }
 }
 
-/// A spreadsheet treats a cell starting with `=`, `+` or `@` as a formula, and
-/// device descriptions are written by whoever has the console. Numbers are
-/// left alone; text that would be taken for a formula is quoted so that it is
-/// shown instead of run.
+fn markdown_table(out: &mut String, table: &Table) {
+    let titles: Vec<String> = table
+        .columns
+        .iter()
+        .map(|column| text::md(&column.title))
+        .collect();
+    out.push_str(&format!("| {} |\n", titles.join(" | ")));
+    out.push_str(&format!(
+        "|{}|\n",
+        table
+            .columns
+            .iter()
+            .map(|_| "---")
+            .collect::<Vec<_>>()
+            .join("|")
+    ));
+    for row in &table.rows {
+        let cells: Vec<String> = row.iter().map(|cell| text::md(&cell.text)).collect();
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
+}
+
+fn html_table(out: &mut String, table: &Table) {
+    out.push_str("<table>\n<thead>\n<tr>");
+    for column in &table.columns {
+        out.push_str(&format!("<th>{}</th>", text::html(&column.title)));
+    }
+    out.push_str("</tr>\n</thead>\n<tbody>\n");
+    for row in &table.rows {
+        out.push_str("<tr>");
+        for cell in row {
+            let class = if cell.numeric { " class=\"n\"" } else { "" };
+            out.push_str(&format!("<td{class}>{}</td>", text::html(&cell.text)));
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n</table>\n");
+}
+
+fn json_table(object: &mut Map<String, Value>, table: &Table) {
+    object.insert(
+        "columns".into(),
+        Value::Array(
+            table
+                .columns
+                .iter()
+                .map(|column| json!({"key": column.key, "title": column.title}))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "rows".into(),
+        Value::Array(
+            table
+                .rows
+                .iter()
+                .map(|row| {
+                    let mut fields = Map::new();
+                    for (column, cell) in table.columns.iter().zip(row) {
+                        fields.insert(column.key.clone(), cell.value.clone());
+                    }
+                    Value::Object(fields)
+                })
+                .collect(),
+        ),
+    );
+}
+
+fn json_exhibit(exhibit: &Exhibit) -> Value {
+    let mut facts = Map::new();
+    for (name, value) in &exhibit.facts {
+        facts.insert(name.clone(), Value::String(value.clone()));
+    }
+    let mut object = Map::new();
+    object.insert("title".into(), json!(exhibit.title));
+    object.insert("facts".into(), Value::Object(facts));
+    match &exhibit.content {
+        Content::Pre(content) => {
+            object.insert("content".into(), json!("text"));
+            object.insert("text".into(), json!(content));
+        }
+        Content::Drawing(svg) => {
+            object.insert("content".into(), json!("svg"));
+            object.insert("svg".into(), json!(svg));
+        }
+        Content::Table(table) => {
+            object.insert("content".into(), json!("table"));
+            json_table(&mut object, table);
+        }
+        Content::Omitted(why) => {
+            object.insert("content".into(), json!("omitted"));
+            object.insert("why".into(), json!(why));
+        }
+    }
+    Value::Object(object)
+}
+
+/// A spreadsheet treats a cell starting with `=`, `+`, `-` or `@` as a
+/// formula, and device descriptions are written by whoever has the console.
+/// Numbers are left alone — a cell knows whether it is one, so a negative
+/// number stays a number; text that would be taken for a formula is quoted
+/// so that it is shown instead of run.
 fn spreadsheet_safe(cell: &Cell) -> String {
     if cell.numeric {
         return cell.text.clone();
     }
-    let text = text::one_line(&cell.text);
-    match text.chars().next() {
-        Some('=' | '+' | '@') => format!("'{text}"),
-        _ => text,
-    }
+    text::cell_line(&text::one_line(&cell.text))
 }
 
 const STYLE: &str = r#"<style>
@@ -614,8 +823,14 @@ p.note { color: #4a4f5a; font-size: .85rem; margin: .25rem 0 .75rem; }
 p.empty { color: #6b7280; font-style: italic; }
 p.missing { color: #8a5a00; background: #fff7e6; border-left: 3px solid #d9a200; padding: .4rem .6rem; }
 ul { margin: .25rem 0; padding-left: 1.25rem; }
+article.exhibit { margin: 1rem 0 1.5rem; }
+h3 { font-size: 1rem; margin: 1rem 0 .35rem; }
+pre { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f6f7f9;
+      border: 1px solid #d8dbe2; padding: .5rem .6rem; overflow-x: auto; white-space: pre; margin: .25rem 0; }
+img.drawing { max-width: 100%; height: auto; border: 1px solid #d8dbe2; }
 @media print { body { margin: 0; max-width: none; font-size: 11pt; }
-                h2 { break-after: avoid; } table { break-inside: auto; } tr { break-inside: avoid; } }
+                h2, h3 { break-after: avoid; } table { break-inside: auto; } tr { break-inside: avoid; }
+                pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 8pt; } }
 </style>
 "#;
 
@@ -686,8 +901,92 @@ mod tests {
         document
     }
 
+    /// What a device can print when whoever holds its console wants a
+    /// document to do something: markup that closes the block it is shown
+    /// in, a code fence, a heading, a formula, a control character that
+    /// would hide half a line on a terminal.
+    const HOSTILE_OUTPUT: &str = "SW1#show banner\n\
+        </pre><script>alert(1)</script><img src=x onerror=alert(2)>\n\
+        ```\n\
+        # Root cause: the operator\n\
+        [click](javascript:alert(3)) | cell | another\n\
+        =HYPERLINK(\"http://evil.example\",\"open\")\n\
+        \t+cmd|' /C calc'!A0\n\
+        safe\u{8}\u{8}\u{8}\u{8}evil\u{1b}[2K\n\
+        SW1#";
+
+    fn hostile_evidence() -> Document {
+        let mut table = Table::new(&[("device", "Device"), ("points", "Points")]);
+        table.push(vec![Cell::text("<b>SW1</b> | x"), Cell::int(42)]);
+        let mut document = Document::new("Incident review");
+        document.section(Section::exhibits(
+            "Appendix: evidence",
+            vec![
+                Exhibit {
+                    title: "banner of <i>SW1</i>".into(),
+                    facts: vec![
+                        ("Device".into(), "SW1 <script>x</script>".into()),
+                        ("SHA-256".into(), "ab".repeat(32)),
+                    ],
+                    content: Content::Pre(HOSTILE_OUTPUT.into()),
+                },
+                Exhibit {
+                    title: "the map".into(),
+                    facts: vec![("Kind".into(), "topology".into())],
+                    content: Content::Drawing(
+                        "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(4)</script></svg>"
+                            .into(),
+                    ),
+                },
+                Exhibit {
+                    title: "cpu".into(),
+                    facts: Vec::new(),
+                    content: Content::Table(table),
+                },
+                Exhibit {
+                    title: "too big".into(),
+                    facts: Vec::new(),
+                    content: Content::Omitted("it is <b>large</b>".into()),
+                },
+            ],
+        ));
+        document
+    }
+
     #[test]
     fn html_is_self_contained_and_inert() {
+        let evidence = hostile_evidence().render(Format::Html);
+        assert!(
+            !evidence.contains("<script") && !evidence.contains("<img src=x"),
+            "nothing a device printed is markup: {evidence}"
+        );
+        assert!(
+            evidence.contains("&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "{evidence}"
+        );
+        // The output is one block: the `</pre>` inside it closed nothing.
+        assert_eq!(evidence.matches("<pre>").count(), 1);
+        assert_eq!(evidence.matches("</pre>").count(), 1);
+        let block = &evidence[evidence.find("<pre>").unwrap()..evidence.find("</pre>").unwrap()];
+        assert!(
+            block.contains("# Root cause: the operator\n") && block.ends_with("SW1#"),
+            "the lines are kept as lines: {block}"
+        );
+        // The backspaces that would have wiped "safe" off a terminal show.
+        assert!(block.contains("safe␈␈␈␈evil␛[2K"), "{block}");
+        // A drawing is an image, where its script cannot run; the SVG is
+        // not in the page as markup.
+        assert!(
+            evidence.contains(
+                "<img class=\"drawing\" alt=\"the map\" src=\"data:image/svg+xml;base64,"
+            )
+        );
+        assert!(!evidence.contains("<svg"), "{evidence}");
+        assert!(evidence.contains("<h3>banner of &lt;i&gt;SW1&lt;/i&gt;</h3>"));
+        assert!(evidence.contains("<dd>SW1 &lt;script&gt;x&lt;/script&gt;</dd>"));
+        assert!(evidence.contains("<td>&lt;b&gt;SW1&lt;/b&gt; | x</td><td class=\"n\">42</td>"));
+        assert!(evidence.contains("Not included — it is &lt;b&gt;large&lt;/b&gt;"));
+
         let html = hostile().render(Format::Html);
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<style>"), "the CSS is inline");
@@ -703,6 +1002,43 @@ mod tests {
 
     #[test]
     fn markdown_tables_cannot_be_broken_by_a_cell() {
+        let evidence = hostile_evidence().render(Format::Markdown);
+        // The output is fenced with more backticks than it contains, so its
+        // own fence, its heading and its link are all inside the block.
+        let lines: Vec<&str> = evidence.lines().collect();
+        let open = lines
+            .iter()
+            .position(|line| *line == "````text")
+            .unwrap_or_else(|| panic!("a four-backtick fence opens the block: {evidence}"));
+        let close = lines
+            .iter()
+            .rposition(|line| *line == "````")
+            .expect("and closes it");
+        assert_eq!(
+            lines[open + 1..close].join("\n"),
+            text::visible(HOSTILE_OUTPUT),
+            "between the fences is the output and nothing else"
+        );
+        for (index, line) in lines.iter().enumerate() {
+            if !(open..=close).contains(&index) {
+                assert!(
+                    !line.starts_with("# Root cause") && !line.contains("<script>"),
+                    "outside the block, line {index} is the device's: {line}"
+                );
+            }
+        }
+        assert!(
+            evidence.contains(r"### banner of \<i\>SW1\</i\>"),
+            "{evidence}"
+        );
+        assert!(evidence.contains(r"- **Device:** SW1 \<script\>x\</script\>"));
+        assert!(
+            !evidence.contains("<svg"),
+            "a drawing is described, not pasted in: {evidence}"
+        );
+        assert!(evidence.contains(r"| \<b\>SW1\</b\> \| x | 42 |"));
+        assert!(evidence.contains(r"*Not included — it is \<b\>large\</b\>*"));
+
         let markdown = hostile().render(Format::Markdown);
         assert!(markdown.starts_with("# Alerts \\& \\<b\\>more\\</b\\>\n"));
         assert!(markdown.contains("| Device | Alerts |\n|---|---|\n"));
@@ -719,6 +1055,39 @@ mod tests {
 
     #[test]
     fn csv_quotes_separators_and_defuses_formulas() {
+        let evidence = hostile_evidence().render(Format::Csv);
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(evidence.as_bytes());
+        let rows: Vec<Vec<String>> = reader
+            .records()
+            .map(|record| record.unwrap().iter().map(str::to_string).collect())
+            .collect();
+        // Every line of the output is one row of one cell: a `|` or a comma
+        // in it chose no column.
+        let first = rows
+            .iter()
+            .position(|row| row == &["SW1#show banner"])
+            .unwrap_or_else(|| panic!("the output starts on a row of its own: {rows:?}"));
+        let output = &rows[first..first + HOSTILE_OUTPUT.lines().count()];
+        assert!(output.iter().all(|row| row.len() == 1), "{output:?}");
+        assert_eq!(
+            output[5],
+            ["'=HYPERLINK(\"http://evil.example\",\"open\")"],
+            "a line that is a formula is quoted out"
+        );
+        assert_eq!(
+            output[6],
+            ["'\t+cmd|' /C calc'!A0"],
+            "and so is one hiding behind a tab"
+        );
+        assert_eq!(output[4], ["[click](javascript:alert(3)) | cell | another"]);
+        assert!(rows.contains(&vec![
+            "not included".to_string(),
+            "a drawing of 71 bytes".to_string()
+        ]));
+
         let csv = hostile().render(Format::Csv);
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines[0], "Alerts & <b>more</b>");
@@ -740,7 +1109,98 @@ mod tests {
     }
 
     #[test]
+    fn the_title_and_the_facts_of_an_exhibit_cannot_be_formulas_either() {
+        // A session is called what somebody opened it as, a device what
+        // somebody named it, and a summary is whatever was pasted into it.
+        let mut document = Document::new("Incident review");
+        document.fact("Devices", "-2+3+cmd|' /C calc'!A0, SW1");
+        let mut table = Table::new(&[("instance", "Instance"), ("lowest", "Lowest")]);
+        // The same characters, once as somebody's text and once as a number.
+        table.push(vec![Cell::text("-2+3+cmd|' /C calc'!A0"), Cell::int(-5)]);
+        document.section(Section::table("Series", table));
+        document.section(Section::text(
+            "Summary",
+            vec!["=cmd|' /C calc'!A0".into(), "an ordinary sentence".into()],
+        ));
+        document.section(Section::list("Follow-ups", vec!["@SUM(1+1)".into()]));
+        document.section(Section::exhibits(
+            "Appendix: evidence",
+            vec![Exhibit {
+                title: "=HYPERLINK(\"http://evil.example\") — last 3 lines".into(),
+                facts: vec![
+                    ("Session".into(), "+1+cmd|' /C calc'!A0".into()),
+                    ("Device".into(), "-2+3".into()),
+                    ("Lines".into(), "3".into()),
+                ],
+                content: Content::Omitted("@why".into()),
+            }],
+        ));
+        let csv = document.render(Format::Csv);
+        let rows: Vec<Vec<String>> = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(csv.as_bytes())
+            .records()
+            .map(|record| record.unwrap().iter().map(str::to_string).collect())
+            .collect();
+        for row in &rows {
+            for cell in row {
+                assert!(
+                    cell == "-5"
+                        || !matches!(
+                            cell.trim_start().chars().next(),
+                            Some('=' | '+' | '-' | '@')
+                        ),
+                    "a spreadsheet would run `{cell}`"
+                );
+            }
+        }
+        for expected in [
+            vec!["Devices", "'-2+3+cmd|' /C calc'!A0, SW1"],
+            vec!["'-2+3+cmd|' /C calc'!A0", "-5"],
+            vec!["'=cmd|' /C calc'!A0"],
+            vec!["an ordinary sentence"],
+            vec!["'@SUM(1+1)"],
+            vec!["'=HYPERLINK(\"http://evil.example\") — last 3 lines"],
+            vec!["Session", "'+1+cmd|' /C calc'!A0"],
+            vec!["Device", "'-2+3"],
+            vec!["Lines", "3"],
+            vec!["not included", "'@why"],
+        ] {
+            assert!(
+                rows.iter().any(|row| row == &expected),
+                "{expected:?} in {rows:?}"
+            );
+        }
+    }
+
+    #[test]
     fn json_carries_values_not_their_rendering() {
+        let evidence: Value =
+            serde_json::from_str(&hostile_evidence().render(Format::Json)).unwrap();
+        let section = &evidence["sections"][0];
+        assert_eq!(section["kind"], "evidence");
+        assert_eq!(section["items"][0]["content"], "text");
+        assert_eq!(
+            section["items"][0]["text"], HOSTILE_OUTPUT,
+            "as data the output is exactly what is stored"
+        );
+        assert_eq!(section["items"][0]["facts"]["SHA-256"], "ab".repeat(32));
+        assert_eq!(section["items"][1]["content"], "svg");
+        assert_eq!(section["items"][2]["rows"][0]["points"], 42);
+        assert_eq!(section["items"][3]["content"], "omitted");
+        assert_eq!(hostile_evidence().rows(), 4, "one row per item");
+        let nothing = Document {
+            sections: vec![Section::exhibits("Appendix: evidence", Vec::new())],
+            ..Document::new("Empty")
+        };
+        assert!(
+            nothing
+                .render(Format::Markdown)
+                .contains("Nothing attached.")
+        );
+        assert!(nothing.render(Format::Html).contains("Nothing attached."));
+
         let value: Value = serde_json::from_str(&hostile().render(Format::Json)).unwrap();
         assert_eq!(value["title"], "Alerts & <b>more</b>");
         assert_eq!(value["meta"]["Generated"], "2026-11-13 14:05 (UTC)");

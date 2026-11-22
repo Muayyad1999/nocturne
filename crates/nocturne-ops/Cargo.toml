@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 nocturne-app.workspace = true
 nocturne-drivers.workspace = true
+# The redactor every stored piece of evidence passes (`redact.rs`). An engine, not a feature.
+nocturne-ai.workspace = true
 tokio.workspace = true
 futures.workspace = true
 serde.workspace = true
@@ -19,13 +21,22 @@ parking_lot.workspace = true
 chrono.workspace = true
 regex.workspace = true
 csv.workspace = true
-# Only for the feature's own two tables (`records.rs`), through `Store::with` / `Store::transaction`.
+# Evidence is identified by the hash of what is stored (`evidence.rs`).
+sha2.workspace = true
+hex.workspace = true
+# The vault's values are held for one call while evidence is redacted, and wiped after it.
+zeroize.workspace = true
+# A drawing in an HTML export is an `<img>` with a data URI, where nothing in it can run.
+base64.workspace = true
+# Only for the feature's own tables (`records.rs`, `evidence.rs`), through `Store::with` / `Store::transaction`.
 rusqlite.workspace = true
 
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 tempfile.workspace = true
+# The tests' stand-in for the terminal feature holds a real connection to the fake device.
+nocturne-transport.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

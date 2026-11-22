@@ -5,18 +5,27 @@
 //! the point: every entry on it is a record that exists somewhere else and
 //! says where it came from (see [`crate::timeline`]). Nothing here reaches a
 //! device; the whole module reads.
+//!
+//! Every change to a stored incident reads it and writes it back inside one
+//! transaction ([`modify`]). The ones that first ask other features what
+//! happened — `update`, `link`, `sync` — do the asking before, on a copy,
+//! and then apply their change to whatever the incident has become in the
+//! meantime: a note written while a link was gathering its events is still
+//! there afterwards.
 
 use nocturne_app::util::{new_id, now_ms};
 use nocturne_app::{App, AppBuilder, AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::model::{EntryKind, FollowUp, Incident, IncidentHead, Severity, State};
-use crate::records::{self, Kind, Query, Record};
+use crate::evidence;
+use crate::model::{Entry, EntryKind, FollowUp, Incident, IncidentHead, Severity, State};
+use crate::records::{self, Kind, Query, Record, Tx};
 use crate::refs::Devices;
-use crate::render::{Cell, Document, Format, Section, Table};
+use crate::render::{Cell, Document, Exhibit, Format, Section, Table};
 use crate::settings;
 use crate::sources::{self, Severity as AlertSeverity};
+use crate::text;
 use crate::timefmt::{self, Zone};
 use crate::timeline;
 
@@ -40,19 +49,54 @@ fn record(incident: &Incident) -> AppResult<Record> {
     })
 }
 
+pub(crate) fn parse(body: &str) -> AppResult<Incident> {
+    serde_json::from_str(body).map_err(AppError::from)
+}
+
 pub fn load(app: &App, id: &str) -> AppResult<Incident> {
     let body = records::body(app.store(), Kind::Incident, id)?
         .ok_or_else(|| AppError::not_found(format!("{WHAT} `{id}`")))?;
-    serde_json::from_str(&body).map_err(AppError::from)
+    parse(&body)
 }
 
-/// Store the incident and announce it.
-fn save(app: &App, incident: &mut Incident) -> AppResult<()> {
+/// Store a new incident and announce it. An incident that exists already is
+/// changed with [`modify`], never written over with a copy read earlier.
+fn save_new(app: &App, incident: &mut Incident) -> AppResult<()> {
     incident.updated_at = now_ms();
     incident.sort_timeline();
     records::save(app.store(), Kind::Incident, &record(incident)?)?;
     app.publish("incidents.changed", &incident.head());
     Ok(())
+}
+
+/// Read the incident, change it and write it back, as part of a step that
+/// may move other records too. `change` sees the incident as it is stored
+/// now; when it refuses, nothing is written.
+pub(crate) fn modify_in<T>(
+    tx: &Tx<'_>,
+    id: &str,
+    change: impl FnOnce(&mut Incident) -> AppResult<T>,
+) -> AppResult<(Incident, T)> {
+    let body = tx
+        .body(Kind::Incident, id)?
+        .ok_or_else(|| AppError::not_found(format!("{WHAT} `{id}`")))?;
+    let mut incident = parse(&body)?;
+    let value = change(&mut incident)?;
+    incident.updated_at = now_ms();
+    incident.sort_timeline();
+    tx.put(Kind::Incident, &record(&incident)?)?;
+    Ok((incident, value))
+}
+
+/// [`modify_in`] as a step of its own, announced once it is committed.
+pub(crate) fn modify<T>(
+    app: &App,
+    id: &str,
+    change: impl FnOnce(&mut Incident) -> AppResult<T>,
+) -> AppResult<(Incident, T)> {
+    let (incident, value) = records::transaction(app.store(), |tx| modify_in(tx, id, change))?;
+    app.publish("incidents.changed", &incident.head());
+    Ok((incident, value))
 }
 
 /// An incident as `get` returns it: the record, with its devices resolved
@@ -77,19 +121,24 @@ fn detailed(app: &App, incident: &Incident) -> AppResult<Value> {
     Ok(value)
 }
 
-/// Gather from every source and add what is new. Returns how many entries
-/// were added and how many gaps the timeline now has.
-async fn sync(app: &App, incident: &mut Incident) -> (usize, usize) {
-    let now = now_ms();
+/// Ask every source what happened to the things `incident` points at.
+///
+/// This waits for other features, so it is never done inside a transaction:
+/// the entries are gathered for the incident as the caller means it to be,
+/// and absorbed afterwards into the incident as it then is.
+async fn gather(app: &App, incident: &Incident) -> Vec<Entry> {
     let devices = Devices::load(app).unwrap_or_else(|_| Devices::empty());
-    let gathered = timeline::gather(app, incident, &devices, now).await;
-    let added = incident.absorb(gathered.all());
-    let gaps = incident
+    timeline::gather(app, incident, &devices, now_ms())
+        .await
+        .all()
+}
+
+fn gaps(incident: &Incident) -> usize {
+    incident
         .timeline
         .iter()
         .filter(|entry| entry.kind == EntryKind::Gap)
-        .count();
-    (added, gaps)
+        .count()
 }
 
 fn severity_from_alert(severity: AlertSeverity) -> Severity {
@@ -248,6 +297,8 @@ pub struct CreateParams {
 }
 
 pub async fn create(app: &App, params: CreateParams) -> AppResult<Value> {
+    text::prose("an incident's summary", &params.summary)?;
+    text::prose("an incident's impact", &params.impact)?;
     let now = now_ms();
     let mut incident = Incident {
         id: new_id(),
@@ -306,8 +357,10 @@ pub async fn create(app: &App, params: CreateParams) -> AppResult<Value> {
         &params.author,
         now,
     ));
-    let (_, gaps) = sync(app, &mut incident).await;
-    save(app, &mut incident)?;
+    let gathered = gather(app, &incident).await;
+    incident.absorb(gathered);
+    let gaps = gaps(&incident);
+    save_new(app, &mut incident)?;
     app.audit(
         "incidents.create",
         incident.device_ids.first().map(String::as_str),
@@ -356,6 +409,16 @@ fn apply_update(
     params: &UpdateParams,
     now: i64,
 ) -> AppResult<Vec<String>> {
+    for (what, prose) in [
+        ("an incident's summary", &params.summary),
+        ("an incident's impact", &params.impact),
+        ("an incident's root cause", &params.root_cause),
+        ("the reason for a state change", &params.note),
+    ] {
+        if let Some(prose) = prose {
+            text::prose(what, prose)?;
+        }
+    }
     let mut moved: Vec<String> = Vec::new();
     if let Some(title) = &params.title {
         if title.trim().is_empty() {
@@ -461,11 +524,17 @@ fn apply_update(
 
 pub async fn update(app: &App, params: UpdateParams) -> AppResult<Value> {
     let now = now_ms();
-    let mut incident = load(app, &params.id)?;
-    let moved = apply_update(&mut incident, &params, now)?;
-    // A device added to the incident brings its own history with it.
-    let (_, gaps) = sync(app, &mut incident).await;
-    save(app, &mut incident)?;
+    // On a copy first: it refuses what cannot be done before anything is
+    // asked of another feature, and it says which devices to gather for — a
+    // device added to the incident brings its own history with it.
+    let mut draft = load(app, &params.id)?;
+    apply_update(&mut draft, &params, now)?;
+    let gathered = gather(app, &draft).await;
+    let (incident, (moved, gaps)) = modify(app, &params.id, |incident| {
+        let moved = apply_update(incident, &params, now)?;
+        incident.absorb(gathered);
+        Ok((moved, gaps(incident)))
+    })?;
     app.audit(
         "incidents.update",
         incident.device_ids.first().map(String::as_str),
@@ -530,39 +599,40 @@ pub struct ReopenParams {
 
 pub fn acknowledge(app: &App, params: IdParams) -> AppResult<Value> {
     let now = now_ms();
-    let mut incident = load(app, &params.id)?;
-    if incident.acked_at.is_some() {
-        return Err(AppError::conflict(format!(
-            "this incident was already acknowledged{}",
-            match incident.acked_by.as_str() {
-                "" => String::new(),
-                who => format!(" by {who}"),
-            }
-        )));
-    }
-    let who = match params.author.as_str() {
-        "" => String::new(),
-        who => format!(" by {who}"),
-    };
-    incident.acked_at = Some(now);
-    incident.acked_by = params.author.clone();
-    if incident.assignee.trim().is_empty() && !params.author.trim().is_empty() {
-        incident.assignee = params.author.clone();
-    }
-    let note = params
-        .note
-        .as_deref()
-        .map(str::trim)
-        .filter(|note| !note.is_empty())
-        .map(|note| format!(": {note}"))
-        .unwrap_or_default();
-    incident.timeline.push(timeline::status_entry(
-        &format!("{}:acknowledged", incident.id),
-        &format!("Acknowledged{who}{note}"),
-        &params.author,
-        now,
-    ));
-    save(app, &mut incident)?;
+    let (incident, ()) = modify(app, &params.id, |incident| {
+        if incident.acked_at.is_some() {
+            return Err(AppError::conflict(format!(
+                "this incident was already acknowledged{}",
+                match incident.acked_by.as_str() {
+                    "" => String::new(),
+                    who => format!(" by {who}"),
+                }
+            )));
+        }
+        let who = match params.author.as_str() {
+            "" => String::new(),
+            who => format!(" by {who}"),
+        };
+        incident.acked_at = Some(now);
+        incident.acked_by = params.author.clone();
+        if incident.assignee.trim().is_empty() && !params.author.trim().is_empty() {
+            incident.assignee = params.author.clone();
+        }
+        let note = params
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|note| !note.is_empty())
+            .map(|note| format!(": {note}"))
+            .unwrap_or_default();
+        incident.timeline.push(timeline::status_entry(
+            &format!("{}:acknowledged", incident.id),
+            &format!("Acknowledged{who}{note}"),
+            &params.author,
+            now,
+        ));
+        Ok(())
+    })?;
     app.audit(
         "incidents.acknowledge",
         incident.device_ids.first().map(String::as_str),
@@ -625,9 +695,19 @@ pub async fn reopen(app: &App, params: ReopenParams) -> AppResult<Value> {
 }
 
 pub fn delete(app: &App, id: &str) -> AppResult<Value> {
-    let incident = load(app, id)?;
-    let removed = records::delete(app.store(), Kind::Incident, id)?;
+    // The evidence that was attached stays, and stops saying it is attached
+    // to an incident that is gone.
+    let (incident, removed, detached) = records::transaction(app.store(), |tx| {
+        let body = tx
+            .body(Kind::Incident, id)?
+            .ok_or_else(|| AppError::not_found(format!("{WHAT} `{id}`")))?;
+        let detached = evidence::forget_incident(tx, id)?;
+        Ok((parse(&body)?, tx.delete(Kind::Incident, id)?, detached))
+    })?;
     app.publish("incidents.changed", &json!({"id": id, "deleted": true}));
+    for item in &detached {
+        app.publish("evidence.changed", item);
+    }
     app.audit(
         "incidents.delete",
         incident.device_ids.first().map(String::as_str),
@@ -654,16 +734,18 @@ pub fn note(app: &App, params: NoteParams) -> AppResult<Value> {
     if params.text.trim().is_empty() {
         return Err(AppError::invalid("a note needs some text"));
     }
+    text::prose("a note on an incident", &params.text)?;
     let now = now_ms();
-    let mut incident = load(app, &params.id)?;
-    incident.timeline.push(timeline::note_entry(
-        &new_id(),
-        params.text.trim(),
-        &params.author,
-        params.ts.unwrap_or(now),
-        now,
-    ));
-    save(app, &mut incident)?;
+    let (incident, ()) = modify(app, &params.id, |incident| {
+        incident.timeline.push(timeline::note_entry(
+            &new_id(),
+            params.text.trim(),
+            &params.author,
+            params.ts.unwrap_or(now),
+            now,
+        ));
+        Ok(())
+    })?;
     app.audit(
         "incidents.note",
         incident.device_ids.first().map(String::as_str),
@@ -685,8 +767,8 @@ pub struct LinkParams {
     pub author: String,
 }
 
-pub async fn link(app: &App, params: LinkParams) -> AppResult<Value> {
-    let mut incident = load(app, &params.id)?;
+/// Add the ids that are not linked yet; returns what was added, in words.
+fn apply_links(incident: &mut Incident, params: &LinkParams) -> Vec<String> {
     let mut added: Vec<String> = Vec::new();
     for (ids, into, what) in [
         (&params.alert_ids, &mut incident.alert_ids, "alert"),
@@ -700,8 +782,20 @@ pub async fn link(app: &App, params: LinkParams) -> AppResult<Value> {
             }
         }
     }
-    let (entries, gaps) = sync(app, &mut incident).await;
-    save(app, &mut incident)?;
+    added
+}
+
+pub async fn link(app: &App, params: LinkParams) -> AppResult<Value> {
+    // What the linked things have to say is read for the incident as it
+    // will be, without holding anything: other features are being asked.
+    let mut draft = load(app, &params.id)?;
+    apply_links(&mut draft, &params);
+    let gathered = gather(app, &draft).await;
+    let (incident, (added, entries, gaps)) = modify(app, &params.id, |incident| {
+        let added = apply_links(incident, &params);
+        let entries = incident.absorb(gathered);
+        Ok((added, entries, gaps(incident)))
+    })?;
     if !added.is_empty() {
         app.audit(
             "incidents.link",
@@ -727,9 +821,8 @@ pub async fn link(app: &App, params: LinkParams) -> AppResult<Value> {
 
 /// Read every source again without linking anything new.
 pub async fn resync(app: &App, id: &str) -> AppResult<Value> {
-    let mut incident = load(app, id)?;
-    let (added, _) = sync(app, &mut incident).await;
-    save(app, &mut incident)?;
+    let gathered = gather(app, &load(app, id)?).await;
+    let (incident, added) = modify(app, id, |incident| Ok(incident.absorb(gathered)))?;
     let mut value = detailed(app, &incident)?;
     value["timeline_entries_added"] = json!(added);
     Ok(value)
@@ -768,8 +861,15 @@ fn markdown() -> Format {
     Format::Markdown
 }
 
-/// The post-incident review document.
-pub fn review(incident: &Incident, devices: &Devices, zone: &Zone, now: i64) -> Document {
+/// The post-incident review document. `evidence` is the appendix: the items
+/// on the timeline, each with its content (see [`evidence::exhibits`]).
+pub fn review(
+    incident: &Incident,
+    devices: &Devices,
+    evidence: Vec<Exhibit>,
+    zone: &Zone,
+    now: i64,
+) -> Document {
     let mut document = Document::new(format!("Incident review: {}", incident.title));
     document
         .fact("Incident", incident.id.clone())
@@ -872,6 +972,9 @@ pub fn review(incident: &Incident, devices: &Devices, zone: &Zone, now: i64) -> 
     if !links.is_empty() {
         document.section(Section::list("Linked records", links));
     }
+    document.section(Section::exhibits("Appendix: evidence", evidence).with_note(
+        "What was captured and attached to this incident, as it is stored: redacted before it was kept, with its source, the time it was read and the SHA-256 of the stored content. Device output is shown exactly as it was printed.",
+    ));
     document
 }
 
@@ -888,7 +991,8 @@ pub fn export(app: &App, params: &ExportParams) -> AppResult<Value> {
     let zone = Zone::resolve(params.utc_offset_minutes)?;
     let now = now_ms();
     let devices = Devices::load(app)?;
-    let document = review(&incident, &devices, &zone, now);
+    let evidence = evidence::exhibits(app, &incident, &zone)?;
+    let document = review(&incident, &devices, evidence, &zone, now);
     Ok(json!({
         "title": document.title,
         "format": params.format.as_str(),
@@ -1195,7 +1299,7 @@ mod tests {
             },
         ];
         let zone = Zone::resolve(Some(0)).unwrap();
-        let document = review(&incident, &Devices::empty(), &zone, 9_000);
+        let document = review(&incident, &Devices::empty(), Vec::new(), &zone, 9_000);
         let markdown = document.render(Format::Markdown);
         assert!(markdown.contains("# Incident review: Core switch down"));
         assert!(markdown.contains("**Severity:** sev2"));
@@ -1211,6 +1315,11 @@ mod tests {
         assert!(markdown.contains("## Root cause\n\nA cut fibre"));
         assert!(markdown.contains("First paragraph."));
         assert!(markdown.contains("| no | order a spare |"));
+        assert!(
+            markdown.contains("## Appendix: evidence\n")
+                && markdown.trim_end().ends_with("Nothing attached."),
+            "an incident without evidence says so: {markdown}"
+        );
         // Two timeline rows, one gap line, one follow-up.
         assert_eq!(document.rows(), 2 + 1 + 1);
     }
@@ -1218,7 +1327,7 @@ mod tests {
     #[test]
     fn an_unresolved_incident_shows_how_long_it_has_been_open() {
         let zone = Zone::resolve(Some(0)).unwrap();
-        let document = review(&incident(), &Devices::empty(), &zone, 100_000);
+        let document = review(&incident(), &Devices::empty(), Vec::new(), &zone, 100_000);
         assert!(
             document
                 .meta

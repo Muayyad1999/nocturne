@@ -21,7 +21,7 @@ use crate::records::{self, Kind};
 use crate::refs::{Devices, Ref};
 
 /// The fields features put ids in, and what kind of record each names.
-const REFERENCE_FIELDS: [(&str, &str); 10] = [
+const REFERENCE_FIELDS: [(&str, &str); 11] = [
     ("incident_id", "incident"),
     ("change_id", "change"),
     ("alert_id", "alert"),
@@ -32,6 +32,7 @@ const REFERENCE_FIELDS: [(&str, &str); 10] = [
     ("version_id", "config_version"),
     ("lab_id", "lab"),
     ("policy_id", "policy"),
+    ("evidence_id", "evidence"),
 ];
 
 /// Every record an audit entry's own detail names.
@@ -57,6 +58,7 @@ fn title_of(app: &App, reference: &Ref) -> Option<String> {
         "note" => Kind::Note,
         "handover" => Kind::Handover,
         "report" => Kind::Report,
+        "evidence" => Kind::Evidence,
         _ => return None,
     };
     let head = records::head(app.store(), kind, &reference.id).ok()??;
