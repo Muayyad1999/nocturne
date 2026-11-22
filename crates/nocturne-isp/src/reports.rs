@@ -12,13 +12,12 @@ use std::collections::BTreeMap;
 use nocturne_app::{App, AppError, AppResult, util};
 use serde::{Deserialize, Serialize};
 
+use crate::calendar::{Calendar, DAY_MS};
 use crate::db;
 use crate::model::{CustomerState, InvoiceState, Settings};
 use crate::money::{
     Conversion, ConversionInput, Converted, Currency, Money, Totals, convert_totals,
 };
-
-const DAY_MS: i64 = 86_400_000;
 
 // ------------------------------------------------------------------ arrears
 
@@ -55,9 +54,21 @@ pub struct CustomerArrears {
     pub customer_name: String,
     pub state: CustomerState,
     pub outstanding: Money,
-    /// Days overdue of their oldest unpaid invoice; `None` when nothing of
-    /// theirs is due yet.
+    /// Days overdue of their oldest unpaid invoice, counted exactly as an
+    /// invoice's own `days_overdue` is; `None` when nothing of theirs is
+    /// overdue.
     pub oldest_days: Option<i64>,
+    pub invoices: u32,
+}
+
+/// What stands in one customer's favour, in one currency.
+#[derive(Clone, Debug, Serialize)]
+pub struct CustomerOverpaid {
+    pub customer_id: String,
+    pub customer_name: String,
+    pub state: CustomerState,
+    pub overpaid: Money,
+    /// How many of their invoices are settled beyond their total.
     pub invoices: u32,
 }
 
@@ -70,6 +81,16 @@ pub struct Arrears {
     pub by_currency: Vec<CurrencyArrears>,
     /// Who owes what, worst first within each currency.
     pub customers: Vec<CustomerArrears>,
+    /// What has been settled beyond the total of an issued invoice — paid
+    /// more than it charged, or credited after it was paid — per currency.
+    /// It stands in customers' favour. It is here because this is the report
+    /// somebody chases debts from, and a customer who owes 100 on one
+    /// invoice and is 20 in credit on another should not be chased as if the
+    /// 20 did not exist. It is **not** taken off any figure above: nothing
+    /// has set it against a debt, so the report shows both.
+    pub overpaid: Totals,
+    /// Who is in credit, largest first within each currency.
+    pub customers_overpaid: Vec<CustomerOverpaid>,
     pub note: String,
 }
 
@@ -98,6 +119,7 @@ fn bands(settings: &Settings) -> Vec<(i64, Option<i64>, String)> {
 pub fn arrears(app: &App, settings: &Settings, customer_id: Option<&str>) -> AppResult<Arrears> {
     let store = app.store();
     let now = util::now_ms();
+    let today = Calendar::of(settings)?;
     let shortfalls = db::shortfalls(store, customer_id)?;
     let bands = bands(settings);
 
@@ -105,16 +127,31 @@ pub fn arrears(app: &App, settings: &Settings, customer_id: Option<&str>) -> App
     let mut per_currency: BTreeMap<&'static str, CurrencyArrears> = BTreeMap::new();
     let mut per_customer: BTreeMap<(String, &'static str), CustomerArrears> = BTreeMap::new();
     let mut names: BTreeMap<String, (String, CustomerState)> = BTreeMap::new();
+    // The ledger outlives the customer record; what is owed by, or to, an
+    // account that was deleted is still money, and saying so is better than
+    // dropping it.
+    let mut named = |customer_id: &str| -> AppResult<(String, CustomerState)> {
+        if let Some(known) = names.get(customer_id) {
+            return Ok(known.clone());
+        }
+        let known = match db::customer(store, customer_id)? {
+            Some(customer) => (customer.name, customer.state),
+            None => ("(deleted customer)".to_string(), CustomerState::Cancelled),
+        };
+        names.insert(customer_id.to_string(), known.clone());
+        Ok(known)
+    };
 
     for shortfall in &shortfalls {
         let currency = shortfall.currency;
-        let outstanding = shortfall.outstanding();
+        let outstanding = shortfall.outstanding()?;
         // No due date means nobody has been asked for it yet, so it is owed
-        // but not overdue.
-        let days_overdue = shortfall
-            .due_at
-            .map(|due| (now - due) / DAY_MS)
-            .filter(|days| *days >= 0);
+        // but not overdue. With one, the question is the same one the invoice
+        // itself asks, of the same function: this report and the invoice
+        // cannot then disagree about whether it is late, or by how many days.
+        let days_overdue = shortfall.due_at.and_then(|due| {
+            today.days_overdue(due, Calendar::stored(shortfall.utc_offset_minutes), now)
+        });
         let entry = per_currency
             .entry(currency.code())
             .or_insert_with(|| CurrencyArrears {
@@ -154,22 +191,7 @@ pub fn arrears(app: &App, settings: &Settings, customer_id: Option<&str>) -> App
         bucket.amount = bucket.amount.plus(outstanding)?;
         bucket.invoices += 1;
 
-        if !names.contains_key(&shortfall.customer_id) {
-            let customer = db::customer(store, &shortfall.customer_id)?;
-            names.insert(
-                shortfall.customer_id.clone(),
-                match customer {
-                    Some(customer) => (customer.name, customer.state),
-                    // The ledger outlives the customer record; it is still
-                    // money owed, and saying so is better than dropping it.
-                    None => ("(deleted customer)".to_string(), CustomerState::Cancelled),
-                },
-            );
-        }
-        let (name, state) = names
-            .get(&shortfall.customer_id)
-            .cloned()
-            .unwrap_or_else(|| (String::new(), CustomerState::Active));
+        let (name, state) = named(&shortfall.customer_id)?;
         let row = per_customer
             .entry((shortfall.customer_id.clone(), currency.code()))
             .or_insert_with(|| CustomerArrears {
@@ -204,13 +226,44 @@ pub fn arrears(app: &App, settings: &Settings, customer_id: Option<&str>) -> App
             .cmp(b.outstanding.currency.code())
             .then(b.outstanding.minor.cmp(&a.outstanding.minor))
     });
+
+    let mut overpaid = Totals::new();
+    let mut in_credit: BTreeMap<(String, &'static str), CustomerOverpaid> = BTreeMap::new();
+    for overpayment in db::overpayments(store, customer_id)? {
+        let amount = overpayment.overpaid()?;
+        overpaid.add(amount)?;
+        let (name, state) = named(&overpayment.customer_id)?;
+        let row = in_credit
+            .entry((overpayment.customer_id.clone(), amount.currency.code()))
+            .or_insert_with(|| CustomerOverpaid {
+                customer_id: overpayment.customer_id.clone(),
+                customer_name: name,
+                state,
+                overpaid: Money::zero(amount.currency),
+                invoices: 0,
+            });
+        row.overpaid = row.overpaid.plus(amount)?;
+        row.invoices += 1;
+    }
+    let mut customers_overpaid: Vec<CustomerOverpaid> = in_credit.into_values().collect();
+    customers_overpaid.sort_by(|a, b| {
+        a.overpaid
+            .currency
+            .code()
+            .cmp(b.overpaid.currency.code())
+            .then(b.overpaid.minor.cmp(&a.overpaid.minor))
+    });
+
     Ok(Arrears {
         as_of: now,
         by_currency: per_currency.into_values().collect(),
         customers,
+        overpaid,
+        customers_overpaid,
         note: "one aged report per currency, and no total across them: an amount owed in dinars \
                and an amount owed in dollars are two facts, and adding them would be a third \
-               thing that is not true"
+               thing that is not true. What customers have overpaid is listed beside what is \
+               owed and is not taken off it."
             .to_string(),
     })
 }
@@ -278,7 +331,7 @@ pub fn revenue(
     }
     let mut outstanding = Totals::new();
     for shortfall in db::shortfalls(store, None)? {
-        outstanding.add(shortfall.outstanding())?;
+        outstanding.add(shortfall.outstanding()?)?;
     }
 
     let converted = match convert {
@@ -354,7 +407,7 @@ pub struct InvoiceCounts {
     pub draft: u32,
     pub issued: u32,
     pub void: u32,
-    /// Issued, due and still short.
+    /// Issued, still short, and past the end of its due day.
     pub overdue: u32,
 }
 

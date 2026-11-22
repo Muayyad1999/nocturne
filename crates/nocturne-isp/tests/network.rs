@@ -472,6 +472,88 @@ async fn a_margin_is_only_worked_out_in_the_currency_the_cost_is_in() {
 }
 
 #[tokio::test]
+async fn a_cost_or_a_capacity_written_down_in_error_can_be_taken_off_a_link_again() {
+    let isp = Isp::start(false, &[]).await;
+    let tariff = isp
+        .tariff("USD 10", 10, "flat", 5_000, "USD", "monthly")
+        .await;
+    let customer = isp
+        .customer("Dollar One", "USD", json!({"tower": "Tower A"}))
+        .await;
+    isp.subscribe(&customer, &tariff, None).await;
+    let saved = isp
+        .ok(
+            "isp.link.save",
+            json!({
+                "name": "Tower A feed",
+                "tower": "Tower A",
+                "capacity_mbit": 100,
+                "cost_per_mbit": {"currency": "USD", "minor": 400},
+            }),
+        )
+        .await;
+    let id = saved["link"]["id"].as_str().expect("an id").to_string();
+    let before = list(&isp.ok("isp.margin", json!({})).await);
+    assert_eq!(before[0]["cost"]["minor"], json!(40_000));
+
+    // Leaving a field out of a save keeps what is stored — that is how every
+    // other field of the link is left alone — so it cannot also mean "none".
+    let kept = isp
+        .ok("isp.link.save", json!({"id": id, "name": "Tower A feed"}))
+        .await;
+    assert_eq!(kept["link"]["cost_per_mbit"]["minor"], json!(400));
+    assert_eq!(kept["link"]["capacity_mbit"], json!(100));
+
+    // Taking them off is said in so many words.
+    let cleared = isp
+        .ok(
+            "isp.link.save",
+            json!({"id": id, "clear_cost": true, "capacity_mbit": 0}),
+        )
+        .await;
+    assert_eq!(cleared["created"], json!(false));
+    assert!(
+        cleared["link"]["cost_per_mbit"].is_null(),
+        "{}",
+        cleared["link"]
+    );
+    assert_eq!(cleared["link"]["capacity_mbit"], json!(0));
+    let stored = list(&isp.ok("isp.links", json!({})).await);
+    assert!(stored[0]["cost_per_mbit"].is_null(), "{}", stored[0]);
+
+    // And the margin stops subtracting a cost that is no longer recorded:
+    // no cost is no margin, not a margin against a cost of nothing.
+    let after = list(&isp.ok("isp.margin", json!({})).await);
+    assert!(after[0]["cost"].is_null(), "{}", after[0]);
+    assert!(after[0]["margin"].is_null(), "{}", after[0]);
+    // No capacity is no ratio, not a ratio against nothing.
+    let capacity = list(&isp.ok("isp.capacity", json!({})).await);
+    assert!(capacity[0]["ratio"].is_null(), "{}", capacity[0]);
+
+    // Setting a cost and taking it off in one breath is two instructions.
+    let err = isp
+        .err(
+            "isp.link.save",
+            json!({
+                "id": id,
+                "clear_cost": true,
+                "cost_per_mbit": {"currency": "USD", "minor": 300},
+            }),
+        )
+        .await;
+    assert_eq!(err.code, "invalid");
+    assert!(err.message.contains("clear_cost"), "{}", err.message);
+
+    // The audit trail says the cost went, rather than repeating the old one.
+    let (_, summary) = isp
+        .audit()
+        .into_iter()
+        .find(|(action, _)| action == "isp.link.save")
+        .expect("the save is audited");
+    assert!(!summary.contains("per Mbit per"), "{summary}");
+}
+
+#[tokio::test]
 async fn one_customers_margin_comes_from_the_link_that_feeds_them() {
     let isp = Isp::start(false, &[]).await;
     let customer = isp

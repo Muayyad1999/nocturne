@@ -45,6 +45,7 @@
 
 pub mod api;
 pub mod billing;
+pub mod calendar;
 pub mod db;
 pub mod model;
 pub mod money;

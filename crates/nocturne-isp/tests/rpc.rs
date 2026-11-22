@@ -55,6 +55,10 @@ async fn every_method_in_the_specification_is_registered() {
         "isp.payments",
         "isp.payment.record",
         "isp.payment.void",
+        "isp.credits",
+        "isp.credit.issue",
+        "isp.credit.allocate",
+        "isp.credit.void",
         "isp.arrears",
         "isp.revenue",
         "isp.usage",
@@ -73,6 +77,11 @@ async fn every_method_in_the_specification_is_registered() {
     assert_eq!(settings["arrears_buckets"], json!([30, 60, 90]));
     assert_eq!(settings["usage_basis"], json!("greater"));
     assert_eq!(settings["invoice_number_prefix"], json!(""));
+    assert_eq!(
+        settings["utc_offset_minutes"],
+        json!(0),
+        "the business's calendar is UTC until somebody says otherwise"
+    );
 }
 
 #[tokio::test]

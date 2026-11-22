@@ -41,6 +41,13 @@ pub struct Settings {
     pub usage_window_hours: u32,
     /// Put in front of an invoice number: `ACME-2026-0001`.
     pub invoice_number_prefix: String,
+    /// How far the business's clock is ahead of UTC, in minutes (east
+    /// positive, `-720..=840`): `180` for Baghdad, `-240` for a business on
+    /// UTC-4. It decides where a month begins and ends, which day an invoice
+    /// falls due on and when that day is over, and which year a number is
+    /// counted in ([`crate::calendar::Calendar`]). A fixed offset, not a
+    /// zone: daylight-saving rules are not modelled.
+    pub utc_offset_minutes: i32,
 }
 
 impl Default for Settings {
@@ -51,6 +58,7 @@ impl Default for Settings {
             usage_basis: "greater".to_string(),
             usage_window_hours: 24,
             invoice_number_prefix: String::new(),
+            utc_offset_minutes: 0,
         }
     }
 }
@@ -258,6 +266,27 @@ impl Default for Tariff {
     }
 }
 
+/// The most megabits one plan or one link may be entered as: a thousand
+/// terabits per second.
+///
+/// Megabits are added up across every subscription behind a tower, exactly
+/// as amounts are added up across a ledger, and a figure nobody could have
+/// meant must not be the one that stops those sums from fitting.
+pub const MBIT_LIMIT: i64 = 1_000_000_000;
+
+/// Megabits as somebody entered them, refused when they are beyond anything
+/// that could have been meant. Whether they may be zero is the caller's
+/// rule: a plan sells some, a link may not have its capacity written down.
+pub fn megabits(mbit: i64, what: &str) -> AppResult<i64> {
+    if mbit > MBIT_LIMIT {
+        return Err(AppError::invalid(format!(
+            "{what} of {mbit} Mbit/s is more than this takes in one figure ({MBIT_LIMIT} Mbit/s): \
+             check the unit — megabits per second, not bits or kilobits"
+        )));
+    }
+    Ok(mbit)
+}
+
 /// The figure for one whole period at these terms.
 pub fn period_price(unit: Unit, unit_price: Money, mbit: i64) -> AppResult<Money> {
     match unit {
@@ -271,6 +300,16 @@ pub fn period_price(unit: Unit, unit_price: Money, mbit: i64) -> AppResult<Money
             unit_price.times(mbit)
         }
     }
+}
+
+/// [`period_price`] for terms somebody is entering now: the unit price and
+/// the megabits are each within their limit, and so is what they come to —
+/// a price per megabit can be reasonable and a million megabits of it not.
+/// Reading terms that already exist never goes through here.
+pub fn agreed_price(unit: Unit, unit_price: Money, mbit: i64) -> AppResult<Money> {
+    megabits(mbit, "a plan")?;
+    unit_price.enterable("a price")?;
+    period_price(unit, unit_price, mbit)?.enterable("a price for the whole period")
 }
 
 // -------------------------------------------------------------- subscription
@@ -404,16 +443,23 @@ impl InvoiceState {
 #[serde(rename_all = "snake_case")]
 pub enum InvoiceStatus {
     Draft,
-    /// Issued, nothing paid, not yet due.
+    /// Issued, nothing paid, and either not yet overdue or — an invoice that
+    /// comes to nothing — never owed at all. Such an invoice stays `Issued`:
+    /// no payment settled it, so it is not `Paid`.
     Issued,
     /// Something paid, something left.
     PartPaid,
+    /// The customer's money arrived for all of it — so there is at least
+    /// one recorded payment. A credit note added afterwards does not take
+    /// the word away: it leaves them in credit.
     Paid,
-    /// Nothing more is owed, but a credit note is part of why. Kept apart
-    /// from `Paid` on purpose: `Paid` is a claim that the customer's money
-    /// arrived, and a write-off is not that claim.
+    /// Nothing more is owed, and it took a credit note to get there: what
+    /// was paid does not cover the total on its own. Kept apart from `Paid`
+    /// on purpose: `Paid` is a claim that the customer's money arrived, and
+    /// a write-off is not that claim.
     Credited,
-    /// Issued, something left and the due date has passed.
+    /// Issued, something left, and its due day is over in the business's
+    /// calendar. Not on the due day itself, at any hour of it.
     Overdue,
     Void,
 }
@@ -500,6 +546,14 @@ pub struct Invoice {
     pub state: InvoiceState,
     pub period_start: i64,
     pub period_end: i64,
+    /// The calendar this invoice was written in: the business's offset from
+    /// UTC, in minutes, when it was drafted. Its period, its lines' periods
+    /// and its due date are days of *that* calendar, and are read in it for
+    /// as long as the invoice exists — changing the setting afterwards moves
+    /// no date on a document a customer has already been given. `0` on an
+    /// invoice from before the setting existed, which is how those were
+    /// billed.
+    pub utc_offset_minutes: i32,
     pub lines: Vec<InvoiceLine>,
     pub total: Money,
     pub issued_at: Option<i64>,
@@ -526,6 +580,7 @@ impl Default for Invoice {
             state: InvoiceState::Draft,
             period_start: 0,
             period_end: 0,
+            utc_offset_minutes: 0,
             lines: Vec::new(),
             total: Currency::of("USD")
                 .expect("USD is in the currency table")
@@ -575,7 +630,8 @@ pub struct InvoiceView {
     /// report that adds them cannot tell you how much money came in.
     pub credited: Money,
     pub outstanding: Money,
-    /// Days past its due date, when it is issued, due and short.
+    /// Whole days past its due day, when it is overdue: `1` throughout the
+    /// day after it fell due. The arrears report counts the same way.
     pub days_overdue: Option<i64>,
     /// The payments recorded against it, newest first.
     pub payments: Vec<Payment>,
@@ -641,6 +697,12 @@ pub struct CreditNote {
     pub reason: String,
     pub note: String,
     pub at: i64,
+    /// When a note issued on the account was set against `invoice_id`.
+    /// `None` for a note issued against its invoice in the first place, and
+    /// for one still on the account. `at` is when the credit was agreed, and
+    /// without this the note would read as if the invoice had been credited
+    /// then.
+    pub allocated_at: Option<i64>,
     pub state: CreditState,
     pub void_reason: String,
     pub voided_at: Option<i64>,
@@ -660,6 +722,7 @@ impl Default for CreditNote {
             reason: String::new(),
             note: String::new(),
             at: 0,
+            allocated_at: None,
             state: CreditState::Issued,
             void_reason: String::new(),
             voided_at: None,

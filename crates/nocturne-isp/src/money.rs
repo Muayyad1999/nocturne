@@ -200,9 +200,39 @@ pub struct Money {
     pub currency: Currency,
 }
 
+/// The most one entry may be, either side of zero, in minor units: a
+/// thousand million million — ten million million dollars, or a thousand
+/// million million dinars.
+///
+/// Nobody's invoice, payment or price is this large; a figure beyond it is
+/// a slip in the units. It is refused where it is entered because of what
+/// it would do afterwards: every balance, arrears report and revenue figure
+/// is a sum over the rows, and one absurd row would stop all of them from
+/// fitting in 64 bits for every customer until somebody found it.
+pub const ENTRY_LIMIT_MINOR: i64 = 1_000_000_000_000_000;
+
 impl Money {
     pub fn new(minor: i64, currency: Currency) -> Money {
         Money { minor, currency }
+    }
+
+    /// This amount, as somebody is entering it now — refused when it is
+    /// beyond [`ENTRY_LIMIT_MINOR`]. For what comes in, never for what is
+    /// read back: a row that already exists is reported as it is.
+    pub fn enterable(self, what: &str) -> AppResult<Money> {
+        if self.minor.unsigned_abs() > ENTRY_LIMIT_MINOR.unsigned_abs() {
+            return Err(AppError::invalid(format!(
+                "{what} of {} {} is more than one entry in this ledger may be ({} {}). A figure \
+                 that size is a slip in the units — the amount where whole minor units were \
+                 meant, or a number pasted into the wrong field — and it is refused here rather \
+                 than left to stop every total it would be part of from adding up.",
+                self.text(),
+                self.currency,
+                Money::new(ENTRY_LIMIT_MINOR, self.currency).text(),
+                self.currency
+            )));
+        }
+        Ok(self)
     }
 
     pub fn zero(currency: Currency) -> Money {
@@ -374,7 +404,7 @@ impl Money {
     }
 }
 
-fn overflow(what: &str) -> AppError {
+pub(crate) fn overflow(what: &str) -> AppError {
     AppError::invalid(format!(
         "{what} these amounts overflows the ledger's 64-bit minor units; the figure is wrong by \
          several orders of magnitude"

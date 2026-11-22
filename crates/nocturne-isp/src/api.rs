@@ -14,7 +14,8 @@ use nocturne_app::{App, AppBuilder, AppError, AppResult, NoParams, settings, uti
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::model::{Customer, Invoice, InvoiceView, Settings, Subscription};
+use crate::calendar::Calendar;
+use crate::model::{Customer, CustomerState, Invoice, InvoiceView, Settings, Subscription};
 use crate::money::{CURRENCIES, Money, Totals};
 use crate::{billing, db, network, records, reports};
 
@@ -22,6 +23,13 @@ pub const SETTINGS_SECTION: &str = "isp";
 
 fn config(app: &App) -> AppResult<Settings> {
     settings::get::<Settings>(app, SETTINGS_SECTION)
+}
+
+/// The business's calendar, as it is set now. Anything that names a period,
+/// or says whether an invoice is overdue, starts here — and is refused here
+/// when the setting is not a calendar.
+fn calendar(app: &App) -> AppResult<Calendar> {
+    Calendar::of(&config(app)?)
 }
 
 /// Records changed: a screen showing them refetches.
@@ -55,6 +63,15 @@ fn payment_changed(app: &App, change: &str, payment: &crate::model::Payment) {
     );
 }
 
+/// A credit note was issued, set against an invoice or voided.
+///
+/// It has its own topic, and it also publishes on one of the older ones,
+/// because what changed on screen is not the note: it is the settlement of
+/// the invoice it stands against, or — for a note on the account — the
+/// customer's balance. A screen that shows either follows
+/// `isp.invoices.changed` and `isp.changed` and has never heard of this
+/// topic; without the second event an open arrears list goes on showing a
+/// debt that was written off a minute ago.
 fn credit_changed(app: &App, change: &str, credit: &crate::model::CreditNote) {
     app.publish(
         "isp.credits.changed",
@@ -65,6 +82,17 @@ fn credit_changed(app: &App, change: &str, credit: &crate::model::CreditNote) {
             "invoice_ids": credit.invoice_id.iter().collect::<Vec<_>>(),
         }),
     );
+    match &credit.invoice_id {
+        Some(invoice_id) => app.publish(
+            "isp.invoices.changed",
+            &json!({
+                "change": "updated",
+                "ids": [invoice_id],
+                "customer_ids": [credit.customer_id],
+            }),
+        ),
+        None => changed(app, &["credits"]),
+    }
 }
 
 // ------------------------------------------------------------------ params
@@ -127,8 +155,15 @@ struct EndParams {
 #[derive(Debug, Deserialize)]
 struct DraftParams {
     customer_id: String,
-    period_start: i64,
-    period_end: i64,
+    /// The period as two instants, in milliseconds since the epoch…
+    #[serde(default)]
+    period_start: Option<i64>,
+    #[serde(default)]
+    period_end: Option<i64>,
+    /// …or as a month of the business's calendar, `2025-10`. One or the
+    /// other.
+    #[serde(default)]
+    month: Option<String>,
     /// Make a draft with no lines, to add them by hand.
     #[serde(default)]
     allow_empty: bool,
@@ -136,8 +171,14 @@ struct DraftParams {
 
 #[derive(Debug, Deserialize)]
 struct RunParams {
-    period_start: i64,
-    period_end: i64,
+    #[serde(default)]
+    period_start: Option<i64>,
+    #[serde(default)]
+    period_end: Option<i64>,
+    /// A month of the business's calendar, `2025-10`, instead of the two
+    /// instants.
+    #[serde(default)]
+    month: Option<String>,
     /// Only these customers; everybody active by default.
     #[serde(default)]
     customer_ids: Vec<String>,
@@ -168,6 +209,15 @@ struct IssueParams {
 struct LineRemoveParams {
     invoice_id: String,
     line_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllocateParams {
+    /// The credit note, which must be on the account.
+    id: String,
+    /// The invoice to set it against.
+    invoice_id: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -258,7 +308,12 @@ struct SubscriptionRow {
 struct RunResult {
     period_start: i64,
     period_end: i64,
+    /// The calendar the period was read in.
+    utc_offset_minutes: i32,
     dry_run: bool,
+    /// How many customers the run looked at. Every one of them is in
+    /// `invoices` or in `skipped`: the two always add up to this.
+    considered: u32,
     drafted: u32,
     issued: u32,
     /// What each customer's invoice would say, or does.
@@ -267,24 +322,33 @@ struct RunResult {
     skipped: Vec<RunSkip>,
     /// What this run comes to, per currency. Never one number.
     totals: Totals,
+    /// Anything about the run as a whole that did not go as asked.
+    warnings: Vec<String>,
     note: String,
 }
 
 #[derive(Debug, Serialize)]
 struct RunRow {
     customer_id: String,
-    /// `None` in a dry run and until it is issued.
+    /// `None` in a dry run.
     invoice_id: Option<String>,
+    /// `None` in a dry run and until it is issued.
     number: Option<String>,
     total: Money,
     lines: u32,
     skipped_subscriptions: Vec<billing::Skipped>,
+    /// Why a draft the run was asked to issue is still a draft, when it is.
+    not_issued: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct RunSkip {
     customer_id: String,
     reason: String,
+    /// The subscriptions that were in force and could not be charged, each
+    /// with its own reason. Empty when nothing of theirs was in force, or
+    /// when they were left out for another reason (already billed).
+    skipped_subscriptions: Vec<serde_json::Value>,
 }
 
 fn subscription_rows(subscriptions: Vec<Subscription>) -> AppResult<Vec<SubscriptionRow>> {
@@ -303,9 +367,10 @@ fn subscription_rows(subscriptions: Vec<Subscription>) -> AppResult<Vec<Subscrip
 
 fn invoice_views(app: &App, invoices: Vec<Invoice>) -> AppResult<Vec<InvoiceView>> {
     let now = util::now_ms();
+    let today = calendar(app)?;
     invoices
         .into_iter()
-        .map(|invoice| billing::invoice_view(app, invoice, now))
+        .map(|invoice| billing::invoice_view(app.store(), &today, invoice, now))
         .collect()
 }
 
@@ -461,7 +526,7 @@ pub fn init(builder: &mut AppBuilder) {
                     "isp.customer.delete",
                     None,
                     format!(
-                        "Deleted customer {} (they had no invoices or payments)",
+                        "Deleted customer {} (they had no invoices, payments or credit notes)",
                         deleted.name
                     ),
                     json!({"customer": params.id}),
@@ -677,19 +742,28 @@ pub fn init(builder: &mut AppBuilder) {
     );
 
     router.add("isp.invoice.get", |app: App, params: IdParams| async move {
+        let today = calendar(&app)?;
         let invoice = db::require_invoice(app.store(), &params.id)?;
-        billing::invoice_view(&app, invoice, util::now_ms())
+        billing::invoice_view(app.store(), &today, invoice, util::now_ms())
     });
 
     router.add(
         "isp.invoice.draft",
         |app: App, params: DraftParams| async move {
+            let calendar = calendar(&app)?;
+            let (period_start, period_end) = billing::period(
+                &calendar,
+                params.period_start,
+                params.period_end,
+                params.month.as_deref(),
+            )?;
             let customer = db::require_customer(app.store(), &params.customer_id)?;
             let drafted = billing::draft(
                 &app,
+                &calendar,
                 &customer,
-                params.period_start,
-                params.period_end,
+                period_start,
+                period_end,
                 params.allow_empty,
             )?;
             app.audit(
@@ -715,108 +789,151 @@ pub fn init(builder: &mut AppBuilder) {
 
     router.add("isp.invoice.run", |app: App, params: RunParams| async move {
         let settings = config(&app)?;
+        let calendar = Calendar::of(&settings)?;
+        let (period_start, period_end) = billing::period(
+            &calendar,
+            params.period_start,
+            params.period_end,
+            params.month.as_deref(),
+        )?;
         let store = app.store();
+        // Everybody, not a page of them: a customer this list leaves out is
+        // not billed, not skipped and not mentioned, this month and every
+        // month after it.
         let customers: Vec<Customer> = if params.customer_ids.is_empty() {
-            db::customers(
-                store,
-                &db::CustomerQuery {
-                    state: Some("active".to_string()),
-                    limit: Some(2_000),
-                    ..db::CustomerQuery::default()
-                },
-            )?
-            .customers
+            db::customers_in_state(store, CustomerState::Active)?
         } else {
-            params
-                .customer_ids
-                .iter()
-                .map(|id| db::require_customer(store, id))
-                .collect::<AppResult<Vec<_>>>()?
+            let mut named: Vec<Customer> = Vec::new();
+            for id in &params.customer_ids {
+                // Named twice is still one customer and one invoice.
+                if named.iter().all(|customer| customer.id != id.trim()) {
+                    named.push(db::require_customer(store, id.trim())?);
+                }
+            }
+            named
         };
         let mut rows: Vec<RunRow> = Vec::new();
         let mut skipped: Vec<RunSkip> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
         let mut totals = Totals::new();
-        let mut issued_count = 0_u32;
-        let mut issued_invoices: Vec<Invoice> = Vec::new();
+        let mut totals_complete = true;
+        let mut drafted: Vec<Invoice> = Vec::new();
+        let mut issued: Vec<Invoice> = Vec::new();
+        // From the first draft written to the audit entry, nothing below may
+        // return early: a run that stopped half way would have billed some
+        // customers and told nobody which. Whatever goes wrong for one
+        // customer is recorded against that customer and the run goes on.
         for customer in &customers {
-            let built = match billing::build(
-                &app,
-                customer,
-                params.period_start,
-                params.period_end,
-                false,
-            ) {
+            // A preview only reads. A real run asks "is this period already
+            // billed?" and writes the draft as one transaction, so two runs
+            // started at the same moment cannot both bill a customer: the
+            // second finds the first one's draft and lists them as skipped.
+            let built = if params.dry_run {
+                billing::build(&app, &calendar, customer, period_start, period_end, false)
+            } else {
+                billing::draft(&app, &calendar, customer, period_start, period_end, false)
+            };
+            let built = match built {
                 Ok(built) => built,
                 Err(err) => {
                     skipped.push(RunSkip {
                         customer_id: customer.id.clone(),
+                        skipped_subscriptions: err
+                            .details
+                            .as_ref()
+                            .and_then(|details| details.get("skipped"))
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_default(),
                         reason: err.message,
                     });
                     continue;
                 }
             };
-            totals.add(built.invoice.total)?;
-            if params.dry_run {
-                rows.push(RunRow {
-                    customer_id: customer.id.clone(),
-                    invoice_id: None,
-                    number: None,
-                    total: built.invoice.total,
-                    lines: u32::try_from(built.invoice.lines.len()).unwrap_or(u32::MAX),
-                    skipped_subscriptions: built.skipped,
-                });
-                continue;
+            if totals_complete && let Err(err) = totals.add(built.invoice.total) {
+                totals_complete = false;
+                warnings.push(format!(
+                    "the totals of this run are incomplete — they stop before customer `{}`: {}. \
+                     Every invoice listed is right; add them up from the list.",
+                    customer.id, err.message
+                ));
             }
-            db::put_invoice(store, &built.invoice)?;
             let mut invoice = built.invoice;
-            if params.issue {
-                invoice = billing::issue(&app, &settings, &invoice.id, None, None)?;
-                issued_count += 1;
+            let mut not_issued = None;
+            if !params.dry_run && params.issue {
+                match billing::issue(&app, &settings, &invoice.id, None, None) {
+                    Ok(frozen) => invoice = frozen,
+                    Err(err) => not_issued = Some(err.message),
+                }
             }
             rows.push(RunRow {
                 customer_id: customer.id.clone(),
-                invoice_id: Some(invoice.id.clone()),
+                invoice_id: (!params.dry_run).then(|| invoice.id.clone()),
                 number: invoice.number.clone(),
                 total: invoice.total,
                 lines: u32::try_from(invoice.lines.len()).unwrap_or(u32::MAX),
                 skipped_subscriptions: built.skipped,
+                not_issued,
             });
-            issued_invoices.push(invoice);
+            if !params.dry_run {
+                if invoice.number.is_some() {
+                    issued.push(invoice);
+                } else {
+                    drafted.push(invoice);
+                }
+            }
+        }
+        let left_as_drafts = rows.iter().filter(|row| row.not_issued.is_some()).count();
+        if left_as_drafts > 0 {
+            warnings.push(format!(
+                "{left_as_drafts} invoice(s) were drafted and could not be issued; each says why \
+                 in `not_issued`, and is still a draft"
+            ));
         }
         if !params.dry_run {
             app.audit(
                 "isp.invoice.run",
                 None,
                 format!(
-                    "Billed {} customer(s) for the period, {} issued, {} skipped",
+                    "Billed {} of {} customer(s) for {} to {}: {} issued, {} skipped",
                     rows.len(),
-                    issued_count,
+                    customers.len(),
+                    calendar.date_text(period_start),
+                    calendar.date_text(period_end.saturating_sub(1)),
+                    issued.len(),
                     skipped.len()
                 ),
                 json!({
-                    "period_start": params.period_start,
-                    "period_end": params.period_end,
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "utc_offset_minutes": calendar.offset_minutes(),
+                    "considered": customers.len(),
                     "drafted": rows.len(),
-                    "issued": issued_count,
+                    "issued": issued.len(),
                     "totals": totals,
                     "skipped": skipped,
+                    "warnings": warnings,
                 }),
             );
-            invoices_changed(
-                &app,
-                if params.issue { "issued" } else { "drafted" },
-                &issued_invoices.iter().collect::<Vec<_>>(),
-            );
+            if !drafted.is_empty() {
+                invoices_changed(&app, "drafted", &drafted.iter().collect::<Vec<_>>());
+            }
+            if !issued.is_empty() {
+                invoices_changed(&app, "issued", &issued.iter().collect::<Vec<_>>());
+            }
         }
         Ok(RunResult {
-            period_start: params.period_start,
-            period_end: params.period_end,
+            period_start,
+            period_end,
+            utc_offset_minutes: calendar.offset_minutes(),
             dry_run: params.dry_run,
+            considered: u32::try_from(customers.len()).unwrap_or(u32::MAX),
             drafted: u32::try_from(rows.len()).unwrap_or(u32::MAX),
-            issued: issued_count,
+            issued: u32::try_from(issued.len()).unwrap_or(u32::MAX),
             invoices: rows,
             skipped,
             totals,
+            warnings,
             note: if params.dry_run {
                 "nothing was written: this is what would be billed, including every customer \
                  left out and why"
@@ -977,7 +1094,7 @@ pub fn init(builder: &mut AppBuilder) {
     router.add(
         "isp.payment.record",
         |app: App, params: billing::PaymentInput| async move {
-            let recorded = billing::record_payment(&app, params)?;
+            let recorded = billing::record_payment(&app, &calendar(&app)?, params)?;
             let payment = &recorded.payment;
             app.audit(
                 "isp.payment.record",
@@ -1051,7 +1168,7 @@ pub fn init(builder: &mut AppBuilder) {
         "isp.credit.issue",
         |app: App, params: billing::CreditInput| async move {
             let settings = config(&app)?;
-            let issued = billing::issue_credit(&app, &settings, params)?;
+            let issued = billing::issue_credit(&app, &settings, &Calendar::of(&settings)?, params)?;
             let credit = &issued.credit;
             app.audit(
                 "isp.credit.issue",
@@ -1077,6 +1194,40 @@ pub fn init(builder: &mut AppBuilder) {
             );
             credit_changed(&app, "issued", credit);
             Ok(issued)
+        },
+    );
+
+    router.add(
+        "isp.credit.allocate",
+        |app: App, params: AllocateParams| async move {
+            let allocated =
+                billing::allocate_credit(&app, &calendar(&app)?, &params.id, &params.invoice_id)?;
+            let credit = &allocated.credit;
+            app.audit(
+                "isp.credit.allocate",
+                None,
+                format!(
+                    "Set credit note {} of {} to customer {} against invoice {}",
+                    credit.number,
+                    credit.amount.text(),
+                    credit.customer_id,
+                    allocated
+                        .invoice
+                        .as_ref()
+                        .and_then(|view| view.invoice.number.clone())
+                        .or_else(|| credit.invoice_id.clone())
+                        .unwrap_or_default()
+                ),
+                json!({
+                    "credit": credit.id,
+                    "number": credit.number,
+                    "customer": credit.customer_id,
+                    "invoice": credit.invoice_id,
+                    "amount": credit.amount,
+                }),
+            );
+            credit_changed(&app, "allocated", credit);
+            Ok(allocated)
         },
     );
 
@@ -1197,6 +1348,9 @@ mod tests {
         )
         .unwrap();
         assert!(!asked.dry_run && asked.issue);
+        // Naming the month is still only a preview.
+        let named: RunParams = serde_json::from_value(json!({"month": "2025-10"})).unwrap();
+        assert!(named.dry_run && named.period_start.is_none());
     }
 
     #[test]

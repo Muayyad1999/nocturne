@@ -400,7 +400,8 @@ async fn a_part_period_states_the_arithmetic_and_an_odd_window_is_not_guessed_at
 
     // A week is not a month, and nothing works out what a seventh of a
     // monthly plan costs on its own: the subscription is skipped, with its
-    // reason, and the draft refuses to be an invoice for nothing.
+    // reason, and the draft refuses to be an invoice for nothing — saying
+    // why, not how many reasons there were.
     let err = isp
         .err(
             "isp.invoice.draft",
@@ -408,7 +409,11 @@ async fn a_part_period_states_the_arithmetic_and_an_odd_window_is_not_guessed_at
                    "period_end": now()}),
         )
         .await;
-    assert!(err.message.contains("skipped"), "{}", err.message);
+    assert!(
+        err.message.contains("agreed monthly") && err.message.contains("7 days"),
+        "{}",
+        err.message
+    );
     let drafted = isp
         .ok(
             "isp.invoice.draft",
@@ -655,4 +660,141 @@ async fn a_customers_currency_cannot_be_changed_under_their_ledger() {
         "{}",
         err.message
     );
+}
+
+/// A credit note is part of the ledger: a numbered document the customer was
+/// given. An account whose only entry is one is still an account with books.
+#[tokio::test]
+async fn a_customer_whose_only_ledger_entry_is_a_credit_note_keeps_their_account_and_currency() {
+    let isp = Isp::start(false, &[]).await;
+    let customer = isp.customer("Credited Only", "USD", json!({})).await;
+    let note = isp
+        .ok(
+            "isp.credit.issue",
+            json!({
+                "customer_id": customer,
+                "amount": {"currency": "USD", "minor": 5_000},
+                "reason": "agreed settlement for the tower move",
+            }),
+        )
+        .await["credit"]["number"]
+        .clone();
+
+    let err = isp
+        .err("isp.customer.delete", json!({"id": customer}))
+        .await;
+    assert_eq!(err.code, "conflict");
+    assert!(
+        err.message.contains("1 credit note"),
+        "the refusal does not say what is in the way: {}",
+        err.message
+    );
+    assert!(err.message.contains("cancelled"), "{}", err.message);
+
+    let err = isp
+        .err(
+            "isp.customer.save",
+            json!({"id": customer, "currency": "IQD"}),
+        )
+        .await;
+    assert_eq!(err.code, "conflict");
+    assert!(
+        err.message.contains("1 credit note"),
+        "the refusal does not say what is in the way: {}",
+        err.message
+    );
+
+    // The account, its currency and the document are all as they were.
+    let detail = isp.ok("isp.customer.get", json!({"id": customer})).await;
+    assert_eq!(detail["customer"]["currency"], json!("USD"));
+    assert_eq!(detail["balance"]["credit_on_account"][0]["minor"], 5_000);
+    assert_eq!(
+        detail["balance"]["credit_on_account"][0]["currency"],
+        json!("USD")
+    );
+    let notes = list(
+        &isp.ok("isp.credits", json!({"customer_id": customer}))
+            .await,
+    );
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["number"], note);
+
+    // A void note is still a document somebody will ask about.
+    isp.ok(
+        "isp.credit.void",
+        json!({"id": notes[0]["id"], "reason": "entered against the wrong account"}),
+    )
+    .await;
+    assert_eq!(
+        isp.err("isp.customer.delete", json!({"id": customer}))
+            .await
+            .code,
+        "conflict"
+    );
+}
+
+/// A subscription is what was agreed, in the currency it was agreed in. A
+/// customer whose currency moved from under their plan would be skipped by
+/// every billing run, with a plan nobody could invoice.
+#[tokio::test]
+async fn a_customer_on_a_plan_keeps_the_currency_the_plan_was_agreed_in() {
+    let isp = Isp::start(false, &[]).await;
+    let customer = isp.customer("On A Plan", "USD", json!({})).await;
+    let tariff = isp
+        .tariff("USD plan", 10, "flat", 2_500, "USD", "monthly")
+        .await;
+    isp.subscribe(&customer, &tariff, None).await;
+
+    let err = isp
+        .err(
+            "isp.customer.save",
+            json!({"id": customer, "currency": "IQD"}),
+        )
+        .await;
+    assert_eq!(err.code, "conflict");
+    assert!(
+        err.message.contains("1 subscription") && err.message.contains("USD"),
+        "the refusal does not say what is in the way: {}",
+        err.message
+    );
+    // Saving the same currency back, or anything else about them, is fine.
+    let saved = isp
+        .ok(
+            "isp.customer.save",
+            json!({"id": customer, "currency": "USD", "site": "Roof 4"}),
+        )
+        .await;
+    assert_eq!(saved["customer"]["currency"], json!("USD"));
+
+    // So the run bills them, in the currency the plan says.
+    let period = last_month();
+    let run = isp
+        .ok(
+            "isp.invoice.run",
+            json!({"period_start": period.0, "period_end": period.1, "dry_run": false}),
+        )
+        .await;
+    assert_eq!(list(&run["invoices"]).len(), 1, "{run:#}");
+    assert!(list(&run["skipped"]).is_empty(), "{run:#}");
+    assert_eq!(run["totals"][0]["currency"], json!("USD"));
+    assert_eq!(run["totals"][0]["minor"], 2_500);
+
+    // An ended plan was still agreed in dollars: the currency stays with it.
+    let other = isp.customer("Plan Ended", "USD", json!({})).await;
+    let ended = isp.subscribe(&other, &tariff, None).await;
+    isp.ok(
+        "isp.subscription.end",
+        json!({"id": ended, "reason": "moved away"}),
+    )
+    .await;
+    assert_eq!(
+        isp.err("isp.customer.save", json!({"id": other, "currency": "IQD"}))
+            .await
+            .code,
+        "conflict"
+    );
+    // Nothing was billed to them, so the account can still be deleted and
+    // opened again in the right currency.
+    let deleted = isp.ok("isp.customer.delete", json!({"id": other})).await;
+    assert_eq!(deleted["deleted"], json!(true));
 }
