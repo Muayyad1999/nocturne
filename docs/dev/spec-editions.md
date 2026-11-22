@@ -33,9 +33,21 @@ So:
 
 | | Free edition | ISP edition |
 |---|---|---|
-| Ships as | the desktop application, single user, SQLite beside it | the server, many users with roles |
+| Ships as | the desktop application and a server binary | the same two, built separately |
 | Features | the fourteen NOC crates | the same **plus `nocturne-isp`** |
 | How | `nocturne-isp` is not compiled in | it is |
+
+Both editions ship as both shapes. An earlier draft of this document said
+the ISP edition was the server and the free one the desktop application,
+which was a guess about who wants what: a small provider running one office
+wants a window on their own machine as much as anyone, and a homelab with a
+rack wants a server. The edition decides what is *in* the build; the shape
+is the user's to choose.
+
+The ISP desktop build is a **separate product** — "Nocturne ISP", its own
+identifier, its own installer filenames — so the two can be installed side
+by side and neither replaces the other. That matters for the obvious case:
+trying the paid edition without losing the free one.
 
 `nocturne-suite` carries an optional `isp` feature; `nocturne-server` and
 `nocturne-desktop` pass it through. The default build does not depend on

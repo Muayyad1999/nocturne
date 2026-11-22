@@ -54,18 +54,36 @@ jobs:
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
   desktop:
-    name: Desktop installers (${{ matrix.os }})
+    name: Desktop installers (${{ matrix.edition }}, ${{ matrix.os }})
     needs: release
     strategy:
       fail-fast: false
+      # Both editions, on every platform. The ISP build is the same
+      # application with `nocturne-isp` compiled in, and it is a *separate
+      # product*: its own name and its own identifier, so the two install
+      # side by side and neither upgrades over the other. That also keeps
+      # their installer filenames apart, which is what lets both live in one
+      # release.
       matrix:
         include:
           - os: ubuntu-24.04
             target: ""
+            edition: free
+          - os: ubuntu-24.04
+            target: ""
+            edition: isp
           - os: windows-latest
             target: ""
+            edition: free
+          - os: windows-latest
+            target: ""
+            edition: isp
           - os: macos-latest
             target: universal-apple-darwin
+            edition: free
+          - os: macos-latest
+            target: universal-apple-darwin
+            edition: isp
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -97,7 +115,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop/src-tauri
-          args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+          # `--config` is merged over `tauri.conf.json`; the path is relative
+          # to `projectPath` above, which is where both files live.
+          args: >-
+            ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+            ${{ matrix.edition == 'isp' && '--features isp --config tauri.isp.conf.json' || '' }}
           # The release already exists; this only adds files to it.
           releaseId: ${{ needs.release.outputs.id }}
 

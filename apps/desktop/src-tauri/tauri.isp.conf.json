@@ -1,0 +1,8 @@
+{
+  "productName": "Nocturne ISP",
+  "identifier": "app.nocturne.desktop.isp",
+  "bundle": {
+    "shortDescription": "Network operations, with subscribers and billing.",
+    "longDescription": "Nocturne ISP: everything in Nocturne — terminal, discovery, monitoring, configuration backup and compliance, safe configuration changes, automation, topology, IPAM, a virtual lab and an AI assistant — plus the subscriber ledger: customers, tariffs priced per megabit, subscriptions, invoices, payments, credit notes, arrears ageing, and what each megabit earned against what it cost."
+  }
+}
