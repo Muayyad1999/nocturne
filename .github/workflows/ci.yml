@@ -49,7 +49,11 @@ jobs:
       # stayed green. What this still cannot see is code that is dead only
       # on another platform: that needs a lint over there, and the portability
       # jobs run `cargo test` rather than clippy to keep them short.
-      - run: cargo clippy --workspace -- -D warnings
+      # Not `--workspace`: that reaches `apps/desktop`, which needs GTK and
+      # WebKitGTK, and only the desktop job installs those. Without the flag
+      # this is the workspace's `default-members` — the same set as every
+      # other step here — and the desktop crate is linted in its own job.
+      - run: cargo clippy -- -D warnings
       - run: cargo test
 
   rust-portability:

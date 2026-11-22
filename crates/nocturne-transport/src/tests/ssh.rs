@@ -12,7 +12,7 @@ use russh::{MethodKind, cipher, kex, mac};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
-use super::support::{Lab, Tap, contains, pattern, soon, tap};
+use super::support::{Lab, Tap, contains, in_the_end, pattern, soon, tap};
 use crate::serve::{ServerHandle, SshServerConfig, SshServerOptions, serve_ssh, serve_ssh_with};
 use crate::ssh::{CryptoPolicy, Role, preferred_algorithms};
 use crate::{
@@ -1009,14 +1009,14 @@ async fn echo_in_bulk_on_several_shells(params: &SshParams) {
             for (index, byte) in echoed.iter().enumerate() {
                 assert_eq!(*byte, pattern(index % CHUNK), "byte {index} is wrong");
             }
-            let writer = soon(sender).await.unwrap();
+            let writer = in_the_end(sender).await.unwrap();
             writer.close().await;
             let (_, reason) = reader.until_closed().await;
             assert_eq!(reason, None);
         }));
     }
     for shell in shells {
-        soon(shell).await.unwrap();
+        in_the_end(shell).await.unwrap();
     }
     soon(session.close()).await;
 }
@@ -1305,7 +1305,7 @@ async fn input_far_beyond_what_the_server_stages_is_echoed_in_full() {
     for (index, byte) in echoed.iter().enumerate() {
         assert_eq!(*byte, pattern(index % CHUNK), "byte {index} is wrong");
     }
-    let writer = soon(sender).await.unwrap();
+    let writer = in_the_end(sender).await.unwrap();
     writer.close().await;
     let (_, reason) = reader.until_closed().await;
     assert_eq!(reason, None);

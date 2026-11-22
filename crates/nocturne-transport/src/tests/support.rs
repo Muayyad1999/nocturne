@@ -332,3 +332,20 @@ pub(crate) async fn soon<T>(future: impl Future<Output = T>) -> T {
         .await
         .expect("timed out")
 }
+
+/// Bounds a future that has real volume to move.
+///
+/// Twenty seconds stops being a statement about this code once there are
+/// megabytes in flight and becomes one about the machine: a debug build
+/// pushing nineteen megabytes through four encrypted shells is slower on a
+/// shared Windows runner than it is anywhere I have run it, and that is not
+/// a defect — it is what a CI runner is. What these tests are for is that
+/// nothing is lost, reordered or deadlocked under back-pressure, and that
+/// is asserted byte by byte elsewhere in them. This bound exists only to
+/// turn a genuine stall into a failed test rather than a hung job, so it is
+/// long enough to be about stalling and nothing else.
+pub(crate) async fn in_the_end<T>(future: impl Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(180), future)
+        .await
+        .expect("timed out")
+}
