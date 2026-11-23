@@ -149,19 +149,41 @@ pub fn prepare(
     }
 }
 
-/// Write one batch of syslog messages: attribute, redact, then [`commit`].
+/// Write one batch of syslog messages the receiver took off its sockets:
+/// attribute, redact, then [`commit`].
+///
+/// Every one of them ends in the receiver's `stored` or `dropped`, also when
+/// the database will not take the batch: a line that was received and is in
+/// no counter is a loss nobody can see.
 pub fn write_batch(app: &App, messages: &[SyslogMessage], via: &str) -> AppResult<usize> {
     if messages.is_empty() {
         return Ok(0);
     }
     let state = app.state::<LogsState>();
+    let counters = &state.syslog.counters;
     let now = now_ms();
-    let index = crate::attribute::refresh(app, now, INDEX_MAX_AGE_MS)?;
+    let index = crate::attribute::refresh(app, now, INDEX_MAX_AGE_MS)
+        .inspect_err(|_| counters.dropped(messages.len() as u64))?;
     let batch = messages
         .iter()
         .map(|message| prepare(&state, &index, message, now, via, None))
         .collect();
-    Ok(commit(app, &index, &state.syslog.counters, batch)?.len())
+    match commit(app, &index, counters, batch) {
+        Ok(kept) => Ok(kept.len()),
+        Err(unwritten) => {
+            counters.dropped(unwritten.rows as u64);
+            Err(unwritten.error)
+        }
+    }
+}
+
+/// A batch [`commit`] could not write: why, and how many of its rows that
+/// leaves in no counter. The rows the unknown-source policy turned away are
+/// not among them; `commit` has counted those as dropped already.
+#[derive(Debug)]
+pub struct Unwritten {
+    pub error: AppError,
+    pub rows: usize,
 }
 
 /// The unknown-source policy: whether a row is kept at all. A row no device
@@ -180,12 +202,15 @@ pub fn keeps(settings: &LogsSettings, prepared: &Prepared) -> bool {
 ///
 /// `counters` are those of the receiver the rows came from, so that
 /// `logs.status` attributes what was stored and what was refused to it.
+/// When the database will not take the batch, the error says how many rows
+/// are lost ([`Unwritten`]); whether those were received, and so belong in
+/// `dropped`, is the caller's to know — a lab's lines never crossed a socket.
 pub fn commit(
     app: &App,
     index: &Index,
     counters: &ReceiverCounters,
     batch: Vec<Prepared>,
-) -> AppResult<Vec<Prepared>> {
+) -> Result<Vec<Prepared>, Unwritten> {
     let settings = LogsSettings::load(app);
     let now = now_ms();
     let mut kept = Vec::with_capacity(batch.len());
@@ -200,17 +225,23 @@ pub fn commit(
         }
         kept.push(prepared);
     }
+    // Counted before anything here can fail: they are dropped by the
+    // setting whether or not the database then takes the list below.
+    counters.dropped(refused.values().map(|(count, _)| count).sum());
+    let unwritten = |error: AppError, rows: usize| Unwritten { error, rows };
     // An address whose lines are all discarded is still listed, with a count:
     // "nothing from this address is being kept" is something the user has to
     // be able to see, or the setting silently makes a device invisible.
     for (address, (count, reason)) in &refused {
-        db::count_dropped(app.store(), address, now, reason, *count)?;
-        counters.dropped(*count);
+        db::count_dropped(app.store(), address, now, reason, *count)
+            .map_err(|error| unwritten(error, kept.len()))?;
     }
     if kept.is_empty() {
         return Ok(kept);
     }
-    let written = db::insert_batch(app.store(), &mut kept)?;
+    let rows = kept.len();
+    let written =
+        db::insert_batch(app.store(), &mut kept).map_err(|error| unwritten(error, rows))?;
     counters.stored(written.stored as u64);
     tail::offer(app, &kept);
     // After the write, never before: what a forwarder sends on is the row
@@ -295,7 +326,11 @@ pub fn from_lab(app: &App, device_reference: &str, lines: &[String]) -> AppResul
     let mut stored = 0;
     while !batch.is_empty() {
         let rest = batch.split_off(batch.len().min(BATCH_ROWS));
-        stored += commit(app, &index, &state.syslog.counters, batch)?.len();
+        // A lab's lines were never received, so lost ones are no `dropped`:
+        // the lab is told by the error instead.
+        stored += commit(app, &index, &state.syslog.counters, batch)
+            .map_err(|unwritten| unwritten.error)?
+            .len();
         batch = rest;
     }
     state

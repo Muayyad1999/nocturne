@@ -461,10 +461,10 @@ async fn a_port_security_violation_on_a_lab_switch_raises_its_alert() {
             .starts_with("Port-security violation on FastEthernet0/1 by "),
         "{raised:#}"
     );
-    assert_eq!(
-        raised["notify"],
-        json!([]),
-        "it is a lab: the alert is raised and sent to no channel"
+    assert!(
+        raised.get("notify").is_none(),
+        "it is a lab, and whether a lab's alert reaches a channel is the monitor's \
+         `notify_for_lab` to say: nothing here rules a channel out: {raised:#}"
     );
     assert_eq!(
         monitor.open_keys(),

@@ -135,6 +135,23 @@ fn v9_template() -> Vec<u8> {
     v9_set(0, &content)
 }
 
+/// Options template 257 (RFC 3954 section 6.1): its scope is the system
+/// (type 1, four bytes), its one option `samplingInterval` (34, four bytes).
+fn v9_options_template() -> Vec<u8> {
+    let mut content = Vec::new();
+    for field in [257u16, 4, 4, 1, 4, 34, 4] {
+        content.extend_from_slice(&field.to_be_bytes());
+    }
+    v9_set(1, &content)
+}
+
+/// The one record of template 257: this exporter looks at one packet in `rate`.
+fn v9_sampling(rate: u32) -> Vec<u8> {
+    let mut content = vec![0; 4];
+    content.extend_from_slice(&rate.to_be_bytes());
+    v9_set(257, &content)
+}
+
 /// One record of template 260: 10.0.0.1 → 192.0.2.80, 4,000 bytes in 4 packets.
 fn v9_data() -> Vec<u8> {
     let mut content = vec![10, 0, 0, 1, 192, 0, 2, 80];
@@ -217,6 +234,8 @@ async fn the_collector_is_off_until_someone_turns_it_on_and_an_empty_answer_says
             "dropped": 0,
             "drops": {"queue_full": 0, "no_room": 0, "unclaimed": 0, "unreadable": 0},
             "queued": 0,
+            "queued_bytes": 0,
+            "max_queued_bytes": 67_108_864,
             "rate_per_minute": 0,
             "last_at": null,
             "sets_without_template": 0,
@@ -607,16 +626,34 @@ async fn data_that_arrives_before_its_template_is_counted_and_never_guessed_at()
 }
 
 #[tokio::test]
-async fn a_collector_that_was_rebound_knows_no_templates_until_they_are_sent_again() {
-    // By hand (RFC 3954), as above. The templates are the decoder's, and
-    // the decoder is the socket's: moving the collector to another port
-    // starts with none.
+async fn a_collector_that_was_moved_or_switched_off_and_on_still_knows_what_its_exporters_said() {
+    // By hand (RFC 3954): options saying the exporter samples one packet in
+    // a hundred, its template, one record — all from one socket, as an
+    // exporter sends from one port. An exporter repeats its templates often
+    // and its options seldom, so a collector that forgot both when it was
+    // moved would count what came in between as unsampled: a number that
+    // looks measured and is not.
     let (lab, _id, port) = exporting_switch().await;
     let app = &lab.app;
-    send_datagrams("127.0.0.1", port, &[v9(&[v9_template()]), v9(&[v9_data()])]).await;
+    let exporter = send_datagrams(
+        "127.0.0.1",
+        port,
+        &[
+            v9(&[v9_options_template(), v9_sampling(100)]),
+            v9(&[v9_template()]),
+            v9(&[v9_data()]),
+        ],
+    )
+    .await;
     wait_until_flows_settled(app, 1).await;
-    let exporters = app.rpc("flows.exporters", Value::Null).await.unwrap();
-    assert_eq!(exporters[0]["templates"], json!(1));
+    let answer = top(app, json!({"by": "source"})).await;
+    assert_eq!(
+        (
+            &answer["coverage"]["sampling"],
+            &answer["coverage"]["sampled_records"]
+        ),
+        (&json!([100]), &json!(1))
+    );
 
     // A port of its own choosing would be "port 0" again, which is what the
     // collector already runs with: it is given a number.
@@ -629,53 +666,69 @@ async fn a_collector_that_was_rebound_knows_no_templates_until_they_are_sent_aga
     )
     .await
     .unwrap();
-    let status = wait_for(app, "the collector on its new port", |status| {
+    wait_for(app, "the collector on its new port", |status| {
         status["flows"]["listening"][0]
             .as_str()
             .is_some_and(|bound| bound.ends_with(&format!(":{moved}")))
     })
     .await;
-    assert_eq!(
-        flows_of(&status, "counted"),
-        1,
-        "what was counted is still counted"
-    );
-    let exporters = app.rpc("flows.exporters", Value::Null).await.unwrap();
-    assert_eq!(
-        (&exporters[0]["templates"], &exporters[0]["records"]),
-        (&json!(0), &json!(1)),
-        "the exporter is still listed with what it sent, and with no template that anything here still knows"
-    );
 
-    // Which is the truth: its next data cannot be read, and is counted as that.
-    send_datagrams("127.0.0.1", moved, &[v9(&[v9_data()])]).await;
-    let status = wait_for(app, "the set without a template to be counted", |status| {
-        flows_of(status, "sets_without_template") == 1
-    })
-    .await;
-    assert_eq!(flows_of(&status, "counted"), 1);
+    // The template again, as the exporter repeats it, and a record; not the
+    // options.
+    exporter
+        .send_to(&v9(&[v9_template(), v9_data()]), ("127.0.0.1", moved))
+        .await
+        .unwrap();
+    wait_until_flows_settled(app, 2).await;
     let answer = top(app, json!({"by": "source"})).await;
     assert_eq!(
         (
-            &answer["total"]["bytes"],
-            &answer["coverage"]["sets_without_template"]
+            &answer["coverage"]["records"],
+            &answer["coverage"]["sampled_records"],
+            &answer["coverage"]["sampling"],
         ),
-        (&json!(4_000), &json!(1)),
-        "the answer has what was read before the move, and says there is something it could not read"
+        (&json!(2), &json!(2), &json!([100])),
+        "the record after the move is a sample like the one before it: {answer:#}"
     );
 
-    // Sent again, they are known again.
-    send_datagrams(
-        "127.0.0.1",
-        moved,
-        &[v9(&[v9_template()]), v9(&[v9_data()])],
+    // Switched off and on again; then a record without its template.
+    app.rpc(
+        "settings.set",
+        json!({"section": "logs", "value": {"flows": {"enabled": false}}}),
     )
+    .await
+    .unwrap();
+    wait_for(app, "the collector to stop", |status| {
+        status["flows"]["listening"] == json!([])
+    })
     .await;
-    wait_until_flows_settled(app, 2).await;
     let exporters = app.rpc("flows.exporters", Value::Null).await.unwrap();
     assert_eq!(
-        (&exporters[0]["templates"], &exporters[0]["records"]),
-        (&json!(1), &json!(2))
+        exporters[0]["templates"],
+        json!(2),
+        "the templates (a flow template and an options one) are still known while it is off"
+    );
+    let port = start_flows(app).await;
+    exporter
+        .send_to(&v9(&[v9_data()]), ("127.0.0.1", port))
+        .await
+        .unwrap();
+    let status = wait_until_flows_settled(app, 3).await;
+    assert_eq!(
+        (
+            flows_of(&status, "sets_without_template"),
+            flows_of(&status, "counted")
+        ),
+        (0, 3),
+        "a record sent without its template is read with the one sent before: {status:#}"
+    );
+    let answer = top(app, json!({"by": "source"})).await;
+    assert_eq!(
+        (
+            &answer["coverage"]["sampled_records"],
+            &answer["total"]["bytes"]
+        ),
+        (&json!(3), &json!(12_000))
     );
 }
 

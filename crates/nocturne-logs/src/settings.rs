@@ -37,11 +37,15 @@ pub struct LogsSettings {
     pub unknown_sources: String,
     /// Lines that may wait to be written before a receiver drops and
     /// counts (each receiver has its own queue of this size; for the flow
-    /// collector it is flow records waiting to be counted). Each one costs
-    /// a few hundred bytes, so this is the memory a receiver may use to
-    /// absorb a burst; beyond it, dropping and saying so is better than
-    /// growing until the machine dies.
+    /// collector it is flow records waiting to be counted). An ordinary line
+    /// costs a few hundred bytes; beyond this, dropping and saying so is
+    /// better than growing until the machine dies.
     pub queue_limit: u32,
+    /// And the bytes they may take up, per receiver: a line can be a whole
+    /// 64 KiB datagram, and whoever can reach the port can send nothing but
+    /// those. What does not fit is dropped and counted like what does not
+    /// fit in `queue_limit`. 1 MiB to 1 GiB.
+    pub queue_limit_bytes: u64,
 }
 
 /// The flow collector: NetFlow v5, NetFlow v9 and IPFIX on one UDP port.
@@ -119,6 +123,7 @@ impl Default for LogsSettings {
             max_rows: 2_000_000,
             unknown_sources: "store".into(),
             queue_limit: crate::state::DEFAULT_QUEUE_LIMIT as u32,
+            queue_limit_bytes: crate::state::DEFAULT_QUEUE_BYTES as u64,
         }
     }
 }
@@ -138,6 +143,7 @@ impl LogsSettings {
                 _ => "store".into(),
             },
             queue_limit: stored.queue_limit.clamp(100, 1_000_000),
+            queue_limit_bytes: stored.queue_limit_bytes.clamp(1 << 20, 1 << 30),
             ..stored
         }
     }
@@ -172,6 +178,7 @@ mod tests {
                 "max_rows": 2_000_000,
                 "unknown_sources": "store",
                 "queue_limit": 50_000,
+                "queue_limit_bytes": 67_108_864,
             })
         );
     }

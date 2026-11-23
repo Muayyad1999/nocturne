@@ -44,6 +44,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::attribute::Index;
+use crate::budget::{self, Budget, Held};
 use crate::model::{ForwardFormat, ForwardKind, Forwarder, ForwarderStatus};
 use crate::state::LogsState;
 
@@ -54,6 +55,12 @@ pub const COLLECTION: &str = "logs_forwarders";
 /// Beyond it entries are dropped and counted: a queue that grows instead
 /// only moves the loss to the moment the machine runs out of memory.
 pub const QUEUE_LIMIT: usize = 10_000;
+/// And the bytes they may take up, the batch being sent included. A row
+/// can hold a whole 64 KiB datagram twice (its message, and the line as
+/// received in its body): ten thousand of those would be a gigabyte and
+/// more for one collector that has stopped reading. Counted per forwarder,
+/// as if no entry were shared, so at most sixteen times this in all.
+pub const QUEUE_BYTES: usize = 16 * 1024 * 1024;
 /// Each forwarder is a task, a connection and a queue.
 pub const MAX_FORWARDERS: usize = 16;
 /// The streams a forwarder can send, in the order they are listed.
@@ -124,7 +131,9 @@ pub struct Counters {
 pub struct Running {
     pub forwarder: Forwarder,
     streams: u8,
-    queue: mpsc::Sender<Arc<LogEntry>>,
+    /// Each entry with what it takes up of `budget`.
+    queue: mpsc::Sender<(Arc<LogEntry>, Held)>,
+    budget: Arc<Budget>,
     pub counters: Arc<Counters>,
     pub(crate) stop: CancellationToken,
     /// Which secret the task was started with (see [`ForwardState::secrets`]).
@@ -162,6 +171,11 @@ impl Running {
     /// Entries waiting to be sent right now.
     pub fn queued(&self) -> usize {
         QUEUE_LIMIT.saturating_sub(self.queue.capacity())
+    }
+
+    /// What the entries waiting and the batch being sent take up.
+    pub fn queued_bytes(&self) -> usize {
+        self.budget.held()
     }
 }
 
@@ -211,17 +225,18 @@ fn from_a_lab(index: &Index, entry: &LogEntry) -> bool {
 /// Hand stored entries to the forwarders that want them.
 ///
 /// This is on the ingest path and does nothing that can wait: an entry goes
-/// on a forwarder's queue, or the queue is full and the forwarder's
-/// `dropped` goes up by one. With no forwarder switched on it is one read
-/// of an empty list.
+/// on a forwarder's queue, or the queue is full — in entries or in bytes —
+/// and the forwarder's `dropped` goes up by one. With no forwarder switched
+/// on it is one read of an empty list.
 pub fn offer<'a>(app: &App, index: &Index, entries: impl IntoIterator<Item = &'a LogEntry>) {
     let running = app.state::<LogsState>().forward.running();
     if running.is_empty() {
         return;
     }
     for entry in entries {
-        // Cloned once, and only if somebody has room for it.
+        // Cloned once, and weighed once, and only if somebody has room.
         let mut shared: Option<Arc<LogEntry>> = None;
+        let mut weight: Option<usize> = None;
         let mut lab: Option<bool> = None;
         for forwarder in running.iter() {
             if !forwarder.wants(entry, || {
@@ -233,10 +248,15 @@ pub fn offer<'a>(app: &App, index: &Index, entries: impl IntoIterator<Item = &'a
                 forwarder.counters.dropped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
+            let bytes = *weight.get_or_insert_with(|| budget::of_entry(entry));
+            let Some(held) = forwarder.budget.take(bytes) else {
+                forwarder.counters.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
             let entry = shared
                 .get_or_insert_with(|| Arc::new(entry.clone()))
                 .clone();
-            if forwarder.queue.try_send(entry).is_err() {
+            if forwarder.queue.try_send((entry, held)).is_err() {
                 forwarder.counters.dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -302,6 +322,7 @@ pub fn apply(app: &App) -> AppResult<()> {
             counters: forward.counters_of(&forwarder.id),
             forwarder,
             queue,
+            budget: Budget::new(QUEUE_BYTES),
             stop: CancellationToken::new(),
             secret,
             after: newest,
@@ -435,6 +456,7 @@ pub fn status(app: &App) -> AppResult<Vec<ForwarderStatus>> {
     let state = app.state::<LogsState>();
     let mut forwarders: Vec<Forwarder> = app.store().list(COLLECTION)?;
     forwarders.sort_by_key(|forwarder| forwarder.name.to_lowercase());
+    let running = state.forward.running();
     let counters = state.forward.counters.lock();
     Ok(forwarders
         .into_iter()
@@ -454,9 +476,15 @@ pub fn status(app: &App) -> AppResult<Vec<ForwarderStatus>> {
                 (true, FAILING) => "failing",
                 (true, _) => "idle",
             };
+            let queue = running
+                .iter()
+                .find(|running| running.forwarder.id == forwarder.id);
             ForwarderStatus {
                 sent: load(|counters| &counters.sent),
                 dropped: load(|counters| &counters.dropped),
+                queued: queue.map_or(0, |queue| queue.queued() as u64),
+                queued_bytes: queue.map_or(0, |queue| queue.queued_bytes() as u64),
+                max_queued_bytes: QUEUE_BYTES as u64,
                 last_error: counted
                     .filter(|_| forwarder.enabled)
                     .and_then(|counters| counters.last_error.lock().clone()),
@@ -540,6 +568,33 @@ fn check_url(url: &str) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Why an HTTPS forwarder's destination would send a credential in the
+/// clear, when it would: `http://` is for a collector on one's own network,
+/// and a token or a password sent there crosses that network as text
+/// anybody on the way can read. Checked when the forwarder is saved and
+/// again before anything is sent, so that a destination stored before this
+/// was refused sends nothing either. Neither reason repeats the URL.
+///
+/// What else the URL holds — a path, a query — goes in the clear over
+/// `http://` too, and nothing here can tell a token in it from a path.
+pub(crate) fn sent_in_the_clear(secret: &Secret) -> Option<&'static str> {
+    let url = reqwest::Url::parse(&secret.url).ok()?;
+    if url.scheme() != "http" {
+        return None;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Some(
+            "the collector's URL is http:// and holds a user name or password, which would cross the network as text anybody on the way can read: use https://",
+        );
+    }
+    if !secret.token.trim().is_empty() {
+        return Some(
+            "the collector's URL is http://, so its token would cross the network as text anybody on the way can read: use https:// (a collector whose certificate is from a private authority can be given `ca_pem`), or no token",
+        );
+    }
+    None
 }
 
 fn check_token(token: &str) -> AppResult<()> {
@@ -789,10 +844,15 @@ pub fn save(app: &App, params: SaveParams) -> AppResult<Forwarder> {
                 }
             }
         }
-        if secret.is_none() {
+        let Some(destination) = &secret else {
             return Err(AppError::invalid(
                 "an HTTPS forwarder needs the URL it posts to (`url`)",
             ));
+        };
+        // Of the destination as it would be stored, so that a token added
+        // to a stored http:// URL is refused as well as one given with it.
+        if let Some(why) = sent_in_the_clear(destination) {
+            return Err(AppError::invalid(why));
         }
         secret_changed = secret != stored;
     }
@@ -936,6 +996,40 @@ mod tests {
         }
         check_url("https://collector.example.net:8088/services/collector/event").unwrap();
         check_url("http://10.0.0.5:8088/services/collector").unwrap();
+    }
+
+    #[test]
+    fn only_https_carries_a_credential() {
+        let secret = |url: &str, token: &str| Secret {
+            url: url.into(),
+            token: token.into(),
+        };
+        for (url, token) in [
+            ("http://10.0.0.5:8088/services/collector", "abc"),
+            ("HTTP://10.0.0.5:8088/services/collector", "abc"),
+            (
+                "http://admin:secret-pw@10.0.0.5:8088/services/collector",
+                "",
+            ),
+            ("http://admin@10.0.0.5:8088/services/collector", ""),
+        ] {
+            let why = sent_in_the_clear(&secret(url, token)).unwrap_or_else(|| panic!("{url}"));
+            assert!(
+                why.contains("https://") && !why.contains("secret-pw") && !why.contains("10.0.0.5"),
+                "{why}"
+            );
+        }
+        for (url, token) in [
+            ("http://10.0.0.5:8088/services/collector", ""),
+            ("http://10.0.0.5:8088/services/collector", "   "),
+            ("https://10.0.0.5:8088/services/collector", "abc"),
+            (
+                "https://admin:secret-pw@10.0.0.5:8088/services/collector",
+                "abc",
+            ),
+        ] {
+            assert_eq!(sent_in_the_clear(&secret(url, token)), None, "{url}");
+        }
     }
 
     #[test]

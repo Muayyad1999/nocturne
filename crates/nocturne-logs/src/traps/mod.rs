@@ -44,6 +44,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio_util::sync::CancellationToken;
 
+use crate::budget::Held;
 use crate::ingest::INDEX_MAX_AGE_MS;
 use crate::settings::LogsSettings;
 use crate::state::{BATCH_ROWS, LogsState, TrapBinding, TrapState};
@@ -110,6 +111,41 @@ pub struct Ack {
 pub struct Queued {
     notification: Notification,
     ack: Option<Ack>,
+    /// What it takes up of the receiver's budget, given back once it is
+    /// written (or is not).
+    held: Option<Held>,
+}
+
+impl Queued {
+    /// What it takes up: itself, what the notification holds, and the
+    /// answer an inform is owed, which is as large as the inform.
+    fn weight(&self) -> usize {
+        use std::mem::size_of;
+        let oid = |oid: &Oid| oid.len() * size_of::<u32>();
+        let notification = &self.notification;
+        let bindings: usize = notification
+            .varbinds
+            .iter()
+            .map(|binding| {
+                oid(&binding.oid)
+                    + match &binding.value {
+                        nocturne_snmp::Value::OctetString(bytes)
+                        | nocturne_snmp::Value::Opaque(bytes) => bytes.capacity(),
+                        nocturne_snmp::Value::Oid(value) => oid(value),
+                        _ => 0,
+                    }
+            })
+            .sum();
+        size_of::<Queued>()
+            + notification.source.capacity()
+            + notification.device_id.as_ref().map_or(0, String::capacity)
+            + notification.reason.capacity()
+            + notification.trap_oid.as_ref().map_or(0, oid)
+            + notification.enterprise.as_ref().map_or(0, oid)
+            + notification.varbinds.capacity() * size_of::<VarBind>()
+            + bindings
+            + self.ack.as_ref().map_or(0, |ack| ack.datagram.capacity())
+    }
 }
 
 /// The informs seen lately: waiting to be written, or stored.
@@ -204,6 +240,8 @@ pub async fn apply(app: &App) -> AppResult<()> {
     let _turn = traps.applying.lock().await;
     let settings = LogsSettings::load(app);
 
+    // Neither is the socket's: applied to the running receiver.
+    traps.budget.set_limit(settings.queue_limit_bytes as usize);
     // Read for every datagram, so switching it needs no new socket — and
     // loses no trap that arrives while one would be rebound.
     let required = settings.traps.require_known_community;
@@ -345,20 +383,33 @@ async fn listen(app: App, socket: Arc<UdpSocket>, queue: Sender<Queued>, stop: C
                 continue;
             }
         };
-        let Some(queued) = take(&app, &state.traps, &socket, &datagram[..length], peer) else {
+        let Some(mut queued) = take(&app, &state.traps, &socket, &datagram[..length], peer) else {
             continue;
         };
-        match queue.try_send(queued) {
-            Ok(()) => {}
-            Err(TrySendError::Full(refused)) => {
-                state.traps.counters.dropped(1);
-                if let Some(ack) = refused.ack {
-                    // Not stored, so not acknowledged: the sender's next
-                    // attempt is a new one.
-                    state.traps.informs.lock().forget(&ack.key);
-                }
+        // What does not fit in bytes is dropped like what does not fit in
+        // number: a datagram can be 64 KiB, and an inform's answer as much
+        // again.
+        queued.held = state.traps.budget.take(queued.weight());
+        let (refused, closed) = match queued.held {
+            None => (Some(queued), false),
+            Some(_) => match queue.try_send(queued) {
+                Ok(()) => (None, false),
+                Err(TrySendError::Full(refused)) => (Some(refused), false),
+                // Nobody writes any more (the application is stopping): what
+                // was taken off the socket is counted all the same.
+                Err(TrySendError::Closed(refused)) => (Some(refused), true),
+            },
+        };
+        if let Some(refused) = refused {
+            state.traps.counters.dropped(1);
+            if let Some(ack) = refused.ack {
+                // Not stored, so not acknowledged: the sender's next
+                // attempt is a new one.
+                state.traps.informs.lock().forget(&ack.key);
             }
-            Err(TrySendError::Closed(_)) => return,
+        }
+        if closed {
+            return;
         }
     }
 }
@@ -501,6 +552,7 @@ fn take(
             inform: is_inform,
         },
         ack,
+        held: None,
     })
 }
 
@@ -579,6 +631,9 @@ async fn store(app: &App, traps: &TrapState, socket: &Weak<UdpSocket>, batch: Ve
     };
     let mut rows = Vec::with_capacity(batch.len());
     let mut acks = Vec::new();
+    // Given back when this returns, whichever way: once the batch is
+    // written, or once it is known that it will not be.
+    let mut holding = Vec::with_capacity(batch.len());
     let index = match crate::attribute::refresh(app, now, INDEX_MAX_AGE_MS) {
         Ok(index) => index,
         Err(err) => {
@@ -597,7 +652,8 @@ async fn store(app: &App, traps: &TrapState, socket: &Weak<UdpSocket>, batch: Ve
         }
     };
     let settings = LogsSettings::load(app);
-    for queued in batch {
+    for mut queued in batch {
+        holding.push(queued.held.take());
         let notification = &queued.notification;
         let interfaces = match &notification.device_id {
             Some(device_id) if render::names_an_interface(&notification.varbinds) => {
@@ -612,15 +668,11 @@ async fn store(app: &App, traps: &TrapState, socket: &Weak<UdpSocket>, batch: Ve
         rows.push(row);
     }
     let count = rows.len();
-    // What `commit` would keep. The rows it turns away for their source it
-    // counts itself; these are the ones lost if the write fails.
-    let wanted = rows
-        .iter()
-        .filter(|row| ingest::keeps(&settings, row))
-        .count();
-    if let Err(err) = ingest::commit(app, &index, &traps.counters, rows) {
-        tracing::error!(%err, count, "a batch of traps could not be stored");
-        traps.counters.dropped(wanted as u64);
+    if let Err(unwritten) = ingest::commit(app, &index, &traps.counters, rows) {
+        tracing::error!(err = %unwritten.error, count, "a batch of traps could not be stored");
+        // The rows `commit` turned away for their source it has counted
+        // itself; these are the ones the failed write lost.
+        traps.counters.dropped(unwritten.rows as u64);
         forget(acks);
         return;
     }

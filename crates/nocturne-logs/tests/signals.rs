@@ -194,7 +194,7 @@ async fn a_second_port_inside_the_window_is_a_second_signal_not_a_swallowed_one(
 }
 
 #[tokio::test]
-async fn an_alert_for_a_lab_device_is_raised_and_notifies_nobody() {
+async fn who_hears_of_an_alert_about_a_lab_device_is_left_to_the_monitor() {
     let lab = lab_with_alerts(&["SW1"]).await;
     let app = &lab.app;
     set_address(app, &lab.id("SW1"), "127.0.0.1").await;
@@ -210,10 +210,15 @@ async fn an_alert_for_a_lab_device_is_raised_and_notifies_nobody() {
 
     receive(app, &[(ERR_DISABLE, "127.0.0.1", T0)]);
     let raised = next_event(&mut events, "test.alert_raised").await;
-    assert_eq!(
-        raised["notify"],
-        json!([]),
-        "an empty list is `no channel`: a lab wakes nobody"
+    assert_eq!(raised["device_id"], json!(lab.id("SW1")));
+    // The monitor holds a lab alert's notice back unless its
+    // `notify_for_lab` setting is on, for every source of alerts. An empty
+    // `notify` here would be "never, whatever the setting says", and the
+    // person who switched the setting on would hear of every lab alert but
+    // a log rule's.
+    assert!(
+        raised.get("notify").is_none(),
+        "no channel is named for a lab device, and none is ruled out: {raised:#}"
     );
 
     receive(app, &[(ERR_DISABLE, "127.0.0.9", T0)]);
@@ -221,7 +226,7 @@ async fn an_alert_for_a_lab_device_is_raised_and_notifies_nobody() {
     assert_eq!(raised["device_id"], hardware["id"]);
     assert!(
         raised.get("notify").is_none(),
-        "for hardware the field is left out, which is the usual routing: {raised:#}"
+        "nor for hardware: the usual routing is the monitor's to decide: {raised:#}"
     );
 }
 

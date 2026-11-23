@@ -2,9 +2,10 @@
 //!
 //! The collector decodes what arrives and hands it on through a queue with a limit. An
 //! exporter sends as fast as its flow cache empties, and anybody who can reach the port can
-//! send more than that, so what waits to be taken is bounded by the number of flow records
-//! and whatever does not fit is dropped and counted ([`FlowCollector::dropped`]) rather than
-//! kept until the machine has no memory left.
+//! send more than that, so what waits to be taken is bounded — by the number of flow records
+//! and by the bytes they take up once decoded ([`QueueLimits`]) — and whatever does not fit
+//! is dropped and counted ([`FlowCollector::dropped`]) rather than kept until the machine has
+//! no memory left.
 
 mod decode;
 
@@ -173,21 +174,106 @@ pub struct Dropped {
     pub records: u64,
 }
 
+/// What may wait in a collector's queue to be taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueLimits {
+    /// Flow records (and as many datagrams, for the ones that carry none).
+    pub records: usize,
+    /// What those records take up once decoded ([`FlowBatch::weight`]). A datagram of 64 KiB
+    /// can be sixty thousand records of one byte each, every one of them a whole
+    /// [`FlowRecord`] in the queue: the number of records alone does not bound the memory.
+    pub bytes: usize,
+}
+
 /// The receiving end of a collector: one [`FlowBatch`] per datagram, oldest first.
 #[derive(Debug)]
 pub struct FlowQueue {
-    batches: Receiver<FlowBatch>,
+    /// Each batch, and whether it is the one let onto an empty queue although it alone is more
+    /// than a limit.
+    batches: Receiver<(FlowBatch, bool)>,
     waiting: Arc<AtomicUsize>,
+    waiting_bytes: Arc<AtomicUsize>,
+    alone: Arc<Mutex<Alone>>,
 }
 
 impl FlowQueue {
     /// The next datagram's worth. `None` once the collector has stopped and everything it had
     /// decoded has been taken.
     pub async fn recv(&mut self) -> Option<FlowBatch> {
-        let batch = self.batches.recv().await?;
+        let (batch, alone) = self.batches.recv().await?;
+        // The one let in alone leaves the counts and the note of it in one step, and the socket
+        // task reads both in one step: it never sees that datagram gone from the counts while
+        // the note still takes it off them, which would let in more than the limits.
+        let note = alone.then(|| self.alone.lock().unwrap_or_else(PoisonError::into_inner));
         self.waiting
             .fetch_sub(batch.records.len(), Ordering::Relaxed);
+        self.waiting_bytes
+            .fetch_sub(batch.weight(), Ordering::Relaxed);
+        if let Some(mut note) = note {
+            *note = Alone::default();
+        }
         Some(batch)
+    }
+}
+
+/// The datagram that was let onto an empty queue although it alone is more than a limit, while
+/// it waits: its records and what they take up. Nothing else that is more than a limit gets in
+/// beside it, so there is at most one.
+#[derive(Clone, Copy, Debug, Default)]
+struct Alone {
+    records: usize,
+    bytes: usize,
+}
+
+impl FlowBatch {
+    /// What it takes up: itself, its records and the addresses they hold as text. An
+    /// estimate from what it owns, not a measurement — an allocator rounds up.
+    pub fn weight(&self) -> usize {
+        use std::mem::size_of;
+        let text = |text: &String| text.capacity();
+        size_of::<FlowBatch>()
+            + self.records.capacity() * size_of::<FlowRecord>()
+            + self
+                .records
+                .iter()
+                .map(|record| {
+                    text(&record.exporter)
+                        + text(&record.src)
+                        + text(&record.dst)
+                        + record.next_hop.as_ref().map_or(0, text)
+                })
+                .sum::<usize>()
+    }
+}
+
+/// A [`Decoder`] that outlives the collectors that use it.
+///
+/// What an exporter announced — its templates and the sampling rate in its options — is the
+/// exporter's, not the socket's. A collector that is moved to another port, or stopped and
+/// started again, and is given the decoder the one before it used, reads what the exporter
+/// sends next with what the exporter said before; one given a fresh decoder knows nothing
+/// until the exporter says it again — templates within minutes, options sometimes not for
+/// hours, and every record in between would be read as unsampled.
+#[derive(Clone, Debug, Default)]
+pub struct SharedDecoder(Arc<Mutex<Decoder>>);
+
+impl SharedDecoder {
+    pub fn new() -> SharedDecoder {
+        SharedDecoder::default()
+    }
+
+    /// How many templates are known for an exporter's address.
+    pub fn templates_of(&self, exporter: IpAddr) -> u32 {
+        self.lock().templates_of(exporter)
+    }
+
+    /// Everything the decoder has seen, over every collector that used it.
+    pub fn stats(&self) -> DecoderStats {
+        self.lock().stats()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Decoder> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -197,6 +283,10 @@ struct Shared {
     stats: Mutex<DecoderStats>,
     /// Flow records decoded and not yet taken from the queue.
     waiting: Arc<AtomicUsize>,
+    /// What they take up.
+    waiting_bytes: Arc<AtomicUsize>,
+    /// The datagram waiting that was let in alone, if one is.
+    alone: Arc<Mutex<Alone>>,
     dropped_datagrams: AtomicU64,
     dropped_records: AtomicU64,
 }
@@ -207,7 +297,8 @@ struct Shared {
 pub struct FlowCounters(Arc<Shared>);
 
 impl FlowCounters {
-    /// What the collector's decoder has seen so far.
+    /// What this collector decoded: the datagrams, records and errors since it started (its
+    /// decoder may have been used by collectors before it), and the templates known now.
     pub fn stats(&self) -> DecoderStats {
         *self.0.stats.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -224,6 +315,11 @@ impl FlowCounters {
     pub fn waiting(&self) -> usize {
         self.0.waiting.load(Ordering::Relaxed)
     }
+
+    /// What they take up ([`FlowBatch::weight`]).
+    pub fn waiting_bytes(&self) -> usize {
+        self.0.waiting_bytes.load(Ordering::Relaxed)
+    }
 }
 
 /// A running flow collector. It stops when [`stop`](FlowCollector::stop) is called or it is
@@ -239,14 +335,22 @@ impl FlowCollector {
     /// Listens for NetFlow v5 / v9 and IPFIX export datagrams. What each datagram held
     /// arrives on the queue as one [`FlowBatch`].
     ///
-    /// At most `queue_records` flow records wait to be taken (and at most that many
-    /// datagrams, for the ones that carry none); a datagram that would take the queue past
-    /// that is decoded — its templates are still learned — and then dropped and counted.
-    /// One datagram is always let onto an empty queue, however many records it holds, or a
-    /// limit smaller than a datagram would drop everything. A limit of zero is taken as one.
+    /// At most `limits.records` flow records wait to be taken (and at most that many
+    /// datagrams, for the ones that carry none), taking up at most `limits.bytes`; a datagram
+    /// that would take the queue past either is decoded — its templates are still learned —
+    /// and then dropped and counted. One datagram is always let onto an empty queue, however
+    /// many records it holds and whatever they take up, or a limit smaller than a datagram
+    /// would drop everything; while one that alone is more than a limit waits, what arrives
+    /// is measured against the limits without it, or it would turn every other exporter away
+    /// for as long as it waits. So the queue holds at most the limits and that one datagram.
+    /// A record limit of zero is taken as one.
+    ///
+    /// Datagrams are decoded with `decoder`, which the caller keeps: give the next collector
+    /// the same one and it knows the templates and sampling rates this one learned.
     pub async fn start(
         bind: SocketAddr,
-        queue_records: usize,
+        limits: QueueLimits,
+        decoder: SharedDecoder,
     ) -> Result<(FlowCollector, FlowQueue), ProbeError> {
         let socket = UdpSocket::bind(bind)
             .await
@@ -254,11 +358,16 @@ impl FlowCollector {
         // Exporters send in bursts when their flow cache expires; ask for room to queue them.
         let _ = socket2::SockRef::from(&socket).set_recv_buffer_size(4 * 1024 * 1024);
         let local_addr = socket.local_addr()?;
-        let limit = queue_records.max(1);
-        let (batches, receiver) = channel(limit);
+        let limits = QueueLimits {
+            records: limits.records.max(1),
+            ..limits
+        };
+        let (batches, receiver) = channel(limits.records);
         let shared = Arc::new(Shared::default());
-        let task = tokio::spawn(collect(socket, batches, shared.clone(), limit));
+        let task = tokio::spawn(collect(socket, batches, shared.clone(), limits, decoder));
         let waiting = shared.waiting.clone();
+        let waiting_bytes = shared.waiting_bytes.clone();
+        let alone = shared.alone.clone();
         Ok((
             FlowCollector {
                 local_addr,
@@ -268,6 +377,8 @@ impl FlowCollector {
             FlowQueue {
                 batches: receiver,
                 waiting,
+                waiting_bytes,
+                alone,
             },
         ))
     }
@@ -282,7 +393,7 @@ impl FlowCollector {
         self.counters.clone()
     }
 
-    /// What the collector's decoder has seen so far.
+    /// What this collector decoded; see [`FlowCounters::stats`].
     pub fn stats(&self) -> DecoderStats {
         self.counters.stats()
     }
@@ -295,6 +406,11 @@ impl FlowCollector {
     /// Flow records decoded and waiting to be taken from the queue right now.
     pub fn waiting(&self) -> usize {
         self.counters.waiting()
+    }
+
+    /// What they take up.
+    pub fn waiting_bytes(&self) -> usize {
+        self.counters.waiting_bytes()
     }
 
     /// Stops collecting; returns when the socket is closed.
@@ -322,8 +438,16 @@ fn canonical(peer: SocketAddr) -> SocketAddr {
 }
 
 /// Receives and decodes datagrams until aborted, or until nobody listens to the records.
-async fn collect(socket: UdpSocket, batches: Sender<FlowBatch>, shared: Arc<Shared>, limit: usize) {
-    let mut decoder = Decoder::new();
+async fn collect(
+    socket: UdpSocket,
+    batches: Sender<(FlowBatch, bool)>,
+    shared: Arc<Shared>,
+    limits: QueueLimits,
+    decoder: SharedDecoder,
+) {
+    // The decoder's counters go on from whatever collectors used it before this one; this
+    // collector's are what it adds.
+    let started_at = decoder.stats();
     let mut datagram = vec![0u8; 65_536];
     loop {
         let (length, peer) = match socket.recv_from(&mut datagram).await {
@@ -335,10 +459,18 @@ async fn collect(socket: UdpSocket, batches: Sender<FlowBatch>, shared: Arc<Shar
             }
         };
         let exporter = canonical(peer);
-        let before = decoder.stats().missing_template_sets;
-        let decoded = decoder.decode(&datagram[..length], exporter);
-        let stats = decoder.stats();
-        *shared.stats.lock().unwrap_or_else(PoisonError::into_inner) = stats;
+        let (decoded, stats, before, templates) = {
+            let mut decoder = decoder.lock();
+            let before = decoder.stats().missing_template_sets;
+            let decoded = decoder.decode(&datagram[..length], exporter);
+            (
+                decoded,
+                decoder.stats(),
+                before,
+                decoder.templates_of(exporter.ip()),
+            )
+        };
+        *shared.stats.lock().unwrap_or_else(PoisonError::into_inner) = stats.since(&started_at);
         let records = match decoded {
             Ok(records) => records,
             Err(error) => {
@@ -347,29 +479,53 @@ async fn collect(socket: UdpSocket, batches: Sender<FlowBatch>, shared: Arc<Shar
             }
         };
         let count = records.len();
-        // Counted before it is offered, so the bound holds even while the other side is
-        // in the middle of taking a batch.
-        let waiting = shared.waiting.fetch_add(count, Ordering::Relaxed);
-        let refused = if waiting > 0 && waiting + count > limit {
-            true
-        } else {
-            let batch = FlowBatch {
-                exporter: exporter.ip(),
-                // The decoder accepted it, so the first two bytes are 5, 9 or 10.
-                version: datagram[1],
-                records,
-                sets_without_template: (stats.missing_template_sets - before)
-                    .min(u64::from(u32::MAX)) as u32,
-                templates: decoder.templates_of(exporter.ip()),
+        let batch = FlowBatch {
+            exporter: exporter.ip(),
+            // The decoder accepted it, so the first two bytes are 5, 9 or 10.
+            version: datagram[1],
+            records,
+            sets_without_template: (stats.missing_template_sets - before).min(u64::from(u32::MAX))
+                as u32,
+            templates,
+        };
+        let weight = batch.weight();
+        let refused = {
+            // The counts and the note of the datagram let in alone, read in one step (see
+            // `FlowQueue::recv`).
+            let mut alone = shared.alone.lock().unwrap_or_else(PoisonError::into_inner);
+            // Counted before it is offered, so the bounds hold even while the other side is
+            // in the middle of taking a batch.
+            let waiting = shared.waiting.fetch_add(count, Ordering::Relaxed);
+            let waiting_bytes = shared.waiting_bytes.fetch_add(weight, Ordering::Relaxed);
+            // Onto an empty queue whatever it holds; beside others, within the limits, not
+            // counting the one that was let in alone.
+            let fits = |waiting: usize, beside: usize, adding: usize, limit: usize| {
+                waiting == 0 || waiting.saturating_sub(beside) + adding <= limit
             };
-            match batches.try_send(batch) {
-                Ok(()) => false,
-                Err(TrySendError::Full(_)) => true,
-                Err(TrySendError::Closed(_)) => return,
+            let by_itself = count > limits.records || weight > limits.bytes;
+            if fits(waiting, alone.records, count, limits.records)
+                && fits(waiting_bytes, alone.bytes, weight, limits.bytes)
+            {
+                match batches.try_send((batch, by_itself)) {
+                    Ok(()) => {
+                        if by_itself {
+                            *alone = Alone {
+                                records: count,
+                                bytes: weight,
+                            };
+                        }
+                        false
+                    }
+                    Err(TrySendError::Full(_)) => true,
+                    Err(TrySendError::Closed(_)) => return,
+                }
+            } else {
+                true
             }
         };
         if refused {
             shared.waiting.fetch_sub(count, Ordering::Relaxed);
+            shared.waiting_bytes.fetch_sub(weight, Ordering::Relaxed);
             shared.dropped_datagrams.fetch_add(1, Ordering::Relaxed);
             shared
                 .dropped_records

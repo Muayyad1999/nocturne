@@ -407,3 +407,203 @@ async fn a_line_that_names_an_interface_is_tied_to_that_interface() {
     assert_eq!(top[0]["key"], json!("GigabitEthernet1/0/3"));
     assert_eq!(top[0]["count"], json!(1));
 }
+
+fn syslog_count(status: &Value, key: &str) -> u64 {
+    status["syslog"][key].as_u64().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_line_the_database_would_not_take_is_counted_as_dropped_and_the_next_is_stored() {
+    let lab = lab(&["SW1"]).await;
+    let app = &lab.app;
+    set_address(app, &lab.id("SW1"), "127.0.0.1").await;
+    let (udp, _) = start_receiver(app).await;
+    // The index table is gone, as on a database that is damaged or full:
+    // the write of the row fails.
+    let rename = |from: &'static str, to: &'static str| {
+        app.store()
+            .with(|conn| conn.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to}")))
+            .expect("the table is renamed")
+    };
+    rename("logs_syslog", "logs_syslog_away");
+    send_udp("127.0.0.1", udp, &[IOS_LINK_DOWN]).await;
+    let status = wait_until_settled(app, 1).await;
+    assert_eq!(
+        (
+            syslog_count(&status, "received"),
+            syslog_count(&status, "stored"),
+            syslog_count(&status, "dropped")
+        ),
+        (1, 0, 1),
+        "received, not kept, and counted as that: {status:#}"
+    );
+    assert!(query(app, json!({"limit": 5})).await.is_empty());
+
+    rename("logs_syslog_away", "logs_syslog");
+    send_udp("127.0.0.1", udp, &[RFC5424]).await;
+    let status = wait_until_settled(app, 2).await;
+    assert_eq!(
+        (
+            syslog_count(&status, "received"),
+            syslog_count(&status, "stored"),
+            syslog_count(&status, "dropped")
+        ),
+        (2, 1, 1),
+        "{status:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_line_turned_away_for_its_source_is_counted_even_when_its_source_cannot_be_listed() {
+    use nocturne_app::util::now_ms;
+    use nocturne_logs::state::LogsState;
+
+    let lab = lab(&["SW1"]).await;
+    let app = &lab.app;
+    if !loopback_alias("127.0.0.9").await {
+        eprintln!("skipped: this machine has no second loopback address");
+        return;
+    }
+    set_address(app, &lab.id("SW1"), "127.0.0.1").await;
+    app.rpc(
+        "settings.set",
+        json!({"section": "logs", "value": {"unknown_sources": "drop"}}),
+    )
+    .await
+    .unwrap();
+    let (udp, _) = start_receiver(app).await;
+    // `logs.status` lists the sources as well, so while their table is away
+    // the receiver's numbers are read where it keeps them.
+    let state = app.state::<LogsState>();
+    let counted = || {
+        let status = state.syslog.status(now_ms());
+        (status.received, status.stored, status.dropped)
+    };
+    let rename = |from: &'static str, to: &'static str| {
+        app.store()
+            .with(|conn| conn.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to}")))
+            .expect("the table is renamed")
+    };
+    // Where each sending address is counted is gone: neither the count of a
+    // line no device claims nor the row of one a device does can be written.
+    rename("logs_sources", "logs_sources_away");
+    send_udp("127.0.0.9", udp, &[IOS_LINK_DOWN]).await;
+    send_udp("127.0.0.1", udp, &[RFC5424]).await;
+    eventually("both lines to be stored or counted as dropped", || {
+        let (received, stored, dropped) = counted();
+        received == 2 && stored + dropped == 2
+    })
+    .await;
+    assert_eq!(
+        counted(),
+        (2, 0, 2),
+        "the line turned away for its source is dropped by the setting whether or not its \
+         address can be listed, and the other could not be written"
+    );
+
+    rename("logs_sources_away", "logs_sources");
+    send_udp("127.0.0.9", udp, &[IOS_LINK_DOWN]).await;
+    send_udp("127.0.0.1", udp, &[RFC5424]).await;
+    eventually("the next two to be accounted for", || {
+        let (received, stored, dropped) = counted();
+        received == 4 && stored + dropped == 4
+    })
+    .await;
+    assert_eq!(counted(), (4, 1, 3));
+}
+
+// On threads of its own: the writer is held up on one of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_line_being_written_still_counts_against_what_the_queue_may_hold() {
+    use nocturne_app::util::now_ms;
+    use nocturne_logs::state::LogsState;
+
+    let lab = lab(&["SW1"]).await;
+    let app = &lab.app;
+    set_address(app, &lab.id("SW1"), "127.0.0.1").await;
+    let (_, tcp) = start_receiver(app).await;
+    let state = app.state::<LogsState>();
+    let read = || state.syslog.status(now_ms());
+    // Held where it shows the stored line to the rules: the line has left
+    // the queue and is still in the writer's hands.
+    let held = hold_the_rules(app);
+    send_tcp_held(tcp, format!("{IOS_LINK_DOWN}\n").as_bytes());
+    wait_held("the line to be stored", || read().stored == 1);
+    let writing = read();
+    held.release();
+    assert_eq!(writing.queued, 0, "{writing:?}");
+    assert!(
+        writing.queued_bytes >= 2 * IOS_LINK_DOWN.len() as u64,
+        "a batch in the writer's hands is memory as much as the queue is, and counts with it \
+         until it is written: {writing:?}"
+    );
+    wait_for(
+        app,
+        "the line's bytes to be given back once it is written",
+        |status| status["syslog"]["queued_bytes"] == json!(0),
+    )
+    .await;
+}
+
+// On threads of its own, as in the application: the writer is held up on
+// one while this one goes on sending and switches the receiver off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn switching_the_receiver_off_does_not_throw_away_what_it_had_received() {
+    use nocturne_app::util::now_ms;
+    use nocturne_logs::state::LogsState;
+
+    let lab = lab(&["SW1"]).await;
+    let app = &lab.app;
+    set_address(app, &lab.id("SW1"), "127.0.0.1").await;
+    let (_, tcp) = start_receiver(app).await;
+    let state = app.state::<LogsState>();
+    // Read from memory, not through `logs.status`: that asks the rules what
+    // they hold, and the rules are what this test holds on to.
+    let seen = |ready: &dyn Fn(u64, u64, bool) -> bool| {
+        let status = state.syslog.status(now_ms());
+        ready(status.received, status.stored, status.enabled)
+    };
+
+    // The writer is held up after its first line is stored, where it shows
+    // the line to the rules: what arrives behind it waits in the queue.
+    let held = hold_the_rules(app);
+    send_tcp_held(tcp, format!("{IOS_LINK_DOWN}\n").as_bytes());
+    wait_held("the first line to be stored", || {
+        seen(&|_, stored, _| stored == 1)
+    });
+    send_tcp_held(
+        tcp,
+        format!("{RFC5424}\n{ROUTEROS}\n{NO_PRIORITY}\n").as_bytes(),
+    );
+    wait_held("the rest to be taken off the socket", || {
+        seen(&|received, _, _| received == 4)
+    });
+
+    app.rpc(
+        "settings.set",
+        json!({"section": "logs", "value": {"syslog": {"enabled": false}}}),
+    )
+    .await
+    .unwrap();
+    wait_held("the receiver to be switched off", || {
+        seen(&|_, _, enabled| !enabled)
+    });
+    held.release();
+
+    let status = wait_for(app, "what was received to be written", |status| {
+        syslog_count(status, "stored") + syslog_count(status, "dropped")
+            >= syslog_count(status, "received")
+    })
+    .await;
+    assert_eq!(
+        (
+            syslog_count(&status, "received"),
+            syslog_count(&status, "stored"),
+            syslog_count(&status, "dropped")
+        ),
+        (4, 4, 0),
+        "a receiver that is switched off still writes what it had taken off the socket: {status:#}"
+    );
+    assert_eq!(status["syslog"]["enabled"], json!(false));
+    assert_eq!(query(app, json!({"limit": 10})).await.len(), 4);
+}

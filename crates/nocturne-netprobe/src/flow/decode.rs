@@ -23,6 +23,22 @@ pub struct DecoderStats {
     pub errors: u64,
 }
 
+impl DecoderStats {
+    /// What was counted after `earlier`, an earlier reading of the same decoder. `templates`
+    /// is not a count of anything that happened but of what is known: it is the latest.
+    pub fn since(&self, earlier: &DecoderStats) -> DecoderStats {
+        DecoderStats {
+            packets: self.packets.saturating_sub(earlier.packets),
+            records: self.records.saturating_sub(earlier.records),
+            templates: self.templates,
+            missing_template_sets: self
+                .missing_template_sets
+                .saturating_sub(earlier.missing_template_sets),
+            errors: self.errors.saturating_sub(earlier.errors),
+        }
+    }
+}
+
 /// Stateful decoder: keeps v9 / IPFIX templates per (exporter, source id, template id).
 #[derive(Debug, Default)]
 pub struct Decoder {

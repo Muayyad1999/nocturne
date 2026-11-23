@@ -608,16 +608,6 @@ impl Table {
         Taken::Counted
     }
 
-    /// The collector was stopped. The templates were its decoder's, and went
-    /// with it: until an exporter sends them again there are none, and
-    /// `templates` must not go on saying what a decoder that no longer
-    /// exists knew.
-    pub fn templates_forgotten(&mut self) {
-        for exporter in self.exporters.values_mut() {
-            exporter.templates = 0;
-        }
-    }
-
     /// Room for one more exporter. A full table gives up the one that has
     /// been silent longest among those no device claims — to a newcomer a
     /// device does claim, never to another stranger: whoever can send a

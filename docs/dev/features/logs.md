@@ -19,7 +19,8 @@ Settings section `logs`:
   traps:  { enabled: false, port: 1162, bind: "0.0.0.0", require_known_community: true },
   flows:  { enabled: false, port: 2055, bind: "0.0.0.0" },
   retention_days: 30, max_rows: 2_000_000, unknown_sources: "store" /* or "drop" */,
-  queue_limit: 50_000 /* what may wait to be written, per receiver; for flows: flow records waiting to be counted */ }
+  queue_limit: 50_000 /* what may wait to be written, per receiver; for flows: flow records waiting to be counted */,
+  queue_limit_bytes: 67_108_864 /* what that may take up, per receiver: 1 MiB to 1 GiB */ }
 ```
 
 Off by default (opening a listening port is the user's decision). The
@@ -36,6 +37,11 @@ Receivers restart when their settings change.
   mnemonic?, host, raw}`. Unattributed sources are kept with `device_id:
   null` (or dropped, per setting) and listed in `logs.sources` so the user
   can add them.
+* Every line taken off a syslog socket (`received`) ends in `stored` or
+  `dropped`: a full queue, an unknown source under `unknown_sources:
+  "drop"`, and a batch the database would not take are all `dropped`. Also
+  across a restart: a receiver that is switched off or rebound still writes
+  what it had already taken off its sockets.
 * Traps: one UDP socket. `decode_trap`, resolve OIDs to names, attribute by
   source address like a syslog line, stream `trap`, `severity: null` (a
   notification has no syslog severity and is given none), `source` = the
@@ -140,7 +146,19 @@ Receivers restart when their settings change.
 * Batched inserts (≤ 250 ms or 500 rows), bounded queue: under a storm the
   receiver drops and **counts** (shown in `logs.status`) rather than growing
   without bound or blocking the socket. Each receiver has a queue of its
-  own, of `queue_limit` entries.
+  own, of `queue_limit` entries **and `queue_limit_bytes` bytes**: an entry
+  is at most a datagram, a datagram can be 64 KiB, and fifty thousand of
+  those would be gigabytes that anybody who can reach the port can make the
+  application allocate. What an entry takes up is estimated from what it
+  holds (its texts, its bindings, an inform's answer); what does not fit in
+  either limit is dropped and counted under the receiver's `dropped`
+  (flows: `drops.queue_full`), never waited for. An entry's bytes are given
+  back once it is written, so the batch in the writer's hands counts as
+  much as what waits; one entry is always let into an empty queue, whatever
+  it takes up. The status says what the queue holds (`queued_bytes`) and
+  may hold (`max_queued_bytes`). The byte limit is applied to a running
+  syslog or trap receiver; the flow collector, like `queue_limit`, reads it
+  when it starts. The tests measure it in the process's memory (below).
 * Retention task: age and row cap, in small batches. The age limit
   (`retention_days`, 0 = keep) applies to the `syslog` and `trap` streams
   and to the `audit` trail — which nothing else may delete, see
@@ -197,10 +215,18 @@ Receivers restart when their settings change.
     silent longest to a newcomer a device claims, and never to another
     stranger (what a refused one sends is counted, `drops.no_room`). The
     engine's queue between the socket and the buckets holds at most
-    `queue_limit` flow records; what does not fit is decoded (templates
-    are still learned), dropped and counted (`drops.queue_full`). The
-    decoder keeps at most 4,096 templates and 8,192 announced sampling
-    rates.
+    `queue_limit` flow records, taking up at most `queue_limit_bytes` once
+    decoded (a datagram of 64 KiB can be sixty thousand one-byte records,
+    each a whole record in the queue: about 11 MiB); what does not fit is
+    decoded (templates are still learned), dropped and counted
+    (`drops.queue_full`). The datagram being counted is not in the queue.
+    One datagram that alone is more than either limit is let onto an empty
+    queue, and what arrives while it waits is measured against the limits
+    without it: an exporter that sends nothing but such datagrams would
+    otherwise turn every other exporter's away for as long as one waits,
+    which under a flood is all the time. So the queue holds at most the
+    limits and that one datagram. The decoder keeps at most 4,096 templates
+    and 8,192 announced sampling rates.
   * **What a datagram costs to read is in proportion to its size.** One
     datagram holds sixteen thousand four-byte template records, or sixty
     thousand one-byte data records, so nothing is done once per record
@@ -233,7 +259,15 @@ Receivers restart when their settings change.
     is applied to the running collector. What has been counted stays when
     the collector is rebound or switched off: the buckets belong to the
     application, not to the socket, and `coverage.collecting` says whether
-    anything new is coming in.
+    anything new is coming in. So does what the exporters announced — their
+    templates, and the sampling rates in their options: there is one
+    decoder for the life of the application, and every collector it starts
+    decodes with it. An exporter repeats its templates often and its
+    options seldom; a collector that forgot both on a rebind would count
+    the sampled records in between as unsampled, a number that looks
+    measured and is not. (Templates and rates are the exporter's at its
+    address and source port: one that comes back from another port is a
+    stranger to them, as after its own restart.)
 * Lab devices: a simulated device has no socket to send from, so
   `nocturne-lab` hands its syslog lines to `logs.ingest`. A lab device is
   one that belongs to a lab **and** is reached through the simulator
@@ -255,7 +289,7 @@ Receivers restart when their settings change.
 | `logs.query` | `{stream?: syslog|trap|audit|event, device_id?, max_severity?, text?, since?, until?, before_id?, limit?: 200}` → `{entries: [LogEntry], has_more}` newest first (`before_id` pages back) |
 | `logs.histogram` | `{stream?, device_id?, text?, since, until, buckets?: 60}` → `[{t, count, by_severity: [8]}]` |
 | `logs.top` | `{since, until, by: device|mnemonic|severity, limit?}` → `[{key, count}]` |
-| `logs.status` | → `{syslog: {enabled, listening: [..], error?, received, stored, dropped, queued, rate_per_minute, last_at, from_lab}, traps: {enabled, implemented: true, listening: [..], error?, received, stored, dropped, queued, rate_per_minute, last_at, rejected, unauthenticated, malformed, duplicates, acknowledged, require_known_community, rejections: [{address, device_id?, reason, count, last_at}], lab}, flows: {enabled, implemented: true, listening: [..], error?, received, malformed, records, counted, dropped, drops: {queue_full, no_room, unclaimed, unreadable}, queued, rate_per_minute, last_at, sets_without_template, exporters, unattributed_exporters, memory: {minutes, keys, max_keys, evicted_minutes, oldest_at?}, lab}, rules: {tracked, forgotten, max_per_rule, held_back, open_alerts, undelivered}, forwarders: [{id, name, state, sent, dropped, last_error?, last_at?}], store: {rows, oldest_at?, retention_days, max_rows, last_prune_at?, pruned_by_age, pruned_by_rows}, unattributed_sources}` — `rules` is what the pattern rules hold in memory (below). `forwarders` is every forwarder by name, with what it has done since the application started: `state` is `disabled`, `idle` (on, nothing sent or tried yet), `ok` (the last send worked) or `failing` (it did not, and `last_error` says how); `last_at` is when something was last sent (below). `traps.lab` is a sentence: a simulated device sends no traps; `flows.lab` likewise. `flows` counts in two units: `received` and `malformed` are datagrams (`rate_per_minute`: datagrams from followed exporters in the last minute), everything else is flow records. Every record decoded (`records`) ends in exactly one of `counted` (it is in the buckets) and `dropped` (the sum of `drops`: the queue was full; there was no room to follow one more exporter; no device claims the exporter and `unknown_sources` is `drop`; the inventory could not be read), or is still `queued`. `sets_without_template` is data sets that arrived before their template: what they held is in no number. `memory` is what the buckets hold: one-minute buckets over all exporters, the keys in them, the ceiling on keys, buckets let go early to stay under it, and the start of the oldest bucket |
+| `logs.status` | → `{syslog: {enabled, listening: [..], error?, received, stored, dropped, queued, queued_bytes, max_queued_bytes, rate_per_minute, last_at, from_lab}, traps: {enabled, implemented: true, listening: [..], error?, received, stored, dropped, queued, queued_bytes, max_queued_bytes, rate_per_minute, last_at, rejected, unauthenticated, malformed, duplicates, acknowledged, require_known_community, rejections: [{address, device_id?, reason, count, last_at}], lab}, flows: {enabled, implemented: true, listening: [..], error?, received, malformed, records, counted, dropped, drops: {queue_full, no_room, unclaimed, unreadable}, queued, queued_bytes, max_queued_bytes, rate_per_minute, last_at, sets_without_template, exporters, unattributed_exporters, memory: {minutes, keys, max_keys, evicted_minutes, oldest_at?}, lab}, rules: {tracked, forgotten, max_per_rule, held_back, open_alerts, undelivered}, forwarders: [{id, name, state, sent, dropped, queued, queued_bytes, max_queued_bytes, last_error?, last_at?}], store: {rows, oldest_at?, retention_days, max_rows, last_prune_at?, pruned_by_age, pruned_by_rows}, unattributed_sources}` — `queued_bytes` is what a queue holds now, in bytes, and `max_queued_bytes` what it may hold (`queue_limit_bytes` for a receiver, 16 MiB for a forwarder); for syslog, traps and forwarders it counts the batch being written or sent too, for flows only what waits. `rules` is what the pattern rules hold in memory (below). `forwarders` is every forwarder by name, with what it has done since the application started: `state` is `disabled`, `idle` (on, nothing sent or tried yet), `ok` (the last send worked) or `failing` (it did not, and `last_error` says how); `last_at` is when something was last sent (below). `traps.lab` is a sentence: a simulated device sends no traps; `flows.lab` likewise. `flows` counts in two units: `received` and `malformed` are datagrams (`rate_per_minute`: datagrams from followed exporters in the last minute), everything else is flow records. Every record decoded (`records`) ends in exactly one of `counted` (it is in the buckets) and `dropped` (the sum of `drops`: the queue was full; there was no room to follow one more exporter; no device claims the exporter and `unknown_sources` is `drop`; the inventory could not be read), or is still `queued`. `sets_without_template` is data sets that arrived before their template: what they held is in no number. `memory` is what the buckets hold: one-minute buckets over all exporters, the keys in them, the ceiling on keys, buckets let go early to stay under it, and the start of the oldest bucket |
 | `logs.restart` | → the status, after re-applying the receiver settings. A trap receiver or a flow collector that could not bind is tried again (whatever held the port may have gone); one that is running is left alone |
 | `logs.bursts` | `{..filter, min_count?: 5, limit?: 50}` → `[Burst]` — the same message from the same device many times, folded into one row with its count, first and last time |
 | `logs.around` | `{entry_id? \| at, device_id?, window_s?: 300, limit?: 100}` → what else happened around one moment: log lines, alerts and changes on that device, in time order |
@@ -266,7 +300,7 @@ Receivers restart when their settings change.
 | `logs.rules.list` / `.save` / `.delete` / `.test` | pattern rules, below. `.list` → `[LogRule]`; `.save` `LogRule` → `LogRule` (`invalid` with the reason when the rule cannot work: a `group_by` the pattern does not capture, a clearing pattern that does not capture it either, `after` naming no rule, an alert with no title); `.delete` `{id}` → `{deleted}`; `.test` `{rule, line}` → `{matched, reason, groups, signal?: {kind, title, severity?, interface?}, parsed, instance, note, clears}` |
 | `logs.clear` | `{stream?: syslog, before?}` → `{removed, stream}` — refused (`forbidden`) for `audit`: the audit trail is evidence, and the API that is audited does not get to erase it. It ages out by retention only |
 | `flows.top` | `{device_id?, exporter?, minutes?: 15, by: source\|destination\|conversation\|application\|interface\|dscp, limit?: 20}` → `{rows: [{key, label, bytes, packets, flows, interface?: {exporter, device_id?, if_index, name?, direction: in\|out}}], total: {bytes, packets, flows}, other: {bytes, packets, flows}, coverage: {collecting, window_start, until, since?, records, sets_without_template, sampling: [u32], sampled_records, exporters}}` — the biggest talkers by bytes over the last `minutes` whole minutes and the running one (1 to 1,440, `invalid` beyond: a day is what is kept), added up over every exporter, or over those of one device (`device_id`: id, name or address; `not_found` when there is no such device) or one exporter by its address (`exporter`, which is how an exporter no device claims is looked at). `by` is required (`invalid` with the list when it is missing or something else); `limit` is brought into 1 to 500. **Rows.** `key` is stable text — an address, `a <-> b`, `tcp/443`, `tcp` (no service port), `ip/1`, a DSCP number, `<exporter> <ifIndex> <in\|out>` — and `label` is the same for a person: `tcp/443 (https)`, `ICMP (IP protocol 1)`, `EF (46)`, `GigabitEthernet0/3 in`. A label is derived from numbers and carries them: flow export says port 443, never HTTPS. An interface is named through `monitor.ifindex` when that method is there and knows the index (in the device's own collected spelling when it has that interface), `ifIndex N` otherwise and `no interface reported` for index 0; over more than one exporter the label says whose (`SW1 ifIndex 3 in`), and the row's `interface` carries the parts. `bytes` and `packets` are as exported and are a floor (see Flows above). **`total`** is everything the exporters reported in the window, exact; **`other`** is the part of it under no key. **Coverage.** `collecting`: whether the collector is listening now — when it is not, an empty answer means "not collecting", not "no traffic". `window_start` and `until`: what was asked about. `since`: the start of the first minute in the window that holds anything, `null` when none does. `records`: flow records added up. `sets_without_template`: data sets that arrived in the window before their template — traffic the exporters reported that is in no row and not in `total`. `sampling`: the 1-in-N rates the exporters said (ascending, at most eight; empty when none said one) and `sampled_records` how many of `records` came with one; nothing is multiplied. `exporters`: how many exporters have something in the window |
-| `flows.exporters` | → `[{address, device_id?, device?, reason, version, first_at, last_at, datagrams, records, dropped, templates, sets_without_template, sampling: [u32]}]`, most recently heard first — every exporter followed (at most 256; one goes when it has been silent for a day). `device` is the device's name; `reason` says why no device claims the address (empty when one does). `version` is what it last spoke (5, 9, 10 for IPFIX). `records` is flow records counted from it, `dropped` those not counted because it is unclaimed and `unknown_sources` is `drop`; `templates` the templates known for it now — none once the collector has been stopped or rebound, until the exporter sends them again (the templates are the decoder's, and the decoder is the socket's; what the exporter sends in between is counted under `sets_without_template`); `sampling` the rates it has said |
+| `flows.exporters` | → `[{address, device_id?, device?, reason, version, first_at, last_at, datagrams, records, dropped, templates, sets_without_template, sampling: [u32]}]`, most recently heard first — every exporter followed (at most 256; one goes when it has been silent for a day). `device` is the device's name; `reason` says why no device claims the address (empty when one does). `version` is what it last spoke (5, 9, 10 for IPFIX). `records` is flow records counted from it, `dropped` those not counted because it is unclaimed and `unknown_sources` is `drop`; `templates` the templates known for it now — the decoder's, which outlives a rebind and a switch-off, so they stay known until withdrawn, pushed out by a full table, or the application restarts (data that arrives with none known is counted under `sets_without_template`); `sampling` the rates it has said |
 | `logs.forward.list` | → `[Forwarder]`, by name. Never a URL or a token: `has_secret` says whether an `https_json` forwarder has its destination |
 | `logs.forward.save` | `{id?, name, kind, enabled?, host?, port?, format?, streams?, min_severity?, lab?, ca_pem?, url?, token?}` → `Forwarder` — the document is replaced by what is sent, and what is left out takes its default (below). Two things are kept when left out: `enabled`, and the secret. `url` and `token` are accepted here and returned nowhere. `invalid` with the reason for a forwarder that cannot work, and nothing is written; `not_found` for an `id` that is not there; at most 16 forwarders |
 | `logs.forward.delete` | `{id}` → `{deleted}` — stops it, and removes its secret from the vault |
@@ -432,9 +466,13 @@ in front of it). None is a line recorded from a device.
 An `Alert` raised by a rule is cleared again — `alerts.clear {dedup_key,
 note}` with the same dedup key — when its opposite arrives (`linkUp` after
 `linkDown`, a neighbour coming back) or after `clear_after_s` without a
-match. An alert for a lab device never reaches a notification channel:
-`alerts.raise` is called with `notify: []` for it, and without the field
-for hardware.
+match. `alerts.raise` is called without `notify` — a rule names no
+channels — for a lab device as for hardware: whether an alert about a lab
+device reaches a channel is the monitor's to decide
+(`monitoring.notify_for_lab`, off by default), in one place for every
+source of alerts. (`notify: []` from here would mean "nobody, whatever
+that setting says".) A build without the monitor has no `alerts.raise` to
+call.
 
 * **The opposite** is the rule's `clear_pattern`. It has to capture the
   rule's `group_by` groups, or it could not say which alert it clears. The
@@ -515,17 +553,25 @@ struct Forwarder { id, name, enabled,
   core, so they are read back from the store by id, twice a second, which
   is the same promise kept another way. A forwarder sends what is stored
   from the moment it is saved or started; nothing older.
-* Each has a bounded queue of 10,000 entries. A slow or dead collector
-  never slows ingest: putting an entry on the queue is all the ingest path
-  does, and when the queue is full the entry is dropped and counted.
-  `logs.status` shows `sent`, `dropped`, the state and the last error.
+* Each has a bounded queue of 10,000 entries and 16 MiB — a row can hold a
+  64 KiB datagram twice (its message, and the line as received in its
+  body), and ten thousand of those would be over a gigabyte for one
+  collector that has stopped reading. The bytes are counted per forwarder,
+  as if no row were shared between them (a row offered to several is one
+  copy in memory), and include the batch being sent until it has been sent
+  or dropped. A slow or dead collector never slows ingest: putting an entry
+  on the queue is all the ingest path does, and when the queue is full, in
+  entries or in bytes, the entry is dropped and counted. `logs.status`
+  shows `sent`, `dropped`, `queued`, `queued_bytes`, `max_queued_bytes`,
+  the state and the last error.
   * `sent` is what was handed to the network. No syslog transport
     acknowledges anything, so for those it does not mean "arrived" — a
     collector that accepts a connection and never reads from it is counted
     until the buffers between the two machines are full. For `https_json`
     it is what the collector answered 2xx to.
-  * `dropped` is what never left: the queue was full, every attempt failed,
-    or the forwarder was saved again or deleted while entries waited.
+  * `dropped` is what never left: the queue was full (in entries or in
+    bytes), every attempt failed, or the forwarder was saved again or
+    deleted while entries waited.
   * Entries are sent in batches of up to 200. A batch that fails is tried
     three times in all, 1 s, 2 s, 4 s … 30 s apart, and then dropped and
     counted. Over a stream a batch that is tried again may arrive twice in
@@ -553,8 +599,7 @@ struct Forwarder { id, name, enabled,
 * **Labs.** What a lab's simulated devices write, and what is recorded
   about them in `event`, is not forwarded unless the forwarder has
   `lab: true` — a log platform would take a lab's port-security violation
-  for a real one, for the reason an alert about a lab device notifies
-  nobody. With it, a lab is the way to try a forwarder out. The audit
+  for a real one. With it, a lab is the way to try a forwarder out. The audit
   trail is what people did, whatever to, and is never held back as a lab's.
 * For `https_json` the URL and the token are one secret, stored as
   `logs:forward:<id>:secret`, write-only over RPC, and absent from every
@@ -584,6 +629,22 @@ struct Forwarder { id, name, enabled,
   lines, store them and send them again, for ever. (A loop through another
   relay, or a receiver switched on afterwards, is not seen.) A refusal
   never repeats the host, the URL or the token it was given.
+* **No credential over `http://`.** A token sent to an `http://` URL, or a
+  user name and password in one, would cross the network as text anybody
+  on the way can read. Such a forwarder is refused (`invalid`, saying to
+  use `https://` — a collector with a private authority's certificate can
+  be given `ca_pem` — or no token); a token added to a stored `http://` URL
+  is refused the same way, and a forwarder stored like that by an earlier
+  version sends nothing (`failing`, and `last_error` says why). Without a
+  credential, `http://` is still for a collector on one's own network; the
+  rest of the URL, a path or a query, goes in the clear too, and nothing
+  here can tell a token in it from a path.
+* **No proxy.** An `https_json` forwarder connects to its collector itself:
+  it does not go through a proxy the environment names (`HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY`) or the system's settings do, which the HTTP
+  client would otherwise follow — a proxy sees where each request goes, the
+  host of an `https://` URL and the whole of an `http://` one, and the
+  destination is a secret. There is no proxy setting for a forwarder.
 * **TLS** is rustls with ring, like everything else. The collector's
   certificate is checked against the authorities this machine trusts, or —
   `ca_pem` — against the one authority given, for a collector with a
@@ -640,7 +701,8 @@ struct Forwarder { id, name, enabled,
 
 **Not built:** CEF or any other format; a client certificate for a
 collector that asks for one; indexer acknowledgement; a queue that
-survives a restart; a proxy other than the one the environment names.
+survives a restart; a proxy of a forwarder's own (none is used, see
+above).
 
 ## Tests
 
@@ -649,6 +711,17 @@ input, non-UTF-8, huge lines, missing PRI); live receivers on port 0:
 send over UDP and TCP (octet-counted and newline framing), `snmptrap` if
 installed else crafted PDUs; attribution by address and by interface IP;
 storm behaviour (100k datagrams: bounded memory, counted drops, no hang);
+a flood of the largest datagrams there are at each receiver, and of the
+largest rows at a forwarder whose collector is gone, with what empties the
+queue held up — the process's resident memory read before, during and
+after, each flood in a process of its own (where the system does not say
+what it is, the counters only), and the queue's bytes, the limit and the
+drops in the status; a syslog line the database would not take counted as
+dropped and the next stored; a line turned away for its source counted as
+dropped when its address cannot be listed either; a syslog receiver switched
+off with lines queued still writing them; a line, a trap and a forwarder's
+batch still counted in the queue's bytes while they are written or tried
+again, and given back after;
 retention; query paging and filters; histogram bucketing; rule matching,
 throttling and each signal; `logs.appended` batching; receiver restart on
 settings change and a clear error when the port is taken; flows top-N from
@@ -699,7 +772,11 @@ tried again and what cannot be sent is counted; the audit trail reaches
 only a forwarder that names it, and a lab's lines only one that asks; the
 URL and the token are searched for in every table, every event, every
 result and error and every log line at trace level; a token is not sent to
-a URL it was not given for; an authority pasted together with a private key
+a URL it was not given for; a token or a password is refused for an
+`http://` URL and kept nowhere, and one an earlier version stored is not
+sent; a forwarder in a process whose environment names a proxy goes
+straight to its collector, over HTTPS and over HTTP, and the proxy (played
+by the test) is asked nothing; an authority pasted together with a private key
 is refused and the key is in no table; a line break in a message starts no second
 message. Flows: real datagrams on port 0 — the export datagrams softflowd
 (v5, v9, IPFIX, each also with `-s 100`) and nfdump's `nfreplay` (v5, v9)
@@ -721,10 +798,12 @@ device has the address; a bucket ageing out and the answer saying since
 when; fifty thousand made-up sources in a minute held as 512 keys while it
 runs and 20 once it is over, with every byte in a row or in `other` and
 the total exact; a storm dropped and counted with the queue never over its
-limit; the collector saying why it cannot bind, retried by `logs.restart`,
-moved to another port without forgetting what it had counted — and
-without claiming templates its new decoder does not have — and still
-answering once it is switched off; datagrams built to be slow (thousands
+limit, and another exporter's records let in beside a datagram larger than
+the queue while it waits (engine test); the collector saying why it cannot bind, retried by `logs.restart`,
+moved to another port, and switched off and on again, without forgetting
+what it had counted or what its exporters announced — a record after the
+move is still a sample, and data sent without its template is read with
+the one sent before — and still answering once it is switched off; datagrams built to be slow (thousands
 of templates into a full table, a set of zeros with one byte at its end,
 "withdraw all" fifteen thousand times, a thousand empty fields to a
 one-byte record) each decoded in the time their size takes (engine
@@ -733,7 +812,9 @@ log line. `logs.ingest` is refused for hardware however the
 request is spelled (id, name, address, parameters by position, a `lab` of
 the caller's own, a record that carries a lab's label and is reached over
 SSH), and a
-port-security violation on a lab switch raises its alert end to end.
+port-security violation on a lab switch raises its alert end to end, with
+no `notify`, so that the monitor's `notify_for_lab` decides who hears of
+it.
 Clearing: an opposite after the window clears at once and with the key the
 alert was raised with; a bounce inside the window is one alert cleared once;
 a quiet period ends on the wall clock; an alert from before a restart is

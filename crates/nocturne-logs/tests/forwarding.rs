@@ -209,6 +209,72 @@ impl Posted {
     }
 }
 
+/// Answer the requests of one connection, one after another, with whatever
+/// `answer` holds at the time: a status and a body.
+async fn answer_requests<S>(
+    stream: S,
+    seen: tokio::sync::mpsc::UnboundedSender<Posted>,
+    answer: Arc<Mutex<(u16, String)>>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut stream = BufReader::new(stream);
+    loop {
+        let mut request_line = String::new();
+        match stream.read_line(&mut request_line).await {
+            Ok(count) if count > 0 => {}
+            _ => return,
+        }
+        let target = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
+        let mut headers = std::collections::HashMap::new();
+        loop {
+            let mut header = String::new();
+            if stream.read_line(&mut header).await.unwrap_or(0) == 0 {
+                return;
+            }
+            let header = header.trim_end();
+            if header.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':') {
+                headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+        let length: usize = headers
+            .get("content-length")
+            .and_then(|length| length.parse().ok())
+            .unwrap_or_default();
+        let mut body = vec![0u8; length];
+        if stream.read_exact(&mut body).await.is_err() {
+            return;
+        }
+        let _ = seen.send(Posted {
+            target,
+            authorization: headers.get("authorization").cloned(),
+            content_type: headers.get("content-type").cloned(),
+            body: String::from_utf8_lossy(&body).into_owned(),
+        });
+        let (status, text) = answer.lock().unwrap().clone();
+        let response = format!(
+            "HTTP/1.1 {status} Answer\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{text}",
+            text.len()
+        );
+        if stream
+            .get_mut()
+            .write_all(response.as_bytes())
+            .await
+            .is_err()
+            || stream.get_mut().flush().await.is_err()
+        {
+            return;
+        }
+    }
+}
+
 /// An HTTP event collector behind TLS. It answers every request with
 /// whatever `answer` holds at the time: a status and a body.
 async fn https_collector(
@@ -224,62 +290,26 @@ async fn https_collector(
         while let Ok((tcp, _)) = listener.accept().await {
             let (acceptor, seen, answer) = (acceptor.clone(), seen.clone(), answer.clone());
             connections.spawn(async move {
-                let Ok(stream) = acceptor.accept(tcp).await else {
-                    return;
-                };
-                let mut stream = BufReader::new(stream);
-                // One request after another on the same connection.
-                loop {
-                    let mut request_line = String::new();
-                    match stream.read_line(&mut request_line).await {
-                        Ok(count) if count > 0 => {}
-                        _ => return,
-                    }
-                    let target = request_line
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap_or_default()
-                        .to_string();
-                    let mut headers = std::collections::HashMap::new();
-                    loop {
-                        let mut header = String::new();
-                        if stream.read_line(&mut header).await.unwrap_or(0) == 0 {
-                            return;
-                        }
-                        let header = header.trim_end();
-                        if header.is_empty() {
-                            break;
-                        }
-                        if let Some((name, value)) = header.split_once(':') {
-                            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
-                        }
-                    }
-                    let length: usize = headers
-                        .get("content-length")
-                        .and_then(|length| length.parse().ok())
-                        .unwrap_or_default();
-                    let mut body = vec![0u8; length];
-                    if stream.read_exact(&mut body).await.is_err() {
-                        return;
-                    }
-                    let _ = seen.send(Posted {
-                        target,
-                        authorization: headers.get("authorization").cloned(),
-                        content_type: headers.get("content-type").cloned(),
-                        body: String::from_utf8_lossy(&body).into_owned(),
-                    });
-                    let (status, text) = answer.lock().unwrap().clone();
-                    let response = format!(
-                        "HTTP/1.1 {status} Answer\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{text}",
-                        text.len()
-                    );
-                    if stream.get_mut().write_all(response.as_bytes()).await.is_err()
-                        || stream.get_mut().flush().await.is_err()
-                    {
-                        return;
-                    }
+                if let Ok(stream) = acceptor.accept(tcp).await {
+                    answer_requests(stream, seen, answer).await;
                 }
             });
+        }
+    });
+    (Collector { port, task }, received)
+}
+
+/// The same collector without TLS, for an `http://` URL.
+async fn http_collector(
+    answer: Arc<Mutex<(u16, String)>>,
+) -> (Collector, UnboundedReceiver<Posted>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("a listener");
+    let port = listener.local_addr().expect("an address").port();
+    let (seen, received) = unbounded_channel();
+    let task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        while let Ok((tcp, _)) = listener.accept().await {
+            connections.spawn(answer_requests(tcp, seen.clone(), answer.clone()));
         }
     });
     (Collector { port, task }, received)
@@ -395,7 +425,7 @@ async fn a_udp_collector_gets_each_stored_line_as_rfc_5424_with_its_secret_alrea
     assert_eq!(forwarder["format"], json!("rfc5424"));
     assert_eq!(
         status_of(app, &id_of(&forwarder)).await,
-        json!({"id": forwarder["id"], "name": "SIEM", "state": "idle", "sent": 0, "dropped": 0, "last_error": null, "last_at": null})
+        json!({"id": forwarder["id"], "name": "SIEM", "state": "idle", "sent": 0, "dropped": 0, "queued": 0, "queued_bytes": 0, "max_queued_bytes": 16_777_216, "last_error": null, "last_at": null})
     );
 
     send_udp("127.0.0.1", port, &[LINK_DOWN, WITH_SECRET]).await;
@@ -971,6 +1001,284 @@ async fn a_token_given_for_one_url_is_not_sent_to_another() {
 }
 
 // ------------------------------------------------------- the audit trail
+
+#[tokio::test]
+async fn a_batch_a_forwarder_is_trying_again_still_counts_against_its_queue() {
+    let (lab, _core, _port) = campus().await;
+    let app = &lab.app;
+    // Nothing listens there: every attempt is refused at once, and the
+    // forwarder waits a second, then two, before the next — holding the batch.
+    let gone = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let forwarder = save(
+        app,
+        json!({"name": "Gone", "kind": "syslog_tcp", "host": "127.0.0.1", "port": gone, "streams": ["syslog"]}),
+    )
+    .await;
+    let id = id_of(&forwarder);
+    let index = nocturne_logs::attribute::refresh(app, nocturne_app::util::now_ms(), 0).unwrap();
+    let rows: Vec<nocturne_app::store::LogEntry> = (0..20)
+        .map(|n| nocturne_app::store::LogEntry {
+            id: 1_000 + n,
+            ts: nocturne_app::util::now_ms(),
+            stream: "syslog".into(),
+            device_id: None,
+            severity: Some(5),
+            source: "127.0.0.1".into(),
+            message: "x".repeat(1_000),
+            body: None,
+        })
+        .collect();
+    // All twenty before the worker runs (this runtime has one thread), so it
+    // takes them as one batch.
+    nocturne_logs::forward::offer(app, &index, rows.iter());
+    let row = until(app, &id, 10, "the first attempt to fail", |row| {
+        row["state"] == json!("failing")
+    })
+    .await;
+    assert_eq!(row["queued"], json!(0), "the queue is empty: {row:#}");
+    assert!(
+        row["queued_bytes"].as_u64().unwrap_or_default() >= 20 * 1_000,
+        "the batch it is trying again is memory as much as the queue is, and counts with it \
+         until it is sent or dropped: {row:#}"
+    );
+    let row = until(
+        app,
+        &id,
+        30,
+        "the batch to be dropped after its last attempt",
+        |row| row["dropped"] == json!(20),
+    )
+    .await;
+    assert_eq!(
+        row["queued_bytes"],
+        json!(0),
+        "and then given back: {row:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_token_is_not_sent_where_anyone_on_the_way_can_read_it() {
+    const TOKEN: &str = "tok-CLEAR-4411";
+    const PASSWORD: &str = "pw-CLEAR-5522";
+    let (lab, _core, port) = campus().await;
+    let app = &lab.app;
+    let (collector, mut posted) = http_collector(accepted()).await;
+    let plain = format!("http://127.0.0.1:{}/services/collector", collector.port);
+    let with_password = format!(
+        "http://admin:{PASSWORD}@127.0.0.1:{}/services/collector",
+        collector.port
+    );
+
+    // Over http:// a token, or a password in the URL, crosses the network
+    // as text anybody on the way can read.
+    for params in [
+        json!({"name": "Clear", "kind": "https_json", "url": plain, "token": TOKEN}),
+        json!({"name": "Clear", "kind": "https_json", "url": with_password}),
+    ] {
+        let refused = app
+            .rpc("logs.forward.save", params)
+            .await
+            .expect_err("refused");
+        assert_eq!(refused.code, "invalid", "{refused}");
+        assert!(
+            refused.message.contains("https://"),
+            "it says what would do: {refused}"
+        );
+        assert!(
+            !refused.message.contains(TOKEN) && !refused.message.contains(PASSWORD),
+            "{refused}"
+        );
+    }
+    let stored = everything_stored(app);
+    assert!(
+        !stored.contains(TOKEN) && !stored.contains(PASSWORD),
+        "nothing of either is kept"
+    );
+    assert_eq!(
+        app.rpc("logs.forward.list", Value::Null).await.unwrap(),
+        json!([])
+    );
+
+    // Without one, http:// is what it was: a collector on one's own network.
+    let forwarder = save(
+        app,
+        json!({"name": "Clear", "kind": "https_json", "url": plain, "streams": ["syslog"]}),
+    )
+    .await;
+    let id = id_of(&forwarder);
+    send_udp("127.0.0.1", port, &[LINK_DOWN]).await;
+    let request = next(&mut posted, "the line over http://").await;
+    assert_eq!(request.authorization, None);
+
+    // A token added afterwards, to the URL as stored, is refused as well.
+    let refused = app
+        .rpc(
+            "logs.forward.save",
+            json!({"id": id, "name": "Clear", "kind": "https_json", "token": TOKEN, "streams": ["syslog"]}),
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(refused.code, "invalid", "{refused}");
+    assert!(!everything_stored(app).contains(TOKEN));
+}
+
+#[tokio::test]
+async fn a_token_an_earlier_version_kept_for_an_http_url_is_not_sent_either() {
+    use nocturne_logs::model::{ForwardFormat, ForwardKind, Forwarder};
+    const TOKEN: &str = "tok-OLDER-7733";
+    let (lab, _core, port) = campus().await;
+    let app = &lab.app;
+    let (collector, mut posted) = http_collector(accepted()).await;
+    // Stored the way a version that took a token for an http:// URL stored
+    // it, which `logs.forward.save` now refuses to.
+    let id = "older1";
+    let forwarder = Forwarder {
+        id: id.into(),
+        name: "Older".into(),
+        enabled: true,
+        kind: ForwardKind::HttpsJson,
+        format: ForwardFormat::Json,
+        streams: vec!["syslog".into()],
+        has_secret: true,
+        ..Forwarder::default()
+    };
+    let secret = json!({"url": format!("http://127.0.0.1:{}/services/collector", collector.port), "token": TOKEN});
+    app.vault()
+        .put(&nocturne_logs::forward::secret_id(id), &secret.to_string())
+        .unwrap();
+    app.store()
+        .put(nocturne_logs::forward::COLLECTION, id, &forwarder)
+        .unwrap();
+    nocturne_logs::forward::apply(app).unwrap();
+
+    send_udp("127.0.0.1", port, &[LINK_DOWN]).await;
+    let row = until(
+        app,
+        id,
+        10,
+        "the forwarder to say why it sent nothing",
+        |row| row["state"] == json!("failing"),
+    )
+    .await;
+    let error = row["last_error"].as_str().unwrap_or_default();
+    assert!(error.contains("https://"), "{row:#}");
+    assert!(!row.to_string().contains(TOKEN), "{row:#}");
+    assert!(
+        within(&mut posted, Duration::from_millis(500))
+            .await
+            .is_empty(),
+        "the collector was sent nothing, and so the token went nowhere"
+    );
+}
+
+/// Set in the environment of the process
+/// `a_forwarder_goes_straight_to_its_collector_whatever_proxy_the_environment_names`
+/// starts this binary in.
+const BEHIND_A_PROXY: &str = "NOCTURNE_TEST_BEHIND_A_PROXY";
+
+// The environment is the process's, so the proxy variables are set for a
+// process of their own: this binary, started again to run `behind_a_proxy`
+// alone. This one plays the proxy, and notes who comes to it.
+#[test]
+fn a_forwarder_goes_straight_to_its_collector_whatever_proxy_the_environment_names() {
+    use std::io::Read;
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
+    proxy
+        .set_nonblocking(true)
+        .expect("a listener that does not wait");
+    let address = format!("http://{}", proxy.local_addr().expect("an address"));
+    let scratch = tempfile::tempdir().expect("a temporary directory");
+    let printed = scratch.path().join("output");
+    let output = std::fs::File::create(&printed).expect("a file for the output");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("this binary"))
+        .args([
+            "--exact",
+            "behind_a_proxy",
+            "--include-ignored",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
+        .env(BEHIND_A_PROXY, "1")
+        .env("HTTP_PROXY", &address)
+        .env("http_proxy", &address)
+        .env("HTTPS_PROXY", &address)
+        .env("https_proxy", &address)
+        .env("ALL_PROXY", &address)
+        .env("all_proxy", &address)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .stdout(output.try_clone().expect("the file, twice"))
+        .stderr(output)
+        .spawn()
+        .expect("this binary starts again");
+    let mut asked = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let status = loop {
+        while let Ok((mut stream, _)) = proxy.accept() {
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let mut first = [0u8; 512];
+            let read = stream.read(&mut first).unwrap_or(0);
+            asked.push(
+                String::from_utf8_lossy(&first[..read])
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+        if let Some(status) = child.try_wait().expect("the child can be waited for") {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the forwarders behind the proxy never finished");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        asked.is_empty(),
+        "a forwarder went to a proxy nobody configured for it, and told it where it was going: {asked:?}"
+    );
+    assert!(
+        status.success(),
+        "the forwarders behind the proxy did not deliver ({status}):\n{}",
+        std::fs::read_to_string(&printed).unwrap_or_default()
+    );
+}
+
+#[tokio::test]
+#[ignore = "started by a_forwarder_goes_straight_to_its_collector_whatever_proxy_the_environment_names, in a process whose environment names a proxy"]
+async fn behind_a_proxy() {
+    if std::env::var_os(BEHIND_A_PROXY).is_none() {
+        return;
+    }
+    let (lab, _core, port) = campus().await;
+    let app = &lab.app;
+    let authority = authority();
+    let (secure, mut over_tls) = https_collector(&authority, accepted()).await;
+    let (plain, mut over_http) = http_collector(accepted()).await;
+    save(
+        app,
+        json!({"name": "Secure", "kind": "https_json", "url": format!("https://localhost:{}/services/collector/hidden-PATH-1", secure.port), "token": "tok-PROXY-61", "ca_pem": authority.ca_pem, "streams": ["syslog"]}),
+    )
+    .await;
+    save(
+        app,
+        json!({"name": "Plain", "kind": "https_json", "url": format!("http://127.0.0.1:{}/services/collector/hidden-PATH-2", plain.port), "streams": ["syslog"]}),
+    )
+    .await;
+    send_udp("127.0.0.1", port, &[LINK_DOWN]).await;
+    let request = next(&mut over_tls, "the line, over HTTPS").await;
+    assert_eq!(request.target, "/services/collector/hidden-PATH-1");
+    let request = next(&mut over_http, "the line, over HTTP").await;
+    assert_eq!(request.target, "/services/collector/hidden-PATH-2");
+}
 
 #[tokio::test]
 async fn the_audit_trail_leaves_only_through_a_forwarder_that_names_it() {

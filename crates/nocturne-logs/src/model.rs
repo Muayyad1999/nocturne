@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 /// What a receiver is doing, as `logs.status` reports it.
 ///
 /// `received` is datagrams and lines taken off the socket, `stored` what was
-/// written, `dropped` what was deliberately thrown away (the queue was full,
-/// or the source is unknown and the setting says drop). The three are
-/// counted since this process started and they do not have to add up while a
-/// batch is in flight.
+/// written, `dropped` what was thrown away and counted (the queue was full,
+/// in lines or in bytes; the source is unknown and the setting says drop;
+/// the database would not take the batch). The three are counted since this
+/// process started; `received` is `stored` plus `dropped` plus what is still
+/// on its way, also across a restart of the receiver.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiverStatus {
     pub enabled: bool,
@@ -23,6 +24,12 @@ pub struct ReceiverStatus {
     pub dropped: u64,
     /// Lines waiting to be written right now.
     pub queued: u64,
+    /// What the lines received and not yet written take up: those waiting,
+    /// and the batch being written. At most `max_queued_bytes`, give or take
+    /// the one line that is always let into an empty queue.
+    pub queued_bytes: u64,
+    /// The `queue_limit_bytes` setting, as the receiver is applying it.
+    pub max_queued_bytes: u64,
     /// Lines received in the last minute.
     pub rate_per_minute: u64,
     pub last_at: Option<i64>,
@@ -51,11 +58,17 @@ pub struct TrapStatus {
     pub error: Option<String>,
     pub received: u64,
     pub stored: u64,
-    /// Thrown away on purpose: the queue was full, or the source is
-    /// unknown and the setting says drop.
+    /// Thrown away and counted: the queue was full (in notifications or in
+    /// bytes), the source is unknown and the setting says drop, or the
+    /// database would not take them.
     pub dropped: u64,
     /// Notifications waiting to be written right now.
     pub queued: u64,
+    /// What they take up, with the batch being written; see
+    /// [`ReceiverStatus::queued_bytes`].
+    pub queued_bytes: u64,
+    /// The `queue_limit_bytes` setting, as the receiver is applying it.
+    pub max_queued_bytes: u64,
     pub rate_per_minute: u64,
     pub last_at: Option<i64>,
     /// SNMPv1/v2c notifications whose community is not the one stored for
@@ -125,6 +138,13 @@ pub struct FlowStatus {
     pub drops: FlowDrops,
     /// Flow records decoded and waiting to be counted right now.
     pub queued: u64,
+    /// What they take up. At most `max_queued_bytes`, and one datagram
+    /// whose records alone are more: such a datagram is let into an empty
+    /// queue, and what arrives while it waits is measured without it. The
+    /// datagram being counted is not in it.
+    pub queued_bytes: u64,
+    /// The `queue_limit_bytes` setting, as the collector is applying it.
+    pub max_queued_bytes: u64,
     /// Datagrams from which something was taken in the last minute.
     pub rate_per_minute: u64,
     pub last_at: Option<i64>,
@@ -416,9 +436,17 @@ pub struct ForwarderStatus {
     /// anything, so for those this is not "arrived"; for `https_json` it is
     /// what the collector answered 2xx to.
     pub sent: u64,
-    /// Entries that never left: the queue was full, or every attempt to
-    /// send them failed, or the forwarder was changed while they waited.
+    /// Entries that never left: the queue was full (in entries or in
+    /// bytes), or every attempt to send them failed, or the forwarder was
+    /// changed while they waited.
     pub dropped: u64,
+    /// Entries waiting to be sent right now (not counting the batch being
+    /// sent).
+    pub queued: u64,
+    /// What the entries waiting and the batch being sent take up.
+    pub queued_bytes: u64,
+    /// What they may take up: the same for every forwarder.
+    pub max_queued_bytes: u64,
     /// Why the last attempt failed, in words that never include an HTTPS
     /// forwarder's URL or token. Cleared by the next send that works.
     pub last_error: Option<String>,

@@ -35,7 +35,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use nocturne_app::util::now_ms;
 use nocturne_app::{App, AppError, AppResult, Router, inventory};
-use nocturne_netprobe::flow::{FlowBatch, FlowCollector, FlowCounters, FlowQueue};
+use nocturne_netprobe::flow::{
+    FlowBatch, FlowCollector, FlowCounters, FlowQueue, QueueLimits, SharedDecoder,
+};
 use parking_lot::Mutex;
 use serde::Deserialize;
 
@@ -112,6 +114,15 @@ pub struct FlowReceiver {
     pub enabled: bool,
 }
 
+/// A byte limit that says the setting's default until the settings are read.
+struct ByteLimit(AtomicU64);
+
+impl Default for ByteLimit {
+    fn default() -> Self {
+        ByteLimit(AtomicU64::new(crate::state::DEFAULT_QUEUE_BYTES as u64))
+    }
+}
+
 /// Everything the flow collector owns.
 #[derive(Default)]
 pub struct FlowState {
@@ -128,16 +139,26 @@ pub struct FlowState {
     /// The `unknown_sources: "drop"` setting, as the counting task reads it
     /// for every datagram.
     drop_unclaimed: AtomicBool,
-    /// Counts the collectors that have been stopped. A counting task knows
-    /// which one it reads for, and so whether the templates its batches
-    /// speak of are still anybody's.
-    stopped: AtomicU64,
+    /// The `queue_limit_bytes` setting as the running collector was started
+    /// with it — like `queue_limit`, it is read when a collector starts —
+    /// or, with none running, as one would be.
+    max_queued_bytes: ByteLimit,
+    /// What the exporters announced — their templates, the sampling rates in
+    /// their options — handed to every collector this application starts.
+    /// It is theirs, not a socket's: a collector that is moved or switched
+    /// off and on again reads what they send next with what they said
+    /// before, instead of counting their sampled records as unsampled until
+    /// they repeat their options.
+    decoder: SharedDecoder,
 }
 
 impl FlowState {
     pub fn status(&self, now: i64) -> FlowStatus {
-        let (enabled, listening, error, collected, queued) = {
+        let (enabled, listening, error, collected, queued, queued_bytes) = {
             let receiver = self.receiver.lock();
+            let waiting = |of: fn(&FlowCounters) -> usize| {
+                receiver.counters.as_ref().map(of).unwrap_or_default() as u64
+            };
             (
                 receiver.enabled,
                 receiver.listening.clone(),
@@ -149,11 +170,8 @@ impl FlowState {
                         .map(Collected::of)
                         .unwrap_or_default(),
                 ),
-                receiver
-                    .counters
-                    .as_ref()
-                    .map(|counters| counters.waiting() as u64)
-                    .unwrap_or_default(),
+                waiting(FlowCounters::waiting),
+                waiting(FlowCounters::waiting_bytes),
             )
         };
         let (held, released, exporters) = {
@@ -181,6 +199,8 @@ impl FlowState {
             dropped: drops.queue_full + drops.no_room + drops.unclaimed + drops.unreadable,
             drops,
             queued,
+            queued_bytes,
+            max_queued_bytes: self.max_queued_bytes.0.load(Ordering::Relaxed),
             rate_per_minute: self.rate.lock().per_minute(now),
             last_at: match self.last_at.load(Ordering::Relaxed) {
                 0 => None,
@@ -249,21 +269,17 @@ pub async fn apply(app: &App) -> AppResult<()> {
         // may well be the same one. What it had decoded is still on its
         // queue and is counted by the task that reads it.
         previous.stop().await;
-        {
-            let mut receiver = flows.receiver.lock();
-            if let Some(counters) = receiver.counters.take() {
-                // Final now that it has stopped.
-                receiver.past = receiver.past.plus(Collected::of(&counters));
-            }
+        let mut receiver = flows.receiver.lock();
+        if let Some(counters) = receiver.counters.take() {
+            // Final now that it has stopped.
+            receiver.past = receiver.past.plus(Collected::of(&counters));
         }
-        // Its decoder went with it, and the templates with the decoder: the
-        // next collector starts with none, and what its exporters send
-        // before they repeat theirs cannot be read. The list must not go on
-        // saying they are known.
-        flows.stopped.fetch_add(1, Ordering::Relaxed);
-        flows.table.lock().templates_forgotten();
     }
 
+    flows
+        .max_queued_bytes
+        .0
+        .store(settings.queue_limit_bytes, Ordering::Relaxed);
     if !wanted.enabled {
         status::publish(app);
         return Ok(());
@@ -281,16 +297,24 @@ pub async fn apply(app: &App) -> AppResult<()> {
             return Ok(());
         }
     };
-    let limit = settings.queue_limit as usize;
-    let (collector, queue) =
-        match FlowCollector::start(SocketAddr::new(address, wanted.port), limit).await {
-            Ok(started) => started,
-            Err(err) => {
-                // The engine's message says which address and what to do.
-                fail(app, err.to_string());
-                return Ok(());
-            }
-        };
+    let limits = QueueLimits {
+        records: settings.queue_limit as usize,
+        bytes: settings.queue_limit_bytes as usize,
+    };
+    let (collector, queue) = match FlowCollector::start(
+        SocketAddr::new(address, wanted.port),
+        limits,
+        flows.decoder.clone(),
+    )
+    .await
+    {
+        Ok(started) => started,
+        Err(err) => {
+            // The engine's message says which address and what to do.
+            fail(app, err.to_string());
+            return Ok(());
+        }
+    };
     let listening = vec![format!("udp {}", collector.local_addr())];
     {
         let mut receiver = flows.receiver.lock();
@@ -298,10 +322,7 @@ pub async fn apply(app: &App) -> AppResult<()> {
         receiver.counters = Some(collector.counters());
         receiver.collector = Some(collector);
     }
-    app.spawn(
-        "logs.flows.count",
-        count(app.clone(), queue, flows.stopped.load(Ordering::Relaxed)),
-    );
+    app.spawn("logs.flows.count", count(app.clone(), queue));
     app.audit(
         "logs.receiver.start",
         None,
@@ -323,17 +344,8 @@ fn fail(app: &App, error: String) {
 /// It ends when its queue is closed and empty — after the collector it
 /// belongs to has been stopped *and* everything that collector had decoded
 /// is counted.
-///
-/// `started_after` is how many collectors had been stopped when this one
-/// started. Once that number has moved on, this task is reading what a
-/// collector that no longer exists had decoded: the records are counted
-/// like any others, and the templates they were read with are nobody's.
-async fn count(app: App, mut queue: FlowQueue, started_after: u64) {
-    let state = app.state::<LogsState>();
-    while let Some(mut batch) = queue.recv().await {
-        if state.flows.stopped.load(Ordering::Relaxed) != started_after {
-            batch.templates = 0;
-        }
+async fn count(app: App, mut queue: FlowQueue) {
+    while let Some(batch) = queue.recv().await {
         take(&app, &batch, now_ms());
     }
 }

@@ -16,6 +16,7 @@ use nocturne_app::{App, AppError, AppResult};
 use nocturne_netprobe::syslog::{SyslogMessage, SyslogServer};
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
+use crate::budget::{self, Budget, Held};
 use crate::settings::LogsSettings;
 use crate::state::{BATCH_ROWS, LogsState};
 use crate::{ingest, status};
@@ -27,6 +28,12 @@ use crate::{ingest, status};
 pub async fn apply(app: &App) -> AppResult<()> {
     let settings = LogsSettings::load(app);
     let state = app.state::<LogsState>();
+    // Applied to the running receiver as well: the budget is not the
+    // socket's, and changing it is no reason to rebind.
+    state
+        .syslog
+        .budget
+        .set_limit(settings.queue_limit_bytes as usize);
     let generation = {
         let mut receiver = state.syslog.receiver.lock();
         // Nothing to do when the receiver is already running exactly this:
@@ -95,11 +102,11 @@ pub async fn apply(app: &App) -> AppResult<()> {
     }
     *state.syslog.queue.lock() = Some(queue.clone());
 
-    app.spawn("logs.syslog.relay", relay(app.clone(), messages, queue));
     app.spawn(
-        "logs.syslog.writer",
-        writer(app.clone(), writer_queue, generation),
+        "logs.syslog.relay",
+        relay(app.clone(), messages, queue, state.syslog.budget.clone()),
     );
+    app.spawn("logs.syslog.writer", writer(app.clone(), writer_queue));
     app.audit(
         "logs.receiver.start",
         None,
@@ -117,11 +124,13 @@ fn fail(app: &App, error: String) {
 }
 
 /// Everything the sockets parse, handed to the writer — or dropped and
-/// counted when the writer is more than the `queue_limit` setting behind.
+/// counted when the writer is more than the `queue_limit` setting behind,
+/// in lines, or `queue_limit_bytes`, in bytes.
 async fn relay(
     app: App,
     mut messages: tokio::sync::mpsc::UnboundedReceiver<SyslogMessage>,
-    queue: Sender<SyslogMessage>,
+    queue: Sender<(SyslogMessage, Held)>,
+    budget: std::sync::Arc<Budget>,
 ) {
     let state = app.state::<LogsState>();
     let mut batch = Vec::with_capacity(256);
@@ -135,36 +144,59 @@ async fn relay(
         }
         let now = now_ms();
         let mut dropped = 0u64;
+        let mut closed = false;
         for message in batch.drain(..) {
             state.syslog.counters.received(now);
-            match queue.try_send(message) {
+            if closed {
+                dropped += 1;
+                continue;
+            }
+            let Some(held) = budget.take(budget::of_message(&message)) else {
+                dropped += 1;
+                continue;
+            };
+            match queue.try_send((message, held)) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => dropped += 1,
-                Err(TrySendError::Closed(_)) => return,
+                // Nobody writes any more (the application is stopping): what
+                // was taken off the socket is counted all the same.
+                Err(TrySendError::Closed(_)) => {
+                    dropped += 1;
+                    closed = true;
+                }
             }
         }
         state.syslog.rate.lock().record(now, received as u64);
         if dropped > 0 {
             state.syslog.counters.dropped(dropped);
         }
+        if closed {
+            return;
+        }
     }
 }
 
 /// The writer task: everything the sockets hand over, in batches.
-async fn writer(app: App, mut queue: Receiver<SyslogMessage>, generation: u64) {
-    let state = app.state::<LogsState>();
-    let mut messages = Vec::with_capacity(BATCH_ROWS);
+///
+/// It ends when its queue is closed and empty — that is, after the receiver
+/// it belongs to has been stopped *and* everything that receiver had
+/// already taken off its sockets is written. A receiver that is switched
+/// off or rebound does not get to throw away what it had received.
+async fn writer(app: App, mut queue: Receiver<(SyslogMessage, Held)>) {
+    let mut taken = Vec::with_capacity(BATCH_ROWS);
     // `recv_many` returns as soon as there is anything at all, so a quiet
     // network's single line is written straight away and a storm arrives in
     // batches of up to `BATCH_ROWS` without a timer.
-    while queue.recv_many(&mut messages, BATCH_ROWS).await > 0 {
-        if state.syslog.receiver.lock().generation != generation {
-            return;
-        }
+    while queue.recv_many(&mut taken, BATCH_ROWS).await > 0 {
+        // The bytes go back to the budget once the batch is written: a batch
+        // in the writer's hands is memory as much as the queue is.
+        let (messages, held): (Vec<SyslogMessage>, Vec<Held>) = taken.drain(..).unzip();
+        // A batch the database would not take is counted as dropped there.
         if let Err(err) = ingest::write_batch(&app, &messages, "syslog") {
             tracing::error!(%err, count = messages.len(), "a batch of syslog lines could not be stored");
         }
-        messages.clear();
+        drop(messages);
+        drop(held);
     }
 }
 

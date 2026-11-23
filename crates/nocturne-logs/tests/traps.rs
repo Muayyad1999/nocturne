@@ -1417,6 +1417,39 @@ async fn a_trap_the_database_would_not_take_is_counted_as_dropped_and_the_next_i
     );
 }
 
+// On threads of its own: the writer is held up on one of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trap_being_written_still_counts_against_what_the_queue_may_hold() {
+    let (lab, _id) = switch().await;
+    let app = &lab.app;
+    let port = start_traps(app).await;
+    let state = app.state::<nocturne_logs::state::LogsState>();
+    let read = || state.traps.status(now_ms());
+    // Held where it shows the stored trap to the rules: the trap has left
+    // the queue and is still in the writer's hands.
+    let held = hold_the_rules(app);
+    // Not through the runtime: one of its threads is held.
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").expect("a socket");
+    sender
+        .send_to(&hex(V2C_LINK_DOWN), ("127.0.0.1", port))
+        .expect("the trap is sent");
+    wait_held("the trap to be stored", || read().stored == 1);
+    let writing = read();
+    held.release();
+    assert_eq!(writing.queued, 0, "{writing:?}");
+    assert!(
+        writing.queued_bytes > 0,
+        "a batch in the writer's hands is memory as much as the queue is, and counts with it \
+         until it is written: {writing:?}"
+    );
+    wait_for(
+        app,
+        "the trap's bytes to be given back once it is written",
+        |status| status["traps"]["queued_bytes"] == json!(0),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn switching_the_receiver_off_does_not_throw_away_what_it_had_received() {
     // The writer is slow over its first trap, so the ones behind it are

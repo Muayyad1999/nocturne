@@ -27,7 +27,8 @@ Splunk` header are written from what that interface is documented to take.
 The trap receiver has met net-snmp's `snmptrap` and `snmpinform` and
 nothing else: no datagram in its tests was sent by a switch or a router.
 
-259 tests (115 unit, 144 through `App::rpc` and real sockets),
+276 tests (120 unit, 156 through `App::rpc` and real sockets — two of
+those run inside another test, in a process of their own),
 `cargo clippy -p nocturne-logs --all-targets -- -D warnings` clean,
 `cargo fmt -p nocturne-logs --check` clean, no `unsafe`.
 
@@ -363,8 +364,8 @@ asks again); naming an interface from the exporter's own option data
   it); a message to a line everywhere else, because that is what a plain
   TCP input and anything reading JSON lines expects, and a number in front
   of every event is what such an input would show otherwise.
-* **Lab entries stay unless `lab: true`**, by the reasoning that gives a
-  lab alert `notify: []`. Decided when the entry is offered, from the
+* **Lab entries stay unless `lab: true`**: a log platform would take a
+  lab's port-security violation for a real one. Decided when the entry is offered, from the
   attribution index; the reader refreshes the index when a row names a
   device it does not know, since a lab's devices are created and start
   talking in the same breath.
@@ -460,8 +461,12 @@ asks again); naming an interface from the exporter's own option data
   any other. Counting it as open for ever would be a number that only
   grows.
 * **`logs.ingest` wants a lab *and* the simulator.** `is_simulated` is
-  `lab` set and `transport: sim`; the same test decides whether an alert
-  notifies nobody. An empty `device_id` is refused before the inventory is
+  `lab` set and `transport: sim`. Whether an alert about such a device
+  reaches a channel is not decided here: the rules pass no `notify`, and
+  the monitor holds a lab's alert back unless `notify_for_lab` is on — one
+  rule for every source of alerts (it was `notify: []` from here once,
+  which made a log rule's lab alert silent whatever that setting said).
+  An empty `device_id` is refused before the inventory is
   asked, because `inventory::find` also matches by address and a simulated
   device has none.
 * **A threshold fires and starts again.** `count` lines inside `window_s`
@@ -593,21 +598,106 @@ found. What was found was elsewhere:
   refused.
 * **A trap the database refused was in no count.** It is `dropped`.
 
-Left as they are, and worth knowing:
+Left as they were at the end of that review, and closed since (next
+section): queues bounded in entries only; the sampling rates and templates
+a rebind forgot; the syslog writer's batch the database refused.
 
-* Both receiver queues and each forwarder's queue are bounded in entries,
-  not in bytes. A syslog line or a trap is at most a datagram (64 KiB), so
-  the worst case of the default `queue_limit` is about 3 GB per receiver,
-  and a stalled forwarder's 10,000 entries of maximal lines about 1 GB.
-  Ordinary traffic is a hundredth of that. A byte budget beside the entry
-  limit would close it.
-* After a rebind, NetFlow v9 / IPFIX records that arrive before the
-  exporter repeats its options data are counted as unsampled: the
-  announced rates went with the decoder too. Keeping one decoder across
-  rebinds (the engine would have to take it as an argument) would keep
-  both the templates and the rates.
-* The syslog writer does not count a batch the database refused either
-  (`syslog.rs`); it was not part of this review.
+## Hardening: what the second review left open
+
+* **Every queue has a byte budget beside its entry limit** (`budget.rs`):
+  the syslog and trap receivers `queue_limit_bytes` (a setting, 64 MiB,
+  1 MiB to 1 GiB, applied to a running receiver), the flow collector the
+  same setting read when it starts (the engine's `QueueLimits`), each
+  forwarder 16 MiB (`forward::QUEUE_BYTES`). What does not fit is dropped
+  under the counter a full queue already used. A queued entry carries a
+  `Held` that gives its bytes back when it is dropped — written, sent,
+  refused, or thrown away with its queue — so a writer's batch in hand
+  counts, and no path can forget to give them back. What an entry weighs
+  is its size plus the capacities of what it owns; a JSON object's entries
+  are counted at half as much again as key and value, for the index and
+  the hash. The flow queue's bytes are the engine's and leave the queue
+  when the counting task takes a batch: one datagram (up to ~11 MiB of
+  one-byte records) is in its hands and in no number.
+* **Measured** (tests/memory.rs, debug build, each flood in a process of
+  its own, VmRSS): with a 2 MiB budget the process grew by 11–12 MiB
+  (600 syslog datagrams of 65,507 bytes), 11–12 MiB (1,000 traps of that
+  size), 40–53 MiB (20 flow datagrams of 65,480 one-byte records — two
+  datagrams held, one being decoded, and what each thread's allocator
+  arena keeps of the decoding) and under 1 MiB (1,000 rows of 128 KiB
+  offered to a forwarder whose collector is gone: the queue's 16 MiB fit
+  in memory the allocator had kept from start-up). With the budget at
+  1 GiB — that is, bounded by entries as before — the same floods grew it
+  by 85, 71 and 211 MiB. A flood is so many datagrams; nothing is timed.
+  The flow flood runs on two runtime threads: on four, the arenas of the
+  threads the collector happened to decode on made the figure wander
+  between 50 and 69 MiB.
+* **A lab's alert is the monitor's to silence.** No `notify` is passed;
+  `notify_for_lab` decides, for log rules as for everything else.
+* **The syslog writer counts what it loses** — a batch the database
+  refused, or the attribution index could not be read for — as `dropped`
+  (`ingest::commit` returns `Unwritten {error, rows}`; the trap writer
+  uses the same count now instead of working it out again), and it no
+  longer stops when the receiver is restarted: it drains what was taken
+  off the sockets, as the trap writer does. The relay counts what it
+  could not queue at shutdown.
+* **An https_json forwarder uses no proxy** (`no_proxy()` on its client),
+  and **refuses a credential over `http://`**: a token, or a user name or
+  password in the URL, at save (`invalid`) and again before sending, for
+  a forwarder stored before. Decided: refused, not acknowledged — a token
+  in the clear is one anybody on the path holds, and a collector that
+  wants one can have https:// with `ca_pem`.
+* **One flow decoder for the life of the application** (`SharedDecoder`
+  in `FlowState`), handed to every collector: templates and announced
+  sampling rates survive a rebind and a switch-off. The collector's
+  counters are what it decoded (`DecoderStats::since`), so `past` plus the
+  running one still adds up. The earlier repair that zeroed `templates`
+  on a rebind is gone with the reason for it.
+* **Tests that hold a writer** hold a lock from a thread of their own
+  (`support::hold_the_rules`, `hold_the_index`), let go after 30 s at the
+  latest, and wait without the runtime's timers (`wait_held`), nudging
+  the sleeping runtime threads: a held thread may be the one that was
+  minding the sockets and the clock, and with it blocked a
+  `tokio::time::sleep` never ended — the switch-off test hung that way.
+
+## The review of that hardening
+
+* **A datagram larger than the flow queue no longer shuts it to everyone
+  else.** One such datagram (65,480 one-byte records, about 11 MiB decoded,
+  more than the default 50,000 records) is let onto an empty queue as
+  before; what arrives while it waits is now measured against the limits
+  without it (the engine's `Alone` note, read and cleared together with the
+  counts). Before, every other exporter's datagram was refused for as long
+  as one waited, which under a flood of them is all the time: beside such a
+  flood a quiet exporter sending one v5 record ten times a second had 1 of
+  123 datagrams counted and 86 refused as `queue_full` (default limits).
+  Now none is refused at the queue; 88 of 123 were counted, the rest lost
+  in the kernel's socket buffer while a debug build decoded the flood. The
+  queue holds at most the limits and that one datagram.
+* **Measured by the review** (debug build, each flood in a process of its
+  own, `unknown_sources: drop` for the flood so the in-memory database
+  does not grow with it, 8 MiB `queue_limit_bytes`): 6 s of 64 KiB syslog
+  datagrams at 500/s grew the process by 28 MiB (queue at most 7.9 MiB);
+  the same with the budget at 1 GiB grew it by 358 MiB (2,275 lines,
+  341 MiB queued). Received was stored plus every kind of dropped, to the
+  datagram, for syslog, traps, flows and two stalled forwarders (sent plus
+  dropped equal to what was offered), with large and with tiny datagrams.
+  With the writer held, 400 of 400 large datagrams were taken off each
+  socket. The process grows by about the budget, the batch's working copies
+  (redacted text, the row's body) and some 20 MiB besides.
+* **The flow flood of `tests/memory.rs` waits for the first datagram to
+  leave the queue** before it sends the second. The counting task, woken
+  behind the socket task, may not get a turn while the socket has datagrams
+  to decode; the first then waits in the queue the whole flood, everything
+  after it is refused, and one datagram is counted where the test expects
+  two (2 runs of 5 here).
+* **Left as it is: a full queue drops from its tail, whoever sent.** Beside
+  a flood of tiny datagrams (20,000 a second from one address), a quiet
+  source's lines over TCP were stored 57% (syslog), 91% (traps) and 50%
+  (syslog with a stalled forwarder) of the time; beside a flood of 64 KiB
+  datagrams, all of them (a small line fits where a large one does not). It
+  was so with the entry limit before the byte budget. A share of the queue
+  per source would keep one noisy device from crowding out the others, and
+  would not help against sources that are made up.
 
 ## Needed from the core and the engines (worked around here)
 

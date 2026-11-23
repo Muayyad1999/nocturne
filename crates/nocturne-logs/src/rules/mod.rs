@@ -339,8 +339,6 @@ struct Raised {
     /// What the pattern captured, each value cut to [`MAX_DETAIL_CHARS`].
     groups: BTreeMap<String, String>,
     device_id: Option<String>,
-    /// The device is simulated: its alert is recorded and notifies nobody.
-    lab: bool,
     entry_id: i64,
     at: i64,
     count: u64,
@@ -615,9 +613,6 @@ pub fn evaluate(app: &App, index: &Index, batch: &[Prepared]) {
                         .map(|(name, value)| (name, plain(&value, MAX_DETAIL_CHARS)))
                         .collect(),
                     device_id: item.entry.device_id.clone(),
-                    lab: device_id
-                        .and_then(|id| index.device(id))
-                        .is_some_and(|device| device.lab),
                     entry_id: item.entry.id,
                     at: item.entry.ts,
                     count,
@@ -735,7 +730,12 @@ fn publish(app: &App, raised: Raised) {
         );
     }
     if let Some(severity) = raised.severity {
-        let mut params = json!({
+        // No `notify`: a rule names no channels, so the alert goes where
+        // the monitor routes alerts. That includes a lab device's — the
+        // monitor holds those back unless `notify_for_lab` is on, one rule
+        // for every source of alerts. An empty list here would be "nobody,
+        // whatever that setting says".
+        let params = json!({
             "rule": raised.rule_name,
             "device_id": raised.device_id,
             "instance": (!raised.instance.is_empty()).then_some(&raised.instance),
@@ -744,13 +744,6 @@ fn publish(app: &App, raised: Raised) {
             "detail": raised.groups.get("detail"),
             "dedup_key": dedup_key(&raised.rule_id, raised.device_id.as_deref(), &raised.instance),
         });
-        if raised.lab {
-            // A lab is where things are broken on purpose. Its alert is
-            // raised like any other — recorded, shown, cleared — and sent
-            // to nobody: an empty list is "no channel", where leaving the
-            // field out would be "the usual ones".
-            params["notify"] = json!([]);
-        }
         app.state::<LogsState>()
             .outbox
             .hand_over(Handoff::Raise(params));

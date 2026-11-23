@@ -34,6 +34,7 @@
 //! the database, the tail, a forwarder or a rule.
 
 pub mod attribute;
+pub mod budget;
 pub mod correlate;
 pub mod db;
 pub mod flows;

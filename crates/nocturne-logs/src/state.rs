@@ -26,17 +26,23 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::Sender;
 
 use crate::attribute::Index;
+use crate::budget::{Budget, Held};
 use crate::model::{ReceiverStatus, TrapStatus};
 use crate::rules::track::Memory;
 
 /// How many lines may wait to be written before the receiver starts dropping
 /// (the default of the `queue_limit` setting).
 ///
-/// Each one is a parsed message of a few hundred bytes, so this is a few tens
-/// of megabytes at worst, and it is roughly ten seconds of a very chattery
-/// campus. Beyond it the honest thing is to drop and say so: growing the
-/// queue only moves the failure to the moment the machine runs out of memory.
+/// A line is a parsed message of a few hundred bytes, and this is roughly ten
+/// seconds of a very chattery campus. Beyond it the honest thing is to drop
+/// and say so: growing the queue only moves the failure to the moment the
+/// machine runs out of memory.
 pub const DEFAULT_QUEUE_LIMIT: usize = 50_000;
+/// And how many bytes they may take up (the default of `queue_limit_bytes`).
+/// A line can also be a whole 64 KiB datagram, and then fifty thousand of
+/// them would be gigabytes; this is what lets the number of lines decide
+/// for ordinary traffic and the bytes for datagrams made large.
+pub const DEFAULT_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 /// Rows written in one transaction. A batch is formed from whatever is
 /// already waiting, so a quiet network's single line is written at once and
 /// no timer is needed.
@@ -136,7 +142,9 @@ pub struct SyslogReceiver {
     pub listening: Vec<String>,
     pub error: Option<String>,
     pub enabled: bool,
-    /// Bumped on every (re)start so a stale ingest task knows to stop.
+    /// Bumped on every (re)start, so that a call to `apply` another call
+    /// overtook while it was binding knows to give up. Not a signal to the
+    /// writer: a stopped receiver's writer still writes what was received.
     pub generation: u64,
     /// The queue size this receiver was started with.
     pub queue_limit: usize,
@@ -154,9 +162,13 @@ pub struct Follow {
 #[derive(Default)]
 pub struct SyslogState {
     pub receiver: Mutex<SyslogReceiver>,
-    /// Where the socket tasks hand their messages to the writer. `None`
-    /// while no receiver runs.
-    pub queue: Mutex<Option<Sender<SyslogMessage>>>,
+    /// Where the socket tasks hand their messages to the writer, each with
+    /// the bytes it holds of the budget. `None` while no receiver runs.
+    pub queue: Mutex<Option<Sender<(SyslogMessage, Held)>>>,
+    /// What the lines received and not yet written may take up. One for the
+    /// life of the application, so that the lines a stopped receiver's
+    /// writer has still to write count with the new receiver's.
+    pub budget: Arc<Budget>,
     pub counters: ReceiverCounters,
     pub rate: Mutex<RateWindow>,
     /// Lines handed over by a lab through `logs.ingest`: stored, never
@@ -184,6 +196,8 @@ impl SyslogState {
                 .as_ref()
                 .map(|queue| receiver.queue_limit.saturating_sub(queue.capacity()) as u64)
                 .unwrap_or_default(),
+            queued_bytes: self.budget.held() as u64,
+            max_queued_bytes: self.budget.limit() as u64,
             rate_per_minute: self.rate.lock().per_minute(now),
             last_at: self.counters.last_at(),
             from_lab: self.from_lab.load(Ordering::Relaxed),
@@ -226,6 +240,8 @@ pub struct TrapState {
     /// Where the socket task hands notifications to the writer. `None`
     /// while no receiver runs.
     pub queue: Mutex<Option<Sender<crate::traps::Queued>>>,
+    /// What the notifications received and not yet written may take up.
+    pub budget: Arc<Budget>,
     pub counters: ReceiverCounters,
     pub rate: Mutex<RateWindow>,
     pub rejected: AtomicU64,
@@ -247,6 +263,7 @@ impl Default for TrapState {
             receiver: Mutex::default(),
             applying: tokio::sync::Mutex::default(),
             queue: Mutex::default(),
+            budget: Arc::default(),
             counters: ReceiverCounters::default(),
             rate: Mutex::default(),
             rejected: AtomicU64::default(),
@@ -281,6 +298,8 @@ impl TrapState {
                 .as_ref()
                 .map(|queue| receiver.queue_limit.saturating_sub(queue.capacity()) as u64)
                 .unwrap_or_default(),
+            queued_bytes: self.budget.held() as u64,
+            max_queued_bytes: self.budget.limit() as u64,
             rate_per_minute: self.rate.lock().per_minute(now),
             last_at: self.counters.last_at(),
             rejected: self.rejected.load(Ordering::Relaxed),

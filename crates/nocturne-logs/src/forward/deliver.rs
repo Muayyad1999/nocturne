@@ -27,6 +27,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use tokio::sync::mpsc::Receiver;
 
 use super::{Counters, Running, wire};
+use crate::budget::Held;
 use crate::model::{ForwardFormat, ForwardKind, Forwarder};
 
 /// Entries sent in one go: one write on a stream, one request over HTTPS.
@@ -145,6 +146,11 @@ impl Outlet {
                 )
             })?
             .ok_or("this forwarder has no URL set")?;
+        // `logs.forward.save` refuses this; a destination stored before it
+        // did must not leave either.
+        if let Some(why) = super::sent_in_the_clear(&secret) {
+            return Err(format!("nothing was sent: {why}"));
+        }
         let url = reqwest::Url::parse(&secret.url)
             .map_err(|_| "the URL stored for this forwarder is not a URL")?;
         let authorization = match authorization(&secret.token) {
@@ -172,6 +178,13 @@ impl Outlet {
             // per batch, not per entry.
             .pool_max_idle_per_host(0)
             .http1_only()
+            // Straight to the collector. The HTTP client is built for this
+            // workspace to follow the proxy the environment or the system
+            // names (`HTTPS_PROXY` and the like), and a proxy sees where a
+            // request goes — the host of an https:// URL, the whole of an
+            // http:// one. This destination is a secret, and no forwarder
+            // has a proxy of its own to set, so it gets none.
+            .no_proxy()
             // Log text goes to the URL that was given and nowhere a reply
             // points to instead.
             .redirect(reqwest::redirect::Policy::none())
@@ -400,13 +413,17 @@ fn mark(app: &App, counters: &Counters, outcome: Result<(), String>) {
 
 /// The worker. Runs until the forwarder is stopped (saved again, switched
 /// off, deleted) or the application shuts down.
-pub(crate) async fn run(app: App, running: Arc<Running>, mut queue: Receiver<Arc<LogEntry>>) {
+pub(crate) async fn run(
+    app: App,
+    running: Arc<Running>,
+    mut queue: Receiver<(Arc<LogEntry>, Held)>,
+) {
     let counters = running.counters.clone();
     let forwarder = &running.forwarder;
     let mut outlet: Option<Outlet> = None;
     let mut failures = 0_u32;
     'batches: loop {
-        let first = tokio::select! {
+        let (first, held) = tokio::select! {
             _ = running.stop.cancelled() => break,
             entry = queue.recv() => match entry {
                 Some(entry) => entry,
@@ -414,9 +431,16 @@ pub(crate) async fn run(app: App, running: Arc<Running>, mut queue: Receiver<Arc
             },
         };
         let mut batch = vec![first];
+        // What the batch takes up goes back to the budget when it is done
+        // with, sent or dropped: while it is tried again and waited for, it
+        // is in memory as much as what is queued behind it.
+        let mut in_hand = vec![held];
         while batch.len() < BATCH {
             match queue.try_recv() {
-                Ok(entry) => batch.push(entry),
+                Ok((entry, held)) => {
+                    batch.push(entry);
+                    in_hand.push(held);
+                }
                 Err(_) => break,
             }
         }

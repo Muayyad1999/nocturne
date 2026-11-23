@@ -1518,6 +1518,14 @@ fn top_talkers_edge_cases() {
 
 // --------------------------------------------------------------------- collector
 
+/// A queue of `records` flow records, with room enough in bytes that only their number counts.
+fn records(records: usize) -> QueueLimits {
+    QueueLimits {
+        records,
+        bytes: 1 << 30,
+    }
+}
+
 /// The next batch of a collector, which a test never waits for longer than five seconds.
 async fn next(queue: &mut FlowQueue) -> FlowBatch {
     tokio::time::timeout(Duration::from_secs(5), queue.recv())
@@ -1528,9 +1536,13 @@ async fn next(queue: &mut FlowQueue) -> FlowBatch {
 
 #[tokio::test]
 async fn collector_decodes_what_exporters_send() {
-    let (collector, mut batches) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 1_000)
-        .await
-        .unwrap();
+    let (collector, mut batches) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(1_000),
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
     let address = collector.local_addr();
     let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
@@ -1622,12 +1634,77 @@ async fn collector_decodes_what_exporters_send() {
     // Stopping releases the port; so does dropping.
     collector.stop().await;
     assert!(UdpSocket::bind(address).await.is_ok());
-    let (collector, _batches) = FlowCollector::start(address, 1_000).await.unwrap();
-    let error = FlowCollector::start(address, 1_000).await.unwrap_err();
+    let (collector, _batches) = FlowCollector::start(address, records(1_000), SharedDecoder::new())
+        .await
+        .unwrap();
+    let error = FlowCollector::start(address, records(1_000), SharedDecoder::new())
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("already using it"), "{error}");
     drop(collector);
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(UdpSocket::bind(address).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_collector_given_the_decoder_of_the_one_before_reads_with_what_was_announced_to_it() {
+    let decoder = SharedDecoder::new();
+    let (first, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(1_000),
+        decoder.clone(),
+    )
+    .await
+    .unwrap();
+    let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    exporter
+        .send_to(&v9_message(1, 1, &[v9_template()]), first.local_addr())
+        .await
+        .unwrap();
+    assert_eq!(next(&mut queue).await.templates, 1);
+    first.stop().await;
+
+    // Another port, the same exporter (and so the same source port), only data.
+    let (second, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(1_000),
+        decoder.clone(),
+    )
+    .await
+    .unwrap();
+    exporter
+        .send_to(&v9_message(1, 2, &[v9_data()]), second.local_addr())
+        .await
+        .unwrap();
+    let batch = next(&mut queue).await;
+    assert_eq!(
+        (
+            batch.records.len(),
+            batch.sets_without_template,
+            batch.templates
+        ),
+        (2, 0, 1),
+        "read with the template the first collector learned"
+    );
+    // Each collector counts what it decoded; the decoder counts it all.
+    assert_eq!((second.stats().packets, second.stats().records), (1, 2));
+    assert_eq!((decoder.stats().packets, decoder.stats().records), (2, 2));
+    assert_eq!(decoder.templates_of(batch.exporter), 1);
+
+    // A fresh decoder knows nothing of what was said to another.
+    let (fresh, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(1_000),
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
+    exporter
+        .send_to(&v9_message(1, 3, &[v9_data()]), fresh.local_addr())
+        .await
+        .unwrap();
+    let batch = next(&mut queue).await;
+    assert_eq!((batch.records.len(), batch.sets_without_template), (0, 1));
 }
 
 #[test]
@@ -1648,9 +1725,13 @@ fn records_and_stats_are_json() {
 #[tokio::test]
 async fn a_collector_nobody_empties_drops_and_counts_instead_of_growing() {
     // Room for five records, and every datagram holds two.
-    let (collector, mut queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 5)
-        .await
-        .unwrap();
+    let (collector, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(5),
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
     let address = collector.local_addr();
     let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
@@ -1688,10 +1769,75 @@ async fn a_collector_nobody_empties_drops_and_counts_instead_of_growing() {
 }
 
 #[tokio::test]
+async fn a_collector_nobody_empties_holds_no_more_bytes_than_it_may_however_many_records_it_may() {
+    // What one datagram of two records is once decoded, from this exporter's address.
+    let one = FlowBatch {
+        exporter: "127.0.0.1".parse().unwrap(),
+        version: 5,
+        records: Decoder::new()
+            .decode(&v5_datagram(), "127.0.0.1:9".parse().unwrap())
+            .unwrap(),
+        sets_without_template: 0,
+        templates: 0,
+    }
+    .weight();
+    // Room for a million records, and in bytes for two datagrams and a half.
+    let limit = one * 5 / 2;
+    let (collector, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        QueueLimits {
+            records: 1_000_000,
+            bytes: limit,
+        },
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
+    let address = collector.local_addr();
+    let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    for _ in 0..40 {
+        exporter.send_to(&v5_datagram(), address).await.unwrap();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while collector.stats().packets < 40 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the collector decoded {:?}",
+            collector.stats()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        (collector.waiting(), collector.waiting_bytes()),
+        (4, 2 * one),
+        "two datagrams' worth waits, and no more"
+    );
+    assert_eq!(
+        collector.dropped(),
+        Dropped {
+            datagrams: 38,
+            records: 76
+        },
+        "what did not fit in bytes is dropped and counted like what does not fit in number"
+    );
+
+    // Taken, they make room again.
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+    assert_eq!(collector.waiting_bytes(), 0);
+    exporter.send_to(&v5_datagram(), address).await.unwrap();
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+}
+
+#[tokio::test]
 async fn a_datagram_bigger_than_the_queue_is_let_through_when_nothing_waits() {
-    let (collector, mut queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 1)
-        .await
-        .unwrap();
+    let (collector, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(1),
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
     let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     exporter
         .send_to(&v5_datagram(), collector.local_addr())
@@ -1703,6 +1849,75 @@ async fn a_datagram_bigger_than_the_queue_is_let_through_when_nothing_waits() {
         "a limit smaller than one datagram must not mean that nothing ever arrives"
     );
     assert_eq!(collector.dropped(), Dropped::default());
+}
+
+/// Wait until the collector has decoded `packets` datagrams; five seconds at most.
+async fn until_decoded(collector: &FlowCollector, packets: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while collector.stats().packets < packets {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the collector decoded {:?}",
+            collector.stats()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// A NetFlow v5 datagram of `count` copies of [`v5_datagram`]'s first record.
+fn v5_of(count: u16) -> Vec<u8> {
+    let two = v5_datagram();
+    let mut datagram = two[..24].to_vec();
+    datagram[2..4].copy_from_slice(&count.to_be_bytes());
+    for _ in 0..count {
+        datagram.extend_from_slice(&two[24..72]);
+    }
+    datagram
+}
+
+#[tokio::test]
+async fn a_datagram_larger_than_the_queue_does_not_turn_another_exporter_away_while_it_waits() {
+    // Room for five records. Whoever can reach the port can send nothing but datagrams larger
+    // than that (sixty thousand one-byte records is one); each is let onto an empty queue, so
+    // one of them nearly always waits there.
+    let (collector, mut queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(5),
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
+    let address = collector.local_addr();
+    let flood = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let quiet = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    flood.send_to(&v5_of(30), address).await.unwrap();
+    until_decoded(&collector, 1).await;
+    // Another exporter's records get in beside it, as many as the limit has room for; another
+    // datagram larger than the queue does not, and neither does what would go past the limit.
+    for datagram in [v5_datagram(), v5_datagram(), v5_of(30), v5_datagram()] {
+        let from = if datagram.len() > 200 { &flood } else { &quiet };
+        from.send_to(&datagram, address).await.unwrap();
+    }
+    until_decoded(&collector, 5).await;
+    assert_eq!(collector.waiting(), 30 + 2 + 2);
+    assert_eq!(
+        collector.dropped(),
+        Dropped {
+            datagrams: 2,
+            records: 32
+        }
+    );
+    // In the order they came.
+    for records in [30, 2, 2] {
+        assert_eq!(next(&mut queue).await.records.len(), records);
+    }
+    assert_eq!((collector.waiting(), collector.waiting_bytes()), (0, 0));
+    // Empty again, so one larger than the queue is let in again, and the others beside it.
+    flood.send_to(&v5_of(30), address).await.unwrap();
+    quiet.send_to(&v5_datagram(), address).await.unwrap();
+    assert_eq!(next(&mut queue).await.records.len(), 30);
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+    assert_eq!(collector.dropped().datagrams, 2);
 }
 
 #[test]
@@ -1720,7 +1935,12 @@ fn an_ipv4_sender_reported_the_ipv6_way_is_still_its_ipv4_address() {
 
 #[tokio::test]
 async fn an_ipv4_exporter_is_an_ipv4_address_on_a_socket_bound_to_every_family() {
-    let Ok((collector, mut queue)) = FlowCollector::start("[::]:0".parse().unwrap(), 100).await
+    let Ok((collector, mut queue)) = FlowCollector::start(
+        "[::]:0".parse().unwrap(),
+        records(100),
+        SharedDecoder::new(),
+    )
+    .await
     else {
         eprintln!("skipped: this machine has no IPv6 socket to bind");
         return;
@@ -1746,9 +1966,13 @@ async fn an_ipv4_exporter_is_an_ipv4_address_on_a_socket_bound_to_every_family()
 
 #[tokio::test]
 async fn datagrams_without_flows_cannot_pile_up_either() {
-    let (collector, _queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 5)
-        .await
-        .unwrap();
+    let (collector, _queue) = FlowCollector::start(
+        "127.0.0.1:0".parse().unwrap(),
+        records(5),
+        SharedDecoder::new(),
+    )
+    .await
+    .unwrap();
     let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     // Templates only: no record, so the record count never moves. The queue still holds
     // at most as many datagrams as its limit.
@@ -2047,9 +2271,13 @@ async fn softflowd_itself_is_collected_from_in_every_version() {
         ("9", traffic::flows()),
         ("10", traffic::flows()),
     ] {
-        let (collector, mut queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 10_000)
-            .await
-            .unwrap();
+        let (collector, mut queue) = FlowCollector::start(
+            "127.0.0.1:0".parse().unwrap(),
+            records(10_000),
+            SharedDecoder::new(),
+        )
+        .await
+        .unwrap();
         let target = format!("127.0.0.1:{}", collector.local_addr().port());
         // It reads the capture file, exports every flow in it and exits. The pid file and
         // the control socket go where the capture is, not into /var/run.

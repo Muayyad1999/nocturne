@@ -245,6 +245,21 @@ pub mod flow {
         /// Templates known for one exporter address, over all its source ports and source ids.
         pub fn templates_of(&self, exporter: std::net::IpAddr) -> u32;
     }
+    impl DecoderStats {
+        /// What was counted after an earlier reading of the same decoder; `templates` is the latest.
+        pub fn since(&self, earlier: &DecoderStats) -> DecoderStats;
+    }
+    /// A decoder that outlives the collectors that use it (`Clone` shares it). What an exporter announced —
+    /// its templates, the sampling rate in its options — is the exporter's, not the socket's: a collector
+    /// started with the decoder the one before it used reads what the exporter sends next with what it
+    /// said before. One given a fresh decoder knows nothing until the exporter says it again, and reads
+    /// every record before its next options as unsampled.
+    pub struct SharedDecoder { /* … */ }
+    impl SharedDecoder {
+        pub fn new() -> SharedDecoder;              // also `Default`
+        pub fn templates_of(&self, exporter: std::net::IpAddr) -> u32;
+        pub fn stats(&self) -> DecoderStats;        // over every collector that used it
+    }
     pub struct Talker { pub key: String, pub bytes: u64, pub packets: u64, pub flows: u64 }
     /// Aggregate records by "src" | "dst" | "conversation" | "application" (protocol/port) | "interface" and return the top N by bytes.
     pub fn top(records: &[FlowRecord], by: &str, n: usize) -> Vec<Talker>;
@@ -256,22 +271,37 @@ pub mod flow {
         pub sets_without_template: u32,             // in this datagram
         pub templates: u32,                         // known for this exporter address after it
     }
+    impl FlowBatch {
+        /// What it takes up: itself, its records and the addresses they hold as text — an estimate
+        /// from what it owns. A datagram of 64 KiB can be sixty thousand one-byte records, each a
+        /// whole `FlowRecord` once decoded: about 11 MiB.
+        pub fn weight(&self) -> usize;
+    }
     pub struct Dropped { pub datagrams: u64, pub records: u64 }
+    /// What may wait to be taken: flow records (and as many datagrams, for those that carry none), and
+    /// the bytes they take up (`FlowBatch::weight`).
+    pub struct QueueLimits { pub records: usize, pub bytes: usize }
     /// The receiving end: `recv().await` → the next datagram's batch, `None` once the collector has
     /// stopped and everything it had decoded has been taken.
     pub struct FlowQueue { /* … */ }
-    /// A collector's counters, readable after it has stopped: `stats()`, `dropped()`, `waiting()`.
+    /// A collector's counters, readable after it has stopped: `stats()`, `dropped()`, `waiting()`,
+    /// `waiting_bytes()`. `stats()` is what this collector decoded (its decoder may have been used
+    /// before), and the templates known now.
     pub struct FlowCounters { /* … */ }
     pub struct FlowCollector { /* … */ }
     impl FlowCollector {
-        /// At most `queue_records` flow records (and that many datagrams) wait to be taken. A datagram
-        /// that would take the queue past that is decoded — its templates are still learned — then
-        /// dropped and counted. One datagram is always let onto an empty queue.
-        pub async fn start(bind: std::net::SocketAddr, queue_records: usize) -> Result<(FlowCollector, FlowQueue), ProbeError>;
+        /// At most `limits.records` flow records (and that many datagrams) taking up at most
+        /// `limits.bytes` wait to be taken. A datagram that would take the queue past either is decoded —
+        /// its templates are still learned — then dropped and counted. One datagram is always let onto an
+        /// empty queue, whatever it holds; while one that alone is more than a limit waits, what arrives
+        /// is measured without it, so that it does not turn every other exporter away (the queue holds at
+        /// most the limits and that one datagram). Datagrams are decoded with `decoder`, which the caller keeps.
+        pub async fn start(bind: std::net::SocketAddr, limits: QueueLimits, decoder: SharedDecoder) -> Result<(FlowCollector, FlowQueue), ProbeError>;
         pub fn local_addr(&self) -> std::net::SocketAddr;
         pub fn stats(&self) -> DecoderStats;
         pub fn dropped(&self) -> Dropped;           // decoded, then thrown away because the queue was full
         pub fn waiting(&self) -> usize;             // flow records decoded and not yet taken
+        pub fn waiting_bytes(&self) -> usize;       // what they take up
         pub fn counters(&self) -> FlowCounters;
         pub async fn stop(self);
     }
@@ -300,8 +330,9 @@ Every options struct implements `Default` with the defaults noted and is `#[serd
   `rustls-platform-verifier`. The process-wide rustls crypto provider is `ring`
   (`rustls::crypto::ring::default_provider().install_default()` once, ignoring "already installed").
 * **Servers** (`tftp`, `syslog`, `flow`) run until `stop()` or drop, never block the runtime, and survive
-  malformed or hostile datagrams. The flow collector's queue has a limit (in flow records) and counts
-  what it drops; nothing the decoder remembers per exporter grows without bound. Binding to a privileged port without rights must produce
+  malformed or hostile datagrams. The flow collector's queue has a limit in flow records and one in the
+  bytes they take up once decoded, and counts what it drops; nothing the decoder remembers per exporter
+  grows without bound. Binding to a privileged port without rights must produce
   `ProbeError::Permission` with a message that tells the user what to do (choose a port ≥ 1024, or on Linux
   grant `CAP_NET_BIND_SERVICE`).
 

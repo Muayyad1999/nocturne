@@ -30,8 +30,9 @@ pub struct DeviceInfo {
     pub role: String,
     pub tags: Vec<String>,
     pub profile: String,
-    /// A simulated device: its lines arrive through `logs.ingest`, and an
-    /// alert about it notifies nobody.
+    /// A simulated device: its lines arrive through `logs.ingest`, and what
+    /// it writes is forwarded only by a forwarder that asks for labs. (Who
+    /// hears of an alert about it is the monitor's to decide.)
     pub lab: bool,
     /// Interface names as last collected, lowercased, in both the long and
     /// the short spelling, mapped to the canonical name.

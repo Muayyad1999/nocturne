@@ -120,6 +120,112 @@ pub async fn settle() {
     tokio::time::sleep(Duration::from_millis(60)).await;
 }
 
+/// A lock of the log feature's, held by a thread of its own, so that the
+/// task that needs it stops there and what arrives behind it waits in its
+/// queue: the one way to hold up a writer that has nothing to wait for but
+/// the database and the rules.
+///
+/// Let go by [`Held::release`], when it is dropped (a test that fails lets
+/// go as it unwinds), and after thirty seconds whatever happens — the task
+/// is held on a runtime thread, and a test that goes wrong must fail, not
+/// keep that thread for ever.
+pub struct Held {
+    release: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// The rules' memory: the syslog and trap writers stop after storing a
+/// batch, where they show it to the rules. (`logs.status` asks the rules
+/// too: read a receiver's numbers from its state meanwhile.)
+pub fn hold_the_rules(app: &App) -> Held {
+    hold(app, |state, held| {
+        let _rules = state.memory.lock();
+        held();
+    })
+}
+
+/// The attribution index: whatever has to say whose a datagram is stops —
+/// the flow collector's counting task, the writers, the trap socket.
+/// `logs.status` does not need it.
+pub fn hold_the_index(app: &App) -> Held {
+    hold(app, |state, held| {
+        let _index = state.index.write();
+        held();
+    })
+}
+
+fn hold(
+    app: &App,
+    with: impl FnOnce(&nocturne_logs::state::LogsState, &dyn Fn()) + Send + 'static,
+) -> Held {
+    let (taken, is_taken) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let app = app.clone();
+    let thread = std::thread::spawn(move || {
+        let state = app.state::<nocturne_logs::state::LogsState>();
+        with(&state, &|| {
+            let _ = taken.send(());
+            let _ = released.recv_timeout(Duration::from_secs(30));
+        });
+    });
+    is_taken.recv().expect("the lock is taken");
+    Held {
+        release: Some(release),
+        thread: Some(thread),
+    }
+}
+
+impl Held {
+    pub fn release(mut self) {
+        self.let_go();
+    }
+
+    fn let_go(&mut self) {
+        drop(self.release.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.let_go();
+    }
+}
+
+/// Wait for `ready` while a runtime thread is held up (see [`Held`]),
+/// without the runtime's timers. The thread that is held may be the one
+/// that was minding the sockets and the clock when it took the writer's
+/// turn; the others sleep until they are given something to do, and with
+/// nothing to do none of them takes the clock over — a `tokio::time::sleep`
+/// here would then never end. So they are given an empty task every few
+/// milliseconds. Panics after thirty seconds.
+pub fn wait_held(what: &str, ready: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::spawn(async {});
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Send bytes over one TCP connection from 127.0.0.1 without the runtime:
+/// what [`send_tcp`] does, for the stretch of a test in which a runtime
+/// thread is held up (see [`wait_held`]).
+pub fn send_tcp_held(port: u16, payload: &[u8]) {
+    use std::io::Write;
+    let mut stream =
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("the receiver accepts");
+    stream.write_all(payload).expect("the lines are sent");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("the connection closes");
+}
+
 /// The signals of one rule out of a list of `logs.signal` payloads.
 pub fn of_rule(signals: &[Value], rule_id: &str) -> Vec<Value> {
     signals
