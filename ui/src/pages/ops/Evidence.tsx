@@ -19,7 +19,7 @@
  */
 
 import { FileCheck2 } from 'lucide-react';
-import { useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type { Evidence, EvidenceKind } from '@/api/types/ops';
 import { Badge } from '@/design/Badge';
@@ -104,11 +104,31 @@ function EvidenceList() {
   const deviceId = search.get('device');
   const incidentId = search.get('attached');
 
+  // What the three selects show. The address follows, but the router applies
+  // an address change as a transition, and React puts a controlled select
+  // whose value only changes in a transition back to its old value after the
+  // key press that changed it: arrow keys bounced back, and a quick second
+  // press read the old choice and skipped an option. The select holds the
+  // choice at once; the address catches up, and a link that changes the
+  // address from elsewhere still sets the selects.
+  const [shown, setShown] = useState({ kind: kind ?? '', device: deviceId ?? '', attached: incidentId ?? '' });
+  useEffect(() => {
+    setShown({ kind: kind ?? '', device: deviceId ?? '', attached: incidentId ?? '' });
+  }, [kind, deviceId, incidentId]);
+
   const setFilter = (name: 'kind' | 'device' | 'attached', value: string) => {
-    const next = new URLSearchParams(search);
-    if (value === '') next.delete(name);
-    else next.set(name, value);
-    setSearch(next, { replace: true });
+    setShown((current) => ({ ...current, [name]: value }));
+    // From the address as it is by then, not as this render saw it: two
+    // filters changed in quick succession must both arrive.
+    setSearch(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (value === '') next.delete(name);
+        else next.set(name, value);
+        return next;
+      },
+      { replace: true },
+    );
     setCursors([]);
   };
 
@@ -256,7 +276,7 @@ function EvidenceList() {
           aria-label="Kind"
           size="sm"
           className={opsStyles.narrow}
-          value={kind ?? ''}
+          value={shown.kind}
           onChange={(event) => setFilter('kind', event.target.value)}
         >
           <option value="">Every kind</option>
@@ -270,7 +290,7 @@ function EvidenceList() {
           aria-label="Device"
           size="sm"
           className={opsStyles.narrow}
-          value={deviceId ?? ''}
+          value={shown.device}
           onChange={(event) => setFilter('device', event.target.value)}
         >
           <option value="">Every device</option>
@@ -288,7 +308,7 @@ function EvidenceList() {
           aria-label="Incident"
           size="sm"
           className={opsStyles.filter}
-          value={incidentId ?? ''}
+          value={shown.attached}
           onChange={(event) => setFilter('attached', event.target.value)}
         >
           <option value="">Attached or not</option>
