@@ -49,6 +49,14 @@ Owned paths: `ui/src/pages/devices/`, `ui/src/pages/settings/`,
   build answers `config.backup` (`methods.ts` → `useHasMethod`). "Open
   terminals" and "Run command…" are left to the screens that own those flows.
 
+- **A dropped file is taken by the file input, not read from the drop.**
+  While something is dragged over the Import dialog's zone the hidden file
+  input covers it, so the drop lands on the input and its `change` reads the
+  file. WebKitGTK — the Linux desktop application — gives a page no files
+  from a `drop` event at all (`docs/dev/spec-desktop.md`, "Drag and drop"),
+  and one path for every engine is what lets the Chromium test
+  ("takes a dropped file through its file input") stand for it.
+
 ## Things the foundation might want to look at
 
 - `design/RadioGroup`: the real `<input>` is under `.dot`, which is

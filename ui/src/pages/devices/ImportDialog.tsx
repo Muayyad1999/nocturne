@@ -184,6 +184,14 @@ export function ImportDialog({ open, onClose }: ImportDialogProps) {
       }
     >
       <div className={styles.body}>
+        {/*
+          While something is dragged over the zone the file input lies over
+          all of it (`.drop[data-over='true'] .file`), so the drop lands on
+          the input and the browser does with it what choosing a file does.
+          That is not decoration: WebKitGTK — the Linux application — never
+          lets a page read a dropped file from the drop itself, only through
+          a file input it was dropped on.
+        */}
         <div
           className={styles.drop}
           data-over={over}
@@ -191,12 +199,35 @@ export function ImportDialog({ open, onClose }: ImportDialogProps) {
             event.preventDefault();
             setOver(true);
           }}
-          onDragLeave={() => setOver(false)}
+          onDragLeave={(event) => {
+            // Under the input there is nothing else to be over, so leaving it
+            // is leaving the zone — or the drag being given up where it was,
+            // which says nothing else. Leaving anything else is leaving the
+            // zone only when the pointer says so: the input coming up under
+            // the pointer is itself a "leave" of what was there before.
+            const box = event.currentTarget.getBoundingClientRect();
+            const outside =
+              event.clientX <= box.left ||
+              event.clientX >= box.right ||
+              event.clientY <= box.top ||
+              event.clientY >= box.bottom;
+            if (event.target === fileRef.current || outside) setOver(false);
+          }}
           onDrop={(event) => {
-            event.preventDefault();
             setOver(false);
+            // Left to the browser, which gives the input the file; the
+            // input's own `change` reads it.
+            if (event.target === fileRef.current) return;
+            event.preventDefault();
             const file = event.dataTransfer.files[0];
             if (file) void readFile(file);
+          }}
+          // No mouse event reaches a page during a drag, so one that does
+          // means the drag is over, however it ended. Without this a drag
+          // that ended in a way nobody was told about would leave an input
+          // nobody can see lying over the text box, taking its clicks.
+          onMouseMove={() => {
+            if (over) setOver(false);
           }}
         >
           <div className={styles.dropHint}>
@@ -212,6 +243,12 @@ export function ImportDialog({ open, onClose }: ImportDialogProps) {
               accept=".csv,.txt,.yml,.yaml,.ini,.cfg,text/*"
               tabIndex={-1}
               aria-hidden="true"
+              // The pointer rests on the input when a drop ends, and
+              // WebKitGTK then shows the input's tooltip until it moves:
+              // without a title that is the browser's own "no file
+              // selected", right after one was. An empty title does not
+              // stop it, so it is given something true to say.
+              title="A file to import devices from"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) void readFile(file);

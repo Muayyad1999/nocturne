@@ -1,5 +1,6 @@
 {
   "productName": "Nocturne ISP",
+  "mainBinaryName": "nocturne-isp",
   "identifier": "app.nocturne.desktop.isp",
   "bundle": {
     "shortDescription": "Network operations, with subscribers and billing.",

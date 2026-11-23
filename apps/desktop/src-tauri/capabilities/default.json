@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the interface may reach. Everything Nocturne does goes through the `rpc` command, where the backend's own rules apply; the WebView gets no filesystem, shell or HTTP access of its own.",
+  "description": "What the interface may reach. Everything Nocturne does goes through the `rpc` command, where the backend's own rules apply; the WebView gets no filesystem, shell or HTTP access of its own. Two things belong to the person's machine rather than to the engine and are lent by the shell: reading text from the clipboard, and opening an http(s) address in the system browser (docs/dev/spec-desktop.md).",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -10,6 +10,10 @@
     "core:webview:allow-internal-toggle-devtools",
     "notification:default",
     "dialog:default",
-    "opener:allow-open-url"
+    "clipboard-manager:allow-read-text",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }]
+    }
   ]
 }

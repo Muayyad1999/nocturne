@@ -40,6 +40,17 @@
   clip-path: inset(50%);
 }
 
+/* During a drag the input is the drop target: over the whole zone, and not
+   to be seen. See the comment on the zone in ImportDialog.tsx for why. */
+.drop[data-over='true'] .file {
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  clip-path: none;
+  opacity: 0;
+}
+
 .summary {
   display: flex;
   flex-wrap: wrap;

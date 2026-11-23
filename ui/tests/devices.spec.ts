@@ -6,7 +6,7 @@
  * faked: what the screen shows is what the backend answered.
  */
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,6 +173,102 @@ test.describe('import and export', () => {
       'arista_eos',
     );
 
+    expect(console.messages, backend.log()).toEqual([]);
+  });
+
+  test('takes a dropped file through its file input, which is the only way the Linux application is given one', async ({
+    page,
+  }, testInfo) => {
+    const console = watchConsole(page);
+    const csv = 'name,address,platform\ndropped-sw1,10.91.0.1,ios\ndropped-sw2,10.91.0.2,eos\n';
+    const file = testInfo.outputPath('dropped-devices.csv');
+    await writeFile(file, csv);
+
+    await openApp(page, '/devices', { backend });
+    await page.getByRole('button', { name: 'Import' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Import devices' });
+    const text = dialog.getByRole('textbox', { name: 'Devices to import' });
+    await expect(text).toBeVisible();
+
+    // This browser would let the page read the file from the drop itself.
+    // WebKitGTK, which the Linux application is shown in, never does: there
+    // a drop carries no files a page can see, and one reaches the page only
+    // through a file input the drop lands on. Made the same here, so that
+    // what passes is what works there.
+    await page.evaluate(() => {
+      const none = document.createElement('input');
+      none.type = 'file';
+      Object.defineProperty(DataTransfer.prototype, 'files', { get: () => none.files });
+    });
+    // What a drop lands on, as the page is told.
+    await page.evaluate(() => {
+      document.addEventListener(
+        'drop',
+        (event) => {
+          const on = event.target as HTMLElement;
+          (window as unknown as { droppedOn: string }).droppedOn =
+            on instanceof HTMLInputElement ? `input:${on.type}` : on.tagName.toLowerCase();
+        },
+        true,
+      );
+    });
+
+    // A file dragged in from another program — a real drag, driven through
+    // the browser's own drag machinery, not an event made up in the page.
+    // The pointer comes to rest over the text box, where a person aims.
+    const box = await text.boundingBox();
+    if (!box) throw new Error('the text box has no place on the page');
+    const at = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+    const cdp = await page.context().newCDPSession(page);
+    const data = { items: [], files: [file], dragOperationsMask: 1 };
+    const over = (x: number, y: number) =>
+      cdp.send('Input.dispatchDragEvent', { type: 'dragOver', x, y, data });
+    const zone = dialog.locator('[data-over]');
+    // Every time the zone changes its mind about being dragged over.
+    await zone.evaluate((element) => {
+      const said: string[] = [];
+      (window as unknown as { zoneSaid: string[] }).zoneSaid = said;
+      new MutationObserver(() => said.push(element.getAttribute('data-over') ?? '')).observe(
+        element,
+        { attributes: true, attributeFilter: ['data-over'] },
+      );
+    });
+    const zoneSaid = () =>
+      page.evaluate(() => (window as unknown as { zoneSaid: string[] }).zoneSaid);
+
+    await cdp.send('Input.dispatchDragEvent', { type: 'dragEnter', ...at, data });
+    for (const dx of [0, 3, 6, 9]) await over(at.x + dx, at.y);
+    await expect(zone).toHaveAttribute('data-over', 'true');
+    // The input coming up under the pointer is not the drag leaving: the
+    // zone said so once and has not taken it back.
+    expect(await zoneSaid()).toEqual(['true']);
+
+    // Carried off the zone, over the dialog's own heading, it is no longer
+    // somewhere to drop; and carried back, it is again.
+    const heading = await dialog.getByRole('heading', { name: 'Import devices' }).boundingBox();
+    if (!heading) throw new Error('the dialog has no heading');
+    await over(Math.round(heading.x + 20), Math.round(heading.y + heading.height / 2));
+    await expect(zone).toHaveAttribute('data-over', 'false');
+    for (const dx of [0, 3, 6]) await over(at.x + dx, at.y);
+    await expect(zone).toHaveAttribute('data-over', 'true');
+    await cdp.send('Input.dispatchDragEvent', { type: 'drop', x: at.x + 6, y: at.y, data });
+
+    // So the file input is where it has to land, in every engine.
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { droppedOn?: string }).droppedOn))
+      .toBe('input:file');
+    await expect(text).toHaveValue(csv);
+    await expect(dialog.getByText('2 new')).toBeVisible();
+
+    // The drag is over: the zone is itself again, and the text box takes
+    // clicks and typing rather than an input nobody can see.
+    await expect(dialog.locator('[data-over="true"]')).toHaveCount(0);
+    await text.click();
+    await text.press('End');
+    await text.pressSequentially('typed-sw3,10.91.0.3,ios');
+    await expect(dialog.getByText('3 new')).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
     expect(console.messages, backend.log()).toEqual([]);
   });
 

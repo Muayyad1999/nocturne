@@ -31,6 +31,10 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-opener = "2"
+# Reading text for the Terminal screen's Paste button and context menu: a
+# script in the WebView may not read the clipboard itself. Only `read_text`
+# is granted (capabilities/default.json); see docs/dev/spec-desktop.md.
+tauri-plugin-clipboard-manager = "2"
 tauri-plugin-notification = "2"
 tokio.workspace = true
 serde.workspace = true
