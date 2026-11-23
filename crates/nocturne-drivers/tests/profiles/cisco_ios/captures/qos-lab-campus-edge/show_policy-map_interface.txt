@@ -1,0 +1,94 @@
+ GigabitEthernet0/0
+
+  Service-policy output: WAN-OUT
+
+    Class-map: class-default (match-any)
+      17397 packets, 13917904 bytes
+      5 minute offered rate 361000 bps, drop rate 31000 bps
+      Match: any
+      Queueing
+      queue limit 64 packets
+      (queue depth/total drops/no-buffer drops) 64/1483/0
+      (pkts output/bytes output) 15914/12731438
+      shape (average) cir 6000000, bc 24000, be 24000
+      target shape rate 6000000
+
+      Service-policy : WAN-QUEUE
+
+        queue stats for all priority classes:
+
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 680/544000
+
+        Class-map: VOICE (match-any)
+          680 packets, 544000 bytes
+          5 minute offered rate 14000 bps, drop rate 0 bps
+          Match: dscp ef (46)
+          Priority: 512 kbps, burst bytes 12800, b/w exceed drops: 0
+
+        Class-map: SCAVENGER (match-any)
+          7968 packets, 6375000 bytes
+          5 minute offered rate 165000 bps, drop rate 31000 bps
+          Match: dscp cs1 (8)
+          Queueing
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 64/1483/0
+          (pkts output/bytes output) 6485/5188534
+          bandwidth 10% (600 kbps)
+
+        Class-map: class-default (match-any)
+          8748 packets, 6998904 bytes
+          5 minute offered rate 182000 bps, drop rate 0 bps
+          Match: any
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 8748/6998904
+
+ GigabitEthernet0/1
+
+  Service-policy input: LAN-IN
+
+    Class-map: GUEST (match-all)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: access-group name GUEST-NET
+      police:
+          cir 3000000 bps, bc 93750 bytes
+        conformed 0 packets, 0 bytes; actions:
+          transmit
+        exceeded 0 packets, 0 bytes; actions:
+          drop
+        conformed 0 bps, exceed 0 bps
+      QoS Set
+        dscp cs1
+          Packets marked 0
+
+    Class-map: class-default (match-any)
+      8748 packets, 6998904 bytes
+      5 minute offered rate 182000 bps, drop rate 0 bps
+      Match: any
+
+ GigabitEthernet0/2
+
+  Service-policy input: LAN-IN
+
+    Class-map: GUEST (match-all)
+      13281 packets, 10625000 bytes
+      5 minute offered rate 275000 bps, drop rate 110000 bps
+      Match: access-group name GUEST-NET
+      police:
+          cir 3000000 bps, bc 93750 bytes
+        conformed 7968 packets, 6375000 bytes; actions:
+          transmit
+        exceeded 5312 packets, 4250000 bytes; actions:
+          drop
+        conformed 165000 bps, exceed 110000 bps
+      QoS Set
+        dscp cs1
+          Packets marked 13281
+
+    Class-map: class-default (match-any)
+      680 packets, 544000 bytes
+      5 minute offered rate 14000 bps, drop rate 0 bps
+      Match: any

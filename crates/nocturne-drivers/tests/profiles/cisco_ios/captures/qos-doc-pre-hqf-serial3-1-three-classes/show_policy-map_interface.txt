@@ -1,0 +1,44 @@
+
+ Serial3/1 
+  Service-policy output: mypolicy
+    Class-map: voice (match-all)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: ip precedence 5 
+      Weighted Fair Queueing
+        Strict Priority
+        Output Queue: Conversation 264 
+        Bandwidth 128 (kbps) Burst 3200 (Bytes)
+        (pkts matched/bytes matched) 0/0
+        (total drops/bytes drops) 0/0
+    Class-map: gold (match-all)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: ip precedence 2 
+      Weighted Fair Queueing
+        Output Queue: Conversation 265 
+        Bandwidth 100 (kbps) Max Threshold 64 (packets)
+        (pkts matched/bytes matched) 0/0
+        (depth/total drops/no-buffer drops) 0/0/0
+    Class-map: silver (match-all)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: ip precedence 1 
+      Weighted Fair Queueing
+        Output Queue: Conversation 266 
+        Bandwidth 80 (kbps)
+        (pkts matched/bytes matched) 0/0
+        (depth/total drops/no-buffer drops) 0/0/0
+         exponential weight: 9
+         mean queue depth: 0
+class     Transmitted       Random drop      Tail drop    Minimum Maximum  Mark
+          pkts/bytes        pkts/bytes       pkts/bytes    thresh  thresh  prob
+0             0/0               0/0              0/0           20      40  1/10
+1             0/0               0/0              0/0           22      40  1/10
+2             0/0               0/0              0/0           24      40  1/10
+3             0/0               0/0              0/0           26      40  1/10
+4             0/0               0/0              0/0           28      40  1/10
+5             0/0               0/0              0/0           30      40  1/10
+6             0/0               0/0              0/0           32      40  1/10
+7             0/0               0/0              0/0           34      40  1/10
+rsvp          0/0               0/0              0/0           36      40  1/10

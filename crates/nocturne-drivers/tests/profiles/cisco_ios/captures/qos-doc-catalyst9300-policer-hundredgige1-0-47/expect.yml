@@ -1,0 +1,34 @@
+origin: documented
+kinds:
+  qos:
+    count: 2
+    rows:
+      - class: IPV4_TTL
+        interface: HundredGigE1/0/47
+        direction: out
+        policy: TTL_MATCH
+        parent: null
+        # "rate 6000000000 bps, burst 187500000 bytes"
+        rate_bps: 6000000000
+        # "553567424 packets" and nothing about bytes
+        packets: 553567424
+        bytes: null
+        # "exceeded 32375773000 bytes; actions:" / "drop": bytes are known, packets are not
+        dropped_bytes: 32375773000
+        police_dropped_packets: null
+        dropped_packets: null
+        queue_dropped_packets: null
+        # this platform prints no offered rate for the class
+        offered_rate_bps: null
+        drop_rate_bps: null
+      - class: class-default
+        interface: HundredGigE1/0/47
+        direction: out
+        policy: TTL_MATCH
+        parent: null
+        # "2184433710 packets"
+        packets: 2184433710
+        bytes: null
+        rate_bps: null
+        dropped_packets: null
+        dropped_bytes: null

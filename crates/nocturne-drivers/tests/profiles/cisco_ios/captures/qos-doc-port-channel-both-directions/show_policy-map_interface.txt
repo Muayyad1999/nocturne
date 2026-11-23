@@ -1,0 +1,57 @@
+
+Port-channel1.1 
+   Service-policy input: input_policy 
+     Class-map: class-default (match-any) 
+       0 packets, 0 bytes 
+       5 minute offered rate 0000 bps, drop rate 0000 bps 
+       Match: any 
+       QoS Set 
+       dscp default 
+       No packet marking statistics available 
+   Service-policy output: Port-channel_1_subscriber 
+     Class-map: EF (match-any) 
+       105233 packets, 6734912 bytes 
+       5 minute offered rate 134000 bps, drop rate 0000 bps 
+       Match: dscp ef (46) 
+       Match: access-group name VLAN_REMARK_EF 
+       Match: qos-group 3 
+       Account QoS statistics 
+         Queueing 
+           Packets dropped 0 packets/0 bytes 
+       QoS Set 
+       cos 5 
+       No packet marking statistics available 
+       dscp ef 
+       No packet marking statistics available 
+     Class-map: AF4 (match-all) 
+       105234 packets, 6734976 bytes 
+       5 minute offered rate 134000 bps, drop rate 0000 bps 
+       Match: dscp cs4 (32) 
+       Account QoS statistics 
+         Queueing 
+           Packets dropped 0 packets/0 bytes 
+       QoS Set 
+       cos 4 
+       No packet marking statistics available 
+     Class-map: AF1 (match-any) 
+       315690 packets, 20204160 bytes 
+       5 minute offered rate 402000 bps, drop rate 0000 bps 
+       Match: dscp cs1 (8) 
+       Match: dscp af11 (10) 
+       Match: dscp af12 (12) 
+       Account QoS statistics 
+         Queueing 
+           Packets dropped 0 packets/0 bytes 
+       QoS Set 
+       cos 1 
+       No packet marking statistics available 
+     Class-map: class-default (match-any) fragment Port-channel_BE 
+       315677 packets, 20203328 bytes 
+       5 minute offered rate 402000 bps, drop rate 0000 bps 
+       Match: any 
+       Queueing 
+         queue limit 31250 bytes 
+         (queue depth/total drops/no-buffer drops) 0/0/0 
+         (pkts output/bytes output) 315679/20203482 
+         bandwidth remaining ratio 1
+

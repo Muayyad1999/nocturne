@@ -1,0 +1,56 @@
+origin: documented
+kinds:
+  qos:
+    count: 5
+    rows:
+      - class: class-default
+        interface: FastEthernet0/0
+        direction: out
+        policy: test1
+        parent: null
+        # "shape (average) cir 1536000, bc 6144, be 6144"
+        rate_bps: 1536000
+        packets: 129
+        bytes: 12562
+        queued_packets: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+      - class: RT
+        policy: test2
+        parent: class-default
+        direction: out
+        # "Priority: 20% (307 kbps), burst bytes 7650, b/w exceed drops: 0"
+        rate_bps: 307000
+        packets: 0
+        bytes: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        queued_packets: null
+      - class: BH
+        policy: test2
+        parent: class-default
+        # "bandwidth 40% (614 kbps)"
+        rate_bps: 614000
+        queued_packets: 0
+        queue_dropped_packets: 0
+      - class: BL
+        policy: test2
+        parent: class-default
+        # "bandwidth 35% (537 kbps)"; the WRED table after it adds nothing to the row
+        rate_bps: 537000
+        packets: 0
+        bytes: 0
+        queued_packets: 0
+        queue_dropped_packets: 0
+      - class: class-default
+        interface: FastEthernet0/0
+        policy: test2
+        parent: class-default
+        rate_bps: null
+        packets: 129
+        bytes: 12562
+        queued_packets: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0

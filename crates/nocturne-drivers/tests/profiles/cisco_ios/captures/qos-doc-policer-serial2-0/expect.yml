@@ -1,0 +1,38 @@
+origin: documented
+kinds:
+  qos:
+    count: 2
+    rows:
+      - class: class1
+        interface: Serial2/0
+        direction: out
+        # "Service-policy output: policy1 (1050)": the number is not part of the name
+        policy: policy1
+        parent: null
+        # "cir 409500 bps, bc 15360 bytes" — the line before it gives the same in percent
+        rate_bps: 409500
+        packets: 0
+        bytes: 0
+        # exceeded and violated are dropped, and both count 0 packets, 0 bytes
+        police_dropped_packets: 0
+        dropped_packets: 0
+        dropped_bytes: 0
+        # nothing queues in this class
+        queue_dropped_packets: null
+        queued_packets: null
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+      - class: class-default
+        interface: Serial2/0
+        direction: out
+        policy: policy1
+        parent: null
+        rate_bps: null
+        # the class's own "0 packets, 0 bytes"; the pair under "Match: any" is the match statement's
+        packets: 0
+        bytes: 0
+        dropped_packets: null
+        police_dropped_packets: null
+        queue_dropped_packets: null
+        offered_rate_bps: 0
+        drop_rate_bps: 0

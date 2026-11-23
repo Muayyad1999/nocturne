@@ -1,0 +1,57 @@
+origin: documented
+kinds:
+  qos:
+    count: 3
+    rows:
+      # The class of the attached policy `shape`.
+      - class: class-default
+        interface: Serial4/3
+        direction: out
+        policy: shape
+        parent: null
+        # "shape (average) cir 128000, bc 1000, be 1000"
+        rate_bps: 128000
+        # "2203 packets, 404709 bytes"
+        packets: 2203
+        bytes: 404709
+        # "(queue depth/total drops/no-buffer drops) 64/354/0"
+        queued_packets: 64
+        queue_dropped_packets: 354
+        dropped_packets: 354
+        # no policer in the class, and the queue counts no bytes
+        police_dropped_packets: null
+        dropped_bytes: null
+        # "30 second offered rate 74000 bps, drop rate 14000 bps"
+        offered_rate_bps: 74000
+        drop_rate_bps: 14000
+      # "Service-policy : LLQ" under it. The "queue stats for all priority
+      # classes" (0/0/0) before this class are not this class's.
+      - class: c1
+        interface: Serial4/3
+        direction: out
+        policy: LLQ
+        parent: class-default
+        # "Priority: 32 kbps, burst bytes 1500, b/w exceed drops: 0"
+        rate_bps: 32000
+        packets: 0
+        bytes: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        # a priority class prints no queue depth
+        queued_packets: null
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+      - class: class-default
+        interface: Serial4/3
+        direction: out
+        policy: LLQ
+        parent: class-default
+        rate_bps: null
+        packets: 2190
+        bytes: 404540
+        # "(queue depth/total drops/no-buffer drops) 63/417/0"
+        queued_packets: 63
+        queue_dropped_packets: 417
+        dropped_packets: 417
+        offered_rate_bps: 74000
+        drop_rate_bps: 14000

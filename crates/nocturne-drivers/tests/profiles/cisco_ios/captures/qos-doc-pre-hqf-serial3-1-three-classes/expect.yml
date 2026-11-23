@@ -1,0 +1,42 @@
+origin: documented
+kinds:
+  qos:
+    count: 3
+    rows:
+      - class: voice
+        interface: Serial3/1
+        direction: out
+        policy: mypolicy
+        parent: null
+        # "Strict Priority" / "Bandwidth 128 (kbps) Burst 3200 (Bytes)"
+        rate_bps: 128000
+        packets: 0
+        bytes: 0
+        # "(total drops/bytes drops) 0/0": the priority queue has no depth to print
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        dropped_bytes: 0
+        queued_packets: null
+        police_dropped_packets: null
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+      - class: gold
+        interface: Serial3/1
+        policy: mypolicy
+        # "Bandwidth 100 (kbps) Max Threshold 64 (packets)"
+        rate_bps: 100000
+        # "(depth/total drops/no-buffer drops) 0/0/0"
+        queued_packets: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        # these drops are counted in packets only
+        dropped_bytes: null
+      - class: silver
+        interface: Serial3/1
+        policy: mypolicy
+        # "Bandwidth 80 (kbps)"; the WRED table beneath adds nothing to the row
+        rate_bps: 80000
+        packets: 0
+        bytes: 0
+        queued_packets: 0
+        queue_dropped_packets: 0

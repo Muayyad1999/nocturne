@@ -1,0 +1,21 @@
+
+HundredGigE1/0/47
+
+  Service-policy output: TTL_MATCH
+
+    Class-map: IPV4_TTL (match-all)
+    553567424 packets
+    Match: access-group name IPV4_TTL
+    police:
+    rate 6000000000 bps, burst 187500000 bytes
+    conformed 22983406600 bytes; actions:
+    transmit
+    exceeded 32375773000 bytes; actions:
+    drop
+    conformed 588922000 bps, exceeded 830894000 bps
+    QoS Set
+    dscp af23
+
+    Class-map: class-default (match-any)
+    2184433710 packets
+    Match: any

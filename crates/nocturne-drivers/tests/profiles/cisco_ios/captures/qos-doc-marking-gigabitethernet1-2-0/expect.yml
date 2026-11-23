@@ -1,0 +1,41 @@
+origin: documented
+kinds:
+  qos:
+    count: 4
+    rows:
+      - class: class-exp-0
+        interface: GigabitEthernet1/2/0
+        direction: in
+        policy: policy-in
+        parent: null
+        packets: 6647740
+        # beyond 32 bits
+        bytes: 9304674796
+        offered_rate_bps: 3234000
+        drop_rate_bps: 0
+        # "Packets marked 6647740" is not a drop counter
+        dropped_packets: null
+        rate_bps: null
+      - class: class-default
+        interface: GigabitEthernet1/2/0
+        direction: in
+        policy: policy-in
+        packets: 1386487
+        bytes: 1903797872
+        offered_rate_bps: 658000
+      - class: class-pre-1
+        interface: GigabitEthernet1/2/0
+        direction: out
+        policy: policy-out
+        packets: 2041355
+        bytes: 2857897000
+        # the page has an empty line between these counters and "Match:"
+        offered_rate_bps: 986000
+        drop_rate_bps: 0
+      - class: class-default
+        interface: GigabitEthernet1/2/0
+        direction: out
+        policy: policy-out
+        packets: 6129975
+        bytes: 8575183331
+        offered_rate_bps: 2960000

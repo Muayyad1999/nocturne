@@ -1,0 +1,7 @@
+origin: documented
+kinds:
+  qos: {}
+problems:
+  - kind: qos
+    code: failed
+    contains: a policy attached below the interface

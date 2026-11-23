@@ -1,0 +1,109 @@
+ GigabitEthernet0/2
+
+  Service-policy output: TOP
+
+    Class-map: SITE-A (match-all)
+      1000 packets, 800000 bytes
+      5 minute offered rate 64000 bps, drop rate 0 bps
+      Match: access-group name SITE-A
+      Queueing
+      queue limit 64 packets
+      (queue depth/total drops/no-buffer drops) 3/40/0
+      (pkts output/bytes output) 960/768000
+      shape (average) cir 4000000, bc 16000, be 16000
+      target shape rate 4000000
+
+      Service-policy : MID
+
+        Class-map: DATA (match-all)
+          600 packets, 480000 bytes
+          5 minute offered rate 38000 bps, drop rate 0 bps
+          Match: dscp af21 (18)
+          Queueing
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 2/25/0
+          (pkts output/bytes output) 575/460000
+          shape (average) cir 2000000, bc 8000, be 8000
+          target shape rate 2000000
+
+          Service-policy : LEAF
+
+            queue stats for all priority classes:
+
+              queue limit 64 packets
+              (queue depth/total drops/no-buffer drops) 0/0/0
+              (pkts output/bytes output) 95/76000
+
+            Class-map: GOLD (match-any)
+              100 packets, 80000 bytes
+              5 minute offered rate 6000 bps, drop rate 0 bps
+              Match: dscp ef (46)
+              Priority: 256 kbps, burst bytes 6400, b/w exceed drops: 5
+
+            Class-map: class-default (match-any)
+              500 packets, 400000 bytes
+              5 minute offered rate 32000 bps, drop rate 0 bps
+              Match: any
+              queue limit 64 packets
+              (queue depth/total drops/no-buffer drops) 2/20/0
+              (pkts output/bytes output) 480/384000
+
+        Class-map: class-default (match-any)
+          400 packets, 320000 bytes
+          5 minute offered rate 26000 bps, drop rate 0 bps
+          Match: any
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 1/15/0
+          (pkts output/bytes output) 385/308000
+
+    Class-map: class-default (match-any)
+      70 packets, 5600 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: any
+      queue limit 64 packets
+      (queue depth/total drops/no-buffer drops) 0/0/0
+      (pkts output/bytes output) 70/5600
+
+ GigabitEthernet0/3
+
+  Service-policy input: MARK-IN
+
+    Class-map: VOICE-IN (match-any)
+      300 packets, 24000 bytes
+      5 minute offered rate 1000 bps, drop rate 0 bps
+      Match: ip dscp ef (46)
+        200 packets, 16000 bytes
+        5 minute rate 0 bps
+      Match: ip precedence 5
+        100 packets, 8000 bytes
+        5 minute rate 0 bps
+      QoS Set
+        dscp ef
+          Packets marked 300
+
+    Class-map: class-default (match-any)
+      12 packets, 9600 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: any
+      QoS Set
+        dscp cs1
+          Packets marked 12
+
+  Service-policy output: EDGE-OUT
+
+    Class-map: SCAVENGER (match-any)
+      30 packets, 24000 bytes
+      5 minute offered rate 2000 bps, drop rate 2000 bps
+      Match: dscp cs1 (8)
+      police:
+          cir 8000 bps, bc 1500 bytes
+        conformed 21 packets, 16800 bytes; actions:
+          drop
+        exceeded 9 packets, 7200 bytes; actions:
+          drop
+        conformed 1000 bps, exceed 1000 bps
+
+    Class-map: class-default (match-any)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: any

@@ -1,0 +1,26 @@
+
+ Serial2/0 
+  Service-policy output: policy1 (1050)
+    Class-map: class1 (match-all) (1051/1)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: ip precedence 0  (1052)
+      police:
+          cir 20 % bc 300 ms
+          cir 409500 bps, bc 15360 bytes
+          pir 40 % be 400 ms
+          pir 819000 bps, be 40960 bytes
+        conformed 0 packets, 0 bytes; actions:
+          transmit 
+        exceeded 0 packets, 0 bytes; actions:
+          drop 
+        violated 0 packets, 0 bytes; actions:
+          drop 
+        conformed 0 bps, exceed 0 bps, violate 0 bps
+    Class-map: class-default (match-any) (1054/0)
+      0 packets, 0 bytes
+      5 minute offered rate 0 bps, drop rate 0 bps
+      Match: any  (1055)
+        0 packets, 0 bytes
+        5 minute rate 0 bps
+

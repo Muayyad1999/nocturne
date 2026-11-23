@@ -21,10 +21,10 @@ interface:
 struct QosClass {
     interface: String,              // canonical interface name, as everywhere else
     direction: Direction,           // in | out
-    policy: String,                 // policy-map / queue tree / simple queue name
-    class: String,                  // class name; "class-default" is a class like any other
+    policy: String,                 // IOS: the policy-map. RouterOS: the menu the queue is in, "queue simple" or "queue tree"
+    class: String,                  // class name (RouterOS: the queue); "class-default" is a class like any other
     parent: Option<String>,         // the parent class or queue, for hierarchical policies
-    rate_bps: Option<u64>,          // configured: CIR, shape rate or max-limit
+    rate_bps: Option<u64>,          // configured: shape rate, policer CIR, priority rate, bandwidth guarantee or max-limit
     packets: Option<u64>,           // classified into this class
     bytes: Option<u64>,
     dropped_packets: Option<u64>,   // every drop, whatever the reason
@@ -39,7 +39,45 @@ struct QosClass {
 
 Every number is optional and uses the lenient deserialisers: a field the
 platform does not print is absent, never zero. The row is flat because a
-profile's `map` allows one level of nesting only.
+profile's `map` allows one level of nesting only. In JSON an absent number is
+`null`, like every other optional field of the model; `direction` is `"in"`
+or `"out"`. A row whose direction cannot be told is dropped and counted as a
+`partial` problem, never filed under a default. `interface` is empty where
+the platform attaches a policy to something that is not an interface.
+
+*A policy is a tree.* A class that holds a child policy is the `parent` of
+that policy's classes, and its counters include theirs: consumers add up one
+level, never the whole table.
+
+*What the two platforms fill.*
+
+| Field | `cisco_ios` | `mikrotik_routeros` |
+|---|---|---|
+| `interface` | the interface the policy is attached to | a simple queue's `target` when that is one interface; empty for addresses and for every tree queue (the listing names a queue's immediate parent only, not the interface at the root) |
+| `direction` | the policy's (`input` → `in`) | simple queue: two rows, upload → `in`, download → `out` (seen from the router, as the target sends and receives); tree queue: `out` |
+| `policy`, `class` | policy-map, class | `queue simple` / `queue tree`, the queue's name |
+| `parent` | the class the nested policy sits in | the queue's `parent` as printed — another queue, an interface or `global` — when printed and not `none` |
+| `rate_bps` | the first of: shaper rate, policer CIR, priority rate, bandwidth guarantee | never: the statistics listing does not print `max-limit` |
+| `queue_dropped_packets` | the queue's `total drops`, plus a priority class's `b/w exceed drops` (it is held to its rate only while the interface is congested) | never: RouterOS counts one kind of drop |
+| `police_dropped_packets` | the packets of each kind (conformed, exceeded, violated) whose action is `drop`; absent without a policer, and where the policer counts bytes only (Catalyst 6500) | never |
+| `dropped_packets` | both of the above together, when every counter the class prints is known | `dropped` |
+| `dropped_bytes` | only where the one thing in the class that drops counts bytes (a policer; before HQF the priority queue) | never |
+| `queued_packets` | `queue depth` | `queued-packets` |
+| `offered_rate_bps`, `drop_rate_bps` | the class's own `offered rate` / `drop rate` | never: RouterOS's `rate` is what passes the queue, not what is offered to it |
+
+`cisco_ios` does not read the queue counters printed under `queue stats for
+all priority classes` (they belong to no class), nor a policy attached below
+an interface (a Frame Relay DLCI, an ATM VC, a service instance): that
+output fails the read with an error that says so, as does a class whose place
+in the tree cannot be told from its indentation. So does an answer that is
+not a listing at all (text before the first interface other than the lines
+of `exec prompt timestamp` or a log message), a policy without a name and a
+class before its interface's policy is named: the read never files a class
+under a name left over from another interface, and never reads text it does
+not understand as "no policy attached". A policer's drops are read only
+where the answer says what it does with both the conforming and the
+exceeding packets. `mikrotik_routeros` fails the read of a queue listing
+that is printed as a table instead of `key=value`.
 
 *Unknown and empty stay different.* A device with no policy attached answers
 with zero rows and that is stored as collected-and-empty. A failed read
@@ -62,16 +100,31 @@ that word must stay true. So a profile may say, per kind, that a read is not
 yet checked:
 
 ```yaml
-unverified: [qos]      # kinds whose parser has only met synthetic output
+unverified: [qos]      # kinds whose parser has not met output recorded from a real device
 ```
 
-* The profile test harness accepts synthetic captures for a kind listed
-  there, requires at least one, and **fails if a real capture exists for a
-  kind still listed** — the flag comes off the day a real recording arrives,
-  not later.
-* `collect.get` carries `unverified: true` on such a document, `monitor.qos`
-  carries it per device, and every screen that shows the data says "this read
-  has not been checked against a real <platform> device" above it.
+* A capture says what its files are, in `expect.yml`: `origin: recorded`
+  (the default), `documented` — a sample printed in the vendor's own
+  documentation, copied as it stands, with the page's address in `SOURCE.md` —
+  or `synthetic` (written by hand, or printed by the simulator). Only
+  `recorded` is real device output. The parsers here are tested against the
+  samples in Cisco's command reference and MikroTik's documentation, against
+  the simulator's output and against hand-written output, each labelled as
+  what it is.
+* The profile test harness accepts documented and synthetic captures for a
+  kind listed there, requires at least one the read succeeds on, and **fails
+  if a recorded capture exists for a kind still listed** — the flag comes off
+  the day a real recording arrives, not later. A documented sample does not
+  lift it.
+* `collect.get` carries `unverified: true` on such a document and
+  `collect.status` on its entry (the key is absent otherwise; it is said of
+  the read that produced the rows, when it was made, so rows handed to the
+  store by another feeder never carry it), `profiles.list` lists the kinds
+  per profile (`unverified: ["qos"]`), `monitor.qos` carries it per device,
+  and every screen that shows the data says "this read has not been checked
+  against a real <platform> device" above it. In Rust:
+  `Profile::is_unverified(kind)`, and `nocturne_app::collect::unverified(app,
+  device_id, kind)` for a device that has nothing stored yet.
 * `maturity` is untouched: lowering it would take write access away from the
   two platforms that have earned it.
 
@@ -147,8 +200,9 @@ So that a lab can show all of the above honestly:
   [kbps]`, `bandwidth {kbps|percent N}`, `police <bps>`, `shape average
   <bps>`, `set dscp …`, `service-policy CHILD`; `service-policy {input|output}
   NAME` on an interface; all rendered in `show running-config`.
-* A flow gains an optional `dscp` (default: none, which matches only
-  `class-default`), so traffic can be classified.
+* A flow gains an optional `dscp` (default: none, which matches no `match
+  dscp` — not even `default` — and so falls to `class-default` unless a
+  `match access-group` catches it by address), so traffic can be classified.
 * The drop model is analytic and deterministic: per tick, a class is offered
   the bytes of the flows that match it; a policer or a shaper drops what
   exceeds its rate integrated over the tick; a `priority` class is served
@@ -156,7 +210,12 @@ So that a lab can show all of the above honestly:
   proportion; what an interface cannot carry is dropped from the classes
   over their share, `class-default` first. No clock is read and no generator
   runs: every counter is a pure function of the world's seed, the flows, the
-  policy and simulated time.
+  policy and simulated time. An interface without a policy carries no more
+  than its speed either (one queue, tail drop). Queue drops, with or without
+  a policy, also count as the interface's output drops; policer drops do not.
+  Policies attach to physical interfaces only, because that is where flow
+  traffic is accounted. The details, and every line of the output with the
+  example in Cisco's reference it comes from, are in `docs/dev/spec-netsim.md`.
 * `show policy-map`, `show policy-map interface [NAME]` in IOS format.
   `show policy-map interface` on a device with no policy answers with
   nothing, as hardware does.
@@ -211,6 +270,12 @@ are really on the wire.
   byte, IP precedence, ECN bits, the per-hop behaviour and its usual use.
 * `tools.qos.voice {codec, calls, link: ethernet|ppp|mpls|…, crtp?, vad?}` →
   bandwidth per call and in total, with the header arithmetic shown.
+  Also optional: `packet_ms?` (voice per packet) and `l2_bytes?` (with
+  `link: "custom"`).
+
+Both methods' full parameter and result shapes, and where every codec and
+link figure comes from, are in `docs/dev/features/toolbox.md` ("QoS
+calculators") and `docs/dev/spec-tools.md` ("Data").
 
 ## The interface
 

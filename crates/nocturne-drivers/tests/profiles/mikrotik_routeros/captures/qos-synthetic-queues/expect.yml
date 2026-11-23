@@ -1,0 +1,94 @@
+origin: synthetic
+kinds:
+  qos:
+    # Three simple queues in use, each read as two rows, and three tree
+    # queues; the disabled queue of each menu is left out.
+    count: 9
+    rows:
+      # The upload halves come first: what the target sends, arriving at the router.
+      - class: office
+        policy: queue simple
+        direction: in
+        # the target is addresses, not an interface
+        interface: ""
+        parent: null
+        # "packets=1403226/7654321", "bytes=184467440/9876543210"
+        packets: 1403226
+        bytes: 184467440
+        # "dropped=12/20417", "queued-packets=0/30"
+        dropped_packets: 12
+        queued_packets: 0
+        queue_dropped_packets: null
+        police_dropped_packets: null
+        rate_bps: null
+      - class: "dhcp-ds<6C:3B:6B:7C:41:3E>"
+        policy: queue simple
+        direction: in
+        # two addresses are not an interface either
+        interface: ""
+        packets: 64
+        bytes: 5120
+        dropped_packets: 0
+      # The comment line above the item does not hide it, and the name has a space.
+      - class: guest wifi
+        policy: queue simple
+        direction: in
+        # "target=bridge-guest": one interface
+        interface: bridge-guest
+        packets: 30400
+        bytes: 7300000
+        dropped_packets: 0
+        queued_packets: 0
+      # Then the download halves: what goes out to the target.
+      - class: office
+        policy: queue simple
+        direction: out
+        interface: ""
+        packets: 7654321
+        # beyond 32 bits
+        bytes: 9876543210
+        # the item wraps: "dropped=12/20417" is on its second line
+        dropped_packets: 20417
+        queued_packets: 30
+      - class: "dhcp-ds<6C:3B:6B:7C:41:3E>"
+        policy: queue simple
+        direction: out
+        packets: 96
+        bytes: 71040
+        dropped_packets: 0
+      - class: guest wifi
+        policy: queue simple
+        direction: out
+        interface: bridge-guest
+        packets: 110200
+        bytes: 156000000
+        dropped_packets: 835
+      # The tree.
+      - class: wan-up
+        policy: queue tree
+        direction: out
+        # the name as printed; that it is an interface is not something the listing says
+        parent: ether1
+        interface: ""
+        packets: 1203456
+        bytes: 912345678
+        dropped_packets: 4521
+        queued_packets: 20
+        queue_dropped_packets: null
+        police_dropped_packets: null
+      - class: voip
+        policy: queue tree
+        direction: out
+        parent: wan-up
+        packets: 234567
+        bytes: 45678901
+        dropped_packets: 0
+        queued_packets: 0
+      - class: bulk
+        policy: queue tree
+        direction: out
+        parent: wan-up
+        packets: 968889
+        bytes: 866666777
+        dropped_packets: 4521
+        queued_packets: 20

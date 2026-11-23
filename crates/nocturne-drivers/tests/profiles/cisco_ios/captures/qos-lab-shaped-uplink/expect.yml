@@ -1,0 +1,65 @@
+origin: synthetic
+kinds:
+  qos:
+    count: 4
+    rows:
+      # The class of the attached policy WAN-EDGE: the shaper.
+      - class: class-default
+        interface: GigabitEthernet0/1
+        direction: out
+        policy: WAN-EDGE
+        parent: null
+        # "shape (average) cir 5000000, bc 20000, be 20000"
+        rate_bps: 5000000
+        packets: 9843
+        bytes: 7875000
+        # "(queue depth/total drops/no-buffer drops) 64/2031/0"
+        queued_packets: 64
+        queue_dropped_packets: 2031
+        dropped_packets: 2031
+        police_dropped_packets: null
+        dropped_bytes: null
+        offered_rate_bps: 206000
+        drop_rate_bps: 42000
+      # "Service-policy : WAN-QUEUE". The queue counters under "queue stats
+      # for all priority classes" (0/0/0) come before VOICE and are not its own.
+      - class: VOICE
+        interface: GigabitEthernet0/1
+        direction: out
+        policy: WAN-QUEUE
+        parent: class-default
+        # "Priority: 1000 kbps, burst bytes 25000, b/w exceed drops: 0"
+        rate_bps: 1000000
+        packets: 1250
+        bytes: 1000000
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        queued_packets: null
+        offered_rate_bps: 26000
+        drop_rate_bps: 0
+      - class: VIDEO
+        policy: WAN-QUEUE
+        parent: class-default
+        # "bandwidth 40% (2000 kbps)"
+        rate_bps: 2000000
+        packets: 2343
+        bytes: 1875000
+        queued_packets: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        offered_rate_bps: 49000
+      # The same drops as the shaper's class above it: a parent's counters
+      # include its children's.
+      - class: class-default
+        interface: GigabitEthernet0/1
+        direction: out
+        policy: WAN-QUEUE
+        parent: class-default
+        rate_bps: null
+        packets: 6250
+        bytes: 5000000
+        queued_packets: 64
+        queue_dropped_packets: 2031
+        dropped_packets: 2031
+        offered_rate_bps: 131000
+        drop_rate_bps: 42000

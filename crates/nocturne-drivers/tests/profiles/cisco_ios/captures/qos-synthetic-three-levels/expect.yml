@@ -1,0 +1,101 @@
+origin: synthetic
+kinds:
+  qos:
+    count: 10
+    rows:
+      - class: SITE-A
+        interface: GigabitEthernet0/2
+        direction: out
+        policy: TOP
+        parent: null
+        rate_bps: 4000000
+        packets: 1000
+        bytes: 800000
+        queued_packets: 3
+        queue_dropped_packets: 40
+      # One level in: "Service-policy : MID" under SITE-A.
+      - class: DATA
+        interface: GigabitEthernet0/2
+        direction: out
+        policy: MID
+        parent: SITE-A
+        rate_bps: 2000000
+        packets: 600
+        queued_packets: 2
+        queue_dropped_packets: 25
+      # Two levels in: "Service-policy : LEAF" under DATA.
+      - class: GOLD
+        interface: GigabitEthernet0/2
+        direction: out
+        policy: LEAF
+        parent: DATA
+        # "Priority: 256 kbps, burst bytes 6400, b/w exceed drops: 5"
+        rate_bps: 256000
+        packets: 100
+        queue_dropped_packets: 5
+        dropped_packets: 5
+        queued_packets: null
+      - class: class-default
+        policy: LEAF
+        parent: DATA
+        packets: 500
+        queued_packets: 2
+        queue_dropped_packets: 20
+      # Back out one level: this class-default is MID's, beside DATA.
+      - class: class-default
+        policy: MID
+        parent: SITE-A
+        rate_bps: null
+        packets: 400
+        queued_packets: 1
+        queue_dropped_packets: 15
+      # And out again: the attached policy's own.
+      - class: class-default
+        interface: GigabitEthernet0/2
+        policy: TOP
+        parent: null
+        packets: 70
+        bytes: 5600
+        queued_packets: 0
+        queue_dropped_packets: 0
+      # The next interface starts over, and nothing of the tree before it is left open.
+      - class: VOICE-IN
+        interface: GigabitEthernet0/3
+        direction: in
+        policy: MARK-IN
+        parent: null
+        # The class's own "300 packets, 24000 bytes" — not the 200 and 100
+        # that each of its two match statements counts beneath it.
+        packets: 300
+        bytes: 24000
+        offered_rate_bps: 1000
+        dropped_packets: null
+      - class: class-default
+        interface: GigabitEthernet0/3
+        direction: in
+        policy: MARK-IN
+        parent: null
+        packets: 12
+        bytes: 9600
+        # "Packets marked 12" is not a drop
+        dropped_packets: null
+      - class: SCAVENGER
+        interface: GigabitEthernet0/3
+        direction: out
+        policy: EDGE-OUT
+        parent: null
+        rate_bps: 8000
+        packets: 30
+        bytes: 24000
+        # conformed 21 and exceeded 9, and the action of both is "drop"
+        police_dropped_packets: 30
+        dropped_packets: 30
+        dropped_bytes: 24000
+        queue_dropped_packets: null
+        drop_rate_bps: 2000
+      - class: class-default
+        interface: GigabitEthernet0/3
+        direction: out
+        policy: EDGE-OUT
+        parent: null
+        packets: 0

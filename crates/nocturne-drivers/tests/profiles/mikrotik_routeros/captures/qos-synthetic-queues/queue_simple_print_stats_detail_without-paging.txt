@@ -1,0 +1,12 @@
+Flags: X - disabled, I - invalid, D - dynamic 
+ 0    name="office" target=192.168.88.0/24 rate=1213000bps/8452000bps total-rate=9665000bps packet-rate=412/903 total-packet-rate=1315 queued-bytes=0/45420 total-queued-bytes=45420 queued-packets=0/30 total-queued-packets=30 bytes=184467440/9876543210 total-bytes=10061010650 packets=1403226/7654321 
+      total-packets=9057547 dropped=12/20417 total-dropped=20429 
+
+ 1  D name="dhcp-ds<6C:3B:6B:7C:41:3E>" target=192.168.88.254/32,fdb4:4de7:a3f8:418c::/66 rate=0bps/0bps total-rate=0bps packet-rate=0/0 total-packet-rate=0 queued-bytes=0/0 total-queued-bytes=0 queued-packets=0/0 total-queued-packets=0 bytes=5120/71040 total-bytes=76160 packets=64/96 
+      total-packets=160 dropped=0/0 total-dropped=0 
+
+ 2    ;;; guest network, both ways
+      name="guest wifi" target=bridge-guest rate=96000bps/2048000bps total-rate=2144000bps packet-rate=40/180 total-packet-rate=220 queued-bytes=0/0 total-queued-bytes=0 queued-packets=0/0 total-queued-packets=0 bytes=7300000/156000000 total-bytes=163300000 packets=30400/110200 
+      total-packets=140600 dropped=0/835 total-dropped=835 
+
+ 3 X  name="retired" target=10.9.9.9/32 rate=0bps/0bps total-rate=0bps packet-rate=0/0 total-packet-rate=0 queued-bytes=0/0 total-queued-bytes=0 queued-packets=0/0 total-queued-packets=0 bytes=1000/2000 total-bytes=3000 packets=10/20 total-packets=30 dropped=1/2 total-dropped=3 

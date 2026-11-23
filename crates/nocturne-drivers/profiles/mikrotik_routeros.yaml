@@ -31,8 +31,9 @@ vendor: MikroTik
 os: RouterOS
 description: >-
   MikroTik RouterOS 6 and 7 (hEX, hAP, RB, CCR, CRS, CHR). Reads interfaces,
-  addresses, VLANs, neighbours, bridge hosts, ARP, routes, health and the
-  RouterBOARD inventory; configuration is read with `/export terse`.
+  addresses, VLANs, neighbours, bridge hosts, ARP, routes, health, the
+  RouterBOARD inventory and the counters of simple and tree queues;
+  configuration is read with `/export terse`.
 ntc_platform: mikrotik_routeros
 # Every kind below is checked against output recorded from real RouterOS
 # devices (tests/profiles/mikrotik_routeros/captures/). Three steps are the
@@ -41,6 +42,13 @@ ntc_platform: mikrotik_routeros
 # `/system health print`. Each of them only adds to rows another, recorded,
 # step has already made.
 maturity: verified
+# The queue statistics are the exception to the paragraph above: no recording
+# of them from a real device exists yet. Their steps are tested against the
+# one sample in MikroTik's documentation and against hand-written output, and
+# everything that shows the data says so. The day a real recording is added
+# under tests/profiles/mikrotik_routeros/captures/ the profile test fails
+# until the kind is taken off this list.
+unverified: [qos]
 # `vlan10@bond1`, `sfp-sfpplus1`, `ether2_BOX`: RouterOS names are free text
 # and must not be rewritten by the Cisco abbreviation rules.
 interface_names: verbatim
@@ -370,6 +378,72 @@ collect:
         description: board_name
         part_id: model
         serial: serial_number
+
+  qos:
+    # RouterOS has no policy-maps: it has queues, in two menus. A row's
+    # `policy` says which menu the queue is in and its `class` is the queue.
+    #
+    # `stats` asks for the counters, `detail` for the property=value form
+    # whatever the menu's default is. The listing does not print `max-limit`,
+    # so these rows carry no configured rate.
+    #
+    # A simple queue counts both ways at once, as `upload/download` seen from
+    # its target: upload is what the target sends, which reaches the router
+    # (`in`), download what goes out to it (`out`). So each queue is read
+    # twice, once for each half, and the command still runs once. A value
+    # that is not exactly two numbers with a `/` between them is not a pair,
+    # and neither half is read from it.
+    #
+    # RouterOS counts one kind of drop — a packet the queue had no room
+    # for — and does not tell a rate limit from congestion, so neither of
+    # the two fields that would tell them apart is filled.
+    - command: /queue simple print stats detail without-paging
+      parser: kv
+      # A disabled or invalid queue passes no traffic.
+      when: &queue_in_use "'X' not in flags and 'I' not in flags"
+      map:
+        policy: "'queue simple'"
+        class: name
+        parent: &queue_parent "parent if parent and parent != 'none' else none"
+        # A queue's target is an interface or addresses. Only one interface
+        # is an interface; an address, or a list, has none to name.
+        interface: &queue_interface >-
+          target if target and not target is matching('[,:/]|^\d{1,3}(\.\d{1,3}){3}$') else none
+        direction: "'in'"
+        packets: packets | regex_search('^(\d+)/\d+$')
+        bytes: bytes | regex_search('^(\d+)/\d+$')
+        dropped_packets: dropped | regex_search('^(\d+)/\d+$')
+        queued_packets: queued_packets | regex_search('^(\d+)/\d+$')
+    - command: /queue simple print stats detail without-paging
+      parser: kv
+      when: *queue_in_use
+      map:
+        policy: "'queue simple'"
+        class: name
+        parent: *queue_parent
+        interface: *queue_interface
+        direction: "'out'"
+        packets: packets | regex_search('^\d+/(\d+)$')
+        bytes: bytes | regex_search('^\d+/(\d+)$')
+        dropped_packets: dropped | regex_search('^\d+/(\d+)$')
+        queued_packets: queued_packets | regex_search('^\d+/(\d+)$')
+    # A queue of the tree shapes one way: what leaves through the interface,
+    # or the `global` point, at the root of its tree. The listing names only
+    # the queue's immediate parent — an interface, `global` or another queue,
+    # and nothing says which — so `parent` is that name as printed and
+    # `interface` is left empty rather than guessed.
+    - command: /queue tree print stats detail without-paging
+      parser: kv
+      when: *queue_in_use
+      map:
+        policy: "'queue tree'"
+        class: name
+        parent: *queue_parent
+        direction: "'out'"
+        packets: packets
+        bytes: bytes
+        dropped_packets: dropped
+        queued_packets: queued_packets
 
 snmp:
   cpu:

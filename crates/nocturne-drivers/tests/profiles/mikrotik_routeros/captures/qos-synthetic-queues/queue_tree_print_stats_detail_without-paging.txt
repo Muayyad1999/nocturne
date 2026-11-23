@@ -1,0 +1,5 @@
+Flags: X - disabled, I - invalid 
+ 0   name="wan-up" parent=ether1 packet-mark="" rate=1840000 packet-rate=310 queued-bytes=30280 queued-packets=20 bytes=912345678 packets=1203456 dropped=4521 
+ 1   name="voip" parent=wan-up packet-mark=voip rate=96000 packet-rate=50 queued-bytes=0 queued-packets=0 bytes=45678901 packets=234567 dropped=0 
+ 2   name="bulk" parent=wan-up packet-mark=bulk rate=1744000 packet-rate=260 queued-bytes=30280 queued-packets=20 bytes=866666777 packets=968889 dropped=4521 
+ 3 X name="old-limit" parent=global packet-mark=legacy rate=0 packet-rate=0 queued-bytes=0 queued-packets=0 bytes=11 packets=1 dropped=1 

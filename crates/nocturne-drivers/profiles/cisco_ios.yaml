@@ -15,6 +15,12 @@ description: >-
 extends: _cli_ios_like
 ntc_platform: cisco_ios
 maturity: verified
+# Reads whose parser has not met output recorded from a real IOS device yet:
+# it is tested against samples printed in Cisco's documentation and against
+# Nocturne's own simulator, and everything that shows the data says so. The
+# day a real recording is added under tests/profiles/cisco_ios/captures/ the
+# profile test fails until the kind is taken off this list.
+unverified: [qos]
 
 detect:
   banner:
@@ -266,6 +272,272 @@ collect:
         description: DESCR
         part_id: PID
         serial: SN
+
+  qos:
+    # Per-class statistics of every policy attached to an interface (MQC).
+    # A device with no policy attached answers with nothing, which is a
+    # read of zero rows and not a failure.
+    #
+    # The template is written here because the bundled library has none for
+    # this command: `{ntc: auto}` would resolve to the template for `show
+    # policy-map`, the configured policy, which reads this output without an
+    # error and throws every counter away.
+    #
+    # How the output is read:
+    #   * A listing is an interface, then `Service-policy input|output: NAME`,
+    #     then that policy's classes. Each has to be there in that order: text
+    #     that names no interface first, a policy without a name and a class
+    #     before its policy stop the read with an error, because the rows
+    #     would otherwise be filed under whatever was named last — or, where
+    #     nothing was recognised at all, the answer would pass for "no policy
+    #     attached".
+    #   * A policy is a tree and the output shows it by indentation alone:
+    #     IOS sets the classes of the attached policy 4 columns in, and a
+    #     policy inside a class (`Service-policy : NAME`) with its classes 4
+    #     further each time. Not every release starts at the same column, so
+    #     the columns are read in bands: a class 3 to 6 columns in belongs to
+    #     the attached policy; one 7 to 10 in to the policy announced inside
+    #     a class of it; one 11 to 14 in to a policy inside that. A class that
+    #     stands further in than any policy announced for it belongs to the
+    #     nearest one that was: the attached policy, shown further in. A class
+    #     outside those columns, a fourth level, or a policy attached below
+    #     the interface (a DLCI, a VC, a service instance) stops the read
+    #     with an error instead of filing counters under a guess. Columns are
+    #     counted in spaces; a tab has no column and is an error too.
+    #   * `queue stats for all priority classes:` introduces queue counters
+    #     that belong to no class; they are skipped up to the next class.
+    #   * A match-any class repeats `N packets, M bytes` once per match
+    #     statement; the class's own counters are the first.
+    - command: show policy-map interface
+      parser:
+        textfsm: |
+          Value Filldown INTERFACE ([A-Za-z][\w\-]*\d[\w/.:\-]*)
+          Value Filldown DIRECTION (input|output)
+          Value Filldown POLICY1 (\S+)
+          Value Filldown POLICY2 (\S*)
+          Value Filldown POLICY3 (\S*)
+          Value Filldown CLASS1 (\S+)
+          Value Filldown CLASS2 (\S+)
+          Value Required CLASS (\S+)
+          Value INDENT ( {3,14})
+          Value List PACKETS (\d+)
+          Value List BYTES (\d+)
+          Value OFFERED_RATE (\d+)
+          Value DROP_RATE (\d+)
+          Value QUEUE_DEPTH (\d+)
+          Value QUEUE_DROPS (\d+)
+          Value QUEUE_DROP_BYTES (\d+)
+          Value PRIORITY_KBPS (\d+)
+          Value PRIORITY_DROPS (\d+)
+          Value BANDWIDTH_KBPS (\d+)
+          Value SHAPE_RATE (\d+)
+          Value POLICE (police)
+          Value POLICE_CIR (\d+)
+          Value CONFORM_PACKETS (\d+)
+          Value CONFORM_BYTES (\d+)
+          Value CONFORM_ACTION (drop|transmit|set-\S+|\S+-transmit)
+          Value EXCEED_PACKETS (\d+)
+          Value EXCEED_BYTES (\d+)
+          Value EXCEED_ACTION (drop|transmit|set-\S+|\S+-transmit)
+          Value VIOLATE_PACKETS (\d+)
+          Value VIOLATE_BYTES (\d+)
+          Value VIOLATE_ACTION (drop|transmit|set-\S+|\S+-transmit)
+
+          # Before any interface is named. A device with nothing attached
+          # prints nothing; text that is not a listing is not "nothing".
+          Start
+            ^\s*$$
+            # `exec prompt timestamp` puts two lines before every answer: the
+            # load, and the time with where it comes from.
+            ^Load for \w+ secs
+            ^Time source is
+            ^No time source
+            # A log message that reached the terminal in the middle of the answer.
+            ^.*%[A-Z0-9_]+-\d-[A-Z0-9_]+:
+            ^\s{0,2}${INTERFACE}\s*$$ -> Target
+            ^\s{0,2}[A-Za-z][\w\-]*\d[\w/.:\-]*\s+\S -> Error "a policy attached below the interface (a DLCI, a VC, a service instance) is not read by this profile"
+            ^. -> Error "the answer does not begin with the name of an interface, so it is not a listing of attached policies this profile can read"
+
+          # An interface is named and its policy is not yet.
+          Target
+            ^\s{0,2}${INTERFACE}\s*$$
+            ^\s{0,2}[A-Za-z][\w\-]*\d[\w/.:\-]*\s+\S -> Error "a policy attached below the interface (a DLCI, a VC, a service instance) is not read by this profile"
+            # A newly attached policy has no policy open inside it yet: the
+            # names of the last ones are emptied (their patterns also match
+            # nothing, and here they have to).
+            ^\s*${POLICY2}[Ss]ervice-policy\s+(?:input|output)\s*:\s*\S -> Continue
+            ^\s*${POLICY3}[Ss]ervice-policy\s+(?:input|output)\s*:\s*\S -> Continue
+            ^\s*[Ss]ervice-policy\s+${DIRECTION}\s*:\s*${POLICY1} -> Policy
+            ^\s*[Ss]ervice-policy\b -> Error "an interface is followed by something other than `Service-policy input|output: NAME`"
+            ^\s*[Cc]lass-map\s*: -> Error "a class before the policy of its interface is named, so the policy it belongs to cannot be told"
+
+          Policy
+            # An interface, a policy and a class each end the class before
+            # them. It is recorded first, while the names it was read under
+            # still stand.
+            ^\s{0,2}[A-Za-z][\w\-]*\d[\w/.:\-]*\s*$$ -> Continue.Record
+            ^\s{0,2}${INTERFACE}\s*$$ -> Target
+            # A row of a WRED table (`af11  0/0  0/0  0/0  20  40  1/10`).
+            # Releases before HQF set the table at the left margin, where a
+            # row that begins `af11` or `cs1` would look like the line below.
+            ^\s*\S+\s+\d+/\d+\s+\d+/\d+\s+\d+/\d+\s
+            # `Serial3/1.1: DLCI 201 -`: the policy hangs below the interface,
+            # and a row has nowhere to say so. Read on, and its classes would
+            # be filed under the interface before it.
+            ^\s{0,2}[A-Za-z][\w\-]*\d[\w/.:\-]*\s+\S -> Error "a policy attached below the interface (a DLCI, a VC, a service instance) is not read by this profile"
+            ^\s*[Ss]ervice-policy\s+(?:input|output)\b -> Continue.Record
+            ^\s*${POLICY2}[Ss]ervice-policy\s+(?:input|output)\s*:\s*\S -> Continue
+            ^\s*${POLICY3}[Ss]ervice-policy\s+(?:input|output)\s*:\s*\S -> Continue
+            ^\s*[Ss]ervice-policy\s+${DIRECTION}\s*:\s*${POLICY1}
+            ^\s*[Ss]ervice-policy\s+(?:input|output)\b -> Error "a `Service-policy input|output` line without the name of a policy"
+            ^\s*[Ss]ervice-policy\s*:\s*$$ -> Error "a `Service-policy :` line without the name of a policy"
+            # A policy opened inside a class of the attached policy closes
+            # whatever was open inside the one before it.
+            ^ {5,8}${POLICY3}[Ss]ervice-policy\s*: -> Continue
+            ^ {5,8}[Ss]ervice-policy\s*:\s*${POLICY2}
+            ^ {9,12}[Ss]ervice-policy\s*:\s*${POLICY3}
+            ^\s*[Ss]ervice-policy\b -> Error "a policy nested deeper than three levels, or indented in a way this profile does not know"
+            ^\s+[Qq]ueue stat(?:istic)?s for all priority classes: -> PriorityQueues
+            ^\s*[Cc]lass-map\s*: -> Continue.Record
+            ^ {3,6}[Cc]lass-map\s*:\s*${CLASS1}\s+\(match -> Continue
+            ^ {7,10}[Cc]lass-map\s*:\s*${CLASS2}\s+\(match -> Continue
+            ^${INDENT}[Cc]lass-map\s*:\s*${CLASS}\s+\(match
+            ^\s*[Cc]lass-map\s*: -> Error "a class whose line is incomplete or at an indentation this profile does not know, so its place in the policy cannot be told"
+            ^\s+${PACKETS}\s+packets,\s+${BYTES}\s+bytes\s*$$
+            # Catalyst 6500 and 7600 count packets only.
+            ^\s+${PACKETS}\s+packets\s*$$
+            ^\s+\d+\s+(?:minute|second)s?\s+offered rate\s+${OFFERED_RATE}\s+bps,\s+drop rate\s+${DROP_RATE}\s+bps
+            ^\s+\((?:queue )?depth/total drops/no-buffer drops\)\s+${QUEUE_DEPTH}/${QUEUE_DROPS}/\d+
+            # Releases before HQF (12.4(20)T): a priority class has no depth.
+            ^\s+\(total drops/bytes drops\)\s+${QUEUE_DROPS}/${QUEUE_DROP_BYTES}\s*$$
+            # IOS XE, under `Account QoS statistics` / `Queueing`.
+            ^\s+Packets dropped\s+${QUEUE_DROPS}\s+packets/${QUEUE_DROP_BYTES}\s+bytes
+            # The rate and the drops of a priority class are on one line; the
+            # drops are read whatever the line says about the rate.
+            ^\s+Priority:\s+(?:\d+%\s+\()?${PRIORITY_KBPS}\s+kbps\b -> Continue
+            ^\s+Priority:.*\bb/w exceed drops:\s+${PRIORITY_DROPS}\s*$$
+            ^\s+[Bb]andwidth\s+(?:\d+%\s+\()?${BANDWIDTH_KBPS}\s+\(?kbps\)?
+            # The comma has to be there: a rate is not read from a line that
+            # ends in the middle of it.
+            ^\s+shape\s+\(\w+\)\s+cir\s+${SHAPE_RATE},
+            ^\s+${POLICE}:\s*$$
+            ^\s+cir\s+${POLICE_CIR}\s+bps
+            # `police rate N`, as IOS XE prints it. The burst has to follow:
+            # header compression prints a `rate N bps` of its own.
+            ^\s+rate\s+${POLICE_CIR}\s+bps,\s+burst\s
+            # A policer names what it does with each kind of packet on the
+            # next line (`actions:`) or, before 12.4, on the same one
+            # (`action: drop`). Only `drop` is a drop; the Catalyst 6500
+            # counts bytes alone. A counter whose action cannot be read is
+            # not read either.
+            ^\s+conformed\s+${CONFORM_PACKETS}\s+packets,\s+${CONFORM_BYTES}\s+bytes;\s+actions?:\s*$$ -> ConformAction
+            ^\s+conformed\s+${CONFORM_PACKETS}\s+packets,\s+${CONFORM_BYTES}\s+bytes;\s+actions?:\s*${CONFORM_ACTION}(?:\s|$$)
+            ^\s+conformed\s+${CONFORM_BYTES}\s+bytes;\s+actions?:\s*$$ -> ConformAction
+            ^\s+exceeded\s+${EXCEED_PACKETS}\s+packets,\s+${EXCEED_BYTES}\s+bytes;\s+actions?:\s*$$ -> ExceedAction
+            ^\s+exceeded\s+${EXCEED_PACKETS}\s+packets,\s+${EXCEED_BYTES}\s+bytes;\s+actions?:\s*${EXCEED_ACTION}(?:\s|$$)
+            ^\s+exceeded\s+${EXCEED_BYTES}\s+bytes;\s+actions?:\s*$$ -> ExceedAction
+            ^\s+violated\s+${VIOLATE_PACKETS}\s+packets,\s+${VIOLATE_BYTES}\s+bytes;\s+actions?:\s*$$ -> ViolateAction
+            ^\s+violated\s+${VIOLATE_PACKETS}\s+packets,\s+${VIOLATE_BYTES}\s+bytes;\s+actions?:\s*${VIOLATE_ACTION}(?:\s|$$)
+            ^\s+violated\s+${VIOLATE_BYTES}\s+bytes;\s+actions?:\s*$$ -> ViolateAction
+
+          PriorityQueues
+            ^\s*[Cc]lass-map\s*: -> Continue.Record
+            ^ {3,6}[Cc]lass-map\s*:\s*${CLASS1}\s+\(match -> Continue
+            ^ {7,10}[Cc]lass-map\s*:\s*${CLASS2}\s+\(match -> Continue
+            ^${INDENT}[Cc]lass-map\s*:\s*${CLASS}\s+\(match -> Policy
+            ^\s*[Cc]lass-map\s*: -> Error "a class whose line is incomplete or at an indentation this profile does not know, so its place in the policy cannot be told"
+            ^\s*[Ss]ervice-policy\b -> Error "the queue statistics of the priority classes are not followed by a class"
+            ^\s{0,2}[A-Za-z][\w\-]*\d[\w/.:\-]*\s*$$ -> Error "the queue statistics of the priority classes are not followed by a class"
+
+          # The line after `actions:`. A log message may come between the two.
+          ConformAction
+            ^\s+${CONFORM_ACTION}(?:\s|$$) -> Policy
+            ^\s*$$
+            ^.*%[A-Z0-9_]+-\d-[A-Z0-9_]+:
+            ^. -> Error "a policer's `actions:` line is not followed by an action"
+
+          ExceedAction
+            ^\s+${EXCEED_ACTION}(?:\s|$$) -> Policy
+            ^\s*$$
+            ^.*%[A-Z0-9_]+-\d-[A-Z0-9_]+:
+            ^. -> Error "a policer's `actions:` line is not followed by an action"
+
+          ViolateAction
+            ^\s+${VIOLATE_ACTION}(?:\s|$$) -> Policy
+            ^\s*$$
+            ^.*%[A-Z0-9_]+-\d-[A-Z0-9_]+:
+            ^. -> Error "a policer's `actions:` line is not followed by an action"
+      map:
+        interface: INTERFACE
+        # A row whose direction cannot be told is refused, not guessed.
+        direction: "{'input': 'in', 'output': 'out'}[DIRECTION]"
+        # The policy open at the class's depth, and the class it sits in.
+        # Where no policy was announced that deep, the class belongs to the
+        # nearest one that was.
+        policy: >-
+          POLICY1 if INDENT | length < 7
+          else ((POLICY2 or POLICY1) if INDENT | length < 11
+                else (POLICY3 or POLICY2 or POLICY1))
+        class: CLASS
+        parent: >-
+          none if INDENT | length < 7
+          else ((CLASS1 if POLICY2 else none) if INDENT | length < 11
+                else (CLASS2 if POLICY3 else (CLASS1 if POLICY2 else none)))
+        # What the class is held to or promised, whichever it has: a shaper's
+        # rate, a policer's CIR, a priority rate, a bandwidth guarantee. The
+        # last two are printed in kbit/s; `priority` without a rate prints 0.
+        rate_bps: >-
+          (SHAPE_RATE | num) or (POLICE_CIR | num)
+          or ((PRIORITY_KBPS | num or 0) * 1000) or ((BANDWIDTH_KBPS | num or 0) * 1000) or none
+        packets: PACKETS | first
+        # Bytes only where every counter line of the class printed them: a
+        # class that counts packets alone can be followed by match statements
+        # that count both, and their bytes are not the class's.
+        bytes: BYTES | first if (BYTES | length) == (PACKETS | length) else none
+        # Congestion: what the class's queue dropped, and what a priority
+        # class lost for exceeding its rate, which it is only held to while
+        # the interface is congested.
+        queue_dropped_packets: >-
+          (QUEUE_DROPS | num or 0) + (PRIORITY_DROPS | num or 0)
+          if QUEUE_DROPS or PRIORITY_DROPS else none
+        # The policy doing its job: the packets of each kind whose action is
+        # `drop`. A policer that only re-marks has dropped nothing, and one
+        # that counts bytes alone does not say. A policer always prints what
+        # conformed and what exceeded: where either is missing, or its action
+        # is, the output is not whole and nothing is concluded from it.
+        police_dropped_packets: >-
+          ((CONFORM_PACKETS | num or 0) if CONFORM_ACTION == 'drop' else 0)
+          + ((EXCEED_PACKETS | num or 0) if EXCEED_ACTION == 'drop' else 0)
+          + ((VIOLATE_PACKETS | num or 0) if VIOLATE_ACTION == 'drop' else 0)
+          if CONFORM_PACKETS and CONFORM_ACTION and EXCEED_PACKETS and EXCEED_ACTION
+             and (VIOLATE_ACTION or not VIOLATE_PACKETS)
+          else none
+        # Both together, when every counter the class printed is known.
+        dropped_packets: >-
+          (QUEUE_DROPS | num or 0) + (PRIORITY_DROPS | num or 0)
+          + ((CONFORM_PACKETS | num or 0) if CONFORM_ACTION == 'drop' else 0)
+          + ((EXCEED_PACKETS | num or 0) if EXCEED_ACTION == 'drop' else 0)
+          + ((VIOLATE_PACKETS | num or 0) if VIOLATE_ACTION == 'drop' else 0)
+          if ((CONFORM_PACKETS and CONFORM_ACTION and EXCEED_PACKETS and EXCEED_ACTION
+               and (VIOLATE_ACTION or not VIOLATE_PACKETS))
+              or ((QUEUE_DROPS or PRIORITY_DROPS)
+                  and not (POLICE or CONFORM_ACTION or EXCEED_ACTION or VIOLATE_ACTION
+                           or CONFORM_PACKETS or EXCEED_PACKETS or VIOLATE_PACKETS
+                           or CONFORM_BYTES or EXCEED_BYTES or VIOLATE_BYTES)))
+          else none
+        # Bytes are only printed by the policer (and, before HQF, by the
+        # priority queue), so the total is known only where that is the one
+        # thing in the class that drops.
+        dropped_bytes: >-
+          (((CONFORM_BYTES | num or 0) if CONFORM_ACTION == 'drop' else 0)
+           + ((EXCEED_BYTES | num or 0) if EXCEED_ACTION == 'drop' else 0)
+           + ((VIOLATE_BYTES | num or 0) if VIOLATE_ACTION == 'drop' else 0))
+          if POLICE and CONFORM_BYTES and CONFORM_ACTION and EXCEED_BYTES and EXCEED_ACTION
+             and (VIOLATE_ACTION or not VIOLATE_BYTES) and not (QUEUE_DROPS or PRIORITY_DROPS)
+          else ((QUEUE_DROP_BYTES | num) if QUEUE_DROP_BYTES and not POLICE and not PRIORITY_DROPS else none)
+        queued_packets: QUEUE_DEPTH
+        offered_rate_bps: OFFERED_RATE
+        drop_rate_bps: DROP_RATE
 
 snmp:
   cpu:

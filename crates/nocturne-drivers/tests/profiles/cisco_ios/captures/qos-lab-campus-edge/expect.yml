@@ -1,0 +1,98 @@
+origin: synthetic
+kinds:
+  qos:
+    count: 8
+    rows:
+      # The uplink: "Service-policy output: WAN-OUT", the shaper.
+      - class: class-default
+        interface: GigabitEthernet0/0
+        direction: out
+        policy: WAN-OUT
+        parent: null
+        rate_bps: 6000000
+        packets: 17397
+        bytes: 13917904
+        # "(queue depth/total drops/no-buffer drops) 64/1483/0"
+        queued_packets: 64
+        queue_dropped_packets: 1483
+        dropped_packets: 1483
+        police_dropped_packets: null
+        offered_rate_bps: 361000
+        drop_rate_bps: 31000
+      - class: VOICE
+        interface: GigabitEthernet0/0
+        direction: out
+        policy: WAN-QUEUE
+        parent: class-default
+        # "Priority: 512 kbps, burst bytes 12800, b/w exceed drops: 0"
+        rate_bps: 512000
+        packets: 680
+        bytes: 544000
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        queued_packets: null
+        offered_rate_bps: 14000
+      - class: SCAVENGER
+        policy: WAN-QUEUE
+        parent: class-default
+        # "bandwidth 10% (600 kbps)"
+        rate_bps: 600000
+        packets: 7968
+        bytes: 6375000
+        queued_packets: 64
+        queue_dropped_packets: 1483
+        dropped_packets: 1483
+        offered_rate_bps: 165000
+        drop_rate_bps: 31000
+      - class: class-default
+        interface: GigabitEthernet0/0
+        policy: WAN-QUEUE
+        parent: class-default
+        rate_bps: null
+        packets: 8748
+        bytes: 6998904
+        queued_packets: 0
+        queue_dropped_packets: 0
+      # The same policy on two interfaces: each has its own counters.
+      - class: GUEST
+        interface: GigabitEthernet0/1
+        direction: in
+        policy: LAN-IN
+        parent: null
+        # "cir 3000000 bps, bc 93750 bytes"
+        rate_bps: 3000000
+        packets: 0
+        # a policer that has dropped nothing has dropped 0, which it prints
+        police_dropped_packets: 0
+        dropped_packets: 0
+        dropped_bytes: 0
+        queue_dropped_packets: null
+      - class: class-default
+        interface: GigabitEthernet0/1
+        direction: in
+        policy: LAN-IN
+        packets: 8748
+        bytes: 6998904
+        offered_rate_bps: 182000
+        dropped_packets: null
+      - class: GUEST
+        interface: GigabitEthernet0/2
+        direction: in
+        policy: LAN-IN
+        rate_bps: 3000000
+        packets: 13281
+        bytes: 10625000
+        # "exceeded 5312 packets, 4250000 bytes; actions:" / "drop". The
+        # "Packets marked 13281" under "QoS Set" are marked, not dropped.
+        police_dropped_packets: 5312
+        dropped_packets: 5312
+        dropped_bytes: 4250000
+        queue_dropped_packets: null
+        offered_rate_bps: 275000
+        drop_rate_bps: 110000
+      - class: class-default
+        interface: GigabitEthernet0/2
+        direction: in
+        policy: LAN-IN
+        packets: 680
+        bytes: 544000

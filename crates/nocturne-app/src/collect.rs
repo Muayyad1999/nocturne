@@ -1,5 +1,5 @@
 //! Structured device data: facts, interfaces, neighbours, VLANs, MAC and ARP
-//! tables, routes, health and hardware inventory.
+//! tables, routes, health, hardware inventory and per-class QoS statistics.
 //!
 //! Whatever reads a device — the CLI collectors, SNMP polling, the lab
 //! simulator — stores what it read here, one document per device and kind,
@@ -38,7 +38,26 @@ pub struct Stored {
     /// Where it came from: `cli`, `snmp`, `lab`, …
     pub source: String,
     /// Model rows as JSON (`nocturne_drivers::model::*`); single-row kinds hold one.
+    /// No rows is an answer — the device has none — and not a missing one:
+    /// a kind that could not be read has no document at all.
     pub rows: Vec<Value>,
+    /// The rows were read by a profile that has not yet met a real device of
+    /// its platform for this kind (`unverified: [<kind>]` in the profile), so
+    /// they may be wrong in ways no test has had the chance to show. Said of
+    /// the read that produced the rows, when it was made; absent when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unverified: bool,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+/// One kind as it was just read, on its way into the store.
+struct Reading {
+    kind: Kind,
+    rows: Vec<Value>,
+    unverified: bool,
 }
 
 impl Stored {
@@ -56,20 +75,15 @@ pub fn typed<T: DeserializeOwned>(stored: &Stored) -> Vec<T> {
     stored.typed()
 }
 
-fn put(
-    app: &App,
-    device_id: &str,
-    kind: Kind,
-    rows: Vec<Value>,
-    source: &str,
-    at: i64,
-) -> AppResult<Stored> {
+fn put(app: &App, device_id: &str, reading: Reading, source: &str, at: i64) -> AppResult<Stored> {
+    let kind = reading.kind;
     let stored = Stored {
         device_id: device_id.to_string(),
         kind,
         collected_at: at,
         source: source.to_string(),
-        rows,
+        rows: reading.rows,
+        unverified: reading.unverified,
     };
     if let Some(current) = app.store().get::<Stored>(&collection(kind), device_id)? {
         app.store()
@@ -94,16 +108,36 @@ pub fn store_many(
     data: Vec<(Kind, Vec<Value>)>,
     source: &str,
 ) -> AppResult<()> {
-    if data.is_empty() {
+    // Whoever hands rows in here read them some other way than through the
+    // device's profile, so what the profile says of its own reads does not
+    // apply to them.
+    let readings = data
+        .into_iter()
+        .map(|(kind, rows)| Reading {
+            kind,
+            rows,
+            unverified: false,
+        })
+        .collect();
+    store_readings(app, device_id, readings, source)
+}
+
+fn store_readings(
+    app: &App,
+    device_id: &str,
+    readings: Vec<Reading>,
+    source: &str,
+) -> AppResult<()> {
+    if readings.is_empty() {
         return Ok(());
     }
     // Refuse to record data for a device that does not exist (it would never be cleaned up).
     inventory::get(app, device_id)?;
     let at = now_ms();
-    let mut kinds = Vec::with_capacity(data.len());
-    for (kind, rows) in data {
-        put(app, device_id, kind, rows, source, at)?;
-        kinds.push(kind);
+    let mut kinds = Vec::with_capacity(readings.len());
+    for reading in readings {
+        kinds.push(reading.kind);
+        put(app, device_id, reading, source, at)?;
     }
     app.publish(
         "collect.updated",
@@ -147,6 +181,17 @@ pub fn forget(app: &App, device_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Whether what the device's profile reads for `kind` has yet to be checked
+/// against a real device of its platform. For saying so about a device that
+/// has nothing stored yet; a stored document says it of itself
+/// ([`Stored::unverified`]).
+pub fn unverified(app: &App, device_id: &str, kind: Kind) -> AppResult<bool> {
+    let device = inventory::get(app, device_id)?;
+    Ok(profiles::platform(app, &device.profile)?
+        .profile
+        .is_unverified(kind))
+}
+
 /// The kinds a platform's profile knows how to collect.
 pub fn supported_kinds(platform: &nocturne_drivers::profile::Platform) -> Vec<Kind> {
     Kind::ALL
@@ -176,16 +221,22 @@ pub async fn run_on(app: &App, cli: &mut Cli, kinds: &[Kind]) -> AppResult<Snaps
     };
     let collector = Collector::new(profiles::expressions(app));
     let snapshot = collector.collect(cli.session(), &platform, &kinds).await;
-    let data: Vec<(Kind, Vec<Value>)> = Kind::ALL
+    let readings: Vec<Reading> = Kind::ALL
         .into_iter()
-        .filter_map(|kind| snapshot.rows(kind).map(|rows| (kind, rows)))
+        .filter_map(|kind| {
+            snapshot.rows(kind).map(|rows| Reading {
+                kind,
+                rows,
+                unverified: platform.profile.is_unverified(kind),
+            })
+        })
         .collect();
     let source = if cli.device.lab.is_some() {
         "lab"
     } else {
         "cli"
     };
-    store_many(app, &cli.device.id, data, source)?;
+    store_readings(app, &cli.device.id, readings, source)?;
     Ok(snapshot)
 }
 
@@ -215,6 +266,9 @@ pub struct KindStatus {
     pub collected_at: i64,
     pub source: String,
     pub rows: usize,
+    /// See [`Stored::unverified`]; absent when false.
+    #[serde(skip_serializing_if = "is_false")]
+    pub unverified: bool,
 }
 
 pub fn status(app: &App, device_id: &str) -> AppResult<Vec<KindStatus>> {
@@ -226,6 +280,7 @@ pub fn status(app: &App, device_id: &str) -> AppResult<Vec<KindStatus>> {
                 collected_at: stored.collected_at,
                 source: stored.source,
                 rows: stored.rows.len(),
+                unverified: stored.unverified,
             });
         }
     }
@@ -566,6 +621,234 @@ mod tests {
             |problem| problem.kind == Kind::Routes && problem.code == ProblemCode::Unsupported
         ));
         assert_eq!(latest(app, &id, Kind::Routes).unwrap(), None);
+    }
+
+    /// What Nocturne's simulator prints for an input policy with a policer
+    /// (the sample `nocturne-drivers` keeps as
+    /// `tests/profiles/cisco_ios/captures/qos-lab-policed-input`). Synthetic:
+    /// no Cisco device printed it.
+    const POLICED_INPUT: &str = " GigabitEthernet0/0\n\n  Service-policy input: LIMIT-USERS\n\n    Class-map: USERS (match-all)\n      7812 packets, 6250000 bytes\n      5 minute offered rate 164000 bps, drop rate 98000 bps\n      Match: access-group name USERS\n      police:\n          cir 2000000 bps, bc 62500 bytes\n        conformed 3125 packets, 2500000 bytes; actions:\n          transmit\n        exceeded 4687 packets, 3750000 bytes; actions:\n          drop\n        conformed 65000 bps, exceed 98000 bps\n\n    Class-map: class-default (match-any)\n      0 packets, 0 bytes\n      5 minute offered rate 0 bps, drop rate 0 bps\n      Match: any\n";
+
+    /// Drive the fake device with the built-in IOS QoS read: the test profile
+    /// plus `cisco_ios`'s own `collect.qos` steps, listed as unverified the
+    /// way `cisco_ios` lists them.
+    async fn read_qos_like_cisco_ios(app: &App, device_id: &str) {
+        let ios = profiles::platform(app, "cisco_ios").unwrap();
+        assert!(
+            ios.profile.is_unverified(Kind::Qos),
+            "this test is about a read that is listed as unverified"
+        );
+        let steps = serde_json::to_string(&ios.profile.collect[&Kind::Qos]).unwrap();
+        // JSON is YAML, which spares the template a second round of quoting.
+        let profile = format!(
+            "id: test_ios_qos\nname: Test IOS with QoS\nextends: test_ios\nunverified: [qos]\ncollect: {{\"qos\": {steps}}}\n"
+        );
+        profiles::save(app, &profile).expect("the profile loads");
+        app.rpc(
+            "devices.update",
+            json!({"id": device_id, "profile": "test_ios_qos"}),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Run `collect.run` for one device and return its entry of the job's result.
+    async fn collect_run(app: &App, device_id: &str, kinds: Value) -> Value {
+        let started = app
+            .rpc("collect.run", json!({"id": device_id, "kinds": kinds}))
+            .await
+            .unwrap();
+        let job = jobs::wait(app, started["job_id"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(job.state, jobs::JobState::Succeeded);
+        job.result.unwrap()["devices"][0].clone()
+    }
+
+    #[tokio::test]
+    async fn no_policy_no_answer_and_never_asked_are_three_different_qos_documents() {
+        let lab = lab(builder(), &["R1"]).await;
+        let (app, id) = (&lab.app, lab.id("R1"));
+        let get = |previous: bool| {
+            app.rpc(
+                "collect.get",
+                json!({"id": id, "kind": "qos", "previous": previous}),
+            )
+        };
+
+        // A device type that has no QoS read: unsupported, and nothing stored.
+        let outcome = collect_run(app, &id, json!(["qos"])).await;
+        assert_eq!(outcome["collected"], json!([]));
+        assert_eq!(outcome["problems"][0]["code"], "unsupported");
+        assert_eq!(get(false).await.unwrap(), Value::Null);
+        assert!(!unverified(app, &id, Kind::Qos).unwrap());
+
+        read_qos_like_cisco_ios(app, &id).await;
+        assert!(unverified(app, &id, Kind::Qos).unwrap());
+        assert!(!unverified(app, &id, Kind::Facts).unwrap());
+
+        // The device refuses the command. That is a failed read: it is in
+        // the job's result, and there is still no document — not an empty one.
+        let outcome = collect_run(app, &id, json!([])).await;
+        assert!(
+            outcome["collected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|kind| kind != "qos"),
+            "{outcome}"
+        );
+        let problem = outcome["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|problem| problem["kind"] == "qos")
+            .unwrap_or_else(|| panic!("a qos problem in {outcome}"));
+        assert_eq!(problem["code"], "failed");
+        assert!(
+            problem["message"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid input"),
+            "{problem}"
+        );
+        assert_eq!(get(false).await.unwrap(), Value::Null);
+
+        // The device answers with nothing: no policy is attached. That is a
+        // read, and it is stored — with no rows, and with the caveat.
+        lab.fake("R1").with(|device| {
+            device
+                .outputs
+                .insert("show policy-map interface".into(), String::new());
+        });
+        let outcome = collect_run(app, &id, json!([])).await;
+        assert!(
+            outcome["collected"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("qos")),
+            "{outcome}"
+        );
+        let empty = get(false).await.unwrap();
+        assert_eq!(empty["rows"], json!([]));
+        assert_eq!(empty["unverified"], true);
+        assert_eq!(empty["source"], "lab");
+        assert_eq!(empty["kind"], "qos");
+
+        // A policy is attached: one row per class.
+        lab.fake("R1").with(|device| {
+            device
+                .outputs
+                .insert("show policy-map interface".into(), POLICED_INPUT.into());
+        });
+        collect_run(app, &id, json!(["qos"])).await;
+        let shown = get(false).await.unwrap();
+        assert_eq!(shown["unverified"], true);
+        assert_eq!(
+            shown["rows"],
+            json!([
+                {
+                    "interface": "GigabitEthernet0/0",
+                    "direction": "in",
+                    "policy": "LIMIT-USERS",
+                    "class": "USERS",
+                    "parent": null,
+                    "rate_bps": 2_000_000,
+                    "packets": 7812,
+                    "bytes": 6_250_000,
+                    "dropped_packets": 4687,
+                    "dropped_bytes": 3_750_000,
+                    "queue_dropped_packets": null,
+                    "police_dropped_packets": 4687,
+                    "queued_packets": null,
+                    "offered_rate_bps": 164_000,
+                    "drop_rate_bps": 98_000,
+                },
+                {
+                    "interface": "GigabitEthernet0/0",
+                    "direction": "in",
+                    "policy": "LIMIT-USERS",
+                    "class": "class-default",
+                    "parent": null,
+                    "rate_bps": null,
+                    "packets": 0,
+                    "bytes": 0,
+                    "dropped_packets": null,
+                    "dropped_bytes": null,
+                    "queue_dropped_packets": null,
+                    "police_dropped_packets": null,
+                    "queued_packets": null,
+                    "offered_rate_bps": 0,
+                    "drop_rate_bps": 0,
+                },
+            ])
+        );
+        // The read before it — the empty one — is the previous generation.
+        assert_eq!(get(true).await.unwrap()["rows"], json!([]));
+        let status = app.rpc("collect.status", json!({"id": id})).await.unwrap();
+        let qos = status
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["kind"] == "qos")
+            .unwrap_or_else(|| panic!("qos in {status}"));
+        assert_eq!(
+            (&qos["rows"], &qos["unverified"]),
+            (&json!(2), &json!(true))
+        );
+
+        // A kind the profile reads with a checked parser says nothing of the sort.
+        let facts = app
+            .rpc("collect.get", json!({"id": id, "kind": "facts"}))
+            .await
+            .unwrap();
+        assert_eq!(facts["rows"][0]["hostname"], "R1");
+        assert_eq!(facts.get("unverified"), None, "{facts}");
+        // Neither do rows that were handed in rather than read through the profile.
+        store(app, &id, Kind::Arp, vec![], "snmp").unwrap();
+        let arp = app
+            .rpc("collect.get", json!({"id": id, "kind": "arp"}))
+            .await
+            .unwrap();
+        assert_eq!(arp.get("unverified"), None, "{arp}");
+
+        // The device stops answering. The failure is reported, and what was
+        // read before stays — it is not replaced by "no policy".
+        lab.fake("R1").with(|device| {
+            device.outputs.remove("show policy-map interface");
+        });
+        let outcome = collect_run(app, &id, json!(["qos"])).await;
+        assert_eq!(outcome["collected"], json!([]));
+        assert_eq!(outcome["problems"][0]["code"], "failed");
+        assert_eq!(get(false).await.unwrap(), shown);
+
+        // A document stored before the caveat existed still reads.
+        let old: Stored = serde_json::from_value(json!({
+            "device_id": id, "kind": "vlans", "collected_at": 1, "source": "cli", "rows": [],
+        }))
+        .unwrap();
+        assert!(!old.unverified);
+    }
+
+    #[tokio::test]
+    async fn the_list_of_device_types_says_which_of_their_reads_are_unverified() {
+        let lab = lab(builder(), &["R1"]).await;
+        let listed = lab.app.rpc("profiles.list", Value::Null).await.unwrap();
+        let unverified = |id: &str| {
+            listed["profiles"]
+                .as_array()
+                .expect("profiles")
+                .iter()
+                .find(|row| row["id"] == id)
+                .unwrap_or_else(|| panic!("{id} in {listed}"))["unverified"]
+                .clone()
+        };
+        // The two built-in profiles that read QoS say so about that read…
+        assert_eq!(unverified("cisco_ios"), json!(["qos"]));
+        assert_eq!(unverified("mikrotik_routeros"), json!(["qos"]));
+        // …and a profile with nothing to say has an empty list, not a missing one.
+        assert_eq!(unverified("test_ios"), json!([]));
+        assert_eq!(unverified("cisco_nxos"), json!([]));
     }
 
     #[tokio::test]

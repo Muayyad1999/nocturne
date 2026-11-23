@@ -1,0 +1,9 @@
+origin: documented
+kinds:
+  # Nothing may be collected: three of the four classes could be read, but a
+  # table that leaves out a class without saying so is worse than no table.
+  qos: {}
+problems:
+  - kind: qos
+    code: failed
+    contains: at an indentation this profile does not know

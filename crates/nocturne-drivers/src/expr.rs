@@ -317,6 +317,11 @@ fn to_number(value: &Value) -> Value {
         .collect();
     if let Ok(integer) = cleaned.parse::<i64>() {
         Value::from(integer)
+    } else if let Ok(integer) = cleaned.parse::<u64>() {
+        // The upper half of a 64-bit counter. As a float it would be rounded
+        // to the nearest 2048, and a sum made with it would be a number the
+        // device never printed.
+        Value::from(integer)
     } else if let Ok(float) = cleaned.parse::<f64>() {
         Value::from(float)
     } else {
@@ -743,5 +748,28 @@ mod tests {
             assert_eq!(up.truthy(&context).unwrap(), is_up);
         }
         assert!(expressions.compile("SPEED |").is_err());
+    }
+
+    #[test]
+    fn a_counter_in_the_upper_half_of_64_bits_is_not_rounded() {
+        // 2^63 + 2: as a float this is 9223372036854775808, and a float is
+        // what `num` used to make of it.
+        let row =
+            json!({"DROPS": "9223372036854775810", "MORE": "5", "TOP": "18446744073709551615"});
+        assert_eq!(
+            eval("DROPS | num", row.clone()),
+            json!(9_223_372_036_854_775_810u64)
+        );
+        assert_eq!(
+            eval("(DROPS | num) + (MORE | num)", row.clone()),
+            json!(9_223_372_036_854_775_815u64)
+        );
+        assert_eq!(eval("TOP | num", row.clone()), json!(u64::MAX));
+        // A sum that no longer fits is an error the collector reports, not
+        // the largest number that does.
+        let overflow = Expressions::new()
+            .eval("(TOP | num) + (MORE | num)", &row)
+            .unwrap_err();
+        assert!(overflow.contains("out of range"), "{overflow}");
     }
 }

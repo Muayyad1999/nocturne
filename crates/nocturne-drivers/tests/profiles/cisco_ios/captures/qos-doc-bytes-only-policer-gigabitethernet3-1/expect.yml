@@ -1,0 +1,32 @@
+origin: documented
+kinds:
+  qos:
+    count: 2
+    rows:
+      - class: p1
+        interface: GigabitEthernet3/1
+        direction: in
+        policy: in1
+        parent: null
+        # "cir 200000000 bps, bc 6250000 bytes" (the line before says "cir 20 %")
+        rate_bps: 200000000
+        # "0 packets" and nothing about bytes
+        packets: 0
+        bytes: null
+        # "exceeded 0 bytes; actions:" / "drop": bytes are known, packets are not
+        dropped_bytes: 0
+        police_dropped_packets: null
+        dropped_packets: null
+        offered_rate_bps: null
+      - class: class-default
+        interface: GigabitEthernet3/1
+        direction: in
+        policy: in1
+        rate_bps: 200000000
+        packets: 10000000
+        bytes: null
+        # "exceeded 465695552 bytes; actions:" / "drop"
+        dropped_bytes: 465695552
+        police_dropped_packets: null
+        dropped_packets: null
+        queue_dropped_packets: null

@@ -109,6 +109,27 @@ pub fn parse_kv(output: &str) -> Vec<Row> {
         .collect()
 }
 
+/// The first line of a listing that begins like an item — an index, then
+/// text — without being one [`parse_kv`] reads: a row of a table, which is
+/// what RouterOS prints where `detail` is left out or not honoured.
+///
+/// For a listing that gave no rows. Such a listing is not an empty one: the
+/// device has items and this parser cannot read them, and passing that off
+/// as "nothing there" would be an answer nobody gave.
+pub fn kv_unread_item(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|line| {
+        if line.is_empty() || is_legend(line) || is_log_echo(line) {
+            return false;
+        }
+        let (index, rest) = split_word(line);
+        if index.is_empty() || !index.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        let (_, rest) = split_flags(rest);
+        !rest.is_empty() && !rest.starts_with(";;;") && !starts_with_pair(rest)
+    })
+}
+
 /// One listed item while its lines are being gathered.
 struct Item {
     index: String,
@@ -574,6 +595,35 @@ mod tests {
         assert_eq!(rows[1]["flags"], "S");
         assert_eq!(rows[2]["flags"], "XS");
         assert_eq!(rows[2]["name"], "ether 5 \"spare\"");
+    }
+
+    #[test]
+    fn a_listing_printed_as_a_table_is_told_from_an_empty_one() {
+        // Written by hand, in the shape RouterOS gives a listing without
+        // `detail`: a header and one row per item. Nothing recorded.
+        let table = "Flags: X - disabled, I - invalid \n #   NAME    PARENT  PACKET-MARK  BYTES  PACKETS  DROPPED\n 0   wan-up  ether1  all          1000   10       1\n 1 X old     global  legacy       0      0        0\n";
+        assert_eq!(parse_kv(table), Vec::<Row>::new());
+        assert_eq!(
+            kv_unread_item(table),
+            Some("0   wan-up  ether1  all          1000   10       1")
+        );
+        // RouterOS 7 names the columns first.
+        let v7 =
+            "Columns: NAME, PARENT, BYTES\n#  NAME    PARENT  BYTES\n0  wan-up  ether1  1000\n";
+        assert_eq!(kv_unread_item(v7), Some("0  wan-up  ether1  1000"));
+
+        // An empty listing, and one in the form the parser reads, have none.
+        for readable in [
+            "",
+            "Flags: X - disabled, I - invalid \n",
+            " 0   name=\"wan-up\" parent=ether1 bytes=1000\n",
+            " 0 X ;;; kept for later\n      name=\"old\" parent=global\n",
+            // A number on a line of its own is not an item either.
+            "0\n 12 \n",
+            "17:20:06 echo: system,error,critical login failure for user admin\n",
+        ] {
+            assert_eq!(kv_unread_item(readable), None, "{readable:?}");
+        }
     }
 
     #[test]

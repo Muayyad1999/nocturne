@@ -82,14 +82,17 @@ let job = jobs::start(app, JobSpec::new("config.backup", "Back up 12 devices").d
 });
 return Ok(jobs::started(&job));                                                 // RPC result {job_id}; UI follows `jobs.changed` / `jobs.log`
 
-// collect.rs — structured device data (facts, interfaces, neighbors, vlans, mac_table, arp, routes, health, inventory)
+// collect.rs — structured device data (facts, interfaces, neighbors, vlans, mac_table, arp, routes, health, inventory, qos)
 collect::run(app, device_id, &[Kind]) -> AppResult<Snapshot>       // over a new CLI session; stores what it read, publishes `collect.updated`
 collect::run_on(app, &mut cli, &[Kind]) -> AppResult<Snapshot>     // over a session you already hold
-collect::latest(app, device_id, Kind) -> AppResult<Option<Stored{device_id, kind, collected_at, source, rows: Vec<Value>}>>
+collect::latest(app, device_id, Kind) -> AppResult<Option<Stored{device_id, kind, collected_at, source, rows: Vec<Value>, unverified: bool}>>
+                                                                   // None = never read (or the read failed); Some with no rows = read, and the device has none.
+                                                                   // unverified (JSON: present only when true) = read by a profile that lists the kind under `unverified:`
+collect::unverified(app, device_id, Kind) -> AppResult<bool>       // the same, of the device's profile, for a device with nothing stored yet
 collect::previous(app, device_id, Kind)                            // the generation before `latest` — for "what changed since last time"
 collect::latest_all(app, Kind) -> AppResult<Vec<Stored>>;  stored.typed::<T>() -> Vec<T>            // T = nocturne_drivers::model::{Interface, Neighbor, …}
 collect::store(app, device_id, Kind, rows, source) / store_many(..) // for feeders other than the CLI (SNMP, the lab); tests use it to hand-build data
-RPC: collect.get {id, kind, previous?} / collect.status {id} / collect.run {device_ids, kinds?} -> {job_id};  event collect.updated {device_id, kinds, at, source}
+RPC: collect.get {id, kind, previous?} -> Stored | null / collect.status {id} -> [{kind, collected_at, source, rows, unverified?: true}] / collect.run {device_ids, kinds?} -> {job_id};  event collect.updated {device_id, kinds, at, source}
 
 // settings.rs
 settings::declare(builder, "section", &Defaults);  settings::get::<T>(app, "section");  RPC settings.get/set/all;  event settings.changed

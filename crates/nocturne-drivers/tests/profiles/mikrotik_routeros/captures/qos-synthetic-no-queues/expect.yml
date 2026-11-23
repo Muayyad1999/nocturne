@@ -1,0 +1,5 @@
+origin: synthetic
+kinds:
+  # Collected and empty: no rows, and no problem either.
+  qos:
+    count: 0

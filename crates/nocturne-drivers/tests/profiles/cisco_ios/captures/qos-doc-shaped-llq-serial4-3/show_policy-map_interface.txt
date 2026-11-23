@@ -1,0 +1,32 @@
+
+ Serial4/3
+  Service-policy output: shape
+    Class-map: class-default (match-any)
+      2203 packets, 404709 bytes
+      30 second offered rate 74000 bps, drop rate 14000 bps
+      Match: any
+      Queueing
+      queue limit 64 packets
+      (queue depth/total drops/no-buffer drops) 64/354/0
+      (pkts output/bytes output) 1836/337280
+      shape (average) cir 128000, bc 1000, be 1000
+      target shape rate 128000
+        lower bound cir 0,  adapt to fecn 0
+      Service-policy : LLQ
+        queue stats for all priority classes:
+         
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 0/0
+        Class-map: c1 (match-all)
+          0 packets, 0 bytes
+          30 second offered rate 0 bps, drop rate 0 bps
+          Match: ip precedence 1
+          Priority: 32 kbps, burst bytes 1500, b/w exceed drops: 0
+        Class-map: class-default (match-any)
+          2190 packets, 404540 bytes
+          30 second offered rate 74000 bps, drop rate 14000 bps
+          Match: any
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 63/417/0
+          (pkts output/bytes output) 2094/386300

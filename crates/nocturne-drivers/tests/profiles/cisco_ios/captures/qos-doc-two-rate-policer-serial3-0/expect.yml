@@ -1,0 +1,34 @@
+origin: documented
+kinds:
+  qos:
+    count: 2
+    rows:
+      # The class is called `police`, as is the block inside it.
+      - class: police
+        interface: Serial3/0
+        direction: out
+        policy: policy1
+        parent: null
+        # "cir 500000 bps, conform-burst 10000, pir 1000000, peak-burst 100000"
+        rate_bps: 500000
+        packets: 148803
+        bytes: 36605538
+        offered_rate_bps: 1249000
+        drop_rate_bps: 249000
+        # "violated 29731 packets, 7313826 bytes; action: drop" — and only that:
+        # conformed is transmitted, exceeded is "set-prec-transmit 2"
+        police_dropped_packets: 29731
+        dropped_packets: 29731
+        dropped_bytes: 7313826
+        queue_dropped_packets: null
+        queued_packets: null
+      - class: class-default
+        interface: Serial3/0
+        direction: out
+        policy: policy1
+        packets: 19
+        bytes: 1990
+        # "30 seconds offered rate 0 bps, drop rate 0 bps"
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+        dropped_packets: null

@@ -82,7 +82,8 @@ use serde_json::Value;
 use crate::expr::{Context, Expressions};
 use crate::ifname;
 use crate::model::{
-    ArpEntry, Facts, Health, Interface, InventoryItem, Kind, MacEntry, Neighbor, Route, Vlan,
+    ArpEntry, Facts, Health, Interface, InventoryItem, Kind, MacEntry, Neighbor, QosClass, Route,
+    Vlan,
 };
 use crate::parse::{self, Row};
 use crate::policy::CommandClass;
@@ -198,6 +199,12 @@ pub struct Snapshot {
     pub routes: Option<Vec<Route>>,
     pub health: Option<Health>,
     pub inventory: Option<Vec<InventoryItem>>,
+    /// `Some(vec![])` is a device with no policy attached; `None` is a read
+    /// that was not made or did not work.
+    // Snapshots are stored (job results, the change pipeline's evidence), and
+    // one written before this field existed must still be readable.
+    #[serde(default)]
+    pub qos: Option<Vec<QosClass>>,
     pub problems: Vec<Problem>,
     pub steps: Vec<StepReport>,
 }
@@ -233,6 +240,7 @@ impl Snapshot {
             Kind::Routes => self.routes.is_some(),
             Kind::Health => self.health.is_some(),
             Kind::Inventory => self.inventory.is_some(),
+            Kind::Qos => self.qos.is_some(),
         }
     }
 
@@ -259,6 +267,7 @@ impl Snapshot {
             Kind::Routes => many(&self.routes),
             Kind::Health => one(&self.health),
             Kind::Inventory => many(&self.inventory),
+            Kind::Qos => many(&self.qos),
         }
     }
 
@@ -327,6 +336,19 @@ impl Collector {
                     .as_ref()
                     .and_then(|facts| serde_json::to_value(facts).ok());
             }
+        }
+        // These messages quote what the device printed — the line no rule
+        // could place, the value that did not fit — and they travel on into
+        // job results and events. A device can print a line of any length.
+        for problem in &mut snapshot.problems {
+            bound(&mut problem.message);
+        }
+        for error in snapshot
+            .steps
+            .iter_mut()
+            .filter_map(|step| step.error.as_mut())
+        {
+            bound(error);
         }
         snapshot
     }
@@ -612,6 +634,21 @@ impl Collector {
     }
 }
 
+/// The most characters of a problem's message, or of a step's error, that
+/// are kept.
+const MESSAGE_LIMIT: usize = 2_000;
+
+/// Cut a message down to [`MESSAGE_LIMIT`] characters, saying how much of it
+/// was left out.
+fn bound(message: &mut String) {
+    let Some((at, _)) = message.char_indices().nth(MESSAGE_LIMIT) else {
+        return;
+    };
+    let left_out = message[at..].chars().count();
+    message.truncate(at);
+    message.push_str(&format!("… ({left_out} more characters)"));
+}
+
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
@@ -682,7 +719,18 @@ fn parse_output(platform: &Platform, step: &CollectStep, output: &str) -> Result
         Parser::Regex(pattern) => Regex::new(pattern)
             .map(|pattern| parse::parse_regex(&pattern, output))
             .map_err(|err| format!("invalid regular expression: {err}")),
-        Parser::Kv => Ok(parse::parse_kv(output)),
+        Parser::Kv => {
+            let rows = parse::parse_kv(output);
+            // No rows from a listing that does list something: it is printed
+            // in a form this parser does not read (a table). That is a read
+            // that failed, and it must not pass for "the device has none".
+            match parse::kv_unread_item(output).filter(|_| rows.is_empty()) {
+                Some(line) => Err(format!(
+                    "the listing has items, but not in the `key=value` form this parser reads (is it printed as a table?); first: {line}"
+                )),
+                None => Ok(rows),
+            }
+        }
         Parser::Colon => Ok(parse::parse_colon(output)),
         Parser::Json(path) => parse::parse_json(output, path),
         Parser::Raw => Ok(parse::parse_raw(output)),
@@ -976,6 +1024,7 @@ fn store(snapshot: &mut Snapshot, kind: Kind, rows: Vec<Row>) {
         Kind::Arp => many!(arp),
         Kind::Routes => many!(routes),
         Kind::Inventory => many!(inventory),
+        Kind::Qos => many!(qos),
     };
     if let Some(first) = first {
         let single = kind.is_single_row();
@@ -1793,6 +1842,812 @@ Vlan10 is down, mtu 9000, address 10.0.10.1/24
         ] {
             assert_eq!(command_slug(command), slug);
         }
+    }
+
+    /// The built-in profile whose QoS read these tests are about.
+    fn cisco_ios() -> (Collector, Arc<Platform>) {
+        let (registry, errors) = Registry::builtin();
+        assert_eq!(errors, vec![], "the built-in profiles load");
+        let platform = registry.get("cisco_ios").expect("cisco_ios is built in");
+        (Collector::new(registry.expressions()), platform)
+    }
+
+    #[tokio::test]
+    async fn no_policy_is_an_empty_table_and_a_refused_read_is_no_table() {
+        let (collector, ios) = cisco_ios();
+
+        // A device with nothing attached answers with nothing. That is a
+        // read that worked: zero rows, and no problem.
+        let mut bare = Recorded::new().with("show policy-map interface", "");
+        let snapshot = collector.collect(&mut bare, &ios, &[Kind::Qos]).await;
+        assert_eq!(snapshot.qos, Some(vec![]));
+        assert_eq!(snapshot.rows(Kind::Qos), Some(vec![]));
+        assert!(snapshot.has(Kind::Qos));
+        assert_eq!(snapshot.problems, vec![]);
+
+        // A device that refuses the command has told us nothing about its
+        // policies, and the snapshot must not look as if it had none.
+        let mut refusing = Recorded::new();
+        let snapshot = collector.collect(&mut refusing, &ios, &[Kind::Qos]).await;
+        assert_eq!(snapshot.qos, None);
+        assert_eq!(snapshot.rows(Kind::Qos), None);
+        assert!(!snapshot.has(Kind::Qos));
+        assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Failed]);
+
+        // A platform without the read is a third thing again.
+        let (collector, acme) = platform();
+        let mut any = Recorded::new();
+        let snapshot = collector.collect(&mut any, &acme, &[Kind::Qos]).await;
+        assert_eq!(snapshot.qos, None);
+        assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Unsupported]);
+        assert!(any.commands_run().is_empty());
+    }
+
+    #[tokio::test]
+    async fn output_the_qos_template_cannot_place_fails_the_read_whole() {
+        let (collector, platform) = cisco_ios();
+        // The second class starts where nothing in a policy does, so its
+        // place in the tree cannot be told. Reading on would file its
+        // counters under a guess, so the read stops — and the class that
+        // could be read is not kept either, because a table that leaves a
+        // class out without saying so is worse than none.
+        let output = " GigabitEthernet0/1\n\n  Service-policy output: WAN\n\n    Class-map: VOICE (match-all)\n      10 packets, 800 bytes\n  Class-map: VIDEO (match-all)\n      20 packets, 1600 bytes\n";
+        let mut device = Recorded::new().with("show policy-map interface", output);
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(snapshot.qos, None);
+        assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Failed]);
+        let message = &snapshot.problems[0].message;
+        assert!(
+            message.contains("at an indentation this profile does not know")
+                && message.contains("Class-map: VIDEO"),
+            "{message}"
+        );
+    }
+
+    /// What `cisco_ios` makes of an answer to `show policy-map interface`.
+    async fn read_policies(output: &str) -> Snapshot {
+        let (collector, platform) = cisco_ios();
+        let mut device = Recorded::new().with("show policy-map interface", output);
+        collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await
+    }
+
+    /// The one problem a failed QoS read reports.
+    fn failure(snapshot: &Snapshot) -> &str {
+        assert_eq!(snapshot.qos, None, "{:?}", snapshot.problems);
+        assert_eq!(codes(snapshot, Kind::Qos), vec![ProblemCode::Failed]);
+        &snapshot.problems[0].message
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_a_listing_of_policies_is_not_read_as_no_policy() {
+        // All hand-written. A device that says something this profile does
+        // not understand has not said that nothing is attached.
+        let message = read_policies("QoS statistics are not available on this platform\n").await;
+        assert!(
+            failure(&message).contains("does not begin with the name of an interface"),
+            "{:?}",
+            message.problems
+        );
+
+        // What may stand before the first interface without being one: the
+        // two lines of `exec prompt timestamp`, and a log message that
+        // reached the terminal.
+        let preamble = "Load for five secs: 1%/0%; one minute: 1%; five minutes: 1%\nTime source is NTP, 10:11:12.123 UTC Mon Nov 23 2026\n\n*Nov 23 10:11:12.001: %LINK-3-UPDOWN: Interface GigabitEthernet0/2, changed state to up\n";
+        let nothing_attached = read_policies(preamble).await;
+        assert_eq!(nothing_attached.qos, Some(vec![]));
+        assert_eq!(nothing_attached.problems, vec![]);
+        let attached = format!(
+            "{preamble} GigabitEthernet0/1\n\n  Service-policy output: WAN\n\n    Class-map: class-default (match-any)\n      10 packets, 800 bytes\n"
+        );
+        let snapshot = read_policies(&attached).await;
+        assert_eq!(snapshot.problems, vec![]);
+        assert_eq!(snapshot.qos.as_ref().map(Vec::len), Some(1));
+        // A router whose clock was never set words the second line otherwise.
+        let unset_clock = read_policies(
+            "Load for five secs: 0%/0%; one minute: 0%; five minutes: 0%\nNo time source, *00:11:35.455 UTC Mon Mar 1 1993\n",
+        )
+        .await;
+        assert_eq!(unset_clock.qos, Some(vec![]));
+        assert_eq!(unset_clock.problems, vec![]);
+
+        // A log message is no part of the listing wherever it lands, also
+        // between a policer's counter and the action on the line after it.
+        let whole = include_str!(
+            "../tests/profiles/cisco_ios/captures/qos-lab-policed-input/show_policy-map_interface.txt"
+        );
+        let interrupted = whole.replace(
+            "          drop\n",
+            "*Nov 23 10:11:12.001: %SYS-5-CONFIG_I: Configured from console by admin on vty0\n          drop\n",
+        );
+        assert_ne!(interrupted, whole);
+        assert_eq!(
+            read_policies(&interrupted).await.qos,
+            read_policies(whole).await.qos
+        );
+    }
+
+    #[tokio::test]
+    async fn a_class_is_never_filed_under_a_name_it_was_not_printed_under() {
+        // All hand-written. Each answer is missing one of the three lines
+        // that say where a class belongs; before, the classes were filed
+        // under whatever had been named last (or under no interface at all).
+        let class = "    Class-map: B (match-all)\n      2 packets, 200 bytes\n";
+        let mut wrong: Vec<String> = Vec::new();
+        let first = " GigabitEthernet0/1\n\n  Service-policy output: FIRST\n\n    Class-map: A (match-all)\n      1 packets, 100 bytes\n\n";
+        for (output, expected) in [
+            (
+                format!("  Service-policy output: FIRST\n\n{class}"),
+                "does not begin with the name of an interface",
+            ),
+            (
+                format!("{first} GigabitEthernet0/2\n\n{class}"),
+                "a class before the policy of its interface is named",
+            ),
+            (
+                format!("{first}  Service-policy input:\n\n{class}"),
+                "without the name of a policy",
+            ),
+            (
+                format!(" GigabitEthernet0/2\n\n  Service-policy input:\n\n{class}"),
+                "followed by something other than `Service-policy input|output: NAME`",
+            ),
+            (
+                format!("{first}      Service-policy :\n\n    {class}"),
+                "a `Service-policy :` line without the name of a policy",
+            ),
+            (
+                // Four tabs are not four columns: a tab has no column.
+                format!("{first}\t\t\t\tClass-map: B (match-all)\n"),
+                "at an indentation this profile does not know",
+            ),
+            (
+                // The line ends before it says how the class matches.
+                format!("{first}    Class-map: B"),
+                "a class whose line is incomplete",
+            ),
+        ] {
+            let snapshot = read_policies(&output).await;
+            let refused = snapshot.qos.is_none()
+                && snapshot
+                    .problems
+                    .iter()
+                    .any(|problem| problem.message.contains(expected));
+            if !refused {
+                wrong.push(format!(
+                    "expected `{expected}`, got {:?} and {:?}",
+                    snapshot.qos, snapshot.problems
+                ));
+            }
+        }
+        // All of them, so that one that is read does not hide the next.
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[tokio::test]
+    async fn a_number_is_not_read_from_a_line_that_ends_inside_it() {
+        // The simulator's shaped uplink (synthetic), cut in the middle of
+        // the shaper's rate: `cir 5000` of `cir 5000000, bc 20000, be 20000`.
+        let whole = include_str!(
+            "../tests/profiles/cisco_ios/captures/qos-lab-shaped-uplink/show_policy-map_interface.txt"
+        );
+        let at = whole.find("cir 5000000,").expect("the shaper's line") + "cir 5000".len();
+        let snapshot = read_policies(&whole[..at]).await;
+        assert_eq!(snapshot.problems, vec![]);
+        let classes = snapshot.qos.as_ref().unwrap();
+        assert_eq!(classes.len(), 1);
+        assert_eq!(
+            classes[0].rate_bps, None,
+            "5000 is the beginning of 5000000"
+        );
+        // What stood on whole lines before the cut is read as it is.
+        assert_eq!(classes[0].queue_dropped_packets, Some(2031));
+        assert_eq!(
+            read_policies(whole).await.qos.unwrap()[0].rate_bps,
+            Some(5_000_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_class_further_in_than_any_policy_announced_for_it_is_the_attached_policys() {
+        // Hand-written. The first interface has three levels; on the second
+        // the attached policy is shown as far in as the innermost of them,
+        // and nothing announces a policy inside it. Its class used to be
+        // filed under the innermost policy of the interface before.
+        let output = " GigabitEthernet0/1\n\n  Service-policy output: TOP\n\n    Class-map: A (match-all)\n      1 packets, 100 bytes\n      Service-policy : MID\n        Class-map: B (match-all)\n          2 packets, 200 bytes\n          Service-policy : LEAF\n            Class-map: C (match-all)\n              3 packets, 300 bytes\n\n GigabitEthernet0/2\n\n  Service-policy output: OTHER\n\n            Class-map: D (match-all)\n              4 packets, 400 bytes\n\n GigabitEthernet0/3\n\n  Service-policy output: THIRD\n\n    Class-map: E (match-all)\n      5 packets, 500 bytes\n      Service-policy : INNER\n            Class-map: F (match-all)\n              6 packets, 600 bytes\n";
+        let snapshot = read_policies(output).await;
+        assert_eq!(snapshot.problems, vec![]);
+        let place = |class: &str, policy: &str, parent: Option<&str>| {
+            (
+                class.to_string(),
+                policy.to_string(),
+                parent.map(str::to_string),
+            )
+        };
+        assert_eq!(
+            tree(&snapshot),
+            [
+                place("A", "TOP", None),
+                place("B", "MID", Some("A")),
+                place("C", "LEAF", Some("B")),
+                place("D", "OTHER", None),
+                place("E", "THIRD", None),
+                // Announced one level in, shown two levels in: still INNER's.
+                place("F", "INNER", Some("E")),
+            ]
+        );
+        assert_eq!(
+            snapshot.qos.as_ref().unwrap()[3].interface,
+            "GigabitEthernet0/2"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_class_that_counts_packets_alone_does_not_take_the_bytes_of_a_match_statement() {
+        // Hand-written: the class line of the Catalyst 6500 sample in
+        // Cisco's reference (`N packets`, no bytes) above match statements
+        // that count both, as older releases print them for match-any.
+        let output = " GigabitEthernet3/1\n\n  Service-policy input: in1\n\n    Class-map: p1 (match-any)\n      12 packets\n      Match:  precedence 1\n        7 packets, 700 bytes\n        5 minute rate 0 bps\n      Match:  precedence 2\n        5 packets, 500 bytes\n        5 minute rate 0 bps\n";
+        let snapshot = read_policies(output).await;
+        assert_eq!(snapshot.problems, vec![]);
+        let classes = snapshot.qos.as_ref().unwrap();
+        assert_eq!(
+            (classes[0].packets, classes[0].bytes),
+            (Some(12), None),
+            "700 is the first match statement's, not the class's"
+        );
+    }
+
+    #[tokio::test]
+    async fn counters_in_the_upper_half_of_64_bits_are_read_exactly_or_not_at_all() {
+        // Hand-written, with numbers no interface has ever counted: what
+        // matters is that none of them comes out as a different number.
+        let output = " TenGigabitEthernet1/1/1\n\n  Service-policy output: BIG\n\n    Class-map: HUGE (match-all)\n      18446744073709551615 packets, 18446744073709551614 bytes\n      5 minute offered rate 9999999999 bps, drop rate 4294967296 bps\n      Match: any\n      Queueing\n      queue limit 64 packets\n      (queue depth/total drops/no-buffer drops) 4294967296/9300000000000000001/0\n      (pkts output/bytes output) 1/1\n      shape (average) cir 100000000000, bc 400000000, be 400000000\n      police:\n          cir 40000000000 bps, bc 1250000000 bytes\n        conformed 9007199254740993 packets, 9007199254740995 bytes; actions:\n          transmit\n        exceeded 9300000000000000003 packets, 18446744073709551001 bytes; actions:\n          drop\n        conformed 65000 bps, exceed 98000 bps\n\n    Class-map: class-default (match-any)\n      4294967296 packets, 281474976710656 bytes\n      5 minute offered rate 0 bps, drop rate 0 bps\n      Match: any\n      Priority: 40000000 kbps, burst bytes 1500, b/w exceed drops: 9007199254740993\n";
+        let snapshot = read_policies(output).await;
+        let classes = snapshot.qos.as_ref().expect("the rows are kept");
+        let huge = &classes[0];
+        assert_eq!(huge.packets, Some(u64::MAX));
+        assert_eq!(huge.bytes, Some(u64::MAX - 1));
+        assert_eq!(huge.rate_bps, Some(100_000_000_000));
+        assert_eq!(huge.queued_packets, Some(4_294_967_296));
+        // Both beyond 2^63, where a float is 2048 wide.
+        assert_eq!(huge.queue_dropped_packets, Some(9_300_000_000_000_000_001));
+        assert_eq!(huge.police_dropped_packets, Some(9_300_000_000_000_000_003));
+        // Their sum does not fit in 64 bits. It is left out and reported,
+        // not replaced by the largest number that does fit.
+        assert_eq!(huge.dropped_packets, None);
+        assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Partial]);
+        assert!(
+            snapshot.problems[0]
+                .message
+                .contains("map.dropped_packets: number out of range"),
+            "{:?}",
+            snapshot.problems
+        );
+        let default = &classes[1];
+        assert_eq!(default.rate_bps, Some(40_000_000_000));
+        // 2^53 + 1, which a float cannot hold.
+        assert_eq!(default.queue_dropped_packets, Some(9_007_199_254_740_993));
+        assert_eq!(default.dropped_packets, Some(9_007_199_254_740_993));
+    }
+
+    #[tokio::test]
+    async fn the_rows_of_an_old_wred_table_are_not_taken_for_a_circuit_below_the_interface() {
+        // Hand-written after the first sample of Cisco's reference (the
+        // layout before hierarchical queueing, WRED table at the left
+        // margin), with a table by DSCP instead of by precedence: its rows
+        // begin `af11`, `cs1`, which look like the name of an interface.
+        let output = " Serial3/1\n  Service-policy output: mypolicy\n    Class-map: silver (match-all)\n      0 packets, 0 bytes\n      5 minute offered rate 0 bps, drop rate 0 bps\n      Match: ip precedence 1\n      Weighted Fair Queueing\n        Output Queue: Conversation 266\n        Bandwidth 80 (kbps)\n        (pkts matched/bytes matched) 0/0\n        (depth/total drops/no-buffer drops) 0/7/0\n         exponential weight: 9\n         mean queue depth: 0\ndscp      Transmitted       Random drop      Tail drop    Minimum Maximum  Mark\n          pkts/bytes        pkts/bytes       pkts/bytes    thresh  thresh  prob\naf11          0/0               3/300            4/400         20      40  1/10\ncs1           0/0               0/0              0/0           24      40  1/10\ndefault       0/0               0/0              0/0           26      40  1/10\n    Class-map: class-default (match-any)\n      9 packets, 900 bytes\n      5 minute offered rate 0 bps, drop rate 0 bps\n      Match: any\n";
+        let snapshot = read_policies(output).await;
+        assert_eq!(snapshot.problems, vec![]);
+        let classes = snapshot.qos.as_ref().unwrap();
+        assert_eq!(
+            classes
+                .iter()
+                .map(|class| (
+                    class.class.as_str(),
+                    class.interface.as_str(),
+                    class.rate_bps,
+                    class.queue_dropped_packets,
+                    class.packets
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("silver", "Serial3/1", Some(80_000), Some(7), Some(0)),
+                ("class-default", "Serial3/1", None, None, Some(9)),
+            ]
+        );
+        // A real circuit below the interface is still refused.
+        let dlci = read_policies(" Serial3/1.1: DLCI 201 -\n  Service-policy output: X\n").await;
+        assert!(
+            failure(&dlci).contains("a policy attached below the interface"),
+            "{:?}",
+            dlci.problems
+        );
+    }
+
+    /// Every number of a row, in a fixed order.
+    fn numbers(class: &QosClass) -> [Option<u64>; 10] {
+        [
+            class.rate_bps,
+            class.packets,
+            class.bytes,
+            class.dropped_packets,
+            class.dropped_bytes,
+            class.queue_dropped_packets,
+            class.police_dropped_packets,
+            class.queued_packets,
+            class.offered_rate_bps,
+            class.drop_rate_bps,
+        ]
+    }
+
+    /// Whether `cut`, read from an answer that was cut short, says anything
+    /// the whole answer does not: every class it has must stand where the
+    /// whole answer puts it, and every number must be the whole answer's or
+    /// be absent.
+    fn says_nothing_else(cut: &[QosClass], whole: &[QosClass]) -> Result<(), String> {
+        if cut.len() > whole.len() {
+            return Err(format!(
+                "{} classes, the whole has {}",
+                cut.len(),
+                whole.len()
+            ));
+        }
+        for (cut, whole) in cut.iter().zip(whole) {
+            let place = |class: &QosClass| {
+                (
+                    class.interface.clone(),
+                    class.direction,
+                    class.policy.clone(),
+                    class.class.clone(),
+                    class.parent.clone(),
+                )
+            };
+            if place(cut) != place(whole) {
+                return Err(format!("{:?} is not {:?}", place(cut), place(whole)));
+            }
+            for (cut_number, whole_number) in numbers(cut).iter().zip(numbers(whole)) {
+                if cut_number.is_some() && *cut_number != whole_number {
+                    return Err(format!(
+                        "{}: {cut_number:?} where the whole answer has {whole_number:?}",
+                        cut.class
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_answer_cut_short_never_turns_into_a_different_number() {
+        // The session only hands over an answer that ended in a prompt, so
+        // this should not happen; if it ever does, a wrong counter must not
+        // be what comes of it. The samples are the simulator's two and the
+        // hand-written three-level one (all synthetic; see their SOURCE.md).
+        let samples = [
+            include_str!(
+                "../tests/profiles/cisco_ios/captures/qos-lab-policed-input/show_policy-map_interface.txt"
+            ),
+            include_str!(
+                "../tests/profiles/cisco_ios/captures/qos-lab-shaped-uplink/show_policy-map_interface.txt"
+            ),
+            include_str!(
+                "../tests/profiles/cisco_ios/captures/qos-synthetic-three-levels/show_policy-map_interface.txt"
+            ),
+        ];
+        let (collector, platform) = cisco_ios();
+        let mut failed = 0;
+        let mut read = 0;
+        for sample in samples {
+            let mut device = Recorded::new().with("show policy-map interface", sample);
+            let whole = collector
+                .collect(&mut device, &platform, &[Kind::Qos])
+                .await
+                .qos
+                .expect("the whole sample is read");
+            // Cut after every line, and (for the first, shortest sample)
+            // after every character.
+            let every_character = sample.len() < 1_000;
+            for (at, character) in sample.char_indices() {
+                if !every_character && character != '\n' {
+                    continue;
+                }
+                let prefix = &sample[..at];
+                let mut device = Recorded::new().with("show policy-map interface", prefix);
+                let snapshot = collector
+                    .collect(&mut device, &platform, &[Kind::Qos])
+                    .await;
+                let Some(cut) = &snapshot.qos else {
+                    assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Failed]);
+                    failed += 1;
+                    continue;
+                };
+                read += 1;
+                if let Err(difference) = says_nothing_else(cut, &whole) {
+                    panic!(
+                        "cut after {at} characters ({:?}): {difference}",
+                        prefix.lines().last().unwrap_or("")
+                    );
+                }
+            }
+        }
+        // Both things happen: a cut in the middle of a line that cannot be
+        // read is an error, a cut between lines leaves rows with less in them.
+        assert!(failed > 20 && read > 100, "{failed} failed, {read} read");
+    }
+
+    #[tokio::test]
+    async fn a_policer_whose_action_did_not_arrive_has_not_dropped_nothing() {
+        // The simulator's policer sample (synthetic), cut after the line
+        // that counts the exceeding packets and before the one that says
+        // they are dropped. Before, this read as a policer that drops
+        // nothing: 0 where the whole answer says 4687.
+        let whole = include_str!(
+            "../tests/profiles/cisco_ios/captures/qos-lab-policed-input/show_policy-map_interface.txt"
+        );
+        let at = whole.find("          drop\n").expect("the action line");
+        let snapshot = read_policies(&whole[..at]).await;
+        assert_eq!(snapshot.problems, vec![]);
+        let class = &snapshot.qos.as_ref().unwrap()[0];
+        assert_eq!(class.packets, Some(7812));
+        assert_eq!(class.police_dropped_packets, None);
+        assert_eq!(class.dropped_packets, None);
+        assert_eq!(class.dropped_bytes, None);
+        // The whole answer, for comparison.
+        let snapshot = read_policies(whole).await;
+        let class = &snapshot.qos.as_ref().unwrap()[0];
+        assert_eq!(class.police_dropped_packets, Some(4687));
+        assert_eq!(class.dropped_bytes, Some(3_750_000));
+    }
+
+    #[tokio::test]
+    async fn what_a_device_printed_is_quoted_in_a_problem_only_up_to_a_limit() {
+        // A class line no rule can place is quoted in the error. This one is
+        // 300 000 characters long.
+        let line = format!("Class-map: {} (match-all)", "A".repeat(300_000));
+        let output = format!(" GigabitEthernet0/0\n\n  Service-policy output: X\n\n{line}\n");
+        let snapshot = read_policies(&output).await;
+        let message = failure(&snapshot);
+        assert!(
+            message.contains("Input Line: Class-map: AAAA"),
+            "{}",
+            &message[..300]
+        );
+        assert!(
+            message.ends_with(" more characters)"),
+            "{}",
+            &message[message.len() - 60..]
+        );
+        assert!(message.chars().count() < MESSAGE_LIMIT + 40);
+        let step_error = snapshot.steps[0].error.as_deref().expect("the step failed");
+        assert!(step_error.chars().count() < MESSAGE_LIMIT + 40);
+
+        // A message that fits is left as it is, whatever it is made of.
+        let mut short = "é".repeat(MESSAGE_LIMIT);
+        bound(&mut short);
+        assert_eq!(short.chars().count(), MESSAGE_LIMIT);
+        let mut long = "é".repeat(MESSAGE_LIMIT + 3);
+        bound(&mut long);
+        assert!(
+            long.ends_with("é… (3 more characters)"),
+            "{}",
+            &long[long.len() - 40..]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_queue_listing_printed_as_a_table_is_a_failed_read_not_an_empty_one() {
+        // Hand-written. `mikrotik_routeros` asks for `print stats detail`;
+        // should a release answer with a table all the same, its rows carry
+        // no `key=value` and the parser reads none of them.
+        let (registry, errors) = Registry::builtin();
+        assert_eq!(errors, vec![]);
+        let platform = registry.get("mikrotik_routeros").expect("built in");
+        let collector = Collector::new(registry.expressions());
+        let simple = "/queue simple print stats detail without-paging";
+        let tree = "/queue tree print stats detail without-paging";
+        let table = "Flags: X - disabled, I - invalid \n #   NAME    PARENT  PACKET-MARK  RATE  PACKET-RATE  QUEUED-BYTES  QUEUED-PACKETS  BYTES  PACKETS  DROPPED\n 0   wan-up  ether1  all          0     0            0             0               1000   10       1\n";
+        let legend = "Flags: X - disabled, I - invalid \n";
+
+        let mut device = Recorded::new().with(simple, table).with(tree, table);
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(
+            snapshot.qos, None,
+            "queues exist, so this is not `no queues`"
+        );
+        assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Failed]);
+        assert!(
+            snapshot.problems[0]
+                .message
+                .contains("not in the `key=value` form this parser reads")
+                && snapshot.problems[0].message.contains("0   wan-up  ether1"),
+            "{:?}",
+            snapshot.problems
+        );
+
+        // No queues at all is still an empty table and no problem.
+        let mut device = Recorded::new().with(simple, legend).with(tree, legend);
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(snapshot.qos, Some(vec![]));
+        assert_eq!(snapshot.problems, vec![]);
+    }
+
+    #[tokio::test]
+    async fn neither_half_is_read_from_a_queue_counter_that_is_not_a_pair() {
+        // Hand-written. A simple queue counts `upload/download`; a value of
+        // any other shape used to give up its first or its last number as
+        // one of the halves.
+        let (registry, errors) = Registry::builtin();
+        assert_eq!(errors, vec![]);
+        let platform = registry.get("mikrotik_routeros").expect("built in");
+        let collector = Collector::new(registry.expressions());
+        let simple = " 0    name=\"odd\" target=ether3 bytes=1 packets=3/4/5 dropped=/6 queued-packets=7/ \n 1    name=\"even\" target=ether4 bytes=10/20 packets=30/40 dropped=50/60 queued-packets=70/80 \n";
+        let mut device = Recorded::new()
+            .with("/queue simple print stats detail without-paging", simple)
+            .with(
+                "/queue tree print stats detail without-paging",
+                "Flags: X - disabled, I - invalid \n",
+            );
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(snapshot.problems, vec![]);
+        let read: Vec<_> = snapshot
+            .qos
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|queue| {
+                (
+                    queue.class.as_str(),
+                    queue.direction.as_str(),
+                    [
+                        queue.bytes,
+                        queue.packets,
+                        queue.dropped_packets,
+                        queue.queued_packets,
+                    ],
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                ("odd", "in", [None; 4]),
+                ("even", "in", [Some(10), Some(30), Some(50), Some(70)]),
+                ("odd", "out", [None; 4]),
+                ("even", "out", [Some(20), Some(40), Some(60), Some(80)]),
+            ]
+        );
+    }
+
+    /// (class, policy, parent) of every row, in order.
+    fn tree(snapshot: &Snapshot) -> Vec<(String, String, Option<String>)> {
+        snapshot
+            .qos
+            .as_ref()
+            .unwrap_or_else(|| panic!("no qos table: {:?}", snapshot.problems))
+            .iter()
+            .map(|class| {
+                (
+                    class.class.clone(),
+                    class.policy.clone(),
+                    class.parent.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_policy_tree_is_read_the_same_whichever_column_the_output_starts_in() {
+        let (collector, platform) = cisco_ios();
+        // Hand-written, three levels deep; see the case's SOURCE.md.
+        let standard = include_str!(
+            "../tests/profiles/cisco_ios/captures/qos-synthetic-three-levels/show_policy-map_interface.txt"
+        );
+        let mut device = Recorded::new().with("show policy-map interface", standard);
+        let expected = tree(
+            &collector
+                .collect(&mut device, &platform, &[Kind::Qos])
+                .await,
+        );
+        assert_eq!(
+            expected[..6],
+            [
+                ("SITE-A", "TOP", None),
+                ("DATA", "MID", Some("SITE-A")),
+                ("GOLD", "LEAF", Some("DATA")),
+                ("class-default", "LEAF", Some("DATA")),
+                ("class-default", "MID", Some("SITE-A")),
+                ("class-default", "TOP", None),
+            ]
+            .map(|(class, policy, parent)| (
+                class.to_string(),
+                policy.to_string(),
+                parent.map(str::to_string)
+            ))
+        );
+
+        // IOS does not start every policy in the same column (a port-channel
+        // subinterface is shown one further in), so everything below the
+        // interface line is moved as a block: one column out, up to three in.
+        for shift in [-1_i32, 1, 2, 3] {
+            let mut device =
+                Recorded::new().with("show policy-map interface", &moved(standard, shift));
+            let snapshot = collector
+                .collect(&mut device, &platform, &[Kind::Qos])
+                .await;
+            // Three columns in, the innermost of the three policies leaves
+            // the columns a policy is looked for in. That is an error, not
+            // a guess.
+            if shift == 3 {
+                assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Failed]);
+                assert!(
+                    snapshot.problems[0]
+                        .message
+                        .contains("nested deeper than three levels"),
+                    "{:?}",
+                    snapshot.problems
+                );
+                continue;
+            }
+            assert_eq!(snapshot.problems, vec![], "moved by {shift}");
+            assert_eq!(tree(&snapshot), expected, "moved by {shift}");
+        }
+    }
+
+    /// `output` with everything below each interface line moved `shift`
+    /// columns to the right (to the left when negative).
+    fn moved(output: &str, shift: i32) -> String {
+        output
+            .lines()
+            .map(|line| {
+                let is_interface = line.starts_with(' ') && !line.starts_with("  ");
+                match shift {
+                    _ if is_interface || line.is_empty() => line.to_string(),
+                    -1 => line[1..].to_string(),
+                    _ => format!("{}{line}", " ".repeat(shift as usize)),
+                }
+            })
+            .map(|line| line + "\n")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_attached_policy_shown_further_in_is_not_taken_for_a_nested_one() {
+        let (collector, platform) = cisco_ios();
+        // The simulator's sample of a shaper with a queueing policy inside
+        // it (synthetic), as it stands…
+        let nested = include_str!(
+            "../tests/profiles/cisco_ios/captures/qos-lab-shaped-uplink/show_policy-map_interface.txt"
+        );
+        // …and a flat policy on another interface.
+        let flat = include_str!(
+            "../tests/profiles/cisco_ios/captures/qos-lab-policed-input/show_policy-map_interface.txt"
+        );
+        let place = |class: &str, policy: &str, parent: Option<&str>| {
+            (
+                class.to_string(),
+                policy.to_string(),
+                parent.map(str::to_string),
+            )
+        };
+        let nested_tree = [
+            place("class-default", "WAN-EDGE", None),
+            place("VOICE", "WAN-QUEUE", Some("class-default")),
+            place("VIDEO", "WAN-QUEUE", Some("class-default")),
+            place("class-default", "WAN-QUEUE", Some("class-default")),
+        ];
+        let flat_tree = [
+            place("USERS", "LIMIT-USERS", None),
+            place("class-default", "LIMIT-USERS", None),
+        ];
+
+        // Three columns further in, the attached policy's classes stand
+        // where a nested policy's would. Nothing announced a nested policy,
+        // so they are the attached policy's — and the policy that *is*
+        // announced inside one of them is still told apart.
+        let mut device = Recorded::new().with("show policy-map interface", &moved(nested, 3));
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(snapshot.problems, vec![]);
+        assert_eq!(tree(&snapshot), nested_tree);
+
+        // The same holds right after a policy that did have one inside it:
+        // the name of that inner policy is not left standing for the next
+        // attached policy to be filed under.
+        let both = format!("{nested}\n{}", moved(flat, 3));
+        let mut device = Recorded::new().with("show policy-map interface", &both);
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(snapshot.problems, vec![]);
+        assert_eq!(tree(&snapshot), [&nested_tree[..], &flat_tree[..]].concat());
+        let classes = snapshot.qos.as_ref().unwrap();
+        assert_eq!(classes[4].interface, "GigabitEthernet0/0");
+        assert_eq!(classes[3].interface, "GigabitEthernet0/1");
+    }
+
+    #[tokio::test]
+    async fn a_priority_class_gives_its_drops_however_its_rate_is_worded() {
+        let (collector, platform) = cisco_ios();
+        // Hand-written. The second class's line is how IOS XE is remembered
+        // to word `priority` without a rate; it is in no reference and no
+        // recording, which is the point: a wording the profile has not seen
+        // must not cost the class its drop counter.
+        let output = " GigabitEthernet0/1\n\n  Service-policy output: WAN\n\n    Class-map: VOICE (match-any)\n      10 packets, 800 bytes\n      Priority: 10% (5000 kbps), burst bytes 125000, b/w exceed drops: 3\n\n    Class-map: SIGNAL (match-any)\n      20 packets, 1600 bytes\n      Priority: Strict, b/w exceed drops: 7\n";
+        let mut device = Recorded::new().with("show policy-map interface", output);
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        assert_eq!(snapshot.problems, vec![]);
+        let classes = snapshot.qos.as_ref().unwrap();
+        assert_eq!(
+            classes
+                .iter()
+                .map(|class| (
+                    class.class.as_str(),
+                    class.rate_bps,
+                    class.queue_dropped_packets,
+                    class.dropped_packets
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("VOICE", Some(5_000_000), Some(3), Some(3)),
+                // No rate was printed, so none is claimed.
+                ("SIGNAL", None, Some(7), Some(7)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_qos_row_that_does_not_say_which_way_is_dropped_and_counted() {
+        const DIRECTIONLESS: &str = r#"
+id: qos_os
+name: QoS OS
+policy: {read_only: ['^show\b']}
+collect:
+  qos:
+    - command: show queues
+      parser: {regex: '(?m)^(?P<name>\S+) (?P<way>\S+) (?P<packets>\d+)$'}
+      map: {class: name, direction: way, packets: packets}
+"#;
+        let mut registry = Registry::empty();
+        let platform = registry.add(DIRECTIONLESS, Origin::User).unwrap();
+        let collector = Collector::new(registry.expressions());
+        let mut device = Recorded::new().with(
+            "show queues",
+            "voice out 10\nvideo sideways 20\nbulk input 30\n",
+        );
+        let snapshot = collector
+            .collect(&mut device, &platform, &[Kind::Qos])
+            .await;
+        let classes = snapshot.qos.as_ref().expect("the other rows are kept");
+        assert_eq!(
+            classes
+                .iter()
+                .map(|class| (class.class.as_str(), class.direction, class.packets))
+                .collect::<Vec<_>>(),
+            vec![
+                ("voice", crate::model::Direction::Out, Some(10)),
+                ("bulk", crate::model::Direction::In, Some(30)),
+            ]
+        );
+        assert_eq!(codes(&snapshot, Kind::Qos), vec![ProblemCode::Partial]);
+        let message = &snapshot.problems[0].message;
+        assert!(
+            message.contains("1 of 3 rows did not fit the model") && message.contains("sideways"),
+            "{message}"
+        );
     }
 
     #[test]

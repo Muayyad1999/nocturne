@@ -5,23 +5,27 @@
 //! count and the rows and fields that must come out; `SOURCE.md` says where
 //! the output was recorded.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use nocturne_drivers::collect::{Collector, Recorded, Snapshot, command_slug as slug};
 use nocturne_drivers::model::Kind;
 use nocturne_drivers::profile::InterfaceNames;
 use serde_json::Value;
 
-use super::cases::{Expect, KindExpect};
+use super::cases::{Expect, KindExpect, Origin};
 use super::{Subject, entries, name_of};
 
 /// Which kinds the captures of a profile cover.
 #[derive(Default)]
 pub struct Coverage {
-    /// Covered by at least one capture of real device output.
+    /// Collected, as expected, from at least one capture recorded from a real device.
     pub real: BTreeSet<Kind>,
-    /// Covered by any capture.
+    /// Collected, as expected, from any capture.
     pub any: BTreeSet<Kind>,
+    /// Kind → the cases that say they are recordings, list it and hold the
+    /// output of one of its commands, whether or not they pass: a recording
+    /// that exists has met the parser.
+    pub recorded_in: BTreeMap<Kind, Vec<String>>,
 }
 
 pub async fn run(subject: &mut Subject<'_>) -> Coverage {
@@ -85,12 +89,24 @@ pub async fn run(subject: &mut Subject<'_>) -> Coverage {
         let Some(expect) = subject.load::<Expect>(&expect_file) else {
             continue;
         };
-        if std::fs::read_to_string(case_dir.join("SOURCE.md"))
-            .map_or(true, |text| text.trim().is_empty())
-        {
+        let origin = match expect.origin() {
+            Ok(origin) => origin,
+            Err(problem) => {
+                subject.fail(&expect_file, problem);
+                continue;
+            }
+        };
+        let source = std::fs::read_to_string(case_dir.join("SOURCE.md")).unwrap_or_default();
+        if source.trim().is_empty() {
             subject.fail(
                 &format!("{case}/SOURCE.md"),
                 "missing or empty: say where each capture file was recorded (for the ntc-templates corpus, the path of the `.raw` file)",
+            );
+        } else if origin == Origin::Documented && !source.contains("https://") {
+            // "The documentation" is not a source anybody can check a sample against.
+            subject.fail(
+                &format!("{case}/SOURCE.md"),
+                "the case says `origin: documented`, so give the address (https://…) of the page of the vendor's documentation each sample is printed on",
             );
         }
         if expect.kinds.is_empty() {
@@ -129,6 +145,23 @@ pub async fn run(subject: &mut Subject<'_>) -> Coverage {
         }
 
         let kinds: Vec<Kind> = expect.kinds.keys().copied().collect();
+        if origin == Origin::Recorded {
+            // What has met the parser is the output of a command, so the
+            // case must hold some: one that only shows a device refusing
+            // the command is a recording too, and has shown the parser nothing.
+            let has_output = |kind: &Kind| {
+                steps.iter().any(|(of, _, command)| {
+                    of == kind && recorded.iter().any(|(_, recorded)| recorded == command)
+                })
+            };
+            for kind in kinds.iter().filter(|kind| has_output(kind)) {
+                coverage
+                    .recorded_in
+                    .entry(*kind)
+                    .or_default()
+                    .push(case.clone());
+            }
+        }
         let snapshot = collector.collect(&mut device, &platform, &kinds).await;
 
         for (file, command) in &recorded {
@@ -154,9 +187,11 @@ pub async fn run(subject: &mut Subject<'_>) -> Coverage {
             rows(subject, &expect_file, *kind, wanted, &snapshot);
         }
         if subject.failures.len() == before {
-            for kind in &kinds {
+            // A case that expects the read to fail proves the failure is
+            // reported; it does not prove the kind can be read.
+            for kind in kinds.iter().filter(|kind| snapshot.has(**kind)) {
                 coverage.any.insert(*kind);
-                if !expect.synthetic {
+                if origin == Origin::Recorded {
                     coverage.real.insert(*kind);
                 }
             }
@@ -270,7 +305,9 @@ fn rows(
             ),
         );
     }
-    if wanted.rows.is_empty() {
+    // Nothing to list when the device has nothing: `count: 0` is the whole
+    // expectation, and it is a real one — the read must work and be empty.
+    if wanted.rows.is_empty() && count != 0 {
         subject.fail(
             file,
             format!("{kind}: `rows` is empty: list rows (and the fields that matter) read from the raw output"),

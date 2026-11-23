@@ -1,0 +1,29 @@
+origin: documented
+kinds:
+  qos:
+    count: 1
+    rows:
+      - class: Limiting-Youtube
+        policy: queue tree
+        direction: out
+        # "parent=global": the name as printed. Nothing in the listing says
+        # whether a parent is an interface, so no interface is claimed.
+        parent: global
+        interface: ""
+        packets: 355
+        bytes: 67887
+        dropped_packets: 0
+        queued_packets: 0
+        # RouterOS does not say why a packet was dropped
+        queue_dropped_packets: null
+        police_dropped_packets: null
+        # max-limit is not part of the listing
+        rate_bps: null
+        # "rate=0" is what passes the queue, not what is offered to it
+        offered_rate_bps: null
+problems:
+  # The simple queues could not be read (this case has no listing of them),
+  # and the collection says so instead of passing for complete.
+  - kind: qos
+    code: partial
+    contains: /queue simple print stats detail without-paging

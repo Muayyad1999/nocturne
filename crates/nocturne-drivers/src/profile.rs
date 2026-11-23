@@ -50,6 +50,12 @@ pub struct Profile {
     /// How far this profile has been checked against the real platform.
     /// Never inherited through `extends`: every profile states its own.
     pub maturity: Maturity,
+    /// Kinds this profile collects with a parser that has not yet met output
+    /// recorded from a real device of this platform. It says so about one
+    /// read without taking the word `verified` — and with it write access —
+    /// from a profile that has earned it for everything else. Inherited like
+    /// any list: a child that inherits the steps inherits the caveat.
+    pub unverified: Vec<Kind>,
     /// How interface names in collected data are spelled.
     pub interface_names: InterfaceNames,
     pub detect: Detect,
@@ -58,6 +64,14 @@ pub struct Profile {
     pub policy: PolicySpec,
     pub collect: IndexMap<Kind, Vec<CollectStep>>,
     pub snmp: SnmpSpec,
+}
+
+impl Profile {
+    /// Whether what this profile reads for `kind` has yet to be checked
+    /// against a real device (`unverified: [<kind>]`).
+    pub fn is_unverified(&self, kind: Kind) -> bool {
+        self.unverified.contains(&kind)
+    }
 }
 
 /// How much a profile can be trusted.
@@ -658,6 +672,22 @@ impl Platform {
             );
         }
 
+        for (index, kind) in profile.unverified.iter().enumerate() {
+            if profile.unverified[..index].contains(kind) {
+                problems.push(format!("unverified[{index}]: `{kind}` is listed twice"));
+            } else if !profile
+                .collect
+                .get(kind)
+                .is_some_and(|steps| !steps.is_empty())
+            {
+                // A caveat about a read that does not exist is a leftover or
+                // a typo of another kind, and either way says something untrue.
+                problems.push(format!(
+                    "unverified[{index}]: `{kind}` is listed as not yet checked against a real device, but this profile has no `collect.{kind}` steps to check"
+                ));
+            }
+        }
+
         for (kind, steps) in &profile.collect {
             if !kind.is_single_row()
                 && !steps.is_empty()
@@ -886,6 +916,8 @@ pub struct ProfileSummary {
     pub extends: Option<String>,
     /// What the profile can collect.
     pub collects: Vec<Kind>,
+    /// Those of `collects` that have not been checked against a real device.
+    pub unverified: Vec<Kind>,
     pub can_configure: bool,
     pub syntax: Syntax,
 }
@@ -1106,6 +1138,7 @@ impl Registry {
                         .filter(|(_, steps)| !steps.is_empty())
                         .map(|(kind, _)| *kind)
                         .collect(),
+                    unverified: profile.unverified.clone(),
                     can_configure: !profile.config.enter.is_empty()
                         || profile.config.syntax == Syntax::Routeros,
                     syntax: profile.config.syntax,
@@ -1525,6 +1558,92 @@ collect:
             bad_parser.to_string().contains("unknown parser `xml`"),
             "{bad_parser}"
         );
+    }
+
+    #[test]
+    fn a_profile_says_which_of_its_reads_have_not_met_a_real_device() {
+        const WITH_QOS: &str = r#"
+id: qos_os
+name: QoS OS
+maturity: community
+unverified: [qos]
+policy: {read_only: ['^show ']}
+collect:
+  facts:
+    - command: show version
+      parser: {regex: 'Version (?P<version>\S+)'}
+      map: {os_version: version}
+  qos:
+    - command: show policy-map interface
+      parser: {regex: 'Class-map: (?P<class>\S+)'}
+      map: {class: class, direction: "'out'"}
+"#;
+        let mut registry = Registry::empty();
+        let platform = registry.add(WITH_QOS, Origin::User).unwrap();
+        assert!(platform.profile.is_unverified(Kind::Qos));
+        assert!(!platform.profile.is_unverified(Kind::Facts));
+        let listed = registry.list();
+        assert_eq!(listed[0].collects, vec![Kind::Facts, Kind::Qos]);
+        assert_eq!(listed[0].unverified, vec![Kind::Qos]);
+
+        // A child that inherits the steps inherits the caveat with them, and
+        // may lift it only by saying so.
+        let child = registry
+            .add(
+                "id: qos_child\nname: Child\nextends: qos_os\n",
+                Origin::User,
+            )
+            .unwrap();
+        assert!(child.profile.is_unverified(Kind::Qos));
+        let lifted = registry
+            .add(
+                "id: qos_lifted\nname: Lifted\nextends: qos_os\nunverified: []\n",
+                Origin::User,
+            )
+            .unwrap();
+        assert!(!lifted.profile.is_unverified(Kind::Qos));
+
+        // A caveat about a read the profile does not make is refused.
+        let nothing_to_check = registry
+            .add(
+                "id: no_qos\nname: None\nunverified: [qos, routes]\n",
+                Origin::User,
+            )
+            .unwrap_err()
+            .to_string();
+        for expected in [
+            "unverified[0]: `qos` is listed as not yet checked",
+            "no `collect.qos` steps",
+            "unverified[1]: `routes`",
+        ] {
+            assert!(
+                nothing_to_check.contains(expected),
+                "missing `{expected}` in: {nothing_to_check}"
+            );
+        }
+        let twice = registry
+            .add(
+                &WITH_QOS
+                    .replace("id: qos_os", "id: twice")
+                    .replace("[qos]", "[qos, qos]"),
+                Origin::User,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            twice.contains("unverified[1]: `qos` is listed twice"),
+            "{twice}"
+        );
+        let not_a_kind = registry
+            .add(
+                &WITH_QOS
+                    .replace("id: qos_os", "id: typo")
+                    .replace("[qos]", "[quos]"),
+                Origin::User,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(not_a_kind.contains("quos"), "{not_a_kind}");
     }
 
     #[test]

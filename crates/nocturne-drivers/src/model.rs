@@ -22,10 +22,12 @@ pub enum Kind {
     Routes,
     Health,
     Inventory,
+    /// Per-class quality-of-service statistics.
+    Qos,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Facts,
         Kind::Interfaces,
         Kind::Neighbors,
@@ -35,6 +37,7 @@ impl Kind {
         Kind::Routes,
         Kind::Health,
         Kind::Inventory,
+        Kind::Qos,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -48,6 +51,7 @@ impl Kind {
             Kind::Routes => "routes",
             Kind::Health => "health",
             Kind::Inventory => "inventory",
+            Kind::Qos => "qos",
         }
     }
 
@@ -70,6 +74,7 @@ impl Kind {
             Kind::Routes => serde_json::to_value(Route::default()),
             Kind::Health => serde_json::to_value(Health::default()),
             Kind::Inventory => serde_json::to_value(InventoryItem::default()),
+            Kind::Qos => serde_json::to_value(QosClass::default()),
         };
         match row {
             Ok(serde_json::Value::Object(row)) => row,
@@ -84,7 +89,7 @@ impl Kind {
             Kind::Interfaces => &["name"],
             Kind::Neighbors => &["local_interface"],
             Kind::Vlans => &["interfaces"],
-            Kind::MacTable | Kind::Arp | Kind::Routes => &["interface"],
+            Kind::MacTable | Kind::Arp | Kind::Routes | Kind::Qos => &["interface"],
             Kind::Facts | Kind::Health | Kind::Inventory => &[],
         }
     }
@@ -291,6 +296,91 @@ pub struct InventoryItem {
     pub serial: String,
 }
 
+/// Which way the traffic of a QoS class flows, seen from the device.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// Arriving on the interface (an input policy; a simple queue's upload).
+    // The default only exists so that `QosClass::default()` can list the
+    // row's fields; a row read from a device must state its direction.
+    #[default]
+    In,
+    /// Leaving through the interface (an output policy; a queue tree; a
+    /// simple queue's download).
+    Out,
+}
+
+impl Direction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Direction::In => "in",
+            Direction::Out => "out",
+        }
+    }
+}
+
+/// One class of a QoS policy, in one direction, on one interface.
+///
+/// A policy is a tree: a class may hold a child policy, whose classes name
+/// it as their `parent`. A parent's counters include its children's, so add
+/// up the rows of one level, never the whole table.
+///
+/// Every number is optional, and absent means the platform does not print
+/// it: an absent drop counter is not "no drops".
+// No struct-level `#[serde(default)]`, unlike the other rows: `direction`
+// has no sensible default, and a row without one must be refused, not filed
+// under `in`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QosClass {
+    /// The interface the policy is attached to. Empty when the platform
+    /// attaches it to something else (a RouterOS queue on an address).
+    #[serde(default, deserialize_with = "lenient::string")]
+    pub interface: String,
+    #[serde(deserialize_with = "lenient::direction")]
+    pub direction: Direction,
+    /// The policy the class belongs to: an IOS policy-map; on RouterOS the
+    /// queueing structure, `queue simple` or `queue tree`.
+    #[serde(default, deserialize_with = "lenient::string")]
+    pub policy: String,
+    /// The class; on RouterOS the queue. `class-default` is a class like any other.
+    #[serde(default, deserialize_with = "lenient::string")]
+    pub class: String,
+    /// The class, or queue, this one sits under.
+    #[serde(default, deserialize_with = "lenient::opt_string")]
+    pub parent: Option<String>,
+    /// The configured rate: a shaper's, a policer's CIR, a priority rate, a
+    /// bandwidth guarantee or a queue's max-limit.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub rate_bps: Option<u64>,
+    /// Classified into this class.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub packets: Option<u64>,
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub bytes: Option<u64>,
+    /// Every drop, whatever the reason.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub dropped_packets: Option<u64>,
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub dropped_bytes: Option<u64>,
+    /// Dropped from the queue (tail drop, WRED): congestion.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub queue_dropped_packets: Option<u64>,
+    /// Dropped by a policer: the policy doing what it was told to.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub police_dropped_packets: Option<u64>,
+    /// Queue depth at the moment of the read.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub queued_packets: Option<u64>,
+    /// Rates as the device averages them itself (IOS: over the load
+    /// interval), kept apart from anything computed from the counters.
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub offered_rate_bps: Option<u64>,
+    #[serde(default, deserialize_with = "lenient::opt_u64")]
+    pub drop_rate_bps: Option<u64>,
+}
+
 /// Forgiving deserialisers for values that came out of text.
 pub(crate) mod lenient {
     use serde::{Deserialize, Deserializer};
@@ -308,6 +398,30 @@ pub(crate) mod lenient {
                 .join(", "),
             other => plain(&other),
         })
+    }
+
+    /// Text, or `None` when there is none.
+    pub fn opt_string<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<String>, D::Error> {
+        Ok(Some(string(deserializer)?).filter(|text| !text.is_empty()))
+    }
+
+    /// `in` or `out`, also in the words devices use for them. Anything else
+    /// is an error: a counter filed under the wrong direction is worse than
+    /// a row that is refused.
+    pub fn direction<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<super::Direction, D::Error> {
+        use serde::de::Error;
+        let text = string(deserializer)?.to_ascii_lowercase();
+        match text.as_str() {
+            "in" | "input" | "ingress" => Ok(super::Direction::In),
+            "out" | "output" | "egress" => Ok(super::Direction::Out),
+            other => Err(D::Error::custom(format!(
+                "direction must be `in` or `out`, not `{other}`"
+            ))),
+        }
     }
 
     pub fn strings<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
@@ -331,25 +445,28 @@ pub(crate) mod lenient {
 
     pub fn opt_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
         Ok(match Value::deserialize(deserializer)? {
-            Value::Number(number) => number
-                .as_u64()
-                .or_else(|| number.as_f64().filter(|n| *n >= 0.0).map(|n| n as u64)),
+            Value::Number(number) => number.as_u64().or_else(|| number.as_f64().and_then(count)),
             Value::String(text) => {
                 let digits: String = text
                     .trim()
                     .chars()
                     .filter(|c| *c != ',' && *c != '_')
                     .collect();
-                digits.parse::<u64>().ok().or_else(|| {
-                    digits
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|n| *n >= 0.0)
-                        .map(|n| n as u64)
-                })
+                digits
+                    .parse::<u64>()
+                    .ok()
+                    .or_else(|| digits.parse::<f64>().ok().and_then(count))
             }
             _ => None,
         })
+    }
+
+    /// A float as a count, where it is one: not negative, and not beyond
+    /// what 64 bits hold. A plain cast would turn anything larger into
+    /// `u64::MAX`, which is a number nobody printed.
+    fn count(number: f64) -> Option<u64> {
+        const BEYOND: f64 = 18_446_744_073_709_551_616.0; // 2^64
+        (0.0..BEYOND).contains(&number).then_some(number as u64)
     }
 
     pub fn opt_f64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
@@ -432,6 +549,69 @@ mod tests {
                 assert!(row.contains_key(*field), "{kind}.{field}");
             }
         }
+    }
+
+    #[test]
+    fn a_qos_number_the_device_did_not_print_is_absent_not_zero() {
+        let class: QosClass = serde_json::from_value(json!({
+            "interface": "GigabitEthernet0/1",
+            "direction": "out",
+            "policy": "WAN-EDGE",
+            "class": "VOICE",
+            "parent": "class-default",
+            "packets": "1,250",
+            "dropped_packets": 0,
+            "queued_packets": "",
+        }))
+        .unwrap();
+        assert_eq!(class.direction, Direction::Out);
+        assert_eq!(class.parent.as_deref(), Some("class-default"));
+        assert_eq!(class.packets, Some(1250));
+        assert_eq!(class.dropped_packets, Some(0), "a printed zero is a zero");
+        assert_eq!(class.queued_packets, None, "an empty value is not a zero");
+        assert_eq!(class.bytes, None);
+        assert_eq!(class.queue_dropped_packets, None);
+        assert_eq!(class.police_dropped_packets, None);
+        assert_eq!(class.rate_bps, None);
+
+        // Written out, the absent numbers are null and the direction is a word.
+        let written = serde_json::to_value(&class).unwrap();
+        assert_eq!(written["direction"], "out");
+        assert_eq!(written["bytes"], json!(null));
+        assert_eq!(written["dropped_packets"], 0);
+
+        // A top-level class has no parent, however the profile spells "none".
+        let top: QosClass =
+            serde_json::from_value(json!({"direction": "input", "class": "c", "parent": " "}))
+                .unwrap();
+        assert_eq!((top.direction, top.parent), (Direction::In, None));
+    }
+
+    #[test]
+    fn a_qos_row_without_a_direction_is_refused() {
+        let missing = serde_json::from_value::<QosClass>(json!({"class": "VOICE"})).unwrap_err();
+        assert!(missing.to_string().contains("direction"), "{missing}");
+        let unknown =
+            serde_json::from_value::<QosClass>(json!({"class": "VOICE", "direction": "both"}))
+                .unwrap_err();
+        assert!(unknown.to_string().contains("`both`"), "{unknown}");
+    }
+
+    #[test]
+    fn a_number_beyond_64_bits_is_absent_not_the_largest_number_there_is() {
+        let read = |packets: serde_json::Value| {
+            serde_json::from_value::<QosClass>(json!({"direction": "out", "packets": packets}))
+                .unwrap()
+                .packets
+        };
+        assert_eq!(read(json!("18446744073709551615")), Some(u64::MAX));
+        // One more than fits, as text and as the float an expression makes of it.
+        assert_eq!(read(json!("18446744073709551616")), None);
+        assert_eq!(read(json!(1.8446744073709552e19)), None);
+        assert_eq!(read(json!("99999999999999999999999")), None);
+        assert_eq!(read(json!(-1)), None);
+        // What a float can hold exactly is still read.
+        assert_eq!(read(json!(4294967296.0)), Some(4_294_967_296));
     }
 
     #[test]

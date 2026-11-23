@@ -156,6 +156,7 @@ pub async fn run(registry: &Registry, root: &Path, only: Option<&str>) -> Report
         let coverage = captures::run(&mut subject).await;
         checks::configs(&mut subject);
         scripted::run(&mut subject).await;
+        unverified(&mut subject, &coverage);
         maturity(&mut subject, &coverage);
 
         let tally = &subject.tally;
@@ -179,17 +180,42 @@ pub async fn run(registry: &Registry, root: &Path, only: Option<&str>) -> Report
     report
 }
 
+/// A kind the profile lists under `unverified` is a read nobody has seen
+/// work on the real platform. That is allowed, on two conditions: the parser
+/// is tested against something, and the caveat goes the day it stops being
+/// true — not whenever somebody remembers.
+fn unverified(subject: &mut Subject<'_>, coverage: &captures::Coverage) {
+    for kind in subject.platform.profile.unverified.clone() {
+        if let Some(cases) = coverage.recorded_in.get(&kind) {
+            subject.fail(
+                "captures/",
+                format!(
+                    "the profile still lists {kind} under `unverified`, but {} {} recorded from a real device: the read has met one now, so take {kind} off the list (if the files are not a recording, say what they are with `origin: documented` or `origin: synthetic` in expect.yml)",
+                    cases.join(", "),
+                    if cases.len() == 1 { "is" } else { "are" },
+                ),
+            );
+        } else if !coverage.any.contains(&kind) {
+            subject.fail(
+                "captures/",
+                format!(
+                    "the profile lists {kind} under `unverified`, which excuses it from a recording, not from being tested: add at least one capture that collects it — a sample from the vendor's documentation (`origin: documented`) or a synthetic one"
+                ),
+            );
+        }
+    }
+}
+
 /// A `verified` profile must have earned the word.
 fn maturity(subject: &mut Subject<'_>, coverage: &captures::Coverage) {
-    if subject.platform.profile.maturity != Maturity::Verified {
+    let profile = &subject.platform.profile;
+    if profile.maturity != Maturity::Verified {
         return;
     }
-    let collected: Vec<Kind> = subject
-        .platform
-        .profile
+    let collected: Vec<Kind> = profile
         .collect
         .iter()
-        .filter(|(_, steps)| !steps.is_empty())
+        .filter(|(kind, steps)| !steps.is_empty() && !profile.is_unverified(**kind))
         .map(|(kind, _)| *kind)
         .collect();
     for kind in collected {
@@ -197,7 +223,7 @@ fn maturity(subject: &mut Subject<'_>, coverage: &captures::Coverage) {
             subject.fail(
                 "captures/",
                 format!(
-                    "the profile says `maturity: verified`, but {kind} is not covered by a capture of real device output (only by synthetic ones, or none): add one, or lower the maturity to `community`"
+                    "the profile says `maturity: verified`, but {kind} is not covered by a capture recorded from a real device (only by documented or synthetic ones, or none): add one, list {kind} under `unverified`, or lower the maturity to `community`"
                 ),
             );
         }

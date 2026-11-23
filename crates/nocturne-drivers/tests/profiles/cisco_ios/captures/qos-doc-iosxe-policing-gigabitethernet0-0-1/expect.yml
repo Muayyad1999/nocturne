@@ -1,0 +1,63 @@
+origin: documented
+kinds:
+  qos:
+    count: 5
+    rows:
+      # "Service-policy input: TUNNEL_MARKING"
+      - class: MATCH_PREC
+        interface: GigabitEthernet0/0/1
+        direction: in
+        policy: TUNNEL_MARKING
+        parent: null
+        # "72417 packets, 25418367 bytes"
+        packets: 72417
+        bytes: 25418367
+        # "5 minute offered rate 0000 bps, drop rate 0000 bps"
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+        # the class only marks
+        rate_bps: null
+        dropped_packets: null
+        queue_dropped_packets: null
+        police_dropped_packets: null
+      - class: MATCH_DSCP
+        interface: GigabitEthernet0/0/1
+        direction: in
+        policy: TUNNEL_MARKING
+        packets: 0
+        bytes: 0
+      - class: class-default
+        interface: GigabitEthernet0/0/1
+        direction: in
+        policy: TUNNEL_MARKING
+        packets: 346462
+        bytes: 28014400
+        dropped_packets: null
+      # "Service-policy output: POLICE-SETTING": the same class name, the other way.
+      - class: MATCH_PREC
+        interface: GigabitEthernet0/0/1
+        direction: out
+        policy: POLICE-SETTING
+        parent: null
+        # "cir 8000 bps, bc 1000 bytes, be 1000 bytes"
+        rate_bps: 8000
+        packets: 0
+        bytes: 0
+        # conformed: transmit; exceeded: "set-qos-transmit 1", which is not a
+        # drop; violated: drop, and it counts "0 packets, 0 bytes"
+        police_dropped_packets: 0
+        dropped_packets: 0
+        dropped_bytes: 0
+        queue_dropped_packets: null
+        queued_packets: null
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+      - class: class-default
+        interface: GigabitEthernet0/0/1
+        direction: out
+        policy: POLICE-SETTING
+        # "31 packets, 2019 bytes"
+        packets: 31
+        bytes: 2019
+        rate_bps: null
+        dropped_packets: null

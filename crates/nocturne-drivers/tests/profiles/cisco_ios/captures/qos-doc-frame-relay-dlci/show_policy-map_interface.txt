@@ -1,0 +1,18 @@
+
+ Serial3/1.1:DLCI 201 -
+  Service-policy output:MQC-SHAPE-LLQ1
+    
+    Class-map:class-default (match-any)
+      1434 packets, 148751 bytes
+      30 second offered rate 14000 bps, drop rate 0 bps
+      Match:any
+      Traffic Shaping
+           Target/Average   Byte   Sustain   Excess    Interval  Increment
+             Rate           Limit  bits/int  bits/int  (ms)      (bytes)
+            63000/63000     1890   7560      7560      120       945
+    
+        Adapt  Queue     Packets   Bytes     Packets   Bytes     Shaping
+        Active Depth                         Delayed   Delayed   Active
+        BECN   0         1434      162991    26        2704      yes
+        Voice Adaptive Shaping active, time left 29 secs 
+

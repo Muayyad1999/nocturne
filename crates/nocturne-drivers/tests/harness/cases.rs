@@ -97,23 +97,59 @@ pub struct Snmp {
     pub sysobjectid: String,
 }
 
+/// Where the files of a capture come from. It decides what the capture
+/// proves: only a recording says anything about the real platform.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// Printed by a device of this platform and recorded: the ntc-templates
+    /// corpus, or a device somebody ran the command on.
+    #[default]
+    Recorded,
+    /// A sample printed in the vendor's own documentation, copied as it
+    /// stands there. It shows the format the vendor describes, but it has
+    /// been through an editor and a typesetter and nobody can say which
+    /// release printed it, so it is not a recording.
+    Documented,
+    /// Written by hand from a documented format, or printed by something
+    /// that is not the platform (Nocturne's simulator).
+    Synthetic,
+}
+
 /// `captures/<case>/expect.yml`
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Expect {
-    /// The capture files were written by hand from documented output formats.
-    #[serde(default)]
-    pub synthetic: bool,
+    /// `recorded` unless stated.
+    pub origin: Option<Origin>,
+    /// The older spelling of `origin: synthetic`.
+    pub synthetic: Option<bool>,
     pub kinds: IndexMap<Kind, KindExpect>,
     /// Problems the collection must report (none unless listed).
     #[serde(default)]
     pub problems: Vec<ExpectedProblem>,
 }
 
+impl Expect {
+    /// What the case says its files are. Saying it twice is refused, so that
+    /// the two statements cannot come to disagree.
+    pub fn origin(&self) -> Result<Origin, &'static str> {
+        match (self.origin, self.synthetic) {
+            (Some(_), Some(_)) => Err(
+                "says both `origin` and `synthetic`: state where the files come from once, with `origin: recorded | documented | synthetic`",
+            ),
+            (Some(origin), None) => Ok(origin),
+            (None, Some(true)) => Ok(Origin::Synthetic),
+            (None, Some(false) | None) => Ok(Origin::Recorded),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KindExpect {
     /// The exact number of rows. May be left out for `facts` and `health`, which are one row.
+    /// `0` is a read that worked and found nothing, and then `rows` is empty.
     pub count: Option<usize>,
     /// Rows that must be there. Each is found by its first field; every field listed must match exactly.
     #[serde(default)]

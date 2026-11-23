@@ -1,0 +1,37 @@
+origin: synthetic
+kinds:
+  qos:
+    count: 2
+    rows:
+      - class: USERS
+        interface: GigabitEthernet0/0
+        direction: in
+        policy: LIMIT-USERS
+        parent: null
+        # "cir 2000000 bps, bc 62500 bytes"
+        rate_bps: 2000000
+        packets: 7812
+        bytes: 6250000
+        # "exceeded 4687 packets, 3750000 bytes; actions:" / "drop"; the
+        # conformed 3125 packets are transmitted
+        police_dropped_packets: 4687
+        dropped_packets: 4687
+        dropped_bytes: 3750000
+        # a class that only polices has no queue
+        queue_dropped_packets: null
+        queued_packets: null
+        offered_rate_bps: 164000
+        drop_rate_bps: 98000
+      - class: class-default
+        interface: GigabitEthernet0/0
+        direction: in
+        policy: LIMIT-USERS
+        parent: null
+        rate_bps: null
+        packets: 0
+        bytes: 0
+        dropped_packets: null
+        police_dropped_packets: null
+        queue_dropped_packets: null
+        offered_rate_bps: 0
+        drop_rate_bps: 0

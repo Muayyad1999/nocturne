@@ -1,0 +1,45 @@
+ GigabitEthernet0/0/1
+
+  Service-policy input: TUNNEL_MARKING
+
+    Class-map: MATCH_PREC (match-any)
+      72417 packets, 25418367 bytes
+      5 minute offered rate 0000 bps, drop rate 0000 bps
+      Match: ip precedence 0
+      QoS Set
+        ip precedence tunnel 3
+          Marker statistics: Disabled
+
+    Class-map: MATCH_DSCP (match-any)
+      0 packets, 0 bytes
+      5 minute offered rate 0000 bps, drop rate 0000 bps
+      Match: ip dscp default (0)
+      QoS Set
+        ip dscp tunnel 3
+          Marker statistics: Disabled
+
+    Class-map: class-default (match-any)
+      346462 packets, 28014400 bytes
+      5 minute offered rate 0000 bps, drop rate 0000 bps
+      Match: any
+
+  Service-policy output: POLICE-SETTING
+
+    Class-map: MATCH_PREC (match-any)
+      0 packets, 0 bytes
+      5 minute offered rate 0000 bps, drop rate 0000 bps
+      Match: ip precedence 0
+      police:
+          cir 8000 bps, bc 1000 bytes, be 1000 bytes
+        conformed 0 packets, 0 bytes; actions:
+          transmit
+        exceeded 0 packets, 0 bytes; actions:
+          set-qos-transmit 1
+        violated 0 packets, 0 bytes; actions:
+          drop
+        conformed 0000 bps, exceed 0000 bps, violate 0000 bps
+
+    Class-map: class-default (match-any)
+      31 packets, 2019 bytes
+      5 minute offered rate 0000 bps, drop rate 0000 bps
+      Match: any

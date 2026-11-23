@@ -1,0 +1,37 @@
+
+Load for five secs: 1%/0%; one minute: 1%; five minutes: 1%
+Time source is hardware calendar, *23:02:40.857 pst Thu Mar 3 2011
+
+ GigabitEthernet1/2/0
+
+  Service-policy input: policy-in
+
+    Class-map: class-exp-0 (match-all)
+      6647740 packets, 9304674796 bytes
+      30 second offered rate 3234000 bps, drop rate 0 bps
+      Match: mpls experimental topmost 0
+      QoS Set
+        precedence 3
+          Packets marked 6647740
+
+    Class-map: class-default (match-any)
+      1386487 packets, 1903797872 bytes
+      30 second offered rate 658000 bps, drop rate 0 bps
+      Match: any
+
+  Service-policy output: policy-out
+
+    Class-map: class-pre-1 (match-all)
+      2041355 packets, 2857897000 bytes
+      30 second offered rate 986000 bps, drop rate 0 bps
+
+      Match: ip precedence 1
+      QoS Set
+        mpls experimental topmost 1
+          Packets marked 2041355
+
+    Class-map: class-default (match-any)
+      6129975 packets, 8575183331 bytes
+      30 second offered rate 2960000 bps, drop rate 0 bps
+      Match: any
+

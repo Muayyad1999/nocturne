@@ -1,0 +1,28 @@
+
+GigabitEthernet3/1 
+  Service-policy input: in1
+    Class-map: p1 (match-all)
+      0 packets
+      Match:  precedence 1 
+           QoS Set
+             ip precedence 7
+      police:
+          cir 20 %
+          cir 200000000 bps, bc 6250000 bytes
+        conformed 0 bytes; actions:
+          transmit 
+        exceeded 0 bytes; actions:
+          drop 
+        conformed 0000 bps, exceed 0000 bps
+    Class-map: class-default (match-any)
+      10000000 packets
+      Match: any 
+      police:
+          cir 20 %
+          cir 200000000 bps, bc 6250000 bytes
+        conformed 174304448 bytes; actions: 
+          transmit 
+        exceeded 465695552 bytes; actions:
+          drop 
+        conformed 4287000 bps, exceed 11492000 bps
+

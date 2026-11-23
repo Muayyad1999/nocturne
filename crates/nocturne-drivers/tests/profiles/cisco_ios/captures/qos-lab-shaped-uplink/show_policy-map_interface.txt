@@ -1,0 +1,46 @@
+ GigabitEthernet0/1
+
+  Service-policy output: WAN-EDGE
+
+    Class-map: class-default (match-any)
+      9843 packets, 7875000 bytes
+      5 minute offered rate 206000 bps, drop rate 42000 bps
+      Match: any
+      Queueing
+      queue limit 64 packets
+      (queue depth/total drops/no-buffer drops) 64/2031/0
+      (pkts output/bytes output) 7812/6250000
+      shape (average) cir 5000000, bc 20000, be 20000
+      target shape rate 5000000
+
+      Service-policy : WAN-QUEUE
+
+        queue stats for all priority classes:
+
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 1250/1000000
+
+        Class-map: VOICE (match-any)
+          1250 packets, 1000000 bytes
+          5 minute offered rate 26000 bps, drop rate 0 bps
+          Match: dscp ef (46)
+          Priority: 1000 kbps, burst bytes 25000, b/w exceed drops: 0
+
+        Class-map: VIDEO (match-any)
+          2343 packets, 1875000 bytes
+          5 minute offered rate 49000 bps, drop rate 0 bps
+          Match: dscp af41 (34)
+          Queueing
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 2343/1875000
+          bandwidth 40% (2000 kbps)
+
+        Class-map: class-default (match-any)
+          6250 packets, 5000000 bytes
+          5 minute offered rate 131000 bps, drop rate 42000 bps
+          Match: any
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 64/2031/0
+          (pkts output/bytes output) 4218/3375000

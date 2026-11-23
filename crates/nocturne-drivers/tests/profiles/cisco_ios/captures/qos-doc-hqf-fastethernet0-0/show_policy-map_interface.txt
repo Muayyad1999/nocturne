@@ -1,0 +1,64 @@
+ FastEthernet0/0 
+ 
+  Service-policy output: test1
+ 
+    Class-map: class-default (match-any)
+      129 packets, 12562 bytes
+      30 second offered rate 0 bps, drop rate 0 bps
+      Match: any 
+      Queueing
+      queue limit 64 packets
+      (queue depth/total drops/no-buffer drops) 0/0/0
+      (pkts output/bytes output) 129/12562
+      shape (average) cir 1536000, bc 6144, be 6144
+      target shape rate 1536000
+ 
+      Service-policy : test2
+ 
+        queue stats for all priority classes:
+          
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 0/0
+ 
+        Class-map: RT (match-all)
+          0 packets, 0 bytes
+          30 second offered rate 0 bps, drop rate 0 bps
+          Match: ip dscp ef (46)
+          Priority: 20% (307 kbps), burst bytes 7650, b/w exceed drops: 0
+          
+ 
+        Class-map: BH (match-all)
+          0 packets, 0 bytes
+          30 second offered rate 0 bps, drop rate 0 bps
+          Match: ip dscp af41 (34)
+          Queueing
+          queue limit 128 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 0/0
+          bandwidth 40% (614 kbps)
+ 
+        Class-map: BL (match-all)
+          0 packets, 0 bytes
+          30 second offered rate 0 bps, drop rate 0 bps
+          Match: ip dscp af21 (18)
+          Queueing
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 0/0
+          bandwidth 35% (537 kbps)
+            Exp-weight-constant: 9 (1/512)
+            Mean queue depth: 0 packets
+            dscp     Transmitted   Random drop   Tail drop   Minimum   Maximum   Mark
+                     pkts/bytes    pkts/bytes    pkts/bytes  thresh    thresh    prob
+            
+            af21     0/0           0/0           0/0         100       400       1/10
+ 
+        Class-map: class-default (match-any)
+          129 packets, 12562 bytes
+          30 second offered rate 0 bps, drop rate 0 bps
+          Match: any 
+          
+          queue limit 64 packets
+          (queue depth/total drops/no-buffer drops) 0/0/0
+          (pkts output/bytes output) 129/12562

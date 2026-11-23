@@ -1,0 +1,64 @@
+origin: documented
+kinds:
+  qos:
+    count: 5
+    rows:
+      # "Service-policy input: input_policy"
+      - class: class-default
+        interface: Port-channel1.1
+        direction: in
+        policy: input_policy
+        parent: null
+        packets: 0
+        bytes: 0
+        # "5 minute offered rate 0000 bps, drop rate 0000 bps"
+        offered_rate_bps: 0
+        drop_rate_bps: 0
+        # the class only marks
+        dropped_packets: null
+        queue_dropped_packets: null
+        rate_bps: null
+      # "Service-policy output: Port-channel_1_subscriber"
+      - class: EF
+        interface: Port-channel1.1
+        direction: out
+        policy: Port-channel_1_subscriber
+        parent: null
+        packets: 105233
+        bytes: 6734912
+        offered_rate_bps: 134000
+        drop_rate_bps: 0
+        # "Queueing" / "Packets dropped 0 packets/0 bytes"
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        dropped_bytes: 0
+        police_dropped_packets: null
+      - class: AF4
+        direction: out
+        policy: Port-channel_1_subscriber
+        packets: 105234
+        bytes: 6734976
+        offered_rate_bps: 134000
+        queue_dropped_packets: 0
+      - class: AF1
+        direction: out
+        policy: Port-channel_1_subscriber
+        packets: 315690
+        bytes: 20204160
+        offered_rate_bps: 402000
+        queue_dropped_packets: 0
+      # "Class-map: class-default (match-any) fragment Port-channel_BE"
+      - class: class-default
+        interface: Port-channel1.1
+        direction: out
+        policy: Port-channel_1_subscriber
+        parent: null
+        packets: 315677
+        bytes: 20203328
+        offered_rate_bps: 402000
+        # "(queue depth/total drops/no-buffer drops) 0/0/0"
+        queued_packets: 0
+        queue_dropped_packets: 0
+        dropped_packets: 0
+        # "bandwidth remaining ratio 1" is a share, not a rate
+        rate_bps: null
