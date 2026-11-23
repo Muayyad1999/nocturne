@@ -58,7 +58,10 @@ jobs:
       # this is the workspace's `default-members` — the same set as every
       # other step here — and the desktop crate is linted in its own job.
       - run: cargo clippy -- -D warnings
-      - run: cargo test
+      # Every crate's tests, even after one has failed: by default cargo stops
+      # at the first failing crate, so a run showed one problem and hid the
+      # rest until the next run, half an hour later.
+      - run: cargo test --no-fail-fast
       # The ISP edition is the same build with one feature on, and nothing
       # above turns it on: a clash between its methods or settings and the
       # rest of the suite would only show on a release tag, after the free
@@ -77,7 +80,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
+      # As on Linux: every crate's tests, so one platform's failure does not
+      # hide the next one's.
+      - run: cargo test --no-fail-fast
 
   ui:
     name: UI — typecheck, unit tests, build (${{ matrix.os }})

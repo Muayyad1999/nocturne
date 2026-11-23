@@ -159,7 +159,11 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
         <span className={styles.amount}>
           <Amount money={row.paid} muted />
           {row.credited.minor !== 0 && (
-            <span className={styles.rowSub}>{formatMoney(row.credited)} credited</span>
+            // In a column as narrow as one figure, the word goes under it
+            // rather than off the edge ("100.00 USD credite").
+            <span className={`${styles.rowSub} ${styles.figureThenWord}`}>
+              <span className={styles.figure}>{formatMoney(row.credited)}</span> credited
+            </span>
           )}
         </span>
       ),

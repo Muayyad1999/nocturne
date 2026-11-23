@@ -156,7 +156,7 @@ what that one leaves to the implementation, and it is contract too.
 | Method | Params → Result |
 |---|---|
 | `evidence.capture_terminal` | `{session_id, lines?: 200, title?}` → `Evidence` with `body`. `lines` is 1 to 10,000 |
-| `evidence.capture_log` | `{name, offset?: 0, limit?: 262144, title?}` → `Evidence` with `body`. `limit` is at most 262,144 bytes; `source.note` says which bytes of the log were read |
+| `evidence.capture_log` | `{name, offset?: 0, limit?: 262144, title?}` → `Evidence` with `body`. `limit` is at most 262,144 bytes; `source.note` says which bytes of the log were read, as the read reported them: it starts at the beginning of the line `offset` falls in, which can be earlier than `offset` |
 | `evidence.capture_topology` | `{view?, layer?, filter?, include_endpoints?, title?}` → `Evidence` with `body` |
 | `evidence.capture_chart` | `{series: [{device_id, metric, instance?}], since, until, step_s?, title?}` → `Evidence` with `body`. Every device must be in the inventory |
 | `evidence.add_text` | `{text, title, session_id?, device_id?, note?}` → `Evidence` with `body`; `source.from` is `operator`. `session_id` is recorded whether or not the session can still be found, so it has to be shaped like an id (at most 64 letters, digits, `-`, `_`, `.`, `:`) or the call is `invalid` |

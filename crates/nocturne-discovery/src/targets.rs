@@ -57,22 +57,12 @@ pub async fn plan(
     let mut plan = Plan::default();
     let mut seen = std::collections::HashSet::new();
     for token in tokens {
-        // A block's size is checked before it is expanded, so that "that is
-        // too big" names the setting rather than an internal limit.
-        if let Ok(block) = token.parse::<IpNet>() {
-            let hosts = host_count(&block);
-            if hosts > limit as u64 {
-                return Err(AppError::invalid(format!(
-                    "`{token}` covers {hosts} addresses; this scan may probe at most {limit}. Scan it in smaller pieces, or raise `max_hosts` under Settings → Discovery (at most {})",
-                    crate::settings::MAX_HOSTS_LIMIT
-                )));
-            }
-        }
-        // The engine owns the address maths; a token it cannot read may still
-        // be a host name, and only when that fails too is the token wrong.
-        let expanded = match sweep::expand_targets(token, limit) {
-            Ok(addresses) => addresses,
-            Err(engine_error) => match dns::resolve(token).await {
+        // The engine owns the address maths, and it also says which tokens
+        // are names. Only a name goes to the resolver: an address, a range or
+        // a block it refused would otherwise be sent to DNS as one, telling a
+        // resolver outside the network what was about to be scanned.
+        let expanded = if sweep::is_host_name(token) {
+            match dns::resolve(token).await {
                 Ok(addresses) if !addresses.is_empty() => {
                     plan.notes.push(format!(
                         "`{token}` resolves to {}",
@@ -84,10 +74,30 @@ pub async fn plan(
                     ));
                     addresses
                 }
-                _ => {
-                    return Err(AppError::invalid(format!("`{token}`: {engine_error}")));
+                Ok(_) => {
+                    return Err(AppError::invalid(format!(
+                        "`{token}` is a host name that resolves to no address"
+                    )));
                 }
-            },
+                Err(err) => {
+                    return Err(AppError::invalid(format!(
+                        "`{token}` is not an address, a range (10.0.1.5-10.0.1.40) or a CIDR block (10.0.0.0/24), and as a host name it does not resolve: {err}"
+                    )));
+                }
+            }
+        } else {
+            let invalid = |engine_error| AppError::invalid(format!("`{token}`: {engine_error}"));
+            // Counted before it is expanded, so that "that is too big" names
+            // the setting rather than an internal limit, for a range as for a
+            // block.
+            let hosts = sweep::count_targets(token).map_err(invalid)?;
+            if hosts > limit as u128 {
+                return Err(AppError::invalid(format!(
+                    "`{token}` covers {hosts} addresses; this scan may probe at most {limit}. Scan it in smaller pieces, or raise `max_hosts` under Settings → Discovery (at most {})",
+                    crate::settings::MAX_HOSTS_LIMIT
+                )));
+            }
+            sweep::expand_targets(token, limit).map_err(invalid)?
         };
         let mut kept = 0usize;
         for address in expanded {

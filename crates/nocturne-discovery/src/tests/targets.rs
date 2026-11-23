@@ -72,6 +72,35 @@ async fn a_target_larger_than_the_cap_is_refused_rather_than_truncated() {
 }
 
 #[tokio::test]
+async fn a_range_larger_than_the_cap_is_refused_as_a_block_is_not_looked_up_as_a_name() {
+    // Before, a range the engine would not expand was handed to the DNS
+    // resolver as a host name, and came back with the engine's own limit.
+    for (range, covers) in [
+        ("10.0.0.1-10.0.255.255", "covers 65535 addresses"),
+        ("fd00::1-fd00::1:0", "covers 65536 addresses"),
+    ] {
+        let error = plan(range, 4096, false, NO_REFUSALS).await.unwrap_err();
+        assert_eq!(error.code, "invalid");
+        assert!(
+            error.message.contains(covers)
+                && error.message.contains("at most 4096")
+                && error.message.contains("max_hosts"),
+            "{range}: {}",
+            error.message
+        );
+    }
+    // A mistyped address is refused in the engine's words, not resolved.
+    let error = plan("10.0.0.256", 4096, false, NO_REFUSALS)
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("four numbers from 0 to 255"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test]
 async fn public_address_space_needs_asking_for_and_is_announced() {
     let error = plan("198.51.100.0/30", 4096, false, NO_REFUSALS)
         .await

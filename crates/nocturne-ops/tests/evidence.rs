@@ -1032,6 +1032,31 @@ async fn a_piece_of_a_session_log_is_read_through_the_terminal_with_redaction_on
             .contains("end of the log")
     );
 
+    // From the middle of a line: the read starts at that line's beginning,
+    // and the item says which bytes it really holds, not which were asked for.
+    let line_start = log.find("SW1(config)#line").unwrap() - 30;
+    let inside = line_start + 12;
+    let from_inside = call(
+        app,
+        "evidence.capture_log",
+        json!({"name": name, "offset": inside, "limit": 130}),
+    )
+    .await;
+    assert!(
+        from_inside["source"]["note"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("bytes {line_start} to ")),
+        "{from_inside}"
+    );
+    assert!(
+        from_inside["body"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("2026-11-13T05:24:"),
+        "{from_inside}"
+    );
+
     let err = refused(
         app,
         "evidence.capture_log",

@@ -48,6 +48,8 @@ tokio-rustls.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# A trap datagram as large as UDP allows needs a send buffer to fit it in.
+socket2.workspace = true
 # The flood test needs more log lines than anyone would write by hand: the
 # simulator emits the real ones its devices produce.
 nocturne-netsim.workspace = true

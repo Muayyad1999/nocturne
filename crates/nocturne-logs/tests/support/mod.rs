@@ -472,6 +472,11 @@ pub async fn send_datagrams(from: &str, port: u16, datagrams: &[Vec<u8>]) -> Udp
     let socket = UdpSocket::bind(format!("{from}:0"))
         .await
         .unwrap_or_else(|err| panic!("a socket on {from}: {err}"));
+    // macOS sends no datagram larger than the socket's send buffer, 9 KiB by
+    // default ("Message too long"), and a trap may be as large as UDP allows.
+    socket2::SockRef::from(&socket)
+        .set_send_buffer_size(256 * 1024)
+        .expect("the send buffer can be made room for any datagram");
     for datagram in datagrams {
         socket
             .send_to(datagram, ("127.0.0.1", port))

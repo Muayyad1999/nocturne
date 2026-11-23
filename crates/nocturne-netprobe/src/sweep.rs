@@ -87,6 +87,27 @@ pub fn expand_targets(targets: &str, limit: usize) -> Result<Vec<IpAddr>, ProbeE
     expand_blocks(&blocks, limit)
 }
 
+/// Whether `target` is a host name, as [`sweep`] reads one: not an address, a range or a
+/// block, and not a mistyped one of those either.
+///
+/// A caller that resolves names itself asks this first: an address expression that was refused
+/// (too large, a number out of range) must not be sent to a DNS server as though it were a
+/// name, which would tell a resolver outside the network what is about to be scanned.
+pub fn is_host_name(target: &str) -> bool {
+    matches!(parse_target(target), Ok(Target::Name(_)))
+}
+
+/// How many addresses `targets` covers (see [`expand_targets`]), counted without expanding
+/// them, so a range of millions costs nothing to refuse. A host name counts as one.
+pub fn count_targets(targets: &str) -> Result<u128, ProbeError> {
+    Ok(parse_targets(targets)?.iter().fold(0u128, |total, target| {
+        total.saturating_add(match target {
+            Target::Block(block) => block.len(),
+            Target::Name(_) => 1,
+        })
+    }))
+}
+
 /// Probes every host address in `targets` (see [`expand_targets`]; host names are accepted
 /// too) and returns the hosts that are alive, sorted by address.
 ///
@@ -552,6 +573,29 @@ fn expand_blocks(blocks: &[Block], limit: usize) -> Result<Vec<IpAddr>, ProbeErr
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn only_a_name_is_a_name_and_a_range_is_counted_without_being_expanded() {
+        assert!(is_host_name("core-sw1.example.net"));
+        assert!(is_host_name("localhost"));
+        for not_a_name in [
+            "10.0.0.1",
+            "10.0.0.0/8",
+            "10.0.0.1-10.0.255.255",
+            "10.0.0.5-40",
+            "fd00::1-fd00::ff",
+            "10.0.0.256",
+            "10.1",
+            "10.0.0.0/33",
+        ] {
+            assert!(!is_host_name(not_a_name), "{not_a_name}");
+        }
+        assert_eq!(count_targets("10.0.0.0/8").unwrap(), 16_777_214);
+        assert_eq!(count_targets("10.0.0.1-10.0.255.255").unwrap(), 65_535);
+        assert_eq!(count_targets("10.0.0.5-40, 10.0.1.1").unwrap(), 37);
+        assert_eq!(count_targets("fd00::/64").unwrap(), 1 << 64);
+        assert!(count_targets("10.0.0.256").is_err());
+    }
 
     fn expand(targets: &str) -> Vec<String> {
         expand_targets(targets, 65_536)

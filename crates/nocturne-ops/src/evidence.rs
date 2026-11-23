@@ -821,14 +821,16 @@ pub async fn capture_log(app: &App, params: CaptureLogParams) -> AppResult<Value
         },
         &redactor,
     )?;
-    // Which bytes of the log this is, as the read itself reported them.
+    // Which bytes of the log this is, as the read itself reported them: a
+    // page starts at the beginning of the line the offset falls in, which can
+    // be earlier than the offset asked for.
     let note = match (
+        answer.get("offset").and_then(Value::as_u64),
         answer.get("next_offset").and_then(Value::as_u64),
         answer.get("size").and_then(Value::as_u64),
     ) {
-        (Some(next), Some(size)) => Some(format!(
-            "bytes {} to {next} of {size}{}",
-            params.offset,
+        (Some(from), Some(next), Some(size)) => Some(format!(
+            "bytes {from} to {next} of {size}{}",
             if answer.get("eof").and_then(Value::as_bool) == Some(true) {
                 ", the end of the log"
             } else {

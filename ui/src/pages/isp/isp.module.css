@@ -491,6 +491,16 @@
   font-size: var(--fs-11);
 }
 
+/* A figure followed by a word, inside a cell that does not wrap: the word may
+   go to the next line, the figure itself never breaks. */
+.figureThenWord {
+  white-space: normal;
+}
+
+.figure {
+  white-space: nowrap;
+}
+
 .inlineGroup {
   display: flex;
   flex-wrap: wrap;

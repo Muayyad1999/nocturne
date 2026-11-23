@@ -612,6 +612,11 @@ test('a credit note issued from an invoice is a figure of its own, and the four 
   const row = table.getByRole('row').filter({ hasText: open });
   await expect(row).toContainText(/25\.00\s*USD\s*100\.00\s*USD credited/);
   await expect(row).toContainText(/125\.00\s*USD/);
+  // And all of it can be read: in a column one figure wide, the line was
+  // once cut off at "100.00 USD credite".
+  const creditedLine = row.locator('span', { hasText: /^\s*100\.00\s*USD credited\s*$/ });
+  await expect(creditedLine).toHaveCount(1);
+  expect(await creditedLine.evaluate((line) => line.scrollWidth <= line.clientWidth)).toBe(true);
 
   // A small dinar draft, so that the list holds an amount in dinars that is
   // a smaller number than one in dollars: 3 000 IQD against 12 500 cents. It

@@ -416,7 +416,10 @@ pub async fn lab(names: &[&str], with: With) -> Lab {
                 .find(|(row, _)| row["name"] == json!(name))
                 .ok_or_else(|| AppError::not_found(format!("session log `{name}`")))?;
             let size = text.len();
-            let offset = (params["offset"].as_u64().unwrap_or(0) as usize).min(size);
+            let asked = (params["offset"].as_u64().unwrap_or(0) as usize).min(size);
+            // Like the real read: the page starts at the beginning of the line
+            // the offset falls in, which can be earlier than asked, and says so.
+            let offset = text[..asked].rfind('\n').map_or(0, |newline| newline + 1);
             let limit = params["limit"].as_u64().unwrap_or(256 * 1024) as usize;
             let mut end = (offset + limit).min(size);
             // Like the real read: whole lines while more of the file follows.
@@ -427,6 +430,7 @@ pub async fn lab(names: &[&str], with: With) -> Lab {
             }
             Ok(json!({
                 "text": text[offset..end],
+                "offset": offset,
                 "size": size,
                 "eof": end >= size,
                 "next_offset": end,
