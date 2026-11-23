@@ -26,6 +26,19 @@ CARGO_TARGET_DIR=/home/user/.cache/nocturne-target/features cargo fmt -p nocturn
 
 ## Decisions
 
+* **Syslog goes to `logs.ingest` by name.** The ticker groups the simulator's syslog
+  lines by device and calls `logs.ingest {device_id, lines}` (awaited in the ticker, so
+  lines keep their order). `unknown_method` → today's direct `store.log_append`; any
+  other error is logged by code only (the message is another feature's and may quote
+  the line) and nothing is written around it. `tests/network.rs` registers a stand-in
+  `logs.ingest` on the builder's router; do not add a dependency on `nocturne-logs`.
+  A device's lines go over in calls of at most `INGEST_LINES_PER_CALL` (the pipeline
+  refuses more than 10,000 in one call whole); the unit tests beside `deliver_syslog`
+  in `runtime.rs` cover the flood and the line of a node that has no device.
+* **A flow's `dscp` needs no code here.** `labs.flow.*`, import and export pass
+  `nocturne_netsim::FlowSpec` through as it is; the field is `Option<u8>` and is not
+  serialised when unset, so old lab documents round-trip byte for byte.
+
 * **No `App` in module state.** `ConnectState` and this crate's state live in the
   app's state map, so an `App` held there would make `Arc<Inner>` immortal and the
   data-directory lock would never be released (the persistence test restarts an app

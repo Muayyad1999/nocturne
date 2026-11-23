@@ -86,6 +86,9 @@ pub struct FlowSpec {             // background traffic that moves interface cou
     pub bps: u64,                 // average rate
     pub pattern: FlowPattern,     // Constant | Sine { period_s } | Burst { on_s, off_s }
     pub enabled: bool,
+    pub dscp: Option<u8>,         // the marking the traffic carries, 0-63; None = none stated.
+                                  // Not written to the lab file when None, so older files
+                                  // load and save unchanged (see *Quality of service*)
 }
 
 // ---------------------------------------------------------------- catalog
@@ -352,8 +355,196 @@ both directions (assume 10 % return traffic). Broken path ⇒ counters stop and
 the dropping interface counts discards. `LinkView::bps_*` and
 `show interfaces` 5-minute rates derive from this.
 
+On the way the traffic meets what holds real traffic back: an interface sends
+no more than its speed (without a policy the excess is tail-dropped from every
+flow alike and counted as output drops), and a service policy polices, shapes
+and queues it (*Quality of service* below). What is dropped at one point is not
+offered to the points behind it, and the return traffic answers what arrived:
+a tenth of the delivered rate, not of the offered one.
+
+When the last flow is removed the tick goes on until nothing shows its traffic
+any more: link rates and queue depths are zero a tick later, and the smoothed
+rates run down as they would on a device whose traffic has stopped, instead of
+standing at their last value. Then the tick stops.
+
 **Device health.** CPU = small seeded noise + a term proportional to forwarded
 traffic + `HighCpu` faults; memory mostly static; `uptime` = time since boot.
+
+## Quality of service
+
+The modular QoS command line, so that a lab has per-class statistics to read,
+chart and alert on, and a QoS change can be rehearsed. Contract across crates:
+`docs/dev/spec-qos.md`.
+
+**Configuration** (syntax from Cisco's command reference, below):
+
+* `class-map [match-all | match-any] NAME` → `(config-cmap)#`: `match [ip]
+  dscp V [V …]` (up to eight names or numbers), `match access-group {N | name
+  NAME}`, `match any`, `description`.
+* `policy-map NAME` → `(config-pmap)#`: `class {NAME | class-default}` →
+  `(config-pmap-c)#`, `description`. In a class: `priority [KBPS | percent
+  N]`, `bandwidth {KBPS | percent N}`, `police [cir] BPS [conform-action
+  transmit exceed-action drop]`, `shape average BPS`, `set dscp V`,
+  `service-policy CHILD` (three levels at most). `exit` from a class returns
+  to the policy map; `class OTHER` from inside a class moves to it.
+* `service-policy {input | output} NAME` on a physical interface.
+* Rendered in `show running-config` between spanning tree and the interfaces:
+  class maps, `!`, policy maps (a policy applied inside another is written
+  before it, so the text can be typed back), `!`. `class-default` is always the
+  last class. A configuration without QoS renders exactly as before.
+
+Refused, like any other line the model has nothing behind (the change pipeline
+relies on that): every other MQC command (`random-detect`, `fair-queue`,
+`queue-limit`, `bandwidth remaining`, `shape peak`, policer actions other than
+transmit/drop, `match protocol`, `set cos` …); a class whose class map is not
+defined (`% class map NAME not configured`, the one message the reference
+quotes); a policy map that is not defined; a second policy in the same
+direction; queueing in an input policy; `priority` together with `bandwidth`
+or `shape` in one class, or on `class-default`; removing a class map or policy
+map that is in use; a policy that would contain itself; a service policy on a
+logical interface (loopback, SVI, port-channel, sub-interface) — flow traffic
+is accounted on the physical ports it crosses, and a policy there would count
+nothing; a class or a child policy that would bring a policy to more than
+1024 classes, those of its child policies counted under every class they are
+applied in (`% policy map NAME cannot be extended: a policy holds 1024
+classes at most, those of its child policies included` — three levels
+multiply, and a policy is written out in full whenever traffic is sorted
+through it; a class refused for this is not entered, so the lines after it
+are refused too instead of landing on the class before). Apart from the
+quoted one, the refusal texts are the simulator's own.
+
+A refusal only counts if the driver that typed the line sees it. The
+simulator's own wordings are chosen to be caught by the error patterns of the
+`cisco_ios` profile (`not configured`, `not supported`, `cannot be`). Three
+are worded after what IOS is remembered to print, which no document at hand
+confirms, and those patterns do not catch them: `%Policy map NAME is being
+used`, `%Class-map NAME is being used` (removing one in use) and `Policy map
+NAME is already attached` (a second policy in one direction). A change that
+runs into one of them on a lab device is therefore refused by the device
+and noticed only when the change is verified — as it would be on hardware,
+if that is indeed what hardware prints.
+
+**Classification.** A flow is plain IP from the address it leaves its source
+with to its destination, carrying its `dscp`. It falls into the first class
+of the policy whose class map matches, else `class-default`:
+
+* `match dscp` matches a flow whose `dscp` is one of the values. A flow with
+  no `dscp` matches no `match dscp` at all (not even `default`): no marking
+  was stated, which is not the same as marking 0.
+* `match access-group` matches when the list would permit it. Only entries
+  that look at addresses alone can match a flow (it has no protocol or
+  ports); a list that does not exist matches nothing. NAT on the path is not
+  followed: classify by address where the traffic comes in, as on real routers.
+* A class map with no `match` statement matches nothing.
+* `set dscp` re-marks the traffic for every policy behind it, on the same
+  device and on the next. The return traffic carries the flow's own marking.
+
+**The drop model** is analytic and deterministic — no clock, no generator;
+every counter is a function of the flows, the configuration and simulated
+time, and the same simulated time gives the same counters however the host
+slices it. Per one-second tick, at every interface the traffic crosses:
+
+1. A class is offered the octets of the flows in it.
+2. `police` passes its rate and drops the rest (`exceeded`). A policer drop is
+   the policy working and is not an interface drop.
+3. `shape average` passes its rate. The excess has nowhere to wait for a whole
+   tick and is dropped from the class's queue.
+4. Output only: when a level is offered more than it can carry — the
+   interface speed, or under a shaped class its shape rate — `priority`
+   classes are served first, each held to its rate if it has one (`b/w
+   exceed drops`); classes with `bandwidth` keep their guarantee and share
+   what is left over in proportion to it; classes without a guarantee,
+   `class-default` among them, live on what nobody reserved plus what the
+   others leave unused, and are the first to lose. When nothing is short, a
+   priority class may exceed its rate.
+5. A percentage is of the interface's `bandwidth` (its speed unless
+   configured); in a child policy, of the nearest shape rate above it.
+6. A class that only marks or polices has no queue: in a queueing policy its
+   packets wait in `class-default`'s queue, whose counters show their drops,
+   as on real devices. In a policy that does not queue at all, what the
+   interface cannot carry is lost in the interface's own queue. A `priority`
+   class with a policy inside it counts what it loses as `b/w exceed drops`,
+   like one without (its line has no other drop counter).
+7. Queue drops, and only those, also count as the interface's output drops.
+
+Nothing is lost between the counters: in every class, classified = sent +
+dropped (by its policer, from its queue, or as `b/w exceed drops`; for a
+class with a policy inside, its classes' drops are its own), with the one
+shift point 6 describes, and what a policy did not let through is the sum of
+its policer drops and its queue drops. A test holds 4000 generated policies
+to that.
+
+Counters are kept as fractions of octets and printed whole; packets are octets
+/ 800. The two rates on a class's second line are exponentially smoothed like
+an interface's 5-minute rates and printed to the kilobit below. `queue depth`
+is the queue limit (64 packets, not configurable) while the class dropped in
+the last tick, else 0. `clear counters [IF]`, attaching a policy and a reload
+start the counters over.
+
+**`show policy-map`, `show policy-map interface [IF] [input | output]`.** A
+device with nothing attached answers `show policy-map interface` with nothing.
+The layout is Cisco's, taken line by line from the sample output in the *Cisco
+IOS Quality of Service Solutions Command Reference*, chapter "show mls qos
+through wrr-queue threshold":
+<https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/qos/command/qos-cr-book/qos-s4.html>
+(configuration syntax from the other chapters of the same book). Nothing here
+was checked against a device: a capture of this output is **synthetic** and
+must be marked so wherever it is used as a fixture.
+
+| Line | From the reference's example for |
+|---|---|
+| ` GigabitEthernet0/1`, `  Service-policy output: NAME`, `    Class-map: NAME (match-all)`, `N packets, N bytes`, `5 minute offered rate N bps, drop rate N bps`, `Match: any`, blank line before each policy and class | `show policy-map interface`, the HQF example (`FastEthernet0/0`, policies `test1`/`test2`) and the `serial2/0` policing example |
+| `Match: dscp ef (46)`, one line per statement | the `port-channel 1.1` example (`Match: dscp cs1 (8)` / `af11 (10)` / `af12 (12)`); `Match: ip dscp ef (46)` from the HQF example |
+| `Match: access-group 101`, `Match: access-group name NAME` | the `serial3/0` and `port-channel 1.1` examples |
+| `police:` / `cir N bps, bc N bytes` / `conformed N packets, N bytes; actions:` / `transmit` / `exceeded …` / `drop` / `conformed N bps, exceed N bps` | the single-rate example (`FastEthernet0/0.1`, class `class1`), indented as in the `serial2/0` example |
+| `Queueing` / `queue limit 64 packets` / `(queue depth/total drops/no-buffer drops) D/T/0` / `(pkts output/bytes output) P/B` / `shape (average) cir N, bc N, be N` / `target shape rate N` / `bandwidth 40% (614 kbps)` | the HQF example and the `serial4/3` example |
+| `Service-policy : CHILD`, `queue stats for all priority classes:` and its three lines, `Priority: 32 kbps, burst bytes 1500, b/w exceed drops: N`, `Priority: 20% (307 kbps), …`, `class-default`'s queue lines without a `Queueing` heading | the HQF and `serial4/3` examples |
+| `QoS Set` / `dscp af11` / `Packets marked N` | `show policy-map session`, class `customer1234` |
+| `  Policy Map NAME` / `    Class NAME` / `priority 20 (%)` / `bandwidth 40 (%)` / `Average Rate Traffic Shaping` / `cir N (bps)` / `service-policy CHILD` / `police cir N bc N` + `conform-action transmit` + `exceed-action drop` | `show policy-map`, the examples for `test1`, `test2` and `policy1`; indentation as in the two real IOS captures in the ntc-templates corpus |
+
+The reference's own hierarchical example (`FastEthernet0/0`, policies `test1`
+and `test2`) is configured in a test and compared with the sample text line by
+line; the differences (counters, the interface, `queue-limit` and WRED, which
+are not modelled, and empty lines the samples do not agree on among
+themselves) are listed there.
+
+Lines the reference has no example of in this layout, built by analogy and to
+be replaced the day a real capture says otherwise:
+
+* a `match dscp` statement with several values: `Match: dscp cs5 (40) ef (46)`
+  (the single-value form, repeated). The reference does show such a statement,
+  but only in the older layout, without the numbers and two spaces apart
+  (`Match: ip dscp cs1  cs2  cs3  cs4`, under `show policy-map session`);
+* a class's `bandwidth` given in kbit/s: `bandwidth 500 kbps` under
+  `show policy-map interface` (after `Priority: 32 kbps`) and `bandwidth 500
+  (kbps)` / `priority 128 (kbps)` under `show policy-map` (after `priority 20
+  (%)`);
+* `priority` with no rate: `Priority: 0 kbps, burst bytes 1500, b/w exceed
+  drops: N`, which the reference shows for `priority level` without a rate.
+
+Bursts are display only (the model works in whole ticks) and follow the same
+book: a shaper's `bc` and `be` are what the rate sends in 4 ms and a priority
+queue's burst is 200 ms at its rate (both stated as the defaults; the
+priority samples never show less than 1500 bytes); a policer's `bc` is `cir /
+32` bytes as in the samples (`cir 1000000 bps, bc 31250 bytes`) and in the
+real `show policy-map` captures, and not below the stated default of 1500.
+Two places where the samples and the stated rule part:
+
+* the priority burst is printed in steps of 50 bytes, which the book does not
+  say: 20 % of 1536000 bit/s is `(307 kbps), burst bytes 7650` in the sample,
+  where 200 ms would be 7675 or 7680. Rounding down to 50 gives every
+  priority burst the book prints (250 for 10 kbit/s, 3200 for 128, 7650 for
+  307); it is read off those samples, not known;
+* the `serial4/3` sample prints `shape (average) cir 128000, bc 1000, be
+  1000`, which is not 4 ms (512). Its configuration is not shown, so it may
+  have set the burst; the simulator prints 512 there. The `FastEthernet0/0`
+  sample (`cir 1536000, bc 6144`) and the `GigabitEthernet1/0/0.10` one (`cir
+  1000000, bc 4000`) are 4 ms.
+
+Not modelled: WRED, fair queueing, queue-limit tuning, two-rate policers and
+re-marking policers, `match protocol` (NBAR), CoS/precedence, control-plane
+policing, policies on logical interfaces, the effect of NAT or tunnels on
+classification, and anything sub-second (bursts inside a tick).
 
 ## CLI: line discipline
 
@@ -381,7 +572,8 @@ The console is a raw byte stream, exactly like a serial console or an SSH shell:
 * Prompts: `Router>`, `Router#`, `Router(config)#`, `Router(config-if)#`,
   `(config-if-range)#`, `(config-subif)#`, `(config-vlan)#`, `(config-line)#`,
   `(config-router)#`, `(dhcp-config)#`, `(config-std-nacl)#`,
-  `(config-ext-nacl)#`.
+  `(config-ext-nacl)#`, `(config-cmap)#`, `(config-pmap)#`,
+  `(config-pmap-c)#`.
 * Console and vty sessions honour `enable secret/password`, `line con 0` /
   `line vty` `password` + `login` / `login local`, `username … privilege …
   secret|password`, `exec-timeout`. A fresh device has no passwords (console
@@ -416,6 +608,7 @@ connected|summary]`, `ip protocols`, `ip ospf`, `ip ospf neighbor [detail]`,
 database`, `cdp neighbors [detail]`, `lldp neighbors [detail]`,
 `spanning-tree [vlan N|summary|root|interface X]`, `etherchannel summary`,
 `port-security [interface X|address]`, `access-lists`, `ip access-lists`,
+`policy-map [NAME]`, `policy-map interface [X] [input|output]`,
 `ip nat translations`, `ip nat statistics`, `ip dhcp binding|pool|conflict`,
 `standby [brief]`, `logging`, `ntp status|associations`, `snmp`, `ssh`,
 `ip ssh`, `line`, `processes cpu [history|sorted]`, `memory statistics`,
@@ -444,7 +637,8 @@ port-priority`, `encapsulation dot1Q`, `ip helper-address`, `ip access-group`,
 `ip nat inside|outside`, `ip ospf …`, `standby …`, `cdp enable`, `lldp
 transmit|receive`, `storm-control` (stored), `power inline` (stored),
 `negotiation auto` (stored)), `router ospf|rip` + subcommands, `ip
-access-list standard|extended NAME` + numbered `access-list`, `ip nat …`, `ip
+access-list standard|extended NAME` + numbered `access-list`, `class-map`,
+`policy-map` and interface `service-policy` (see *Quality of service*), `ip nat …`, `ip
 dhcp pool` + `ip dhcp excluded-address`, `ip dhcp snooping` (stored), `logging
 host|buffered|console|trap`, `ntp server`, `clock timezone`, `snmp-server
 community|location|contact|host|enable traps`, `lldp run`, `cdp run`, `ip
@@ -461,7 +655,8 @@ from the text of its own `show running-config` must reproduce exactly the same
 running-config, in real IOS ordering (version/services, hostname, boot,
 enable, usernames, aaa, clock, ip settings, vlans (only in vlan-transparent
 style when `vtp mode transparent`; otherwise VLANs live in `vlan.dat` and still
-persist with the lab), spanning-tree, interfaces in natural order, routers,
+persist with the lab), spanning-tree, class maps, policy maps, interfaces in
+natural order, routers,
 `ip route`s, ACLs, NAT, snmp, banner, lines, ntp, `end`), `!` separators and
 single-space indentation.
 
@@ -560,8 +755,14 @@ genuinely instructive. `start_trace` injects one PDU and its events carry the
    switches with redundant uplinks (STP blocking visible), VLANs 10 (Staff),
    20 (Guest), 30 (Voice), 99 (Management), a server, ~6 hosts on DHCP, an
    `nms` in VLAN 99, every network device with a management SVI/loopback, vty
-   `login local` + `username admin privilege 15 secret nocturne`, and three
-   background flows. After `settle`, every host can reach `8.8.8.8` on the
+   `login local` + `username admin privilege 15 secret nocturne`, and four
+   background flows, two of them marked (voice EF, the backup CS1). The edge
+   router carries a small real QoS configuration, so that whoever opens the
+   lab sees QoS at work in `show policy-map interface`: the uplink is shaped
+   to 6 Mbit/s with voice in a priority class, and guests are recognised by
+   address on the inside interfaces, policed to 3 Mbit/s and marked CS1,
+   which on the uplink is the class that loses when staff browsing peaks.
+   After `settle`, every host can reach `8.8.8.8` on the
    cloud and the `nms` can `probe_ping` every device's `mgmt_ip`. Also ship
    five small teaching labs as `pub fn examples() -> Vec<LabSpec>` (basic
    switching; VLANs + trunk; router-on-a-stick; OSPF triangle; DHCP + NAT).

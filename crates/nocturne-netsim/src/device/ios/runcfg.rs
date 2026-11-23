@@ -9,12 +9,14 @@ use std::fmt::Write as _;
 
 use crate::catalog::Role;
 use crate::device::config::{
-    AclItem, Duplex, IfConfig, L3Addr, Lease, LineConfig, LoginMode, NatSide, NatTarget, Secret,
-    Slot, StpMode, SwMode, Switchport, Timestamps, Violation, VtpMode,
+    AclItem, ClassMatch, DeviceConfig, Duplex, IfConfig, L3Addr, Lease, LineConfig, LoginMode,
+    NatSide, NatTarget, PolicyClass, PolicyMap, Secret, Share, Slot, StpMode, SwMode, Switchport,
+    Timestamps, Violation, VtpMode,
 };
 use crate::ifname::{IfId, IfKind};
 use crate::sim::acl::rule_text;
 use crate::sim::node::Node;
+use crate::util::dscp;
 use crate::util::text::ranges;
 
 fn secret_text(secret: &Secret) -> String {
@@ -40,6 +42,98 @@ fn timestamps(kind: &str, value: Timestamps) -> String {
         Timestamps::Datetime { msec: true } => format!("service timestamps {kind} datetime msec"),
         Timestamps::Datetime { msec: false } => format!("service timestamps {kind} datetime"),
     }
+}
+
+/// A class map's `match` statement, as typed.
+pub(crate) fn match_text(statement: &ClassMatch) -> String {
+    match statement {
+        ClassMatch::Dscp { values, ip } => {
+            let names: Vec<String> = values.iter().map(|v| dscp::config_text(*v)).collect();
+            format!(
+                "match {}dscp {}",
+                if *ip { "ip " } else { "" },
+                names.join(" ")
+            )
+        }
+        ClassMatch::AccessGroup { acl, named: true } => format!("match access-group name {acl}"),
+        ClassMatch::AccessGroup { acl, named: false } => format!("match access-group {acl}"),
+        ClassMatch::Any => "match any".to_string(),
+    }
+}
+
+fn share_text(share: Share) -> String {
+    match share {
+        Share::Kbps(kbps) => kbps.to_string(),
+        Share::Percent(percent) => format!("percent {percent}"),
+    }
+}
+
+/// The actions of one class of a policy map, as typed.
+pub(crate) fn class_lines(class: &PolicyClass) -> Vec<String> {
+    let mut out = Vec::new();
+    match class.priority {
+        Some(Some(share)) => out.push(format!("priority {}", share_text(share))),
+        Some(None) => out.push("priority".to_string()),
+        None => {}
+    }
+    if let Some(share) = class.bandwidth {
+        out.push(format!("bandwidth {}", share_text(share)));
+    }
+    if let Some(police) = class.police {
+        out.push(format!(
+            "police {}{}{}",
+            if police.cir_keyword { "cir " } else { "" },
+            police.cir,
+            if police.actions {
+                " conform-action transmit exceed-action drop"
+            } else {
+                ""
+            }
+        ));
+    }
+    if let Some(rate) = class.shape {
+        out.push(format!("shape average {rate}"));
+    }
+    if let Some(value) = class.set_dscp {
+        out.push(format!("set dscp {}", dscp::config_text(value)));
+    }
+    if let Some(child) = &class.child {
+        out.push(format!("service-policy {child}"));
+    }
+    out
+}
+
+/// Policy maps in an order that can be typed back in: a policy applied
+/// inside another one comes just before it, because a device refuses to
+/// reference a policy map it has not seen yet.
+pub(crate) fn policy_order(cfg: &DeviceConfig) -> Vec<&PolicyMap> {
+    fn place<'c>(
+        cfg: &'c DeviceConfig,
+        map: &'c PolicyMap,
+        out: &mut Vec<&'c PolicyMap>,
+        budget: usize,
+    ) {
+        if out.iter().any(|done| done.name == map.name) {
+            return;
+        }
+        // Policies cannot contain each other, so the budget is never spent;
+        // it is there so that a damaged model prints instead of recursing.
+        if budget > 0 {
+            for child in map.classes.iter().filter_map(|c| c.child.as_deref()) {
+                if let Some(child) = cfg.policy_map(child) {
+                    place(cfg, child, out, budget - 1);
+                }
+            }
+        }
+        if !out.iter().any(|done| done.name == map.name) {
+            out.push(map);
+        }
+    }
+    let mut out = Vec::new();
+    for map in &cfg.policy_maps {
+        place(cfg, map, &mut out, crate::device::config::POLICY_DEPTH + 1);
+    }
+    out
 }
 
 /// The body of the running configuration, from the first `!` to `end`.
@@ -249,6 +343,37 @@ pub(crate) fn render(node: &Node) -> String {
                 line("!");
             }
         }
+    }
+    for map in &cfg.class_maps {
+        line(&format!(
+            "class-map {} {}",
+            if map.any { "match-any" } else { "match-all" },
+            map.name
+        ));
+        if !map.description.is_empty() {
+            line(&format!(" description {}", map.description));
+        }
+        for statement in &map.matches {
+            line(&format!(" {}", match_text(statement)));
+        }
+    }
+    if !cfg.class_maps.is_empty() {
+        line("!");
+    }
+    for map in policy_order(cfg) {
+        line(&format!("policy-map {}", map.name));
+        if !map.description.is_empty() {
+            line(&format!(" description {}", map.description));
+        }
+        for class in &map.classes {
+            line(&format!(" class {}", class.name));
+            for text in class_lines(class) {
+                line(&format!("  {text}"));
+            }
+        }
+    }
+    if !cfg.policy_maps.is_empty() {
+        line("!");
     }
     for (id, iface) in &cfg.interfaces {
         line(&format!("interface {}", id.name()));
@@ -709,6 +834,12 @@ pub(crate) fn interface_lines(node: &Node, id: IfId, cfg: &IfConfig) -> Vec<Stri
     }
     if let Some(priority) = cfg.stp.port_priority {
         out.push(format!("spanning-tree port-priority {priority}"));
+    }
+    if let Some(policy) = &cfg.policy_in {
+        out.push(format!("service-policy input {policy}"));
+    }
+    if let Some(policy) = &cfg.policy_out {
+        out.push(format!("service-policy output {policy}"));
     }
     out.extend(cfg.stored.iter().cloned());
     out

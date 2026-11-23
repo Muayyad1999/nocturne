@@ -179,6 +179,13 @@ pub struct FlowSpec {
     pub bps: u64,
     pub pattern: FlowPattern,
     pub enabled: bool,
+    /// Addition to the contract: the DSCP marking the traffic carries, 0 to 63
+    /// (46 = EF). `None`, the default, states no marking: the flow matches no
+    /// `match dscp` and falls into `class-default` unless an access list
+    /// catches it. Left out of the saved lab when unset, so labs saved before
+    /// the field existed load and save unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dscp: Option<u8>,
 }
 
 impl Default for FlowSpec {
@@ -190,6 +197,7 @@ impl Default for FlowSpec {
             bps: 0,
             pattern: FlowPattern::Constant,
             enabled: true,
+            dscp: None,
         }
     }
 }

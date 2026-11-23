@@ -97,6 +97,8 @@ pub(crate) struct IfState {
     /// Rates offered by flows right now, bits per second.
     pub(crate) load_in: f64,
     pub(crate) load_out: f64,
+    /// Fraction of a packet dropped from the output queue and not yet counted.
+    pub(crate) out_drop_carry: f64,
 }
 
 impl IfState {
@@ -125,6 +127,7 @@ impl IfState {
             rate_out: 0.0,
             load_in: 0.0,
             load_out: 0.0,
+            out_drop_carry: 0.0,
         }
     }
 }
@@ -165,6 +168,9 @@ pub(crate) struct Node {
     pub(crate) hsrp: Hsrp,
     /// ACL hit counters by (list name, sequence number).
     pub(crate) acl_hits: BTreeMap<(String, u32), u64>,
+    /// Counters of the attached service policies, by interface and direction
+    /// (`true` = output).
+    pub(crate) qos: BTreeMap<(IfId, bool), crate::sim::qos::PolicyStats>,
     pub(crate) log: LogBuffer,
     pub(crate) procs: Procs,
     /// Sim time of the last configuration change (for `show running-config` headers).
@@ -220,6 +226,7 @@ impl Node {
             nat: Nat::default(),
             hsrp: Hsrp::default(),
             acl_hits: BTreeMap::new(),
+            qos: BTreeMap::new(),
             log: LogBuffer::default(),
             procs: Procs::default(),
             last_config_change: None,

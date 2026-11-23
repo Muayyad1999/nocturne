@@ -421,7 +421,7 @@ fn flows_move_counters_and_stop_when_the_path_is_cut() {
             dst_ip: "10.2.0.10".into(),
             bps: 1_000_000,
             pattern: FlowPattern::Burst { on_s: 2, off_s: 8 },
-            enabled: true,
+            ..FlowSpec::default()
         })
         .unwrap();
     let mut seen = std::collections::BTreeSet::new();
@@ -890,7 +890,35 @@ fn identical_inputs_give_identical_outputs() {
             "enable secret determinism\nusername u secret p",
         );
         transcript.push_str(&lab.running_config(r1).unwrap());
+        // Traffic through a policy that drops: the QoS counters are part of
+        // what has to come out the same.
+        cfg(
+            &mut lab,
+            r1,
+            "class-map match-any VOICE\n match dscp ef\npolicy-map QUEUE\n class VOICE\n  priority 256\npolicy-map WAN\n class class-default\n  shape average 3000000\n  service-policy QUEUE\ninterface g0/1\n service-policy output WAN",
+        );
+        for (name, bps, dscp, pattern) in [
+            ("voice", 400_000, Some(46), FlowPattern::Constant),
+            ("bulk", 4_000_000, None, FlowPattern::Sine { period_s: 13 }),
+        ] {
+            lab.add_flow(FlowSpec {
+                name: name.into(),
+                src: "PC1".into(),
+                dst_ip: "10.2.0.10".into(),
+                bps,
+                pattern,
+                dscp,
+                ..FlowSpec::default()
+            })
+            .unwrap();
+        }
         lab.advance(30 * SECOND);
+        let policy = exec(&mut lab, r1, "show policy-map interface");
+        assert!(
+            !policy.contains("b/w exceed drops: 0") && !policy.contains("64/0/0"),
+            "the policy has to be dropping for this to mean anything: {policy}"
+        );
+        transcript.push_str(&policy);
         let events = serde_json::to_string(&lab.take_events()).unwrap();
         let snapshot = serde_json::to_string(&lab.snapshot()).unwrap();
         let metrics = serde_json::to_string(&lab.metrics(r1).unwrap()).unwrap();

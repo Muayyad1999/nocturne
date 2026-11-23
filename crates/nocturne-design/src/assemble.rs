@@ -276,6 +276,7 @@ fn lab_spec(model: &Model, t: &Topology) -> LabSpec {
                 bps: 2_000_000,
                 pattern: FlowPattern::Sine { period_s: 120 },
                 enabled: true,
+                dscp: None,
             })
         })
         .collect();

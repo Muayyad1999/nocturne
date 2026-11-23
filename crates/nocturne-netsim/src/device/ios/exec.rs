@@ -526,8 +526,11 @@ pub(crate) fn answer(
                 for (id, state) in &mut node.ifs {
                     if only.is_none_or(|o| o == *id) {
                         state.counters = Default::default();
+                        state.out_drop_carry = 0.0;
                     }
                 }
+                // The policy counters of an interface are cleared with it.
+                node.qos_clear(only);
                 let by = if shell.user().is_empty() {
                     "console"
                 } else {

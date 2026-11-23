@@ -458,6 +458,86 @@ fn link_lights(snapshot: &LabSnapshot) -> Vec<LinkLight> {
         .collect()
 }
 
+/// One message a simulated device logged.
+struct SyslogLine {
+    severity: u8,
+    /// `%LINK-3-UPDOWN`.
+    source: String,
+    message: String,
+    /// The message as the device formats it, timestamp included.
+    line: String,
+    sim_time: u64,
+}
+
+/// Lines handed to `logs.ingest` in one call. The pipeline refuses a call
+/// of more than 10,000 lines whole (`docs/dev/features/logs.md`; the number
+/// cannot be imported, features do not link), and nothing bounds how many
+/// lines one tick brings: stay well inside it.
+const INGEST_LINES_PER_CALL: usize = 5_000;
+
+/// Hand the simulator's syslog lines on. A simulated device has no socket to
+/// send from, so its lines are given to the log pipeline by name
+/// (`logs.ingest`), where they take the path a datagram from hardware takes:
+/// parsing, rules, signals, the live tail. In a build without the logs
+/// feature they are written to the log store directly, so a lab's messages
+/// are still there to read.
+async fn deliver_syslog(
+    app: &App,
+    lab_id: &str,
+    now: i64,
+    batches: Vec<(Option<String>, Vec<SyslogLine>)>,
+) {
+    for (device_id, lines) in batches {
+        // How many of the lines the pipeline has dealt with, by taking them
+        // or by refusing them.
+        let mut settled = 0;
+        if let Some(device) = &device_id {
+            for chunk in lines.chunks(INGEST_LINES_PER_CALL) {
+                let text: Vec<&str> = chunk.iter().map(|line| line.line.as_str()).collect();
+                match app
+                    .rpc("logs.ingest", json!({"device_id": device, "lines": text}))
+                    .await
+                {
+                    Ok(_) => settled += chunk.len(),
+                    Err(err) if err.code == "unknown_method" => break,
+                    Err(err) => {
+                        // The pipeline is there and said no (the device went
+                        // away under us, say): writing around it would undo
+                        // its answer, and what it refused once it will refuse
+                        // again, so the rest is not tried. The message is
+                        // another feature's and may quote the line: only the
+                        // kind of refusal is logged.
+                        tracing::warn!(
+                            code = err.code,
+                            lines = lines.len() - settled,
+                            "the log pipeline refused lab syslog lines"
+                        );
+                        settled = lines.len();
+                        break;
+                    }
+                }
+            }
+        }
+        // No pipeline in this build, or a node that has no inventory device
+        // (the pipeline takes lines for a device only).
+        for line in lines.into_iter().skip(settled) {
+            let entry = LogEntry {
+                id: 0,
+                ts: now,
+                stream: "syslog".into(),
+                device_id: device_id.clone(),
+                severity: Some(line.severity),
+                source: line.source,
+                message: line.message,
+                body: Some(json!({"line": line.line, "lab_id": lab_id, "sim_time": line.sim_time})),
+            };
+            if let Err(err) = app.store().log_append(&entry) {
+                tracing::warn!(%err, "a lab syslog line could not be stored");
+            }
+        }
+    }
+}
+
 struct Step {
     events: Vec<LabEvent>,
     lights: Option<Vec<LinkLight>>,
@@ -511,6 +591,7 @@ async fn ticker(app: App, lab: Arc<RunningLab>) {
         // Everything below runs with the simulator unlocked.
         let mut changed_nodes: Vec<NodeId> = Vec::new();
         let mut packets: Vec<PacketEvent> = Vec::new();
+        let mut syslog: Vec<(Option<String>, Vec<SyslogLine>)> = Vec::new();
         for event in step.events {
             match event {
                 LabEvent::Syslog {
@@ -523,18 +604,17 @@ async fn ticker(app: App, lab: Arc<RunningLab>) {
                     time,
                 } => {
                     let device_id = lab.devices.read().get(&node).cloned();
-                    let entry = LogEntry {
-                        id: 0,
-                        ts: now,
-                        stream: "syslog".into(),
-                        device_id,
-                        severity: Some(severity),
+                    let line = SyslogLine {
+                        severity,
                         source: format!("%{facility}-{severity}-{mnemonic}"),
                         message,
-                        body: Some(json!({"line": line, "lab_id": lab.id, "sim_time": time})),
+                        line,
+                        sim_time: time,
                     };
-                    if let Err(err) = app.store().log_append(&entry) {
-                        tracing::warn!(%err, "a lab syslog line could not be stored");
+                    // One batch per device, lines in the order they were logged.
+                    match syslog.iter_mut().find(|(device, _)| *device == device_id) {
+                        Some((_, lines)) => lines.push(line),
+                        None => syslog.push((device_id, vec![line])),
                     }
                 }
                 LabEvent::Packet(event) => packets.push(event),
@@ -553,6 +633,7 @@ async fn ticker(app: App, lab: Arc<RunningLab>) {
                 ),
             }
         }
+        deliver_syslog(&app, &lab.id, now, syslog).await;
         // `write memory` changes nothing a device would announce, so the
         // nodes somebody typed on are looked at too, and all of them now and
         // then.
@@ -687,4 +768,115 @@ pub fn current_spec(app: &App, id: &str) -> AppResult<(LabRecord, LabSpec)> {
         None => record.spec.clone(),
     };
     Ok((record, spec))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use nocturne_app::AppError;
+    use nocturne_app::store::LogQuery;
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct IngestParams {
+        device_id: String,
+        lines: Vec<String>,
+    }
+
+    /// What a stand-in for the logs feature was handed, call by call.
+    type Calls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+    /// An app whose `logs.ingest` keeps the limit the logs specification
+    /// states: more than 10,000 lines in one call are refused whole.
+    fn app_with_pipeline() -> (App, Calls) {
+        let calls = Calls::default();
+        let seen = calls.clone();
+        let mut builder = nocturne_app::testing::builder();
+        builder
+            .router
+            .add("logs.ingest", move |_: App, params: IngestParams| {
+                let seen = seen.clone();
+                async move {
+                    if params.lines.len() > 10_000 {
+                        return Err(AppError::invalid("at most 10000 lines in one call"));
+                    }
+                    let stored = params.lines.len();
+                    seen.lock().unwrap().push((params.device_id, params.lines));
+                    Ok(json!({ "stored": stored }))
+                }
+            });
+        (builder.build(), calls)
+    }
+
+    fn lines(count: usize) -> Vec<SyslogLine> {
+        (0..count)
+            .map(|n| SyslogLine {
+                severity: 5,
+                source: "%SYS-5-CONFIG_I".into(),
+                message: format!("message {n}"),
+                line: format!("*Mar  1 00:00:01.000: %SYS-5-CONFIG_I: message {n}"),
+                sim_time: 1_000_000,
+            })
+            .collect()
+    }
+
+    fn stored(app: &App) -> Vec<LogEntry> {
+        app.store()
+            .log_query(&LogQuery {
+                stream: Some("syslog".into()),
+                limit: Some(100_000),
+                ..LogQuery::default()
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_lab_syslog_reaches_the_pipeline_whole_and_in_order() {
+        let (app, calls) = app_with_pipeline();
+        // Far more than the pipeline takes in one call, and a second device
+        // behind it whose few lines must not be held up or mixed in.
+        let batches = vec![
+            (Some("dev-a".to_string()), lines(23_456)),
+            (Some("dev-b".to_string()), lines(3)),
+        ];
+        deliver_syslog(&app, "lab", 0, batches).await;
+
+        let calls = calls.lock().unwrap().clone();
+        assert!(calls.iter().all(|(_, lines)| lines.len() <= 10_000));
+        let of = |device: &str| -> Vec<String> {
+            calls
+                .iter()
+                .filter(|(to, _)| to == device)
+                .flat_map(|(_, lines)| lines.clone())
+                .collect()
+        };
+        let expected: Vec<String> = lines(23_456).into_iter().map(|l| l.line).collect();
+        assert_eq!(of("dev-a").len(), 23_456);
+        assert!(
+            of("dev-a") == expected,
+            "every line once, in the order logged"
+        );
+        assert_eq!(of("dev-b").len(), 3);
+        // The pipeline owns them: nothing was also written around it.
+        assert_eq!(stored(&app).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_line_from_a_node_without_a_device_is_kept_unattributed() {
+        let (app, calls) = app_with_pipeline();
+        deliver_syslog(&app, "lab-1", 42, vec![(None, lines(2))]).await;
+        // The pipeline takes lines for a device only, so it was not asked.
+        assert!(calls.lock().unwrap().is_empty());
+        let entries = stored(&app);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| entry.device_id.is_none()));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.body.as_ref().unwrap()["lab_id"] == "lab-1")
+        );
+    }
 }

@@ -24,6 +24,7 @@ pub(crate) mod ospf_spf;
 pub(crate) mod port;
 pub(crate) mod probe;
 pub(crate) mod procs;
+pub(crate) mod qos;
 pub(crate) mod reconcile;
 pub(crate) mod rib;
 pub(crate) mod rip;
@@ -196,6 +197,9 @@ pub(crate) struct World {
     pub(crate) flows: BTreeMap<FlowId, flows::FlowRuntime>,
     pub(crate) next_flow: FlowId,
     pub(crate) flow_tick_armed: bool,
+    /// Flow traffic is still showing somewhere (a link's rate, a smoothed
+    /// average) although no flow is left to tick for.
+    pub(crate) traffic_lingers: bool,
     /// This world is a scratch copy used by an instant probe.
     pub(crate) scratch: bool,
     /// Ignore random frame loss (path resolution for flows).
@@ -237,6 +241,7 @@ impl World {
             flows: BTreeMap::new(),
             next_flow: 1,
             flow_tick_armed: false,
+            traffic_lingers: false,
             scratch: false,
             lossless: false,
             session_keys: 0,

@@ -722,6 +722,12 @@ impl Lab {
             .ok_or_else(|| LabError::UnknownNodeName(flow.src.clone()))?;
         let dst = parse_ip(flow.dst_ip.trim())
             .ok_or_else(|| LabError::InvalidAddress(flow.dst_ip.clone()))?;
+        if let Some(dscp) = flow.dscp.filter(|dscp| *dscp > 63) {
+            return Err(LabError::InvalidSpec(format!(
+                "flow \"{}\": a DSCP value is 0 to 63, not {dscp}",
+                flow.name
+            )));
+        }
         let id = self.world.next_flow;
         self.world.next_flow += 1;
         self.world

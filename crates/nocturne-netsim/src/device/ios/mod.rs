@@ -9,6 +9,7 @@
 pub(crate) mod boot;
 mod config;
 mod config_if;
+mod config_qos;
 mod config_sub;
 mod exec;
 mod help;
@@ -114,6 +115,10 @@ pub(crate) enum Mode {
     DhcpPool(String),
     AclStd(String),
     AclExt(String),
+    ClassMap(String),
+    PolicyMap(String),
+    /// One class of a policy map: policy name, class name.
+    PolicyClass(String, String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -129,9 +134,12 @@ enum GrammarKind {
     DhcpPool,
     AclStd,
     AclExt,
+    ClassMap,
+    PolicyMap,
+    PolicyClass,
 }
 
-const KINDS: [GrammarKind; 11] = [
+const KINDS: [GrammarKind; 14] = [
     GrammarKind::User,
     GrammarKind::Priv,
     GrammarKind::Config,
@@ -143,6 +151,9 @@ const KINDS: [GrammarKind; 11] = [
     GrammarKind::DhcpPool,
     GrammarKind::AclStd,
     GrammarKind::AclExt,
+    GrammarKind::ClassMap,
+    GrammarKind::PolicyMap,
+    GrammarKind::PolicyClass,
 ];
 const ROLES: [Role; 3] = [Role::Router, Role::L2Switch, Role::L3Switch];
 
@@ -159,6 +170,9 @@ fn build(kind: GrammarKind, role: Role) -> Grammar<Handler> {
         GrammarKind::DhcpPool => config_sub::dhcp_table(),
         GrammarKind::AclStd => config_sub::acl_table(false),
         GrammarKind::AclExt => config_sub::acl_table(true),
+        GrammarKind::ClassMap => config_qos::class_map_table(),
+        GrammarKind::PolicyMap => config_qos::policy_map_table(),
+        GrammarKind::PolicyClass => config_qos::policy_class_table(),
     };
     Grammar::new(table, help::DICTIONARY)
 }
@@ -285,6 +299,9 @@ impl IosShell {
             Mode::DhcpPool(_) => "dhcp-config",
             Mode::AclStd(_) => "config-std-nacl",
             Mode::AclExt(_) => "config-ext-nacl",
+            Mode::ClassMap(_) => "config-cmap",
+            Mode::PolicyMap(_) => "config-pmap",
+            Mode::PolicyClass(..) => "config-pmap-c",
         };
         format!("{host}({suffix})#")
     }
@@ -302,6 +319,9 @@ impl IosShell {
             Mode::DhcpPool(_) => GrammarKind::DhcpPool,
             Mode::AclStd(_) => GrammarKind::AclStd,
             Mode::AclExt(_) => GrammarKind::AclExt,
+            Mode::ClassMap(_) => GrammarKind::ClassMap,
+            Mode::PolicyMap(_) => GrammarKind::PolicyMap,
+            Mode::PolicyClass(..) => GrammarKind::PolicyClass,
         }
     }
 

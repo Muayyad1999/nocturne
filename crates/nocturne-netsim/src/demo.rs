@@ -76,6 +76,15 @@ fn flow(name: &str, src: &str, dst_ip: &str, bps: u64, pattern: FlowPattern) -> 
         bps,
         pattern,
         enabled: true,
+        dscp: None,
+    }
+}
+
+/// The same flow, carrying a DSCP marking.
+fn marked(dscp: u8, flow: FlowSpec) -> FlowSpec {
+    FlowSpec {
+        dscp: Some(dscp),
+        ..flow
     }
 }
 
@@ -121,8 +130,33 @@ vlan 99
  name Management
 ";
 
+/// The edge router. Its uplink is sold at 6 Mbit/s, so it shapes to that and
+/// decides who waits: voice (marked EF by the phones) goes first, guests are
+/// held to 3 Mbit/s and marked down where they come in, and give way to
+/// everyone else when the uplink is full. Guests are recognised by address
+/// on the inside interfaces, before translation, and by marking on the way
+/// out, which is how it is done on real routers too.
 const EDGE: &str = "\
 hostname EDGE
+class-map match-all GUEST
+ match access-group name GUEST-NET
+class-map match-any VOICE
+ match dscp ef
+class-map match-any SCAVENGER
+ match dscp cs1
+policy-map LAN-IN
+ class GUEST
+  police 3000000
+  set dscp cs1
+policy-map WAN-QUEUE
+ class VOICE
+  priority 512
+ class SCAVENGER
+  bandwidth percent 10
+policy-map WAN-OUT
+ class class-default
+  shape average 6000000
+  service-policy WAN-QUEUE
 interface Loopback0
  description Management
  ip address 10.255.0.1 255.255.255.255
@@ -130,16 +164,19 @@ interface GigabitEthernet0/0
  description Internet uplink
  ip address 203.0.113.2 255.255.255.252
  ip nat outside
+ service-policy output WAN-OUT
  no shutdown
 interface GigabitEthernet0/1
  description To DS1
  ip address 10.0.0.1 255.255.255.252
  ip nat inside
+ service-policy input LAN-IN
  no shutdown
 interface GigabitEthernet0/2
  description To DS2
  ip address 10.0.0.5 255.255.255.252
  ip nat inside
+ service-policy input LAN-IN
  no shutdown
 router ospf 1
  router-id 10.255.0.1
@@ -149,6 +186,8 @@ router ospf 1
 ip nat inside source list 1 interface GigabitEthernet0/0 overload
 ip route 0.0.0.0 0.0.0.0 203.0.113.1
 access-list 1 permit 10.0.0.0 0.255.255.255
+ip access-list extended GUEST-NET
+ permit ip 10.10.20.0 0.0.0.255 any
 ";
 
 /// One distribution switch. `n` is 1 or 2; DS1 is the primary gateway and
@@ -409,20 +448,24 @@ pub fn demo_campus() -> LabSpec {
         name: "Campus".to_string(),
         description: "A small campus: Internet edge with NAT, two layer-3 distribution switches sharing the gateways \
                       (HSRP) and routing with OSPF, three access switches with redundant uplinks, Staff, Guest, Voice \
-                      and Management VLANs, DHCP for the users, a server and the management station. Log in to any \
-                      network device over SSH as admin / nocturne."
+                      and Management VLANs, DHCP for the users, a server and the management station. The Internet \
+                      uplink is sold at 6 Mbit/s: EDGE shapes to it, sends voice first and holds the guests back \
+                      (show policy-map interface). Log in to any network device over SSH as admin / nocturne."
             .to_string(),
         nodes,
         links,
         notes: vec![
-            note(360.0, 110.0, 520.0, 110.0, "Edge: NAT overload to the Internet, default route originated into OSPF", "#f6e3b4"),
+            note(360.0, 110.0, 520.0, 110.0, "Edge: NAT overload to the Internet, default route originated into OSPF. QoS: uplink shaped to 6 Mbit/s, voice first, guests capped", "#f6e3b4"),
             note(160.0, 270.0, 920.0, 110.0, "Distribution: OSPF area 0, HSRP gateways (.1), DHCP on DS1, guests fenced in by ACL GUEST-IN", "#cfe3f7"),
             note(80.0, 430.0, 1100.0, 250.0, "Access: VLAN 10 Staff, 20 Guest, 30 Voice, 99 Management. One uplink per VLAN is blocked by spanning tree.", "#d8f0d2"),
         ],
         flows: vec![
             flow("Staff web browsing", "Staff-PC1", "8.8.8.8", 2_000_000, FlowPattern::Sine { period_s: 120 }),
-            flow("Nightly backup to SRV1", "Staff-PC2", "10.10.10.10", 20_000_000, FlowPattern::Burst { on_s: 40, off_s: 80 }),
+            // Bulk traffic that says so itself (CS1); it stays inside the campus.
+            marked(8, flow("Nightly backup to SRV1", "Staff-PC2", "10.10.10.10", 20_000_000, FlowPattern::Burst { on_s: 40, off_s: 80 })),
             flow("Guest video stream", "Guest-Laptop1", "8.8.8.8", 5_000_000, FlowPattern::Constant),
+            // Marked EF by the phone, which is what the edge's VOICE class looks for.
+            marked(46, flow("Voice calls", "Phone1", "8.8.8.8", 256_000, FlowPattern::Constant)),
         ],
         seed: 0x00C0_FFEE,
     }

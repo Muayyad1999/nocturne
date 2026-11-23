@@ -90,3 +90,38 @@ interface + parent; exec() returns device error text as Ok; real IOS ordering na
 single OSPF process; no L3 port-channels; console cable uses pseudo-ports Console/RS232;
 channel members that find no partner do not forward (like `port-channel standalone-disable`);
 RIP has no holddown (poison + triggered updates instead); HSRP timers fixed 3/10 s.
+
+## Quality of service (added later)
+
+Spec: `docs/dev/spec-netsim.md` (*Quality of service*) and `docs/dev/spec-qos.md`.
+
+* Model: `device/config.rs` (`ClassMap`, `PolicyMap`, `PolicyClass`, `IfConfig::policy_in/out`).
+  Command line: `device/ios/config_qos.rs` (modes `config-cmap`, `config-pmap`,
+  `config-pmap-c`; the `class` command is in both policy modes because sub-modes only
+  fall back to global configuration). Rendering: `runcfg.rs` (`policy_order`: children
+  before the policy that uses them). Statistics: `show/qos.rs`.
+* Engine: `sim/qos.rs` is pure (`plan` → `classify` → `evaluate`/`fifo` → `schedule`);
+  `sim/flows.rs::tick` lays every flow out as a chain of stages (in/out of every hop,
+  then the return traffic back), lets every point decide what it passes, and repeats
+  until the rates stop moving (a drop upstream is not offered downstream; bounded by
+  `MAX_ROUNDS` for paths that cross in a circle). Counters live in `Node::qos`, as
+  fractions of octets; `Node::qos_account` folds a tick in and prunes what is no longer
+  configured.
+* Format: every line of `show policy-map interface` has a counterpart in Cisco's command
+  reference; the spec has the table and the three lines built by analogy. The page text
+  used is not in the repository (it is Cisco's); re-fetch it from the URL in the spec.
+* Tests: `tests/tier3_qos.rs` (the two exact-text tests are what the `cisco_ios` profile's
+  `qos` step is written against), `tests/demo.rs` (the campus edge), unit tests in
+  `sim/qos.rs`. Float fuzz: counters are sums of products, so display and the
+  interface drop counter round with a tiny margin (`show/qos.rs::whole`).
+* Review round: the reference's own hierarchical example is now a test
+  (`the_policies_of_the_reference_s_example_print_as_the_reference_prints_them`), which is
+  where the priority burst's 50-byte step comes from; conservation is a generated-policy
+  unit test (`every_octet_offered_is_sent_on_or_counted_as_exactly_one_kind_of_drop`);
+  a policy is bounded at `POLICY_CLASSES` written out (three levels multiply, and `plan`
+  writes a policy out on every tick); the flow tick keeps running after the last flow is
+  removed until nothing shows its traffic (`World::traffic_lingers`).
+* When breaking code on purpose to see a test fail: restore the file with a fresh
+  modification time (or `touch` it). Cargo decides by mtime, and a file put back with its
+  old one leaves the *broken* build in the shared target directory for every crate that
+  depends on this one.

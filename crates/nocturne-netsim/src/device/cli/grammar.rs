@@ -101,6 +101,18 @@ impl Args {
         }
     }
 
+    /// Every word captured under `name`, in the order typed.
+    pub(crate) fn texts(&self, name: &str) -> Vec<&str> {
+        self.values
+            .iter()
+            .filter(|(n, _)| *n == name)
+            .filter_map(|(_, v)| match v {
+                Val::Word(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Every value captured under `name` (arguments inside `{...}` may repeat).
     pub(crate) fn ips(&self, name: &str) -> Vec<Ipv4Addr> {
         self.values

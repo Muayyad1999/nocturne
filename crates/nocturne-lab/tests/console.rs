@@ -80,6 +80,50 @@ async fn a_console_is_an_ordinary_cli_session() {
         .await;
 }
 
+/// The read the monitor makes for QoS, through the real driver. A device
+/// with no policy attached answers it with nothing at all, and that has to
+/// come back as an empty answer, not as an error or a session that hangs
+/// waiting for output.
+#[tokio::test]
+async fn the_qos_read_works_through_the_driver_with_a_policy_and_without_one() {
+    let app = app();
+    fast_ticks(&app).await;
+    let lab = start_example(&app, "demo", "QoS").await;
+
+    let mut edge = connect::cli(&app, &device_id(&lab, "EDGE"), CliOptions::default())
+        .await
+        .expect("the console logs in");
+    let shown = edge.read("show policy-map interface").await.unwrap();
+    assert_eq!(shown.error, None, "{shown:?}");
+    assert!(
+        shown.output.contains("Service-policy output: WAN-OUT")
+            && shown.output.contains("Class-map: VOICE (match-any)")
+            && shown
+                .output
+                .contains("shape (average) cir 6000000, bc 24000, be 24000"),
+        "{shown:?}"
+    );
+    // The command and the prompt are not part of the answer.
+    assert!(
+        shown.output.trim_start().starts_with("GigabitEthernet0/0"),
+        "{shown:?}"
+    );
+    assert!(!shown.output.contains("EDGE#"), "{shown:?}");
+    edge.close().await;
+
+    let mut switch = connect::cli(&app, &device_id(&lab, "AS1"), CliOptions::default())
+        .await
+        .expect("the console logs in");
+    let nothing = switch.read("show policy-map interface").await.unwrap();
+    assert_eq!(nothing.error, None, "{nothing:?}");
+    assert_eq!(nothing.output.trim(), "", "{nothing:?}");
+    // The session is still in step after an answer of nothing.
+    let after = switch.read("show clock").await.unwrap();
+    assert_eq!(after.error, None, "{after:?}");
+    assert!(!after.output.trim().is_empty(), "{after:?}");
+    switch.close().await;
+}
+
 #[tokio::test]
 async fn collecting_from_a_lab_device_returns_real_data() {
     let app = app();

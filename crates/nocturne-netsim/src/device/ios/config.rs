@@ -287,6 +287,7 @@ pub(crate) fn table(role: Role) -> Table {
         c("end", "Exit from configure mode", end),
         c("exit", "Exit from configure mode", end),
     ];
+    t.extend(crate::device::ios::config_qos::global_table());
     if role != Role::L2Switch {
         t.extend(vec![
             n("ip routing", "Enable IP routing", |cx, a| cx.cfg().ip_routing = !a.no),

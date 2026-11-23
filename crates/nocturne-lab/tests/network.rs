@@ -1,13 +1,15 @@
 //! The campus: probes, the connectivity matrix, faults, capture, traces,
-//! flows and the simulator's syslog landing in the log store.
+//! flows (and their markings), and where the simulator's syslog goes.
 
 mod common;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::*;
-use nocturne_app::App;
 use nocturne_app::store::LogQuery;
+use nocturne_app::{App, AppError};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 async fn campus(app: &App) -> Value {
@@ -261,14 +263,9 @@ async fn capture_and_trace_arrive_in_order() {
     assert_eq!(empty["events"], json!([]));
 }
 
-#[tokio::test]
-async fn the_simulator_s_syslog_lands_in_the_log_store() {
-    let app = app();
-    let lab = campus(&app).await;
-    let id = lab["id"].as_str().unwrap().to_string();
-    let as1 = lab["devices"]["AS1"].as_str().unwrap().to_string();
-
-    let links = app.rpc("labs.links", json!({"lab_id": id})).await.unwrap();
+/// Cut one of AS1's uplinks, which makes AS1 log `%LINK-3-UPDOWN`.
+async fn cut_an_uplink_of_as1(app: &App, lab: &str) {
+    let links = app.rpc("labs.links", json!({"lab_id": lab})).await.unwrap();
     let uplink = links
         .as_array()
         .unwrap()
@@ -279,35 +276,144 @@ async fn the_simulator_s_syslog_lands_in_the_log_store() {
         .unwrap();
     app.rpc(
         "labs.fault.inject",
-        json!({"lab_id": id, "fault": {"link_down": {"link": uplink}}}),
+        json!({"lab_id": lab, "fault": {"link_down": {"link": uplink}}}),
     )
     .await
     .unwrap();
+}
 
-    let store = app.store().clone();
-    let device = as1.clone();
-    until(Duration::from_secs(10), "a syslog line from AS1", || {
-        let entries = store
-            .log_query(&LogQuery {
-                stream: Some("syslog".into()),
-                device_id: Some(device.clone()),
-                ..LogQuery::default()
+fn stored_syslog(app: &App, device: &str) -> Vec<nocturne_app::store::LogEntry> {
+    app.store()
+        .log_query(&LogQuery {
+            stream: Some("syslog".into()),
+            device_id: Some(device.to_string()),
+            ..LogQuery::default()
+        })
+        .unwrap()
+}
+
+/// What a stand-in for the logs feature was handed.
+type Ingested = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+#[derive(Deserialize)]
+struct IngestParams {
+    device_id: String,
+    lines: Vec<String>,
+}
+
+/// An app with the lab feature and a `logs.ingest` that behaves as the
+/// specification of the logs feature says (`{device_id, lines}` →
+/// `{stored}`), or refuses.
+fn app_with_log_pipeline(refuse: bool) -> (App, Ingested) {
+    let ingested = Ingested::default();
+    let seen = ingested.clone();
+    let mut builder = builder();
+    builder
+        .router
+        .add("logs.ingest", move |_: App, params: IngestParams| {
+            let seen = seen.clone();
+            async move {
+                let stored = params.lines.len();
+                seen.lock().unwrap().push((params.device_id, params.lines));
+                if refuse {
+                    return Err(AppError::forbidden("not a lab device"));
+                }
+                Ok(json!({ "stored": stored }))
+            }
+        });
+    (builder.build(), ingested)
+}
+
+#[tokio::test]
+async fn lab_syslog_is_handed_to_the_log_pipeline_by_name_and_not_written_around_it() {
+    let (app, ingested) = app_with_log_pipeline(false);
+    let lab = campus(&app).await;
+    let id = lab["id"].as_str().unwrap().to_string();
+    let as1 = lab["devices"]["AS1"].as_str().unwrap().to_string();
+    cut_an_uplink_of_as1(&app, &id).await;
+
+    let (seen, device) = (ingested.clone(), as1.clone());
+    until(
+        Duration::from_secs(10),
+        "AS1's link message at logs.ingest",
+        || {
+            seen.lock().unwrap().iter().any(|(to, lines)| {
+                *to == device && lines.iter().any(|line| line.contains("%LINK-3-UPDOWN"))
             })
-            .unwrap();
-        entries
+        },
+    )
+    .await;
+    let calls = ingested.lock().unwrap().clone();
+    // Every call names a device of this lab and carries whole lines, as the
+    // device formats them: timestamp, tag, text.
+    let devices: Vec<&str> = lab["devices"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(Value::as_str)
+        .collect();
+    for (device, lines) in &calls {
+        assert!(
+            devices.contains(&device.as_str()),
+            "{device} is not a lab device"
+        );
+        assert!(!lines.is_empty());
+    }
+    let line = calls
+        .iter()
+        .filter(|(device, _)| *device == as1)
+        .flat_map(|(_, lines)| lines)
+        .find(|line| line.contains("%LINK-3-UPDOWN"))
+        .unwrap();
+    assert!(
+        line.starts_with('*') && line.contains(": %LINK-3-UPDOWN: Interface GigabitEthernet0/"),
+        "{line:?}"
+    );
+    // The pipeline owns the line from there. Had the lab stored it as well,
+    // every message of a lab would be in the log twice.
+    assert_eq!(stored_syslog(&app, &as1).len(), 0);
+}
+
+#[tokio::test]
+async fn a_refusal_from_the_log_pipeline_is_not_worked_around() {
+    let (app, ingested) = app_with_log_pipeline(true);
+    let lab = campus(&app).await;
+    let id = lab["id"].as_str().unwrap().to_string();
+    let as1 = lab["devices"]["AS1"].as_str().unwrap().to_string();
+    cut_an_uplink_of_as1(&app, &id).await;
+    let (seen, device) = (ingested.clone(), as1.clone());
+    until(
+        Duration::from_secs(10),
+        "AS1's link message at logs.ingest",
+        || seen.lock().unwrap().iter().any(|(to, _)| *to == device),
+    )
+    .await;
+    // Give a direct write the chance to happen, then see that it did not.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(stored_syslog(&app, &as1).len(), 0);
+}
+
+#[tokio::test]
+async fn without_the_logs_feature_lab_syslog_is_written_to_the_log_store_directly() {
+    let app = app();
+    assert!(
+        !app.methods().contains(&"logs.ingest"),
+        "this test is about a build without the logs feature"
+    );
+    let lab = campus(&app).await;
+    let id = lab["id"].as_str().unwrap().to_string();
+    let as1 = lab["devices"]["AS1"].as_str().unwrap().to_string();
+    cut_an_uplink_of_as1(&app, &id).await;
+
+    let (probe, device) = (app.clone(), as1.clone());
+    until(Duration::from_secs(10), "a syslog line from AS1", || {
+        stored_syslog(&probe, &device)
             .iter()
             .any(|entry| entry.source.contains("UPDOWN") && entry.message.contains("down"))
     })
     .await;
 
-    let entries = app
-        .store()
-        .log_query(&LogQuery {
-            stream: Some("syslog".into()),
-            device_id: Some(as1.clone()),
-            ..LogQuery::default()
-        })
-        .unwrap();
+    let entries = stored_syslog(&app, &as1);
     let entry = entries
         .iter()
         .find(|entry| entry.source.contains("LINK"))
@@ -335,7 +441,7 @@ async fn flows_are_listed_added_and_removed() {
         .await
         .unwrap();
     let flows = flows.as_array().unwrap();
-    assert_eq!(flows.len(), 3, "the campus ships three background flows");
+    assert_eq!(flows.len(), 4, "the campus ships four background flows");
     assert!(
         flows
             .iter()
@@ -367,7 +473,7 @@ async fn flows_are_listed_added_and_removed() {
         },
     )
     .await;
-    assert_eq!(listed.as_array().unwrap().len(), 4);
+    assert_eq!(listed.as_array().unwrap().len(), 5);
     let ours = listed
         .as_array()
         .unwrap()
@@ -403,7 +509,133 @@ async fn flows_are_listed_added_and_removed() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        4
+    );
+}
+
+#[tokio::test]
+async fn a_flow_s_marking_travels_through_the_api_and_the_lab_document() {
+    let app = app();
+    let lab = campus(&app).await;
+    let id = lab["id"].as_str().unwrap().to_string();
+
+    // The campus ships a marked flow, and one that states no marking: the
+    // field is simply absent there, not zero and not null.
+    let flows = app
+        .rpc("labs.flow.list", json!({"lab_id": id}))
+        .await
+        .unwrap();
+    let named = |flows: &Value, name: &str| {
+        flows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|flow| flow["flow"]["name"] == name)
+            .unwrap_or_else(|| panic!("no flow {name}: {flows}"))["flow"]
+            .clone()
+    };
+    assert_eq!(named(&flows, "Voice calls")["dscp"], 46);
+    assert!(
+        named(&flows, "Staff web browsing").get("dscp").is_none(),
+        "{flows}"
+    );
+
+    // Added with a marking, listed with it.
+    let added = app
+        .rpc(
+            "labs.flow.add",
+            json!({"lab_id": id, "flow": {"name": "Video call", "src": "Staff-Laptop",
+                                          "dst_ip": "8.8.8.8", "bps": 1_200_000, "dscp": 34}}),
+        )
+        .await
+        .unwrap();
+    assert!(added["flow_id"].is_u64(), "{added}");
+    let flows = app
+        .rpc("labs.flow.list", json!({"lab_id": id}))
+        .await
+        .unwrap();
+    assert_eq!(named(&flows, "Video call")["dscp"], 34);
+
+    // A code point has six bits; the refusal says which flow and what value.
+    let bad = app
+        .rpc(
+            "labs.flow.add",
+            json!({"lab_id": id, "flow": {"name": "Wrong", "src": "Staff-Laptop",
+                                          "dst_ip": "8.8.8.8", "bps": 1, "dscp": 64}}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(bad.code, "invalid", "{bad:?}");
+    assert!(
+        bad.message.contains("Wrong") && bad.message.contains("64"),
+        "{bad:?}"
+    );
+
+    // The marking is part of the lab document, in JSON and in YAML, and an
+    // import brings it back.
+    for format in ["json", "yaml"] {
+        let exported = app
+            .rpc("labs.export", json!({"id": id, "format": format}))
+            .await
+            .unwrap();
+        let text = exported["text"].as_str().unwrap();
+        let imported = app
+            .rpc(
+                "labs.import",
+                json!({"name": format!("Copy from {format}"), "spec": text}),
+            )
+            .await
+            .unwrap();
+        let copy = imported["id"].as_str().unwrap().to_string();
+        app.rpc("labs.start", json!({ "id": copy })).await.unwrap();
+        let flows = app
+            .rpc("labs.flow.list", json!({"lab_id": copy}))
+            .await
+            .unwrap();
+        assert_eq!(named(&flows, "Video call")["dscp"], 34, "{format}");
+        assert_eq!(named(&flows, "Voice calls")["dscp"], 46, "{format}");
+        assert!(
+            named(&flows, "Staff web browsing").get("dscp").is_none(),
+            "{format}: {flows}"
+        );
+        app.rpc("labs.stop", json!({ "id": copy })).await.unwrap();
+    }
+
+    // A document from before the field existed is still a lab.
+    let old = json!({
+        "name": "Old",
+        "nodes": [
+            {"name": "PC1", "model": "pc", "host": {"ip": "10.0.0.1", "mask": "255.255.255.0"}},
+            {"name": "PC2", "model": "pc", "host": {"ip": "10.0.0.2", "mask": "255.255.255.0"}},
+        ],
+        "links": [{"a": {"node": "PC1", "interface": "Ethernet0"},
+                   "b": {"node": "PC2", "interface": "Ethernet0"}}],
+        "flows": [{"name": "copy", "src": "PC1", "dst_ip": "10.0.0.2", "bps": 1000,
+                   "pattern": "constant", "enabled": true}],
+    });
+    let imported = app
+        .rpc("labs.import", json!({ "spec": old }))
+        .await
+        .unwrap();
+    let exported = app
+        .rpc(
+            "labs.export",
+            json!({"id": imported["id"], "format": "json"}),
+        )
+        .await
+        .unwrap();
+    let again: Value = serde_json::from_str(exported["text"].as_str().unwrap()).unwrap();
+    assert_eq!(again["flows"], old["flows"]);
+    // And one with a marking no packet could carry is refused, by name.
+    let mut wrong = old.clone();
+    wrong["flows"][0]["dscp"] = json!(99);
+    let refused = app
+        .rpc("labs.import", json!({ "spec": wrong }))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.message.contains("copy") && refused.message.contains("99"),
+        "{refused:?}"
     );
 }
 

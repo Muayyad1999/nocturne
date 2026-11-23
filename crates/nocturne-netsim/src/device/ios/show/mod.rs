@@ -3,6 +3,7 @@
 
 pub(crate) mod interfaces;
 pub(crate) mod protocols;
+pub(crate) mod qos;
 pub(crate) mod routing;
 pub(crate) mod switching;
 pub(crate) mod system;
@@ -213,6 +214,33 @@ pub(crate) fn table(role: Role, privileged: bool) -> Table {
             "show interfaces description",
             "Show interface description",
             emit!(|cx: &mut Cx| interfaces::description(cx.n)),
+        ),
+        // Before the plain form, so that `interface` is the keyword and not a
+        // policy map of that name.
+        c(
+            "show policy-map interface [<if>] [input | output]",
+            "Show QoS Policy Map",
+            |cx, a| {
+                let direction = if a.has("input") {
+                    Some(false)
+                } else if a.has("output") {
+                    Some(true)
+                } else {
+                    None
+                };
+                match qos::policy_map_interface(cx.n, a.iface("if"), direction) {
+                    Some(text) => cx.out.push_str(&text),
+                    None => cx.invalid(),
+                }
+            },
+        ),
+        c(
+            "show policy-map [<word:name;policy-map name>]",
+            "Show QoS Policy Map",
+            |cx, a| {
+                let text = qos::policy_map(cx.n, a.text("name"));
+                cx.out.push_str(&text);
+            },
         ),
         c(
             "show interfaces counters [errors]",

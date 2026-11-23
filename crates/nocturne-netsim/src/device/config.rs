@@ -377,6 +377,9 @@ pub(crate) struct IfConfig {
     pub(crate) helpers: Vec<Ipv4Addr>,
     pub(crate) acl_in: Option<String>,
     pub(crate) acl_out: Option<String>,
+    /// `service-policy input|output NAME`.
+    pub(crate) policy_in: Option<String>,
+    pub(crate) policy_out: Option<String>,
     pub(crate) nat: Option<NatSide>,
     pub(crate) ospf: IfOspf,
     pub(crate) hsrp_version: u8,
@@ -407,6 +410,8 @@ impl IfConfig {
             helpers: Vec::new(),
             acl_in: None,
             acl_out: None,
+            policy_in: None,
+            policy_out: None,
             nat: None,
             ospf: IfOspf::default(),
             hsrp_version: 1,
@@ -699,6 +704,103 @@ impl Acl {
     }
 }
 
+// --------------------------------------------------------------------- QoS
+
+/// One `match` statement of a class map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ClassMatch {
+    /// `match [ip] dscp ef af41`: any of the listed code points.
+    Dscp { values: Vec<u8>, ip: bool },
+    /// `match access-group 101` / `match access-group name VOICE`.
+    AccessGroup { acl: String, named: bool },
+    /// `match any`.
+    Any,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClassMap {
+    pub(crate) name: String,
+    /// `match-any`: one statement is enough. Otherwise every statement must hold.
+    pub(crate) any: bool,
+    pub(crate) description: String,
+    pub(crate) matches: Vec<ClassMatch>,
+}
+
+/// A rate given in kbit/s or as a share of what the policy has to hand out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Share {
+    Kbps(u32),
+    Percent(u8),
+}
+
+impl Share {
+    /// In bits per second, against `reference` (the interface speed, or the
+    /// shape rate of the class the policy hangs under).
+    pub(crate) fn bps(self, reference: f64) -> f64 {
+        match self {
+            Share::Kbps(kbps) => f64::from(kbps) * 1000.0,
+            Share::Percent(percent) => reference * f64::from(percent) / 100.0,
+        }
+    }
+}
+
+/// `police`: single rate, conforming traffic sent on and the rest dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Police {
+    pub(crate) cir: u64,
+    /// Entered as `police cir <bps>` rather than `police <bps>`.
+    pub(crate) cir_keyword: bool,
+    /// Entered with `conform-action transmit exceed-action drop` spelled out.
+    pub(crate) actions: bool,
+}
+
+/// What a policy map does with one class.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PolicyClass {
+    /// A class-map name, or `class-default`.
+    pub(crate) name: String,
+    /// `priority` (`Some(None)` = no rate), `priority 128`, `priority percent 10`.
+    pub(crate) priority: Option<Option<Share>>,
+    pub(crate) bandwidth: Option<Share>,
+    pub(crate) police: Option<Police>,
+    /// `shape average <bps>`.
+    pub(crate) shape: Option<u64>,
+    pub(crate) set_dscp: Option<u8>,
+    /// `service-policy CHILD`: a policy map applied to this class's traffic.
+    pub(crate) child: Option<String>,
+}
+
+impl PolicyClass {
+    pub(crate) fn new(name: &str) -> PolicyClass {
+        PolicyClass {
+            name: name.to_string(),
+            ..PolicyClass::default()
+        }
+    }
+
+    /// The class holds traffic back in a queue (as opposed to marking or policing it).
+    pub(crate) fn queues(&self) -> bool {
+        self.priority.is_some() || self.bandwidth.is_some() || self.shape.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PolicyMap {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) classes: Vec<PolicyClass>,
+}
+
+/// The class every policy ends with, configured or not.
+pub(crate) const CLASS_DEFAULT: &str = "class-default";
+/// Deepest nesting of `service-policy` inside a class (parent, child, grandchild).
+pub(crate) const POLICY_DEPTH: usize = 3;
+/// Most classes one policy may hold, those of its child policies counted
+/// under every class they are applied in. A policy is written out in full
+/// each time traffic is sorted through it, and three levels of a thousand
+/// classes each would be a thousand million of them.
+pub(crate) const POLICY_CLASSES: usize = 1024;
+
 // --------------------------------------------------------------------- NAT
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -912,6 +1014,8 @@ pub(crate) struct DeviceConfig {
     pub(crate) rip: Option<RipConfig>,
     pub(crate) static_routes: Vec<StaticRoute>,
     pub(crate) acls: Vec<Acl>,
+    pub(crate) class_maps: Vec<ClassMap>,
+    pub(crate) policy_maps: Vec<PolicyMap>,
     pub(crate) nat: NatConfig,
     pub(crate) logging: Logging,
     pub(crate) snmp: Snmp,
@@ -987,6 +1091,8 @@ impl DeviceConfig {
             rip: None,
             static_routes: Vec::new(),
             acls: Vec::new(),
+            class_maps: Vec::new(),
+            policy_maps: Vec::new(),
             nat: NatConfig::default(),
             logging: Logging {
                 console: true,
@@ -1013,6 +1119,123 @@ impl DeviceConfig {
 
     pub(crate) fn acl_mut(&mut self, name: &str) -> Option<&mut Acl> {
         self.acls.iter_mut().find(|a| a.name == name)
+    }
+
+    pub(crate) fn class_map(&self, name: &str) -> Option<&ClassMap> {
+        self.class_maps.iter().find(|c| c.name == name)
+    }
+
+    pub(crate) fn policy_map(&self, name: &str) -> Option<&PolicyMap> {
+        self.policy_maps.iter().find(|p| p.name == name)
+    }
+
+    /// The policy attached to an interface in one direction.
+    pub(crate) fn service_policy(&self, iface: IfId, output: bool) -> Option<&PolicyMap> {
+        let cfg = self.iface(iface)?;
+        let name = if output {
+            cfg.policy_out.as_ref()
+        } else {
+            cfg.policy_in.as_ref()
+        }?;
+        self.policy_map(name)
+    }
+
+    /// Does `policy` reach `target` through `service-policy` statements
+    /// (itself included)? Bounded, so a damaged model cannot loop.
+    pub(crate) fn policy_reaches(&self, policy: &str, target: &str) -> bool {
+        let mut pending = vec![(policy.to_string(), 0_usize)];
+        while let Some((name, depth)) = pending.pop() {
+            if name == target {
+                return true;
+            }
+            if depth > POLICY_DEPTH {
+                continue;
+            }
+            if let Some(map) = self.policy_map(&name) {
+                pending.extend(
+                    map.classes
+                        .iter()
+                        .filter_map(|class| class.child.clone())
+                        .map(|child| (child, depth + 1)),
+                );
+            }
+        }
+        false
+    }
+
+    /// The classes `policy` holds once its child policies are written out
+    /// under the classes they are applied in. Counting stops as soon as the
+    /// answer is past `limit`, so the cost is bounded however the policies
+    /// multiply each other.
+    pub(crate) fn policy_size(&self, policy: &str, limit: usize) -> usize {
+        fn size(cfg: &DeviceConfig, name: &str, budget: usize, limit: usize) -> usize {
+            let Some(map) = cfg.policy_map(name).filter(|_| budget > 0) else {
+                return 0;
+            };
+            let mut total = 0_usize;
+            for class in &map.classes {
+                total = total.saturating_add(1);
+                if let Some(child) = class.child.as_deref() {
+                    total = total.saturating_add(size(cfg, child, budget - 1, limit));
+                }
+                if total > limit {
+                    break;
+                }
+            }
+            total
+        }
+        size(self, policy, POLICY_DEPTH + 1, limit)
+    }
+
+    /// The first policy map that, written out, holds more classes than a
+    /// policy may.
+    pub(crate) fn oversized_policy(&self) -> Option<&str> {
+        self.policy_maps
+            .iter()
+            .find(|map| self.policy_size(&map.name, POLICY_CLASSES) > POLICY_CLASSES)
+            .map(|map| map.name.as_str())
+    }
+
+    /// How many policy maps `policy` has above it, itself included (1 = it
+    /// is applied inside no other policy).
+    pub(crate) fn policy_height(&self, policy: &str) -> usize {
+        fn height(cfg: &DeviceConfig, name: &str, budget: usize) -> usize {
+            if budget == 0 {
+                return 0;
+            }
+            let above = cfg
+                .policy_maps
+                .iter()
+                .filter(|map| {
+                    map.classes
+                        .iter()
+                        .any(|class| class.child.as_deref() == Some(name))
+                })
+                .map(|map| height(cfg, &map.name, budget - 1))
+                .max()
+                .unwrap_or(0);
+            1 + above
+        }
+        height(self, policy, POLICY_DEPTH + 2)
+    }
+
+    /// How many policy maps deep `policy` goes (1 = no children).
+    pub(crate) fn policy_depth(&self, policy: &str) -> usize {
+        fn depth(cfg: &DeviceConfig, name: &str, budget: usize) -> usize {
+            if budget == 0 {
+                return 0;
+            }
+            let below = cfg
+                .policy_map(name)
+                .into_iter()
+                .flat_map(|map| map.classes.iter())
+                .filter_map(|class| class.child.as_deref())
+                .map(|child| depth(cfg, child, budget - 1))
+                .max()
+                .unwrap_or(0);
+            1 + below
+        }
+        depth(self, policy, POLICY_DEPTH + 2)
     }
 
     pub(crate) fn user(&self, name: &str) -> Option<&User> {

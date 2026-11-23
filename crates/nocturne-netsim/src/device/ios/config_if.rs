@@ -107,6 +107,11 @@ pub(crate) fn table(role: Role) -> Table {
             "Specify access control for packets",
             access_group,
         ),
+        n(
+            "service-policy (input | output) ~ <word:name;policy-map name>",
+            "Configure QoS Service Policy",
+            crate::device::ios::config_qos::service_policy,
+        ),
         n("cdp enable", "Enable CDP on interface", |cx, a| {
             each(cx, |cfg, _| cfg.cdp_enable = !a.no)
         }),

@@ -426,6 +426,7 @@ impl Node {
         self.nat = Default::default();
         self.hsrp = Default::default();
         self.acl_hits.clear();
+        self.qos.clear();
         self.procs.clear();
         self.log.clear();
         self.forwarded = 0;

@@ -33,7 +33,7 @@ fn id(lab: &Lab, name: &str) -> u32 {
 #[test]
 fn campus_comes_up_and_everything_is_reachable() {
     let spec = demo_campus();
-    assert_eq!(spec.flows.len(), 3);
+    assert_eq!(spec.flows.len(), 4);
     let mut lab = build(&spec);
     assert!(
         lab.now() < 60 * SECOND,
@@ -227,6 +227,159 @@ fn campus_comes_up_and_everything_is_reachable() {
     );
 }
 
+/// The `nth` number on a line of `show policy-map interface` output: the
+/// first line starting with `starts` at or after the line containing
+/// `after`, or, with `starts` empty, the line right under it (a class's
+/// packets and bytes).
+fn counter(shown: &str, after: &str, starts: &str, nth: usize) -> u64 {
+    let mut lines = shown
+        .lines()
+        .skip_while(|line| !line.contains(after))
+        .map(str::trim_start);
+    let line = if starts.is_empty() {
+        lines.nth(1)
+    } else {
+        lines.find(|line| line.starts_with(starts))
+    }
+    .unwrap_or_else(|| panic!("no {starts:?} after {after:?} in:\n{shown}"));
+    line.split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .nth(nth)
+        .unwrap_or_else(|| panic!("no number {nth} in {line:?}"))
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn campus_edge_shows_qos_at_work_on_its_uplink() {
+    let mut lab = build(&demo_campus());
+    let edge = id(&lab, "EDGE");
+    assert!(
+        lab.node_tables(edge).is_ok() && exec(&mut lab, edge, "show running-config").contains(
+            "policy-map WAN-OUT\n class class-default\n  shape average 6000000\n  service-policy WAN-QUEUE\n"
+        )
+    );
+    // Four minutes from a clean slate: two full swings of the staff's browsing.
+    exec(&mut lab, edge, "clear counters");
+    lab.advance(240 * SECOND);
+    let shown = exec(&mut lab, edge, "show policy-map interface");
+
+    // Guests are recognised by address where they come in, held to 3 of
+    // their 5 Mbit/s, and marked down.
+    let guests = shown
+        .split("Service-policy input: LAN-IN")
+        .skip(1)
+        .find(|part| counter(part, "Class-map: GUEST", "exceeded", 0) > 0)
+        .unwrap_or_else(|| panic!("no guest traffic was policed:\n{shown}"));
+    let offered = counter(guests, "Class-map: GUEST", "", 1);
+    assert_eq!(offered, 5_000_000 / 8 * 240, "{shown}");
+    assert_eq!(
+        counter(guests, "Class-map: GUEST", "exceeded", 1),
+        2_000_000 / 8 * 240,
+        "{shown}"
+    );
+    assert!(guests.contains("QoS Set\n        dscp cs1\n"), "{shown}");
+
+    // On the way out the phone's EF traffic is in the priority class, whole.
+    let out = shown
+        .split("Service-policy output: WAN-OUT")
+        .nth(1)
+        .unwrap();
+    assert_eq!(
+        counter(out, "Class-map: VOICE", "", 1),
+        256_000 / 8 * 240,
+        "{shown}"
+    );
+    assert_eq!(
+        counter(out, "Class-map: VOICE", "Priority:", 2),
+        0,
+        "{shown}"
+    );
+    // The guests arrive as scavenger traffic. Whenever staff browsing peaks
+    // the 6 Mbit/s are not enough, and it is the guests who wait and lose.
+    let scavenger = counter(out, "Class-map: SCAVENGER", "", 1);
+    assert_eq!(scavenger, 3_000_000 / 8 * 240, "{shown}");
+    let lost = counter(out, "Class-map: SCAVENGER", "(queue depth", 1);
+    assert!(lost > 5_000, "{shown}");
+    // Staff traffic, in the default class, is never dropped, and the shaper
+    // never sends more than it is set to.
+    let default = out.split("Class-map: SCAVENGER").nth(1).unwrap();
+    assert_eq!(
+        counter(default, "Class-map: class-default", "(queue depth", 1),
+        0,
+        "{shown}"
+    );
+    let sent = counter(out, "Class-map: class-default", "(pkts output", 1);
+    assert!(sent <= 6_000_000 / 8 * 240, "{shown}");
+    assert_eq!(
+        counter(out, "Class-map: class-default", "(queue depth", 1),
+        lost,
+        "{shown}"
+    );
+    // The interface counts the queue drops, and only those.
+    let uplink = lab
+        .metrics(edge)
+        .unwrap()
+        .interfaces
+        .into_iter()
+        .find(|i| i.name == "GigabitEthernet0/0")
+        .unwrap();
+    assert_eq!(uplink.out_discards, lost);
+    // Every flow is still delivering.
+    assert!(lab.flows().iter().all(|(_, _, state)| state.active));
+}
+
+/// The lab feature advances a lab by its tick (50 ms of real time) times
+/// the speed the user chose, so the same simulated minute arrives in pieces
+/// of 12.5 ms at a quarter speed and of 800 ms at sixteen times. What a
+/// device counted by then must not depend on that.
+#[test]
+fn the_campus_counts_the_same_at_every_lab_speed() {
+    let run = |piece: u64| {
+        let mut lab = build(&demo_campus());
+        let start = lab.now();
+        let total = 240 * SECOND;
+        let mut done = 0;
+        while done < total {
+            let step = piece.min(total - done);
+            lab.advance(step);
+            done += step;
+        }
+        assert_eq!(lab.now(), start + total);
+        let edge = id(&lab, "EDGE");
+        let mut transcript = exec(&mut lab, edge, "show policy-map interface");
+        transcript.push_str(&exec(&mut lab, edge, "show interfaces"));
+        for node in lab.snapshot().nodes {
+            transcript.push_str(&serde_json::to_string(&lab.metrics(node.id)).unwrap());
+            transcript.push('\n');
+        }
+        transcript.push_str(&serde_json::to_string(&lab.flows()).unwrap());
+        transcript.push_str(&serde_json::to_string(&lab.snapshot().links).unwrap());
+        transcript
+    };
+    let normal = run(50_000);
+    // Something is being dropped in there, by a policer and by a queue.
+    assert!(
+        normal.matches("exceeded 0 packets").count() < normal.matches("exceeded ").count(),
+        "{normal}"
+    );
+    let uplink = normal
+        .split("Service-policy output: WAN-OUT")
+        .nth(1)
+        .unwrap();
+    assert!(
+        counter(uplink, "Class-map: SCAVENGER", "(queue depth", 1) > 5_000,
+        "{normal}"
+    );
+    for (speed, piece) in [
+        ("0.25x", 12_500),
+        ("16x", 800_000),
+        ("one piece", 240 * SECOND),
+    ] {
+        pretty_assertions::assert_eq!(normal, run(piece), "at {speed}");
+    }
+}
+
 #[test]
 fn campus_survives_the_loss_of_a_distribution_switch() {
     let mut lab = build(&demo_campus());
@@ -280,6 +433,13 @@ fn campus_spec_round_trips_and_is_deterministic() {
     let edge = id(&a, "EDGE");
     assert_eq!(a.metrics(edge).unwrap(), b.metrics(edge).unwrap());
     assert_eq!(a.take_events(), b.take_events());
+    // The edge's QoS counters replay too.
+    let policy = exec(&mut a, edge, "show policy-map interface");
+    assert!(
+        policy.contains("Service-policy output: WAN-OUT"),
+        "{policy}"
+    );
+    assert_eq!(policy, exec(&mut b, edge, "show policy-map interface"));
 
     // Saving the running lab and loading it again gives the same network.
     for node in a.snapshot().nodes.iter().filter(|n| n.cli == CliKind::Ios) {
