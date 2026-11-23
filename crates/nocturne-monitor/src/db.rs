@@ -85,8 +85,32 @@ CREATE TABLE IF NOT EXISTS monitor_check_events (
 CREATE INDEX IF NOT EXISTS monitor_check_events_check ON monitor_check_events (check_id, at);
 ";
 
+/// Alerts written before `notified_at` existed do not say whether their
+/// firing notice went out. Left as they are they read as "nobody was told":
+/// every alert open across the upgrade would be announced a second time at
+/// its next sighting, and none of them would have its resolve announced. What
+/// the old code did is known — it sent the notice when the alert was raised,
+/// unless a maintenance window muted it — so that is written down once. The
+/// flag an old alert carries is the one from its last sighting, which is the
+/// nearest thing on record to the one from its raise.
+///
+/// Runs at every start and finds nothing after the first: a body that has
+/// the key, even as `null`, is left alone.
+const BACKFILL_NOTIFIED_AT: &str = "
+UPDATE monitor_alerts
+SET body = json_set(
+    body,
+    '$.notified_at',
+    CASE WHEN json_extract(body, '$.muted_by_maintenance') THEN NULL
+         ELSE json_extract(body, '$.started_at') END)
+WHERE json_type(body, '$.notified_at') IS NULL;
+";
+
 pub fn init(store: &Store) -> AppResult<()> {
-    store.with(|conn| conn.execute_batch(SCHEMA))
+    store.with(|conn| {
+        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(BACKFILL_NOTIFIED_AT)
+    })
 }
 
 /// Document collections this feature owns.

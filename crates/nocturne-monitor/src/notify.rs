@@ -314,12 +314,13 @@ pub fn targets(app: &App, wanted: &[String]) -> AppResult<Vec<Channel>> {
 
 /// Send an alert to its channels, in the background: a slow webhook must
 /// never hold up polling.
+///
+/// Whether the alert is muted is not looked at here. That is the alert
+/// lifecycle's to decide, at the moment a notification is due
+/// ([`crate::alerts`]), and the answer differs by stage: a firing notice
+/// waits for a window or a snooze to end, a resolved notice follows the
+/// firing notice it closes.
 pub fn send(app: &App, alert: &Alert, stage: Stage, wanted: &[String]) {
-    let now = app.state::<MonitorState>().now();
-    if alert.muted(now) {
-        // Muted by a maintenance window or a snooze: recorded, not sent.
-        return;
-    }
     let channels = match targets(app, wanted) {
         Ok(channels) => channels,
         Err(err) => {

@@ -365,13 +365,13 @@ async fn availability_leaves_out_the_time_that_could_not_be_measured() {
             rtt_ms: None,
             facts: Default::default(),
         };
-        crate::checks::store::record(&harness.app, &stored, "SW1", &outcome, at).unwrap();
+        crate::checks::store::record(&harness.app, &stored, "SW1", &outcome, at, at).unwrap();
         at += 2 * minute;
     }
     let until = base + 6 * minute;
-    let events = crate::checks::store::events(&harness.app, &check, base, until, 100).unwrap();
+    let (_, state) = crate::checks::store::require(&harness.app, &check).unwrap();
     let summary =
-        crate::checks::store::summarise(&harness.app, &check, base, until, &events).unwrap();
+        crate::checks::store::summarise(&harness.app, &stored, &state, true, base, until).unwrap();
     assert_eq!(summary.up_s, 120, "two minutes up before it failed");
     assert_eq!(summary.down_s, 120);
     assert_eq!(summary.cannot_run_s, 120);
@@ -705,6 +705,315 @@ async fn a_box_that_is_down_does_not_also_complain_about_its_web_server() {
         harness.open_alerts().is_empty(),
         "but the alert about it is suppressed while the box itself is down: {:?}",
         harness.open_alerts()
+    );
+}
+
+/// A device on a fake address with the two rules an outage involves: the
+/// box being down, and a service on it being down.
+async fn box_and_service_rules(harness: &Harness) -> String {
+    harness.only_rule("builtin.device_down").await;
+    harness
+        .rpc(
+            "alerts.rules.save",
+            json!({"id": "builtin.service_check_down", "enabled": true}),
+        )
+        .await;
+    harness.device("SW1", "10.0.0.1", json!({})).await
+}
+
+/// Two failed polls a minute apart: the device is declared down.
+async fn take_the_box_down(harness: &Harness, device: &str) {
+    harness.probe.down("10.0.0.1");
+    harness.poll_and_evaluate(device).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert!(harness.poll_and_evaluate(device).await.down);
+}
+
+fn titles(alerts: &[crate::model::Alert]) -> Vec<&str> {
+    alerts.iter().map(|alert| alert.title.as_str()).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_box_that_comes_back_does_not_alert_on_what_its_checks_found_while_it_was_away() {
+    // The poll is usually first to notice a device is back, and the checks'
+    // stored verdicts are then still the ones from the outage. Judging those
+    // raised a "service down" alert after the outage was over, for every
+    // check, and resolved it again at the check's next run.
+    let harness = Harness::new().await;
+    let device = box_and_service_rules(&harness).await;
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"interval_s": 300}),
+        )
+        .await;
+    harness.run_check(&check).await;
+    assert_eq!(harness.check_state(&check).status, CheckStatus::Up);
+
+    take_the_box_down(&harness, &device).await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    harness.run_check(&check).await;
+    assert_eq!(harness.check_state(&check).status, CheckStatus::Down);
+    assert_eq!(titles(&harness.open_alerts()), ["Device down — SW1"]);
+
+    // The host is back, and a poll sees it before the check runs again.
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    harness.probe.up("10.0.0.1");
+    let poll = harness.poll_and_evaluate(&device).await;
+    assert_eq!(poll.transition, Some(true));
+    assert_eq!(
+        harness.check_state(&check).status,
+        CheckStatus::Down,
+        "the check has not run since: what it holds is from the outage"
+    );
+    assert!(
+        harness.open_alerts().is_empty(),
+        "nothing has been measured since the box came back: {:?}",
+        titles(&harness.open_alerts())
+    );
+
+    // Nor do later polls raise it, however many come before the check.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.poll_and_evaluate(&device).await;
+    assert!(harness.open_alerts().is_empty());
+
+    // The check's own next run is what speaks, and it finds the service up.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.run_check(&check).await;
+    assert_eq!(harness.check_state(&check).status, CheckStatus::Up);
+    assert_eq!(
+        titles(&harness.all_alerts()),
+        ["Device down — SW1"],
+        "one outage, one alert: the service was never alerted on"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_service_still_down_after_its_box_comes_back_is_alerted_by_its_next_run() {
+    // The other half: ignoring the stale verdict must not hide a service
+    // that really did not come back with the box.
+    let harness = Harness::new().await;
+    let device = box_and_service_rules(&harness).await;
+    // A service on its own address, so it can stay down while the box is up.
+    harness.probe.down("10.0.0.80");
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"host": "10.0.0.80", "interval_s": 300}),
+        )
+        .await;
+
+    take_the_box_down(&harness, &device).await;
+    harness.run_check(&check).await;
+    assert_eq!(titles(&harness.open_alerts()), ["Device down — SW1"]);
+
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.probe.up("10.0.0.1");
+    harness.poll_and_evaluate(&device).await;
+    assert!(harness.open_alerts().is_empty(), "not yet measured again");
+
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.run_check(&check).await;
+    assert_eq!(
+        titles(&harness.open_alerts()),
+        ["Service check down — web on SW1"],
+        "measured after the box came back, and still down"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_outage_alert_from_before_the_box_went_away_is_still_open_when_it_comes_back() {
+    // A verdict from before the recovery says nothing either way: it must
+    // not resolve an alert any more than raise one.
+    let harness = Harness::new().await;
+    let device = box_and_service_rules(&harness).await;
+    harness.probe.down("10.0.0.80");
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"host": "10.0.0.80", "interval_s": 300}),
+        )
+        .await;
+    harness.run_check(&check).await;
+    let before = harness.open_alerts();
+    assert_eq!(titles(&before), ["Service check down — web on SW1"]);
+
+    take_the_box_down(&harness, &device).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.probe.up("10.0.0.1");
+    harness.poll_and_evaluate(&device).await;
+
+    let after = harness.open_alerts();
+    assert_eq!(titles(&after), ["Service check down — web on SW1"]);
+    assert_eq!(after[0].id, before[0].id, "the same alert, not a new one");
+    assert_eq!(after[0].count, 1, "and nothing new was seen of it");
+}
+
+#[tokio::test(start_paused = true)]
+async fn what_a_check_found_while_the_recovery_poll_was_still_out_is_from_the_outage_too() {
+    // The box is back when it is *declared* back, at the end of the poll
+    // that heard from it, not when that poll set out. A run of a check
+    // that came back empty in between was sent to a box nobody had yet
+    // seen answer, and is as stale as the ones before it.
+    let harness = Harness::new().await;
+    let device = box_and_service_rules(&harness).await;
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"interval_s": 300}),
+        )
+        .await;
+    take_the_box_down(&harness, &device).await;
+
+    // It answers again, slowly: the poll that finds it is out for two
+    // seconds, and the check's verdict lands in the middle of them.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.probe.set(
+        "10.0.0.1",
+        HostState {
+            delay: Duration::from_secs(2),
+            ..HostState::default()
+        },
+    );
+    let recovery = {
+        let (app, device) = (harness.app.clone(), device.clone());
+        tokio::spawn(async move {
+            let poll = crate::poll::poll_device(&app, &device).await.unwrap();
+            crate::rules::evaluate(&app, &poll).await;
+            poll
+        })
+    };
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    found(
+        &harness,
+        &check,
+        crate::checks::outcome::Outcome::down("timeout", "none of the 3 echo requests came back"),
+    )
+    .await;
+    let poll = recovery.await.unwrap();
+
+    assert_eq!(poll.transition, Some(true));
+    assert!(
+        poll.at < harness.check_state(&check).last_run_at.unwrap(),
+        "the run was recorded after the poll set out"
+    );
+    assert_eq!(
+        titles(&harness.all_alerts()),
+        ["Device down — SW1"],
+        "and still says nothing about the box that came back"
+    );
+    assert!(harness.open_alerts().is_empty());
+}
+
+// ------------------------------------------------- certificate warnings
+
+/// Record what a run found and let the rules see it, as `run_and_record`
+/// does, without a TLS server behind it: these tests are about what the
+/// rules make of a verdict, not about how one is reached.
+async fn found(harness: &Harness, check_id: &str, outcome: crate::checks::outcome::Outcome) {
+    let (check, _) = crate::checks::store::require(&harness.app, check_id).unwrap();
+    let now = harness.now();
+    crate::checks::store::record(&harness.app, &check, "SW1", &outcome, now, now).unwrap();
+    crate::rules::evaluate_checks(&harness.app, &check.device_id).await;
+}
+
+fn expiring_in(days: i64) -> crate::checks::outcome::Outcome {
+    crate::checks::outcome::Outcome::up("ok", Some(12.0))
+        .with_facts(crate::checks::model::CheckFacts {
+            cert_expires_in_days: Some(days),
+            ..Default::default()
+        })
+        .warning_about(
+            "tls_expiring",
+            format!("the certificate expires in {days} day(s)"),
+        )
+}
+
+async fn portal_with_a_certificate_warning(harness: &Harness, device: &str) -> String {
+    harness.only_rule("builtin.service_check_warning").await;
+    let check = harness
+        .check_on(device, "portal", json!({"kind": "https"}), json!({}))
+        .await;
+    found(harness, &check, expiring_in(5)).await;
+    check
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_certificate_warning_is_not_resolved_by_a_run_that_never_saw_the_certificate() {
+    let (harness, device) = harness_with_device().await;
+    let check = portal_with_a_certificate_warning(&harness, &device).await;
+    let open = harness.open_alerts();
+    assert_eq!(
+        titles(&open),
+        ["Certificate about to expire — portal on SW1"]
+    );
+    assert_eq!(open[0].value, Some(5.0));
+
+    // The web server restarts and one run times out. Nothing was learned
+    // about the certificate, which still expires on the same day.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    found(
+        &harness,
+        &check,
+        crate::checks::outcome::Outcome::down("timeout", "the server did not answer in time"),
+    )
+    .await;
+    let still = harness.open_alerts();
+    assert_eq!(
+        still.iter().map(|alert| &alert.id).collect::<Vec<_>>(),
+        [&open[0].id],
+        "a timeout says nothing about the certificate"
+    );
+
+    // And when the server is back, it is the same alert rather than a second.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    found(&harness, &check, expiring_in(5)).await;
+    assert_eq!(harness.all_alerts().len(), 1);
+    assert_eq!(harness.open_alerts()[0].id, open[0].id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_certificate_warning_ends_when_a_run_sees_the_certificate_renewed_or_expired() {
+    // Renewed: the run answered and nothing is inside its warning margin.
+    let (harness, device) = harness_with_device().await;
+    let check = portal_with_a_certificate_warning(&harness, &device).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    found(
+        &harness,
+        &check,
+        crate::checks::outcome::Outcome::up("ok", Some(12.0)),
+    )
+    .await;
+    assert!(harness.open_alerts().is_empty(), "a renewed certificate");
+
+    // Expired: the run did see the certificate, and it is past warning —
+    // that is an outage now, and the service-down rule's to report.
+    let (harness, device) = harness_with_device().await;
+    let check = portal_with_a_certificate_warning(&harness, &device).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    found(
+        &harness,
+        &check,
+        crate::checks::outcome::Outcome::up("ok", Some(12.0))
+            .with_facts(crate::checks::model::CheckFacts {
+                cert_expires_in_days: Some(-1),
+                ..Default::default()
+            })
+            .failing("tls_expired", "the certificate expired 1 day(s) ago"),
+    )
+    .await;
+    assert!(
+        harness.open_alerts().is_empty(),
+        "no longer about to expire: {:?}",
+        titles(&harness.open_alerts())
     );
 }
 

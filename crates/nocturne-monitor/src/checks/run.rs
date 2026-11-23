@@ -49,7 +49,11 @@ pub struct Aim {
 /// an error code: "this check could not run, and here is the sentence to show
 /// for it" is the answer, and it goes on to be recorded like any other.
 pub fn aim(check: &ServiceCheck, device: &Device) -> Result<Aim, Box<Outcome>> {
-    let explicit = !check.host.trim().is_empty();
+    // An SNMP check never uses a host of its own: it asks the device's own
+    // agent ([`snmp`]). `checks.save` refuses one, but a row stored before it
+    // did may still carry one, and it must not count as the deliberate act
+    // that lets a check past the simulated-device guard below.
+    let explicit = !check.host.trim().is_empty() && !matches!(check.spec, CheckSpec::Snmp { .. });
     let host = if explicit {
         check.host.trim().to_string()
     } else {
@@ -103,7 +107,9 @@ pub async fn run_once(app: &App, check: &ServiceCheck) -> Outcome {
             loss_pct_down,
         } => {
             let echoes = count.unwrap_or(DEFAULT_ECHOES).clamp(1, 16);
-            let limit = loss_pct_down.unwrap_or(100.0);
+            // Clamped for the sake of a check stored before the range was
+            // enforced on save.
+            let limit = loss_pct_down.unwrap_or(100.0).clamp(0.0, 100.0);
             match state.probe.ping(&aimed.host, echoes, timeout).await {
                 Ok(report) => {
                     let loss = report.loss_pct();
@@ -117,10 +123,18 @@ pub async fn run_once(app: &App, check: &ServiceCheck) -> Outcome {
                             "no_reply",
                             format!("none of the {echoes} echo requests came back"),
                         )
-                    } else if loss >= limit {
+                    } else if loss > 0.0 && loss >= limit {
+                        // `loss > 0`: a limit of nought says "any loss is an
+                        // outage", and a host that answered every echo has
+                        // lost none. Without it `0 >= 0` made such a check
+                        // permanently down on a healthy host.
                         measured.failing(
                             "loss",
-                            format!("{loss:.0} % of the echo requests were lost, at or above the {limit:.0} % this check calls down"),
+                            if limit > 0.0 {
+                                format!("{loss:.0} % of the echo requests were lost, at or above the {limit:.0} % this check calls down")
+                            } else {
+                                format!("{loss:.0} % of the echo requests were lost, and this check calls any loss down")
+                            },
                         )
                     } else {
                         measured

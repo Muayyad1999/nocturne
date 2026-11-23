@@ -25,7 +25,7 @@ use crate::model::{DeviceHealth, DeviceRecord, IfStatus, Sources};
 use crate::rates::{self, Interval};
 use crate::read::{self, Reading};
 use crate::settings::{LAB_CLI_INTERVAL_S, MonitorSettings, PING_COUNT};
-use crate::state::{DeviceRuntime, MonitorState};
+use crate::state::{CounterSource, DeviceRuntime, MonitorState};
 
 /// One number to store, in the series (device, metric, instance).
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -59,6 +59,9 @@ pub struct Poll {
     pub error: Option<String>,
     /// The damped verdict after this poll.
     pub down: bool,
+    /// When the device last came back from being down
+    /// ([`DeviceRecord::up_since`]), this poll included.
+    pub up_since: Option<i64>,
     /// `Some(true)` when the device came up with this poll, `Some(false)`
     /// when it went down, `None` when nothing changed.
     pub transition: Option<bool>,
@@ -135,6 +138,11 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         )));
     }
     let at = state.now();
+    // `at` dates what this poll finds. `tick` decides what is due: the CLI
+    // read, the hand-over to the collected store and the scheduler's next
+    // turn are all "so long after the last one", which a time of day that
+    // can be set back cannot measure.
+    let tick = state.monotonic();
     let mut poll = Poll {
         device_id: device.id.clone(),
         device: device.name.clone(),
@@ -213,7 +221,7 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
     }
 
     // ------------------------------------------------------------- the read
-    let mut reading: Option<Reading> = None;
+    let mut reading: Option<(Reading, CounterSource)> = None;
     poll.sources.snmp.enabled = plan.snmp;
     if plan.snmp {
         poll.sources.snmp.at = Some(at);
@@ -226,7 +234,7 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
                     poll.via = Some("snmp".into());
                     poll.error = None;
                 }
-                reading = Some(read);
+                reading = Some((read, CounterSource::Snmp));
             }
             Err(error) => {
                 poll.sources.snmp.ok = Some(false);
@@ -238,11 +246,11 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         }
     }
 
-    let cli_due = cli_due(&state, &device, &plan, &settings, reading.is_some(), at);
+    let cli_due = cli_due(&state, &device, &plan, &settings, reading.is_some(), tick);
     poll.sources.cli.enabled = plan.cli && (plan.lab || !plan.snmp);
     if cli_due && (poll.ok || !plan.icmp) {
         poll.sources.cli.at = Some(at);
-        state.device(&device.id, |runtime| runtime.last_cli_at = at);
+        state.device(&device.id, |runtime| runtime.last_cli_mono = Some(tick));
         match read::over_cli(app, &device.id).await {
             Ok(read) => {
                 poll.sources.cli.ok = Some(true);
@@ -251,7 +259,7 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
                     poll.via = Some("cli".into());
                     poll.error = None;
                 }
-                reading = Some(read);
+                reading = Some((read, CounterSource::Cli));
             }
             Err(error) => {
                 poll.sources.cli.ok = Some(false);
@@ -264,8 +272,8 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
     }
 
     // ------------------------------------------------------- rates and gaps
-    if let Some(reading) = &reading {
-        let outcome = state.device(&device.id, |runtime| apply(runtime, reading, at));
+    if let Some((reading, source)) = &reading {
+        let outcome = state.device(&device.id, |runtime| apply(runtime, reading, *source, at));
         poll.rebooted = outcome.rebooted;
         poll.interfaces_read = reading.interfaces_read;
         poll.health = DeviceHealth {
@@ -308,10 +316,24 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
                 ..rates.status
             });
         }
-    } else if plan.snmp || cli_due {
-        // The read failed: the counters we hold are now next to an unknown
-        // amount of time, so they are dropped rather than used.
-        state.device(&device.id, DeviceRuntime::reset_counters);
+    } else {
+        // No reading this time. If the source that left the counters we hold
+        // was asked again and did not answer, they are now next to an unknown
+        // amount of time, and are dropped rather than used. A poll in which
+        // the *other* source failed, or in which the CLI was simply not due,
+        // is not that: with SNMP switched on but answering nobody, every
+        // poll between two CLI reads is one, and dropping the counters there
+        // would leave the CLI fallback with nothing to subtract from, ever.
+        state.device(&device.id, |runtime| {
+            let asked_and_lost = match runtime.counters_from {
+                Some(CounterSource::Snmp) => plan.snmp,
+                Some(CounterSource::Cli) => cli_due,
+                None => false,
+            };
+            if asked_and_lost {
+                runtime.reset_counters();
+            }
+        });
     }
 
     poll.measures
@@ -343,6 +365,13 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
     }
     poll.down = record.down;
     poll.transition = (record.down != was_down).then_some(!record.down);
+    if poll.transition == Some(true) {
+        // The moment it is declared up, not the moment this poll set out: a
+        // check that ran while the echoes were still in the air ran against
+        // a device nobody had yet seen answer.
+        record.up_since = Some(state.now());
+    }
+    poll.up_since = record.up_since;
     app.store().put(collections::DEVICES, &device.id, &record)?;
 
     // ------------------------------------------------------------- storing
@@ -351,7 +380,7 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         crate::interfaces::replace(app, &device.id, &poll.interfaces)?;
         app.publish("monitor.interfaces", &json!({"device_id": device.id}));
     }
-    store_collected(app, &state, &device, &reading, &settings, at)?;
+    store_collected(app, &state, &device, &reading, &settings, tick)?;
 
     inventory::update_state(app, &device.id, |device_state| {
         device_state.reachable = Some(!record.down);
@@ -382,10 +411,10 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         });
     }
 
-    state.device(&device.id, |runtime| runtime.last_poll_at = at);
+    state.device(&device.id, |runtime| runtime.last_poll_mono = Some(tick));
     {
         let mut runtime = state.runtime.lock();
-        runtime.polls.record(at);
+        runtime.polls.record(tick);
     }
     app.publish(
         "monitor.polled",
@@ -414,7 +443,7 @@ fn cli_due(
     plan: &Plan,
     settings: &MonitorSettings,
     snmp_read: bool,
-    at: i64,
+    tick: i64,
 ) -> bool {
     if !plan.cli {
         return false;
@@ -429,8 +458,8 @@ fn cli_due(
     } else {
         settings.cli_interval_s
     };
-    let last = state.device(&device.id, |runtime| runtime.last_cli_at);
-    last == 0 || at - last >= i64::from(cadence) * 1_000
+    let last = state.device(&device.id, |runtime| runtime.last_cli_mono);
+    last.is_none_or(|last| tick - last >= i64::from(cadence) * 1_000)
 }
 
 /// The rates of one interface, next to the status row they belong to.
@@ -446,7 +475,12 @@ pub struct ReadingOutcome {
 
 /// Turn a reading plus what the previous poll left into rates, and leave the
 /// new counters behind for the next one.
-pub fn apply(runtime: &mut DeviceRuntime, reading: &Reading, at: i64) -> ReadingOutcome {
+pub fn apply(
+    runtime: &mut DeviceRuntime,
+    reading: &Reading,
+    source: CounterSource,
+    at: i64,
+) -> ReadingOutcome {
     let elapsed = match (runtime.time_base, reading.time_base) {
         (Some(previous), Some(current)) => {
             rates::interval(previous, current, at - runtime.counters_at)
@@ -501,6 +535,7 @@ pub fn apply(runtime: &mut DeviceRuntime, reading: &Reading, at: i64) -> Reading
         .collect();
     runtime.time_base = reading.time_base;
     runtime.counters_at = at;
+    runtime.counters_from = Some(source);
     ReadingOutcome {
         interfaces,
         rebooted,
@@ -568,25 +603,28 @@ fn store_collected(
     app: &App,
     state: &MonitorState,
     device: &Device,
-    reading: &Option<Reading>,
+    reading: &Option<(Reading, CounterSource)>,
     settings: &MonitorSettings,
-    at: i64,
+    tick: i64,
 ) -> AppResult<()> {
-    let Some(reading) = reading else {
+    // Only what SNMP itself read. A CLI read has been stored by the
+    // collector already, in full and under its own name — including the one
+    // that stands in while SNMP is switched on and not answering.
+    let Some((reading, CounterSource::Snmp)) = reading else {
         return Ok(());
     };
-    if !reading.interfaces_read || !device.monitor.snmp {
-        // The CLI path stores through the collector already.
+    if !reading.interfaces_read {
         return Ok(());
     }
     let due = state.device(&device.id, |runtime| {
-        runtime.last_collect_at == 0
-            || at - runtime.last_collect_at >= i64::from(settings.cli_interval_s) * 1_000
+        runtime
+            .last_collect_mono
+            .is_none_or(|last| tick - last >= i64::from(settings.cli_interval_s) * 1_000)
     });
     if !due {
         return Ok(());
     }
-    state.device(&device.id, |runtime| runtime.last_collect_at = at);
+    state.device(&device.id, |runtime| runtime.last_collect_mono = Some(tick));
     collect::store(
         app,
         &device.id,

@@ -16,7 +16,7 @@ use nocturne_snmp::{Auth, Oid, Value, VarBind, oids};
 use parking_lot::Mutex;
 use serde_json::{Value as Json, json};
 
-use crate::clock::VirtualClock;
+use crate::clock::{Clock, VirtualClock};
 use crate::probe::{Echoes, Reachability};
 use crate::snmp::{SnmpSession, SnmpTransport, TableRow};
 use crate::state::MonitorState;
@@ -29,6 +29,71 @@ use crate::state::MonitorState;
 /// from roll-ups that do not exist yet.
 pub fn epoch() -> i64 {
     nocturne_app::util::now_ms()
+}
+
+/// A clock a test moves by hand.
+///
+/// For the tests that need both a real socket and the passing of an hour: a
+/// paused tokio timer cannot be mixed with real I/O (it fast-forwards over
+/// the request), so those run on real time and step this instead.
+pub struct ManualClock(std::sync::atomic::AtomicI64);
+
+impl ManualClock {
+    pub fn new(now: i64) -> ManualClock {
+        ManualClock(std::sync::atomic::AtomicI64::new(now))
+    }
+
+    pub fn advance(&self, by: Duration) {
+        self.0
+            .fetch_add(by.as_millis() as i64, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Clock for ManualClock {
+    fn now_ms(&self) -> i64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The same counter: it is only ever stepped forwards, and nothing
+    /// compares the two readings with each other.
+    fn monotonic_ms(&self) -> i64 {
+        self.now_ms()
+    }
+}
+
+/// A clock whose reading of the time of day a test can step, the way NTP or
+/// a person at the control panel does, while time itself carries on at its
+/// usual rate underneath.
+pub struct SteppedClock {
+    inner: VirtualClock,
+    offset: std::sync::atomic::AtomicI64,
+}
+
+impl SteppedClock {
+    /// A clock reading `base` right now. Must be created inside a runtime.
+    pub fn new(base: i64) -> SteppedClock {
+        SteppedClock {
+            inner: VirtualClock::new(base),
+            offset: std::sync::atomic::AtomicI64::new(0),
+        }
+    }
+
+    /// Move the time of day by `by_ms`, backwards when negative.
+    pub fn step(&self, by_ms: i64) {
+        self.offset
+            .fetch_add(by_ms, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Clock for SteppedClock {
+    fn now_ms(&self) -> i64 {
+        self.inner.now_ms() + self.offset.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Untouched by a step, which is the point of it.
+    fn monotonic_ms(&self) -> i64 {
+        self.inner.monotonic_ms()
+    }
 }
 
 // ------------------------------------------------------------------ probe
@@ -477,7 +542,7 @@ pub struct Harness {
     pub app: App,
     pub probe: Arc<FakeProbe>,
     pub snmp: Arc<FakeSnmp>,
-    pub clock: Arc<VirtualClock>,
+    pub clock: Arc<dyn Clock>,
     /// The credential every device created here is given.
     pub credential_id: String,
 }
@@ -485,9 +550,13 @@ pub struct Harness {
 impl Harness {
     /// A running app with no devices. Use [`Harness::device`] to add some.
     pub async fn new() -> Harness {
+        Harness::with_clock(Arc::new(VirtualClock::new(epoch()))).await
+    }
+
+    /// The same, on a clock of the test's choosing.
+    pub async fn with_clock(clock: Arc<dyn Clock>) -> Harness {
         let probe = Arc::new(FakeProbe::default());
         let snmp = Arc::new(FakeSnmp::default());
-        let clock = Arc::new(VirtualClock::new(epoch()));
         let mut builder = nocturne_app::testing::builder();
         crate::init(&mut builder);
         // Replaces the state `init` registered: the same wiring, fake probes,
@@ -537,17 +606,17 @@ impl Harness {
     /// hands out a fresh random id for every device created — so *when* a
     /// device is first polled is random from a test's point of view. The
     /// jitter only applies to a device the scheduler has not seen before
-    /// (`last_poll_at == 0`), so writing a phase here makes it part of the
+    /// (no `last_poll_mono` yet), so writing a phase here makes it part of the
     /// fixture. Any test that asserts how often something was polled in a
     /// given window pins its devices first; the test that is *about* the
     /// spread deliberately does not.
     pub fn due_now(&self, device_id: &str, interval_s: u32) {
         let interval_ms = i64::from(interval_s.max(5)) * 1_000;
-        let now = self.now();
+        let now = self.clock.monotonic_ms();
         self.app
             .state::<MonitorState>()
             .device(device_id, |runtime| {
-                runtime.last_poll_at = now - interval_ms;
+                runtime.last_poll_mono = Some(now - interval_ms);
             });
     }
 
@@ -603,9 +672,9 @@ impl Harness {
     /// *when* a check first runs is random from a test's point of view.
     pub fn check_due_now(&self, check_id: &str, interval_s: u32) {
         let interval_ms = i64::from(interval_s.max(5)) * 1_000;
-        let now = self.now();
+        let now = self.clock.monotonic_ms();
         self.app.state::<MonitorState>().check(check_id, |runtime| {
-            runtime.last_run_at = now - interval_ms;
+            runtime.last_run_mono = Some(now - interval_ms);
         });
     }
 
@@ -656,7 +725,6 @@ impl Harness {
     }
 
     pub fn now(&self) -> i64 {
-        use crate::clock::Clock;
         self.clock.now_ms()
     }
 

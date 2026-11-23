@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::state::MonitorState;
-use crate::testing::{Harness, HostState};
+use crate::testing::{Harness, HostState, SteppedClock, epoch};
 
 /// Let the scheduler run for `seconds` of virtual time, in small steps so
 /// that its own tick is seen.
@@ -342,6 +342,194 @@ async fn deleting_a_device_clears_what_monitoring_kept_about_it() {
             .get::<crate::model::DeviceRecord>(crate::db::collections::DEVICES, &id)
             .unwrap()
             .is_none()
+    );
+    harness.app.shutdown();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wall_clock_set_back_an_hour_stops_neither_the_polls_nor_the_checks() {
+    // A machine that boots with its clock an hour fast and is then put
+    // right by NTP: the time of day goes backwards, time does not.
+    let clock = std::sync::Arc::new(SteppedClock::new(epoch()));
+    let harness = Harness::with_clock(clock.clone()).await;
+    harness.silence_rules().await;
+    let device = harness.device("SW1", "10.4.0.1", json!({})).await;
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"host": "10.4.0.80", "interval_s": 10, "timeout_ms": 1_000}),
+        )
+        .await;
+    harness.due_now(&device, 60);
+    harness.check_due_now(&check, 10);
+    crate::scheduler::spawn(&harness.app);
+    run_for(180).await;
+    let polls = harness.probe.count("10.4.0.1");
+    let runs = harness.probe.count("10.4.0.80");
+    assert!(polls >= 2 && runs >= 5, "{polls} polls and {runs} runs");
+
+    clock.step(-3_600_000);
+    run_for(300).await;
+    let polls_after = harness.probe.count("10.4.0.1");
+    let runs_after = harness.probe.count("10.4.0.80");
+    assert!(
+        polls_after >= polls + 3,
+        "a device on a 60 s interval was polled {} times in the five minutes \
+         after the clock was set back",
+        polls_after - polls
+    );
+    assert!(
+        runs_after >= runs + 10,
+        "a check on a 10 s interval ran {} times in the five minutes after \
+         the clock was set back",
+        runs_after - runs
+    );
+
+    // A device added in that hour is picked up like any other.
+    harness.device("SW2", "10.4.0.2", json!({})).await;
+    run_for(90).await;
+    assert!(
+        harness.probe.count("10.4.0.2") >= 1,
+        "a device created after the step was never polled"
+    );
+    harness.app.shutdown();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wall_clock_set_back_does_not_stretch_the_wait_before_an_alert_is_raised() {
+    // `for_s` is a length of time too. The rule here waits ten minutes
+    // before telling anybody that a check cannot run.
+    let clock = std::sync::Arc::new(SteppedClock::new(epoch()));
+    let harness = Harness::with_clock(clock.clone()).await;
+    harness.only_rule("builtin.service_check_cannot_run").await;
+    let device = harness
+        .device("SW1", "10.4.0.1", json!({"monitor": {"snmp": false}}))
+        .await;
+    // No SNMP credential: the check has nothing to ask with.
+    let check = harness
+        .check_on(&device, "agent", json!({"kind": "snmp"}), json!({}))
+        .await;
+    harness.run_check(&check).await;
+    assert!(harness.open_alerts().is_empty(), "not yet");
+
+    clock.step(-3_600_000);
+    for _ in 0..11 {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        harness.run_check(&check).await;
+    }
+    assert_eq!(
+        harness.open_alerts().len(),
+        1,
+        "eleven minutes of it, whatever the time of day did meanwhile"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_check_that_was_just_repointed_is_not_run_once_more_at_its_old_target() {
+    // The scheduler works from a list of checks it re-reads every few
+    // seconds. A check edited in between is in that list as it used to be.
+    let harness = Harness::new().await;
+    harness.silence_rules().await;
+    let device = harness
+        .device("SW1", "10.6.0.1", json!({"monitor": {"interval_s": 3600}}))
+        .await;
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"host": "10.6.0.5", "interval_s": 5, "timeout_ms": 1_000}),
+        )
+        .await;
+    crate::scheduler::spawn(&harness.app);
+    // Long enough for the scheduler to have read its list, not long enough
+    // for it to read it again.
+    run_for(2).await;
+    let before = harness.probe.count("10.6.0.5");
+
+    harness
+        .rpc("checks.save", json!({"id": check, "host": "10.6.0.6"}))
+        .await;
+    harness.check_due_now(&check, 5);
+    run_for(2).await;
+
+    assert_eq!(
+        harness.probe.count("10.6.0.5"),
+        before,
+        "nothing more is sent to the host the check no longer points at"
+    );
+    assert_eq!(
+        harness.probe.count("10.6.0.6"),
+        1,
+        "the run that was due went to the new one"
+    );
+    assert_eq!(
+        harness.check_state(&check).status,
+        crate::checks::model::CheckStatus::Up
+    );
+    harness.app.shutdown();
+}
+
+#[tokio::test]
+async fn the_scheduler_keeps_time_on_the_real_clock_as_it_does_on_a_test_one() {
+    // Every other test here runs on a clock that follows a paused timer.
+    // This one runs the scheduler on the clock the application ships with,
+    // in real time, so that its forward-only reading is exercised by
+    // something other than production.
+    let harness = Harness::with_clock(std::sync::Arc::new(crate::clock::SystemClock)).await;
+    harness.silence_rules().await;
+    let device = harness
+        .device("SW1", "10.7.0.1", json!({"monitor": {"interval_s": 5}}))
+        .await;
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"host": "10.7.0.80", "interval_s": 5, "timeout_ms": 1_000}),
+        )
+        .await;
+    harness.due_now(&device, 5);
+    harness.check_due_now(&check, 5);
+    // Taken before there is a scheduler, so no round can be earlier.
+    let started = std::time::Instant::now();
+    crate::scheduler::spawn(&harness.app);
+
+    // Waited for rather than slept for: how long a tick takes belongs to
+    // the machine, and this must not fail because it was busy. What is
+    // asserted is the one thing that does not depend on it — the second
+    // round comes, and not before an interval has gone by.
+    let both_seen = |times: usize| {
+        harness.probe.count("10.7.0.1") >= times && harness.probe.count("10.7.0.80") >= times
+    };
+    let wait_for = |times: usize| {
+        let both_seen = &both_seen;
+        async move {
+            let gave_up = std::time::Instant::now() + Duration::from_secs(60);
+            while !both_seen(times) {
+                assert!(
+                    std::time::Instant::now() < gave_up,
+                    "round {times} of polls and runs never came"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            std::time::Instant::now()
+        }
+    };
+    wait_for(1).await;
+    let second = wait_for(2).await;
+    // Counted from before the first round, not from when this task noticed
+    // it: on a busy machine the noticing can be late by any amount, which
+    // would make the interval look short. The first round is not before
+    // `started` and the second not less than an interval after the first,
+    // so this bound holds however the machine is doing.
+    assert!(
+        second - started >= Duration::from_secs(5),
+        "the second round of a five-second interval came {:?} after the \
+         scheduler was started",
+        second - started
     );
     harness.app.shutdown();
 }

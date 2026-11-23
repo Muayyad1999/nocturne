@@ -429,3 +429,187 @@ async fn the_cli_is_read_at_its_own_slower_cadence() {
         ["icmp.loss_pct", "icmp.rtt_ms", "up"]
     );
 }
+
+/// A simulated switch read over the CLI with the counters profile, reporting
+/// `in_octets` on its first port after `uptime_s` of uptime.
+async fn cli_switch(monitor: serde_json::Value) -> (nocturne_app::testing::Lab, String) {
+    cli_switch_on(
+        Arc::new(crate::clock::VirtualClock::new(crate::testing::epoch())),
+        monitor,
+    )
+    .await
+}
+
+/// The same switch, on a clock of the test's choosing.
+async fn cli_switch_on(
+    clock: Arc<dyn crate::clock::Clock>,
+    monitor: serde_json::Value,
+) -> (nocturne_app::testing::Lab, String) {
+    let mut builder = nocturne_app::testing::builder();
+    crate::init(&mut builder);
+    builder.state(MonitorState::fake(
+        clock,
+        Arc::new(FakeProbe::default()),
+        Arc::new(crate::testing::FakeSnmp::default()),
+    ));
+    let lab = nocturne_app::testing::lab(builder, &["SW1"]).await;
+    nocturne_app::profiles::save(&lab.app, CLI_PROFILE).expect("the profile loads");
+    let id = lab.id("SW1");
+    lab.app
+        .rpc(
+            "devices.update",
+            json!({"id": id, "profile": "test_cli_counters", "monitor": monitor}),
+        )
+        .await
+        .unwrap();
+    (lab, id)
+}
+
+fn report(lab: &nocturne_app::testing::Lab, in_octets: u64, uptime_s: u64) {
+    lab.fake("SW1").with(|state| {
+        state
+            .outputs
+            .insert("show interfaces summary".into(), summary(in_octets));
+        state.outputs.insert(
+            "show system uptime".into(),
+            format!("Device uptime {uptime_s} seconds\n"),
+        );
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_cli_fallback_still_measures_rates_while_snmp_is_on_and_failing() {
+    // SNMP switched on but answering nobody, and a command line that works:
+    // the CLI is read every 30 s here (every five minutes on hardware) and
+    // the device polled every 10. The polls in between have no reading, and
+    // used to throw away the counters the CLI had just left — so the next
+    // CLI read never had anything to subtract from.
+    let (lab, id) =
+        cli_switch(json!({"enabled": true, "icmp": true, "snmp": true, "interval_s": 10})).await;
+    report(&lab, 1_000_000, 100_000);
+    let first = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert_eq!(first.sources.snmp.ok, Some(false), "no agent answers");
+    assert_eq!(first.sources.cli.ok, Some(true));
+    assert_eq!(
+        first.interfaces[0].in_bps, None,
+        "nothing to subtract from yet"
+    );
+    // What the collector stored is still the collector's. SNMP read nothing
+    // here, so nothing may be filed under its name — least of all a copy of
+    // the CLI's rows with half their fields gone.
+    let collected =
+        nocturne_app::collect::latest(&lab.app, &id, nocturne_drivers::model::Kind::Interfaces)
+            .unwrap()
+            .expect("the CLI read was collected");
+    assert_eq!(collected.source, "lab");
+
+    for _ in 0..2 {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let between = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+        assert_eq!(between.sources.snmp.ok, Some(false));
+        assert!(!between.interfaces_read, "the CLI is not due yet");
+    }
+
+    // 30 s after the first read, 37.5 MB more.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    report(&lab, 38_500_000, 100_030);
+    let second = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert_eq!(second.sources.cli.ok, Some(true));
+    assert_eq!(
+        second.interfaces[0].in_bps,
+        Some(10_000_000.0),
+        "two CLI reads thirty seconds apart are an interval, whatever SNMP did in between"
+    );
+    let stored = lab
+        .app
+        .rpc("monitor.interfaces", json!({"device_id": id}))
+        .await
+        .unwrap();
+    assert_eq!(stored[0]["in_bps"], 10_000_000.0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cli_read_that_fails_still_leaves_a_gap_while_snmp_is_on_and_failing() {
+    // The other side of the same rule: the counters are kept across polls
+    // that had no read *due*, not across a read that was due and failed.
+    let (lab, id) =
+        cli_switch(json!({"enabled": true, "icmp": true, "snmp": true, "interval_s": 10})).await;
+    report(&lab, 1_000_000, 100_000);
+    crate::poll::poll_device(&lab.app, &id).await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    // The simulator finds a node by its name: under another one, nothing
+    // answers for SW1.
+    lab.fake("SW1").with(|state| state.hostname = "AWAY".into());
+    let failed = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert_eq!(
+        failed.sources.cli.ok,
+        Some(false),
+        "the read was due and failed"
+    );
+    assert!(!failed.interfaces_read);
+
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    lab.fake("SW1").with(|state| state.hostname = "SW1".into());
+    report(&lab, 76_000_000, 100_060);
+    let back = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert!(back.interfaces_read);
+    assert_eq!(
+        back.interfaces[0].in_bps, None,
+        "an interval with a failed read in the middle is a gap"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn counters_cleared_on_the_device_are_a_gap_not_a_wrap() {
+    // `clear counters` on a switch read over its command line: the number
+    // goes down and the uptime goes on. Read as a 64-bit wrap, this was
+    // 4.9 × 10^17 bit/s through a gigabit port.
+    let (lab, id) =
+        cli_switch(json!({"enabled": true, "icmp": true, "snmp": false, "interval_s": 30})).await;
+    report(&lab, 5_000_000_000, 100_000);
+    crate::poll::poll_device(&lab.app, &id).await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    report(&lab, 1_000, 100_300);
+    let cleared = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert!(cleared.interfaces_read);
+    assert!(!cleared.rebooted, "the device did not restart");
+    assert_eq!(cleared.interfaces[0].in_bps, None);
+    assert_eq!(cleared.interfaces[0].util_pct, None);
+    assert_eq!(cleared.measure("if.in_bps", "GigabitEthernet0/1"), None);
+    assert_eq!(cleared.measure("if.util_pct", "GigabitEthernet0/1"), None);
+
+    // The cleared counters are the new baseline.
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    report(&lab, 37_501_000, 100_330);
+    let after = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert_eq!(after.interfaces[0].in_bps, Some(10_000_000.0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wall_clock_set_back_does_not_put_off_the_next_cli_read() {
+    // The CLI has its own, slower cadence inside the poll, and it is a
+    // cadence like the scheduler's: thirty seconds are thirty seconds
+    // whatever NTP has just done to the time of day.
+    let clock = Arc::new(crate::testing::SteppedClock::new(crate::testing::epoch()));
+    let (lab, id) = cli_switch_on(
+        clock.clone(),
+        json!({"enabled": true, "icmp": true, "snmp": false, "interval_s": 10}),
+    )
+    .await;
+    report(&lab, 1_000_000, 100_000);
+    let first = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert_eq!(first.sources.cli.ok, Some(true));
+
+    clock.step(-3_600_000);
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    report(&lab, 38_500_000, 100_030);
+    let second = crate::poll::poll_device(&lab.app, &id).await.unwrap();
+    assert_eq!(
+        second.sources.cli.ok,
+        Some(true),
+        "thirty seconds on, the CLI is due again"
+    );
+    assert_eq!(second.interfaces[0].in_bps, Some(10_000_000.0));
+}

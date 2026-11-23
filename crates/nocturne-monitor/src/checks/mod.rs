@@ -36,11 +36,12 @@ pub mod rpc;
 pub mod run;
 pub mod store;
 
-use nocturne_app::{App, AppResult};
+use nocturne_app::{App, AppError, AppResult};
 use serde_json::json;
 
 use self::model::{CheckStatus, ServiceCheck};
 use self::store::Recorded;
+use crate::settings::MonitorSettings;
 use crate::state::MonitorState;
 
 pub use rpc::register;
@@ -49,13 +50,26 @@ pub use rpc::register;
 ///
 /// This is the only path a check result takes, whether the run came from the
 /// scheduler or from `checks.run_now`.
+///
+/// `check` is the definition as the caller read it, which may be seconds old
+/// by the time the probe comes back. If the check was edited or deleted in
+/// the meantime the result is about something that no longer exists in that
+/// form: nothing is recorded, no sample is written, the rules are not asked,
+/// and the caller gets a `conflict` that says so.
 pub async fn run_and_record(app: &App, check: &ServiceCheck) -> AppResult<Recorded> {
     let device = nocturne_app::inventory::get(app, &check.device_id)
         .map(|device| device.name)
         .unwrap_or_default();
+    let state = app.state::<MonitorState>();
+    let started_at = state.now();
     let found = run::run_once(app, check).await;
-    let at = app.state::<MonitorState>().now();
-    let recorded = store::record(app, check, &device, &found, at)?;
+    let at = state.now();
+    let Some(recorded) = store::record(app, check, &device, &found, started_at, at)? else {
+        return Err(AppError::conflict(format!(
+            "the `{}` check was changed or deleted while it was running, so what that run found was not recorded: it was about the check as it used to be",
+            check.name
+        )));
+    };
     crate::poll::write_samples(app, &check.device_id, at, &run::samples(check, &found))?;
     app.publish(
         "checks.ran",
@@ -78,16 +92,97 @@ pub async fn run_and_record(app: &App, check: &ServiceCheck) -> AppResult<Record
     Ok(recorded)
 }
 
-/// Whether a check should be running at all right now.
+/// Why nothing is running a check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unwatched {
+    /// The check itself is switched off.
+    Disabled,
+    /// Monitoring is switched off for the check's device.
+    DeviceOff,
+    /// Monitoring is switched off for the whole installation.
+    MonitoringOff,
+    /// Service checks are switched off for the whole installation.
+    ChecksOff,
+}
+
+impl Unwatched {
+    /// A stable word for it, for a caller that switches on the reason.
+    pub fn code(self) -> &'static str {
+        match self {
+            Unwatched::Disabled => "disabled",
+            Unwatched::DeviceOff | Unwatched::MonitoringOff => "monitoring_off",
+            Unwatched::ChecksOff => "checks_off",
+        }
+    }
+
+    /// The sentence a person is shown when they ask for a run and do not get
+    /// one.
+    pub fn sentence(self, check: &ServiceCheck, device: &str) -> String {
+        match self {
+            Unwatched::Disabled => format!(
+                "the `{}` check is switched off, so it was not run: switch it on to have it checked",
+                check.name
+            ),
+            Unwatched::DeviceOff => format!(
+                "monitoring is switched off for `{device}`, and that switches off its service checks too, so `{}` was not run",
+                check.name
+            ),
+            Unwatched::MonitoringOff => format!(
+                "monitoring is switched off (the `monitoring` setting `enabled`), so `{}` was not run",
+                check.name
+            ),
+            Unwatched::ChecksOff => format!(
+                "service checks are switched off (the `monitoring` setting `checks_enabled`), so `{}` was not run",
+                check.name
+            ),
+        }
+    }
+}
+
+/// Whether anything is running a check: the one place that rule is written.
 ///
-/// A device that is not monitored does not have its services checked either:
-/// switching monitoring off for a device has to switch *everything* off for
-/// it, or it does not mean anything.
-pub fn runnable(app: &App, check: &ServiceCheck) -> bool {
-    check.enabled
-        && nocturne_app::inventory::get(app, &check.device_id)
-            .map(|device| device.monitor.enabled)
-            .unwrap_or(false)
+/// A check is watched when it is switched on, its device is monitored, and
+/// monitoring and service checks are on for the installation. Switching
+/// monitoring off for a device has to switch *everything* off for it, or it
+/// does not mean anything — so everything that asks "is this check live?"
+/// asks here:
+///
+/// * the scheduler, before it starts a run;
+/// * `checks.run_now`, which leaves an unwatched check alone and says why —
+///   a run by hand would record a verdict, and raise an alert, that no later
+///   run would ever revisit;
+/// * `monitor.status`, which counts an unwatched check as `disabled`
+///   whatever it last found;
+/// * `checks.history`, which stops crediting the last status with time once
+///   nothing is running the check.
+///
+/// The alerts follow the same switch from the rules' side: see
+/// [`crate::rules::stand_down`].
+pub fn watched(
+    settings: &MonitorSettings,
+    device_monitored: bool,
+    check_enabled: bool,
+) -> Result<(), Unwatched> {
+    if !check_enabled {
+        Err(Unwatched::Disabled)
+    } else if !device_monitored {
+        Err(Unwatched::DeviceOff)
+    } else if !settings.enabled {
+        Err(Unwatched::MonitoringOff)
+    } else if !settings.checks_enabled {
+        Err(Unwatched::ChecksOff)
+    } else {
+        Ok(())
+    }
+}
+
+/// [`watched`] for one check, reading the settings and the device itself.
+/// A check whose device has left the inventory is not watched either.
+pub fn watching(app: &App, check: &ServiceCheck) -> Result<(), Unwatched> {
+    let monitored = nocturne_app::inventory::get(app, &check.device_id)
+        .map(|device| device.monitor.enabled)
+        .unwrap_or(false);
+    watched(&MonitorSettings::load(app), monitored, check.enabled)
 }
 
 /// The checks of a device that are not up, for a device view or an alert's

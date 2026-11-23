@@ -4,7 +4,7 @@ Spec: `docs/dev/features/monitor.md`. Conventions: `docs/dev/features/README.md`
 
 ## State: complete
 
-194 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
+263 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
 clean, `cargo fmt` applied, no `unsafe`.
 
 ```
@@ -41,6 +41,9 @@ src/
   tests/          polling, counters, health, lifecycle, scheduling, notifications,
                   live (in-process SNMP Agent + CLI), snmpd (real net-snmp), rpc,
                   checks (the five states, history, alerting, scheduling),
+                  check_history (what the history may claim), check_definitions
+                  (limits, hosts, stale runs, moves), check_watching
+                  (monitoring switched off),
                   check_engines (real listeners), listeners + certificates
                   (the servers those tests start)
 ```
@@ -77,7 +80,9 @@ src/
 * **History is the changes, not the runs.** One row per transition with the
   previous status and how long it had lasted (`held_s`). That answers "when
   did it last go down and for how long" without keeping every run for ever,
-  and the response times are already in the time series.
+  and the response times are already in the time series. The price is that
+  every figure is an inference from two rows, and the inference has to stop
+  somewhere: see "What a check's history may claim" below.
 * **Availability excludes what could not be measured.** `up_s`, `warning_s`,
   `down_s`, `cannot_run_s` and `unknown_s` are kept apart, and
   `availability_pct` is `null` when nothing in the window was measured. A
@@ -121,6 +126,195 @@ src/
   there, so each gained a case. `CONDITION_KINDS` was deliberately **not**
   extended: that drives the rule editor's dropdown, and offering a condition
   with no form for its parameters would be worse than not offering it.
+
+### What a check's history may claim (after the review findings)
+
+* **Time nobody measured is `unknown`, never the last status.** One bound,
+  `store::silence_ms` (2 × interval + timeout + 30 s: one run may be late or
+  skipped, two may not), used in three places through `measured_until`:
+  `record` closes a broken watch with a `→ unknown` row at the *last run*
+  before it records the new one from `unknown`; `summarise` closes the tail
+  the same way, since no row does; a repoint closes at the last run too. It
+  is measured from the end of one run to the *start* of the next
+  (`record` takes both times), because a probe can legitimately take much
+  longer than its interval (ten redirects, sixteen echoes) and that is not a
+  hole. A purely elapsed-time rule was chosen over explicit markers (a row
+  at shutdown, at disable, …) because it is the only one that also covers a
+  crash and a laptop lid.
+* **Silence is counted from the last run or the last save, whichever is
+  later** (`store::silent_since`), and `store::save` closes a hole that is
+  already there. Counted from the last run alone, shortening a check's
+  interval read as a hole nearly every time (an hourly check made a
+  one-minute check 40 minutes after it ran: 40 minutes is more than a
+  one-minute check may go unrun), wrote a false `not_measured` row and
+  restarted `since`. Counting from the save is only sound if the save
+  cannot vouch for silence before it, so `save` judges that stretch by the
+  cadence the check had *until then* and, if it was already broken, writes
+  the `→ unknown` row and leaves the state `unknown` until the next run.
+  That is the one place a stored verdict is forgotten without a run or a
+  repoint; the dates (`last_ok_at`, `last_down_at`) and the history keep
+  what it was. A save that leaves the check switched off moves nothing, or
+  a chain of edits to a disabled check would keep its watch "alive". No new
+  stored field was needed: the definition's `updated_at` is the save.
+* **A window's last stretch is closed by the next row, when there is one.**
+  `summarise` first asks whether any change is on record after `until`; if
+  so the status the window ends in lasted through it, exactly as between
+  two rows inside the window. Only otherwise does the check's present state
+  (`measured_until`) decide. Judged from the present state alone, a check
+  that had been repointed (no `last_run_at`) answered `unknown` for every
+  earlier window's tail, although its own rows said what it was doing.
+* **The row after a gap is real, the timeline line is not always.** After a
+  gap `previous` is `unknown` and `changed` is true even if the status is
+  what it was — the history did change. The device's `event` log only gets a
+  line when the status differs from what was *last heard*, or every start of
+  the desktop application would write one line per check.
+* **`summarise` reads the rows itself.** It used to be handed the list the
+  caller was about to return, which is cut to `limit`; everything after the
+  cut was charged to the last row that made it. It now streams every change
+  in the window inside one visit to the store, and `events` returns the
+  newest `limit` (the end of a flapping episode, not its first minutes) with
+  `events_total` / `truncated`.
+* **Pruning keeps one old row per check** — the newest before the cut-off,
+  which is the status the retention opens on. `store::opening` also
+  copes without it (the oldest row's `previous` + `held_s`, then the check's
+  own `since`), because installations pruned by the earlier code have
+  already lost it and a window can be longer than the retention.
+* **A run is recorded against the definition it ran from, or not at all.**
+  `record` re-reads the check inside its transaction and drops the result
+  unless the stored definition is *equal* to the one the run was given
+  (`updated_at` alone is not enough under a paused test clock, and equality
+  is what is actually meant). `store::save` is one transaction for the same
+  reason. `run_and_record` turns a dropped result into a `conflict`, which
+  is how `checks.run_now` reports it. The scheduler also re-reads its list
+  at the first tick after any `forget_check` (`Runtime::checks_changed`)
+  instead of running a five-second-old copy once more.
+* **`identity` includes the device** (and, for SNMP, not the host). Keeping
+  the state across a move when the check names its own host was considered
+  and dropped: the alert key, the series and the rule scope all change with
+  the device, and "starts from `unknown`" is never wrong.
+
+### One rule for "is this check live" (`checks::watched`)
+
+Switched on, device monitored, monitoring on, checks on. The scheduler,
+`checks.run_now`, the `monitor.status` counts and the history's tail all call
+it; the alerts follow from the rules' side (`rules::stand_down`, called from
+the `devices.changed` listener and from any evaluation that reaches an
+unmonitored device). Decided deliberately:
+
+* `checks.run_now` **skips** an unwatched check rather than running it
+  without recording. A dry run would be a second kind of result in the
+  contract, and "monitoring is off for this device" should also mean nothing
+  is sent to it because an assistant asked.
+* The state is **not** wiped when monitoring is switched off. What the check
+  last found is a record with a date on it; only the derived views (counts,
+  alerts, history tail) stop treating it as current.
+* The two installation-wide switches stop `checks.run_now` as well. That
+  goes one step beyond the finding (which was about the per-device switch)
+  for the same reason: with `monitoring.enabled` off a run by hand raises an
+  alert nothing looks at again until it is switched back on. If on-demand
+  runs are wanted while the scheduler is off, it is one match arm in
+  `rpc::run_now`.
+* Only the **per-device** switch closes alerts. Turning `monitoring.enabled`
+  or `checks_enabled` off stops the runs, takes every check out of the
+  up/down counts and stops `run_now`, but leaves open alerts open: that
+  switch is usually thrown for an hour, and resolving every alert in the
+  installation (with notices) for it would be worse than leaving them.
+* `monitor.poll_now` still polls an unmonitored device when asked; the rules
+  just do not act on what it finds.
+
+### Cadence is not the time of day
+
+`Clock::monotonic_ms` beside `Clock::now_ms`. Every "is it due?" — device
+polls, check runs, the inventory refresh, the CLI read, the hand-over to the
+collected store, polls per minute, cycle time — is a difference of monotonic
+readings; `DeviceRuntime::last_*_mono` and `CheckRuntime::last_run_mono` are
+`Option`s so that no reading is a sentinel. The reasoning is in the comment
+in `scheduler::scheduler`. Left on timestamps: a rule's `for_s` wait (it now
+starts over if the time of day goes back during it, rather than lasting for
+the step) and `rates` with `TimeBase::Wall`, i.e. a device that reports no
+uptime of its own — a backwards step there is an unusable interval (a gap),
+a forwards one stretches the interval and understates one rate. Not fixed.
+
+### Alert lifecycle (after the review findings)
+
+* **Every change to an alert is one store transaction** (`alerts::fire`,
+  `resolve`, `amend`). Look-up and insert used to be two visits to the store,
+  and polls, checks and `alerts.raise` all arrive on different threads: two
+  callers found nothing open and both raised. There is deliberately no
+  `alerts::save` any more — a bare save is how a copy read a moment ago
+  overwrites what happened since (an acknowledgement losing a sighting, a
+  sighting undoing an acknowledgement). Maintenance windows and the device
+  are read *before* the transaction: they live in the same store behind the
+  same non-reentrant lock.
+* **A sighting is a measurement** (`AlertSpec::observed_at`,
+  `Finding::observed_at`). A check rule judges a stored verdict, and that
+  verdict is looked at after every poll and after every other check on the
+  device has run. Counting each look made `count` meaningless (12 checks on a
+  device → 12 per round) and published an event per look. Three comparisons
+  against the alert's `last_seen_at` do all the work: an observation it has
+  already seen is not counted; an all-clear older than its last sighting
+  does not resolve it; a sighting older than the last resolve does not raise
+  it again. The last two also close a real race — an evaluation that read
+  `down` just before the run that cleared it used to re-raise the alert
+  behind the resolve. For that to hold, a resolve is dated no earlier than
+  the observation that cleared it: a poll's evaluation carries the time the
+  poll set out, which can be before a sighting the alert already counted.
+* **The firing notice is owed until it is paid** (`Alert::notified_at`), and
+  **the resolved notice is paired with it**. Muting used to be frozen into
+  the alert at the raise, so an outage that began inside a maintenance window
+  and outlasted it was never announced at all. It is paid at the first
+  *evaluation* that finds the alert unmuted, counted or not: an evaluation
+  that looks again at a run it has already counted still sends the notice,
+  or a check that runs hourly would announce an outage an hour after the
+  window closed. The resolved notice follows
+  the firing one *regardless* of windows and snoozes: the alternative leaves
+  an incident open for ever in a chat or a pager, and "resolved" is not a
+  message that wakes anybody. It is not sent for an alert that was never
+  announced. `notify::send` therefore no longer looks at muting at all.
+* **`alerts.changed` carries `notification`** (`firing` / `resolved` /
+  `null`), because the desktop shell shows its own notification from this
+  event and its old test (`count == 1`) cannot see a late announcement.
+* **What a check found before its device came back is not known**
+  (`DeviceRecord::up_since`). Stamped when the device is *declared* up, not
+  when the poll set out. Deliberately not done: making the device's checks
+  due at once on recovery. A box answers ping well before its services are
+  up after a reboot, so that would trade the false alert for a real but
+  equally useless one; the check's own next run speaks instead.
+* **Alerts open across the upgrade** have no `notified_at`; `db::init`
+  writes the answer the old code implies, once (see `BACKFILL_NOTIFIED_AT`).
+
+* **The concurrency tests run several rounds, and count.** Two alerts under
+  one key is the rare symptom of a raise that visits the store twice; a lost
+  sighting is the common one. `checks_that_finish_together…` can only see
+  the first (one run is one sighting) and, with the transaction taken out,
+  passed 10 times in 10 on a loaded machine. `evaluations_of_one_device_
+  that_overlap…` (poll rules, every evaluation a sighting) and the
+  `alerts.raise` / `alerts.ack` tests failed every time, loaded or not.
+
+Still left alone: `checks::run_and_record` has the rules look at *every*
+check of the device after each run. It is harmless (the other checks'
+verdicts are already seen), but it is `checks × rules` store reads per run
+where one check's would do. A check that runs between a host dying and the
+poller declaring the device down (the damping window) still raises its own
+alert beside the device's. And a run whose probe was sent before the device
+came back but recorded after `up_since` is still trusted: `record` now knows
+when a run started, but `CheckState` does not keep it.
+
+### Counters
+
+* **A counter that goes down is only sometimes a wrap** (`rates::delta`).
+  32-bit: always (they really do, every few minutes). 64-bit: only when the
+  wrapped difference is at most 2^56, i.e. when the counter had actually
+  reached the top — otherwise it was cleared on the device and the interval
+  is a gap. Text off the CLI (`Width::Text`): never. The 64-bit rule keeps a
+  genuine wrap working and is what `clear counters` / Junos `clear interfaces
+  statistics` / a re-seated line card needed.
+* **Counters remember which source left them** (`DeviceRuntime::
+  counters_from`), and are dropped only when *that* source was asked again
+  and failed. With SNMP on but dead, every poll between two CLI reads used
+  to drop the CLI's counters, so the fallback never produced a rate. The
+  same knowledge stops a CLI reading being re-filed in the collected store
+  as `snmp` (it used to be, with most of its fields gone).
 
 ### Polling and alerts
 

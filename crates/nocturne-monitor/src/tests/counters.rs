@@ -107,6 +107,39 @@ async fn a_64_bit_counter_that_wraps_is_not_a_spike() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_64_bit_counter_that_starts_again_without_a_reboot_is_a_gap() {
+    // Statistics cleared on the device, a line card re-seated: the counter
+    // goes back to nothing while the uptime carries on. It had not counted
+    // anywhere near 2^64, so it did not wrap.
+    let harness = Harness::new().await;
+    let id = switch(&harness, true).await;
+    harness.snmp.edit("10.0.0.1:161", |agent| {
+        agent.interfaces[0].in_octets = 5_000_000_000;
+    });
+    harness.poll(&id).await;
+
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    harness.snmp.edit("10.0.0.1:161", |agent| {
+        agent.uptime_ticks = Some(agent.uptime_ticks.unwrap() + 6_000);
+        agent.interfaces[0].in_octets = 1_000;
+        agent.interfaces[0].out_octets += 7_500_000;
+    });
+    let poll = harness.poll(&id).await;
+    assert!(!poll.rebooted);
+    assert_eq!(
+        poll.interfaces[0].in_bps, None,
+        "a gap, not 2.4 × 10^18 bit/s"
+    );
+    assert_eq!(poll.measure("if.in_bps", PORT), None);
+    assert_eq!(
+        poll.interfaces[0].out_bps,
+        Some(1_000_000.0),
+        "the counter that kept counting still has its rate"
+    );
+    assert_eq!(poll.interfaces[0].util_pct, Some(0.1));
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_32_bit_counter_that_wraps_is_not_a_spike() {
     let harness = Harness::new().await;
     // No 64-bit columns: an old agent, or SNMPv1.

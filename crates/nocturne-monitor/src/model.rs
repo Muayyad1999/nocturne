@@ -117,8 +117,19 @@ pub struct Alert {
     pub ack_note: Option<String>,
     pub snoozed_until: Option<i64>,
     /// How often the condition has been seen since this alert was raised.
+    /// Seen means measured: a rule looking again at what a service check
+    /// last found is not another sighting.
     pub count: u64,
+    /// Whether a maintenance window covered the alert the last time it was
+    /// seen, announced or resolved. A record of that moment, not a live
+    /// answer.
     pub muted_by_maintenance: bool,
+    /// When the firing notification went out: the first time the rules (or
+    /// `alerts.raise`) found the alert firing, outside every maintenance
+    /// window and not snoozed — whether or not that look counted as a
+    /// sighting. `None` while nobody has been told — and then nobody is
+    /// told when it resolves either.
+    pub notified_at: Option<i64>,
     pub lab: bool,
     /// What makes two sightings the same alert. Rules build it from
     /// (rule, device, instance); `alerts.raise` takes it from the caller.
@@ -126,7 +137,9 @@ pub struct Alert {
 }
 
 impl Alert {
-    /// Whether notifications for this alert are muted right now.
+    /// Whether this alert's firing notification is held back right now: a
+    /// maintenance window covered it when it was last seen, or it is
+    /// snoozed.
     pub fn muted(&self, now: i64) -> bool {
         self.muted_by_maintenance || self.snoozed_until.is_some_and(|until| until > now)
     }
@@ -435,7 +448,8 @@ pub struct IfStatus {
     pub oper_up: Option<bool>,
     pub speed_bps: Option<u64>,
     /// Rates are `null` when the interval could not be measured (first poll
-    /// after a start, a reboot, a failed poll) — a gap, never a zero.
+    /// after a start, a reboot, a failed poll, a counter cleared on the
+    /// device) — a gap, never a zero.
     pub in_bps: Option<f64>,
     pub out_bps: Option<f64>,
     pub util_pct: Option<f64>,
@@ -497,6 +511,11 @@ pub struct DeviceRecord {
     pub failures: u32,
     /// The damped verdict: `true` once `down_after` polls in a row failed.
     pub down: bool,
+    /// When the device was last declared up again after being down; `None`
+    /// until that has happened. Whatever a service check found before this
+    /// was found on a device that was not there, and says nothing about the
+    /// service now.
+    pub up_since: Option<i64>,
 }
 
 #[cfg(test)]

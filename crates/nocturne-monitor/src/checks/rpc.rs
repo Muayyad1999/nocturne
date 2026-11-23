@@ -92,10 +92,19 @@ fn host(text: &str) -> AppResult<String> {
 
 fn validate(spec: &CheckSpec) -> AppResult<()> {
     match spec {
-        CheckSpec::Icmp { count, .. } => {
+        CheckSpec::Icmp {
+            count,
+            loss_pct_down,
+        } => {
             if count.is_some_and(|count| count == 0 || count > 16) {
                 return Err(AppError::invalid(
                     "an ICMP check sends between 1 and 16 echo requests",
+                ));
+            }
+            // Written so that a value that is not a number at all fails too.
+            if loss_pct_down.is_some_and(|limit| !(0.0..=100.0).contains(&limit)) {
+                return Err(AppError::invalid(
+                    "`loss_pct_down` is a percentage of the echo requests, from 0 to 100: 0 calls any loss an outage, 100 only the loss of every echo",
                 ));
             }
         }
@@ -158,7 +167,7 @@ fn validate(spec: &CheckSpec) -> AppResult<()> {
     Ok(())
 }
 
-pub fn save(app: &App, params: SaveParams) -> AppResult<ServiceCheckView> {
+pub async fn save(app: &App, params: SaveParams) -> AppResult<ServiceCheckView> {
     let now = app.state::<MonitorState>().now();
     let existing = match &params.id {
         Some(id) if !id.is_empty() => Some(store::require(app, id)?),
@@ -192,7 +201,13 @@ pub fn save(app: &App, params: SaveParams) -> AppResult<ServiceCheckView> {
                 "say what to check: a `spec` with a `kind` of icmp, tcp, dns, http, https, tls, ntp or snmp",
             )
         })?;
-    validate(&spec)?;
+    // Only a spec this call supplies. One that is merely kept was accepted
+    // when it was stored; if the rules have tightened since, refusing it
+    // here would stop its owner renaming the check or switching it off
+    // until they had fixed something they did not touch.
+    if params.spec.is_some() {
+        validate(&spec)?;
+    }
 
     let id = existing
         .as_ref()
@@ -225,18 +240,39 @@ pub fn save(app: &App, params: SaveParams) -> AppResult<ServiceCheckView> {
         )));
     }
 
+    let mut named_host = match params.host.as_deref() {
+        Some(text) => host(text)?,
+        None => existing
+            .as_ref()
+            .map(|(check, _)| check.host.clone())
+            .unwrap_or_default(),
+    };
+    if spec.kind() == CheckKind::Snmp && !named_host.is_empty() {
+        // An SNMP check goes over the device's own session, to the device's
+        // address and SNMP port, with the device's credential. A host on it
+        // would be a target the check claims and never contacts. One left on
+        // a stored SNMP check by a version that accepted it is tidied away
+        // when the check is next saved; anything else is a person saying
+        // "check that host", and they are told it will not be.
+        let left_over = params.host.is_none()
+            && existing
+                .as_ref()
+                .is_some_and(|(check, _)| check.kind() == CheckKind::Snmp);
+        if !left_over {
+            return Err(AppError::invalid(format!(
+                "an SNMP check always asks the device's own agent, at `{}`'s address with its SNMP credential, so it cannot name a host of its own (`{named_host}`): leave `host` empty, or attach the check to the device that agent belongs to",
+                device.name
+            )));
+        }
+        named_host.clear();
+    }
+
     let check = ServiceCheck {
         id,
         device_id,
         name,
         spec,
-        host: match params.host.as_deref() {
-            Some(text) => host(text)?,
-            None => existing
-                .as_ref()
-                .map(|(check, _)| check.host.clone())
-                .unwrap_or_default(),
-        },
+        host: named_host,
         enabled: params
             .enabled
             .or_else(|| existing.as_ref().map(|(check, _)| check.enabled))
@@ -268,6 +304,17 @@ pub fn save(app: &App, params: SaveParams) -> AppResult<ServiceCheckView> {
         }),
     );
     app.publish("monitor.status_changed", &json!({"what": "checks"}));
+    // A save can end what an alert was about — the check switched off, or
+    // moved to another device — and waiting for the next poll or run to
+    // notice means waiting for something that may never come: a check that
+    // is switched off does not run, and its device may have nothing to poll
+    // it by. So the rules look now, as they do after a delete.
+    crate::rules::evaluate_checks(app, &check.device_id).await;
+    if let Some((before, _)) = &existing
+        && before.device_id != check.device_id
+    {
+        crate::rules::evaluate_checks(app, &before.device_id).await;
+    }
     let (stored, state) = store::require(app, &check.id)?;
     Ok(store::view(app, stored, state))
 }
@@ -303,66 +350,91 @@ async fn run_now(app: &App, params: RunNowParams) -> AppResult<Value> {
         )));
     }
 
-    // Bounded the same way the poller is, so "check everything now" on a
-    // busy device cannot open more sockets than a polling cycle would.
-    let concurrency = MonitorSettings::load(app).concurrency.clamp(1, 64) as usize;
-    let mut running: JoinSet<(String, AppResult<super::store::Recorded>)> = JoinSet::new();
-    let mut queue = checks.into_iter();
-    let mut results: Vec<(String, AppResult<super::store::Recorded>)> = Vec::new();
-    for check in queue.by_ref().take(concurrency) {
-        let app = app.clone();
-        running.spawn(async move {
-            let id = check.id.clone();
-            (id, super::run_and_record(&app, &check).await)
-        });
-    }
-    while let Some(finished) = running.join_next().await {
-        match finished {
-            Ok(result) => results.push(result),
-            Err(error) => return Err(AppError::internal(format!("a check panicked: {error}"))),
-        }
-        if let Some(check) = queue.next() {
-            let app = app.clone();
-            running.spawn(async move {
-                let id = check.id.clone();
-                (id, super::run_and_record(&app, &check).await)
-            });
+    // Asking for a run does not override the switches. A check nothing is
+    // watching would be recorded once and never again: its verdict would
+    // sit in the list, and its alert on the screen, with no later run to
+    // take either back. It is left alone, and the answer says so.
+    let mut answered = Vec::new();
+    let mut runnable = Vec::new();
+    for check in checks {
+        match super::watching(app, &check) {
+            Ok(()) => runnable.push(check),
+            Err(why) => {
+                let device = inventory::get(app, &check.device_id)
+                    .map(|device| device.name)
+                    .unwrap_or_default();
+                answered.push(json!({
+                    "check_id": check.id,
+                    "name": check.name,
+                    "kind": check.kind().as_str(),
+                    "skipped": why.code(),
+                    "error": why.sentence(&check, &device),
+                }));
+            }
         }
     }
 
-    let mut answered = Vec::new();
-    for (id, result) in results {
-        match result {
+    // Bounded the same way the poller is, so "check everything now" on a
+    // busy device cannot open more sockets than a polling cycle would.
+    let concurrency = MonitorSettings::load(app).concurrency.clamp(1, 64) as usize;
+    type Ran = (ServiceCheck, AppResult<super::store::Recorded>);
+    let mut running: JoinSet<Ran> = JoinSet::new();
+    let start = |running: &mut JoinSet<Ran>, check: ServiceCheck| {
+        let app = app.clone();
+        running.spawn(async move {
+            let result = super::run_and_record(&app, &check).await;
+            (check, result)
+        });
+    };
+    let mut queue = runnable.into_iter();
+    for check in queue.by_ref().take(concurrency) {
+        start(&mut running, check);
+    }
+    let mut ran = 0;
+    while let Some(finished) = running.join_next().await {
+        let (check, result) = match finished {
+            Ok(finished) => finished,
+            Err(error) => return Err(AppError::internal(format!("a check panicked: {error}"))),
+        };
+        // Reported from what the run itself recorded, not from a second look
+        // at the store: the check may have been edited or deleted since.
+        answered.push(match result {
             Ok(recorded) => {
-                let (check, state) = store::require(app, &id)?;
-                answered.push(json!({
-                    "check_id": id,
+                ran += 1;
+                json!({
+                    "check_id": check.id,
                     "name": check.name,
                     "kind": check.kind().as_str(),
-                    "status": state.status.as_str(),
+                    "status": recorded.state.status.as_str(),
                     "previous": recorded.previous.as_str(),
                     "changed": recorded.changed,
-                    "code": state.code,
-                    "message": state.message,
-                    "rtt_ms": state.rtt_ms,
-                    "facts": state.facts,
-                }));
+                    "code": recorded.state.code,
+                    "message": recorded.state.message,
+                    "rtt_ms": recorded.state.rtt_ms,
+                    "facts": recorded.state.facts,
+                })
             }
-            // A check that could not even be recorded is reported as itself,
-            // not as a result.
-            Err(error) => answered.push(json!({
-                "check_id": id,
+            // A check that could not be recorded is reported as itself, not
+            // as a result.
+            Err(error) => json!({
+                "check_id": check.id,
+                "name": check.name,
+                "kind": check.kind().as_str(),
                 "error": error.message,
-            })),
+            }),
+        });
+        if let Some(check) = queue.next() {
+            start(&mut running, check);
         }
     }
+
     answered.sort_by(|left, right| {
         left["name"]
             .as_str()
             .unwrap_or_default()
             .cmp(right["name"].as_str().unwrap_or_default())
     });
-    Ok(json!({"ran": answered.len(), "checks": answered}))
+    Ok(json!({"ran": ran, "checks": answered}))
 }
 
 // ---------------------------------------------------------------- history
@@ -375,8 +447,12 @@ fn history(app: &App, params: HistoryParams) -> AppResult<Value> {
     if until <= since {
         return Err(AppError::invalid("the window has to end after it starts"));
     }
-    let events = store::events(app, &check.id, since, until, params.limit.unwrap_or(500))?;
-    let summary = store::summarise(app, &check.id, since, until, &events)?;
+    // The list is cut to a length; the summary is not. It is added up from
+    // every change in the window, so asking for fewer rows to look at never
+    // changes how the check is said to have spent the time.
+    let (events, total) = store::events(app, &check.id, since, until, params.limit.unwrap_or(500))?;
+    let watched = super::watching(app, &check).is_ok();
+    let summary = store::summarise(app, &check, &state, watched, since, until)?;
     Ok(json!({
         "check_id": check.id,
         "device_id": check.device_id,
@@ -386,6 +462,8 @@ fn history(app: &App, params: HistoryParams) -> AppResult<Value> {
         "until": until,
         "current": state,
         "events": events,
+        "events_total": total,
+        "truncated": total > events.len() as u64,
         "summary": summary,
         // Where the response times are: the same series API as every other
         // metric, so a check charts like anything else.
@@ -416,7 +494,7 @@ pub fn register(router: &mut Router) {
         Ok::<ServiceCheckView, AppError>(store::view(&app, check, state))
     });
     router.add("checks.save", |app: App, params: SaveParams| async move {
-        save(&app, params)
+        save(&app, params).await
     });
     router.add("checks.delete", |app: App, params: IdParams| async move {
         let (check, _) = store::require(&app, &params.id)?;

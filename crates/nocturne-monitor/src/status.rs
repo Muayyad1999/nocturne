@@ -126,7 +126,16 @@ pub fn status(app: &App) -> AppResult<Status> {
         });
     }
 
-    let checks = crate::checks::store::counts(app)?;
+    // A check nothing is running is counted as switched off, whatever it
+    // last found: the same rule the scheduler runs them by.
+    let unmonitored: std::collections::HashSet<&str> = devices
+        .iter()
+        .filter(|row| !row.device.monitor.enabled)
+        .map(|row| row.device.id.as_str())
+        .collect();
+    let checks = crate::checks::store::counts(app, |device_id, enabled| {
+        crate::checks::watched(&settings, !unmonitored.contains(device_id), enabled).is_ok()
+    })?;
     if checks.down > 0 {
         problems.push(Problem {
             kind: "checks",
@@ -202,7 +211,7 @@ pub fn status(app: &App) -> AppResult<Status> {
     let (polls_per_min, last_cycle_ms) = {
         let mut runtime = state.runtime.lock();
         let last = runtime.last_cycle_ms;
-        (runtime.polls.per_minute(now), last)
+        (runtime.polls.per_minute(state.monotonic()), last)
     };
     Ok(Status {
         enabled: settings.enabled,

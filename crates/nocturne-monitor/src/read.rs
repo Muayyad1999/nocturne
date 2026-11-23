@@ -375,15 +375,16 @@ fn from_model(interface: Interface) -> RawIf {
         oper_up: interface.oper_up,
         speed_bps: interface.speed_bps,
         counters: IfCounters {
-            // A CLI counter is whatever width the device prints; it is read
-            // as 64-bit because the text has no wrap point of its own, and
-            // the device's uptime is what guards against a restart.
-            in_octets: counters.in_octets.map(Counter::bits64),
-            out_octets: counters.out_octets.map(Counter::bits64),
-            in_errors: counters.in_errors.map(Counter::bits64),
-            out_errors: counters.out_errors.map(Counter::bits64),
-            in_discards: counters.in_discards.map(Counter::bits64),
-            out_discards: counters.out_discards.map(Counter::bits64),
+            // A CLI counter is whatever width the device prints, and the
+            // text does not say which. With no wrap point of its own, one
+            // that goes down is a gap: the device's uptime guards against a
+            // restart, but not against `clear counters`.
+            in_octets: counters.in_octets.map(Counter::text),
+            out_octets: counters.out_octets.map(Counter::text),
+            in_errors: counters.in_errors.map(Counter::text),
+            out_errors: counters.out_errors.map(Counter::text),
+            in_discards: counters.in_discards.map(Counter::text),
+            out_discards: counters.out_discards.map(Counter::text),
         },
     }
 }

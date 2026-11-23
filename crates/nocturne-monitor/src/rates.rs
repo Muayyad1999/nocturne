@@ -9,8 +9,12 @@
 //!
 //! The rules:
 //!
-//! * uptime went **forwards** → the interval is real; a counter that went
-//!   down wrapped, and the delta is taken modulo the counter's width;
+//! * uptime went **forwards** → the interval is real. A 32-bit counter that
+//!   went down wrapped, and the delta is taken modulo 2^32. A 64-bit counter
+//!   that went down wrapped only if it had actually reached the top of its
+//!   range; otherwise, and always for a counter read off text, it was
+//!   started again on the device (`clear counters`, a re-seated line card)
+//!   and there is no delta at all — see [`delta`];
 //! * uptime went **backwards** → the device restarted; the interval is
 //!   thrown away and the new readings become the baseline. A reboot must
 //!   never show up as a spike on a graph;
@@ -27,6 +31,10 @@
 pub enum Width {
     Bits32,
     Bits64,
+    /// Read off the text of a `show` command: a number, with nothing to say
+    /// how wide the counter behind it is. It has no wrap point to take a
+    /// delta around, so one that went down is never a wrap.
+    Text,
 }
 
 /// One reading of one counter.
@@ -48,6 +56,13 @@ impl Counter {
         Counter {
             value,
             width: Width::Bits64,
+        }
+    }
+
+    pub fn text(value: u64) -> Counter {
+        Counter {
+            value,
+            width: Width::Text,
         }
     }
 }
@@ -121,10 +136,19 @@ fn seconds(elapsed: f64) -> Interval {
     }
 }
 
+/// The most a 64-bit counter can plausibly have advanced across a wrap.
+///
+/// 2^56 octets is more than two weeks of a 400 Gbit/s port running flat out,
+/// which no gap between two polls comes near; and a counter has to have
+/// counted 99.6 % of its range to be within 2^56 of the top.
+const MAX_64_BIT_WRAP: u64 = 1 << 56;
+
 /// How much a counter advanced between two readings, taking the wrap into
-/// account. `None` when the two readings cannot be compared (the counter
-/// changed width because the device started or stopped offering the 64-bit
-/// columns).
+/// account. `None` when the two readings cannot be compared: the counter
+/// changed width (the device started or stopped offering the 64-bit
+/// columns, or the reading came from the other source), or it went down in a
+/// way that is not a wrap — it was started again on the device while the
+/// device itself stayed up.
 pub fn delta(previous: Counter, current: Counter) -> Option<u64> {
     if previous.width != current.width {
         return None;
@@ -132,12 +156,28 @@ pub fn delta(previous: Counter, current: Counter) -> Option<u64> {
     if current.value >= previous.value {
         return Some(current.value - previous.value);
     }
-    Some(match current.width {
-        // Both readings come from a 32-bit column, so the arithmetic is
-        // modulo 2^32 whatever the values happen to be stored in.
-        Width::Bits32 => u64::from((current.value as u32).wrapping_sub(previous.value as u32)),
-        Width::Bits64 => current.value.wrapping_sub(previous.value),
-    })
+    match current.width {
+        // A 32-bit counter really does wrap — every 5.7 minutes on a busy
+        // 100 Mbit/s port — and a wrap cannot be told from a restart of the
+        // counter, so it is taken for the wrap it nearly always is. Both
+        // readings come from a 32-bit column, so the arithmetic is modulo
+        // 2^32 whatever the values happen to be stored in.
+        Width::Bits32 => Some(u64::from(
+            (current.value as u32).wrapping_sub(previous.value as u32),
+        )),
+        // A 64-bit octet counter takes 46 years to wrap at 100 Gbit/s, so
+        // one that went down has almost never wrapped: statistics were
+        // cleared, a line card was re-seated, an interface was created
+        // again. Calling that a wrap charts 10^18 bit/s. It is a wrap only
+        // when the counter had really reached the end of its range, which
+        // is to say when the wrapped difference is small enough to be
+        // traffic; anything else is an interval that cannot be measured.
+        Width::Bits64 => {
+            let wrapped = current.value.wrapping_sub(previous.value);
+            (wrapped <= MAX_64_BIT_WRAP).then_some(wrapped)
+        }
+        Width::Text => None,
+    }
 }
 
 /// Units per second between two readings, or `None` if the interval or the
@@ -205,6 +245,47 @@ mod tests {
         assert_eq!(delta(before, after), Some(15));
         // And a 64-bit reading is never mistaken for a 32-bit one.
         assert_eq!(delta(Counter::bits32(10), Counter::bits64(20)), None);
+    }
+
+    #[test]
+    fn a_64_bit_counter_that_went_down_far_from_the_top_was_started_again() {
+        // 5 GB counted, then 1 kB, with the device up throughout.
+        let before = Counter::bits64(5_000_000_000);
+        let after = Counter::bits64(1_000);
+        assert_eq!(delta(before, after), None);
+        assert_eq!(bits_rate(before, after, 300.0), None, "a gap, not 4.9e17");
+        // Right up to the edge of what a wrap could be.
+        let top = Counter::bits64(u64::MAX);
+        assert_eq!(
+            delta(top, Counter::bits64(MAX_64_BIT_WRAP - 1)),
+            Some(MAX_64_BIT_WRAP)
+        );
+        assert_eq!(delta(top, Counter::bits64(MAX_64_BIT_WRAP)), None);
+    }
+
+    #[test]
+    fn a_counter_read_off_text_never_wraps() {
+        assert_eq!(
+            delta(Counter::text(1_000), Counter::text(3_000)),
+            Some(2_000)
+        );
+        assert_eq!(
+            rate(Counter::text(1_000), Counter::text(3_000), 10.0),
+            Some(200.0)
+        );
+        // `clear counters`: down, with nothing to wrap around.
+        assert_eq!(
+            delta(Counter::text(5_000_000_000), Counter::text(1_000)),
+            None
+        );
+        // Not even from the top of a range the text never claimed to have.
+        assert_eq!(delta(Counter::text(u64::MAX - 9), Counter::text(5)), None);
+        assert_eq!(
+            delta(Counter::text(u64::from(u32::MAX)), Counter::text(5)),
+            None
+        );
+        // And a number off the CLI is not compared with one off SNMP.
+        assert_eq!(delta(Counter::text(10), Counter::bits64(20)), None);
     }
 
     #[test]

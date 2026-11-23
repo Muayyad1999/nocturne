@@ -7,6 +7,13 @@
 //! raises, only a clear verdict resolves; anything else leaves the alert
 //! exactly as it was. That is what stops a failed SNMP read from quietly
 //! resolving half the alerts on a device.
+//!
+//! A verdict is also only as good as the measurement behind it. Most rules
+//! judge the poll in hand; a service-check rule judges what the check last
+//! *found*, which may be minutes old, so each of its findings says when that
+//! was ([`Finding::observed_at`]). What a check found before its device came
+//! back from an outage is not known to be true any more; and looking twice at
+//! one run is one sighting, not two.
 
 use nocturne_app::model::Device;
 use nocturne_app::{App, AppError, AppResult, Router, inventory, util};
@@ -18,7 +25,8 @@ use crate::checks::model::CheckStatus;
 use crate::db::collections::RULES;
 use crate::metrics::{self, glob};
 use crate::model::{
-    AlertRule, CheckAlertState, Condition, IfStatus, InterfaceSelector, Op, Scope, Severity,
+    AlertRule, CheckAlertState, Condition, DeviceRecord, IfStatus, InterfaceSelector, Op, Scope,
+    Severity,
 };
 use crate::poll::Poll;
 use crate::state::MonitorState;
@@ -225,6 +233,10 @@ pub struct Finding {
     pub verdict: Verdict,
     pub value: Option<f64>,
     pub detail: String,
+    /// When what this finding rests on was measured, where that was not the
+    /// evaluation itself: the run of the service check it judges. `None` for
+    /// a finding read off the poll in hand.
+    pub observed_at: Option<i64>,
 }
 
 /// What a rule is evaluated against: a poll that has just happened, or
@@ -245,12 +257,19 @@ impl Facts<'_> {
     fn down(&self, app: &App) -> bool {
         match self {
             Facts::Live(poll) => poll.down,
-            Facts::Stored(_, device) => app
-                .store()
-                .get::<crate::model::DeviceRecord>(crate::db::collections::DEVICES, &device.id)
-                .ok()
-                .flatten()
-                .is_some_and(|record| record.down),
+            Facts::Stored(_, device) => {
+                device_record(app, &device.id).is_some_and(|record| record.down)
+            }
+        }
+    }
+
+    /// When the device last came back from being down, if it ever has.
+    fn up_since(&self, app: &App) -> Option<i64> {
+        match self {
+            Facts::Live(poll) => poll.up_since,
+            Facts::Stored(_, device) => {
+                device_record(app, &device.id).and_then(|record| record.up_since)
+            }
         }
     }
 
@@ -285,6 +304,13 @@ impl Facts<'_> {
     }
 }
 
+fn device_record(app: &App, device_id: &str) -> Option<DeviceRecord> {
+    app.store()
+        .get::<DeviceRecord>(crate::db::collections::DEVICES, device_id)
+        .ok()
+        .flatten()
+}
+
 /// Evaluate one rule for one device. The flag says whether the instance list
 /// is complete, i.e. whether alerts for instances it does not mention may be
 /// resolved.
@@ -311,6 +337,7 @@ pub fn evaluate_rule(
                     } else {
                         "The device is answering again.".into()
                     },
+                    observed_at: None,
                 }],
                 true,
             ))
@@ -349,6 +376,7 @@ pub fn evaluate_rule(
                             Verdict::Clear
                         },
                         value: None,
+                        observed_at: None,
                     }
                 })
                 .collect();
@@ -395,6 +423,7 @@ pub fn evaluate_rule(
                         instance: (!name.is_empty()).then(|| name.clone()),
                         verdict,
                         value: Some(reading),
+                        observed_at: None,
                     }
                 })
                 .collect();
@@ -428,6 +457,7 @@ pub fn evaluate_rule(
                             Verdict::Clear
                         },
                         value: None,
+                        observed_at: None,
                     }
                 })
                 .collect();
@@ -462,6 +492,7 @@ pub fn evaluate_rule(
                         "Round-trip time is {current:.1} ms, against a {} h median of {median:.1} ms.",
                         window_s / 3_600
                     ),
+                    observed_at: None,
                 }],
                 true,
             ))
@@ -476,6 +507,7 @@ pub fn evaluate_rule(
             // poll, after one check has run, and for `alerts.rules.test`.
             let wanted = check.as_deref().unwrap_or("*");
             let rows = crate::checks::store::of_device(app, facts.device_id())?;
+            let up_since = facts.up_since(app);
             let mut findings = Vec::new();
             for (service, current) in rows {
                 if !service.enabled
@@ -484,7 +516,18 @@ pub fn evaluate_rule(
                 {
                     continue;
                 }
+                // The poller is usually first to notice that a device is
+                // back, and what its checks hold is then still what they
+                // found while it was away: `down`, for every one of them,
+                // recorded without an alert because the outage explained
+                // it. Judged now, that raises a service-down alert for each
+                // check after the outage is over. A verdict from before the
+                // device came back is not a verdict on the device that came
+                // back; the check's own next run is.
+                let from_before_the_outage_ended =
+                    matches!((current.last_run_at, up_since), (Some(ran), Some(up)) if ran < up);
                 let verdict = match (*state, current.status) {
+                    _ if from_before_the_outage_ended => Verdict::Unknown,
                     // Nothing has been found yet, or the check has just been
                     // pointed somewhere else: say nothing either way.
                     (_, CheckStatus::Unknown) => Verdict::Unknown,
@@ -497,6 +540,19 @@ pub fn evaluate_rule(
                     // a recovery that never happened.
                     (CheckAlertState::Down | CheckAlertState::Warning, CheckStatus::CannotRun) => {
                         Verdict::Unknown
+                    }
+                    // Nor has a run that found the service down learned
+                    // anything about its certificate: a timeout while the web
+                    // server restarts does not move the expiry date. The one
+                    // exception is a run that did see the certificate and
+                    // found it expired — it is no longer *about* to expire,
+                    // and the outage it has become is the down rule's.
+                    (CheckAlertState::Warning, CheckStatus::Down) => {
+                        if current.code == "tls_expired" {
+                            Verdict::Clear
+                        } else {
+                            Verdict::Unknown
+                        }
                     }
                     _ => Verdict::Clear,
                 };
@@ -533,6 +589,7 @@ pub fn evaluate_rule(
                         _ => None,
                     },
                     detail,
+                    observed_at: current.last_run_at,
                 });
             }
             // The stored state is the whole truth about this device's
@@ -597,6 +654,9 @@ fn evaluate_checks_inner(app: &App, device_id: &str) -> AppResult<()> {
     let device = inventory::get(app, device_id)?;
     let state = app.state::<MonitorState>();
     let now = state.now();
+    if !device.monitor.enabled {
+        return stand_down(app, &device, now);
+    }
     let facts = Facts::Stored(app, &device);
     let down = facts.down(app);
     for rule in list(app)? {
@@ -619,6 +679,12 @@ fn evaluate_inner(app: &App, poll: &Poll) -> AppResult<()> {
     let device = inventory::get(app, &poll.device_id)?;
     let state = app.state::<MonitorState>();
     let now = poll.at;
+    // `monitor.poll_now` will poll any device it is given. What it finds on
+    // one whose monitoring is off is an answer for whoever asked, not a
+    // condition anybody is watching.
+    if !device.monitor.enabled {
+        return stand_down(app, &device, now);
+    }
     let facts = Facts::Live(poll);
     for rule in list(app)? {
         if !rule.enabled || !scope::matches(&rule.scope, &device, true) {
@@ -632,6 +698,56 @@ fn evaluate_inner(app: &App, poll: &Poll) -> AppResult<()> {
         let (findings, complete) = evaluate_rule(app, &rule, &facts, now)?;
         apply_findings(app, &state, &rule, &device, &findings, complete, now)?;
     }
+    Ok(())
+}
+
+/// Close what the rules have open on a device whose monitoring is switched
+/// off, and say nothing new about it.
+///
+/// An alert is a claim that something is wrong *now*, kept true by the next
+/// poll or the next run. With monitoring off for the device there is no next
+/// one: nothing would ever resolve the alert, and the screen would go on
+/// saying "web on SW9 is down" about a switch somebody unplugged on purpose
+/// last month. So the rules stand down: whatever they raised on the device is
+/// resolved, with a note that says why, when the switch is thrown
+/// (`devices.changed`, in the scheduler's event task) and again at any
+/// evaluation that still comes its way.
+///
+/// Two kinds of alert are left alone. One raised by another feature through
+/// `alerts.raise` is not the rules' to close. And a configuration-change
+/// alert records something that happened, not a state somebody has to keep
+/// watching for it to stay true.
+pub fn stand_down(app: &App, device: &Device, now: i64) -> AppResult<()> {
+    let state = app.state::<MonitorState>();
+    let rules = list(app)?;
+    for alert in alerts::open_of_device(app, &device.id)? {
+        let Some(rule_id) = alert.rule_id.as_deref() else {
+            continue;
+        };
+        let rule = rules.iter().find(|rule| rule.id == rule_id);
+        if rule.is_some_and(|rule| matches!(rule.condition, Condition::ConfigChanged)) {
+            continue;
+        }
+        alerts::resolve_key(
+            app,
+            &alert.dedup_key,
+            now,
+            None,
+            Some(
+                "Monitoring was switched off for this device, so this is no longer being watched.",
+            ),
+            rule.map(|rule| rule.notify.as_slice()).unwrap_or_default(),
+        )?;
+    }
+    // Conditions that were waiting out their `for_s` start again from
+    // nothing if monitoring comes back: the wait is for a condition that
+    // has been *seen* to hold, and nobody has been looking.
+    let ours = format!(":{}:", device.id);
+    state
+        .runtime
+        .lock()
+        .pending
+        .retain(|key, _| !key.contains(&ours));
     Ok(())
 }
 
@@ -654,7 +770,15 @@ fn apply_findings(
                 if !open && rule.for_s > 0 {
                     let since = {
                         let mut runtime = state.runtime.lock();
-                        *runtime.pending.entry(key.clone()).or_insert(now)
+                        let since = runtime.pending.entry(key.clone()).or_insert(now);
+                        // `now` is a time of day and can be set back. A wait
+                        // that began "later than now" would then last for
+                        // the size of the step on top of `for_s`; it starts
+                        // over instead.
+                        if *since > now {
+                            *since = now;
+                        }
+                        *since
                     };
                     let waited = now - since;
                     if waited < i64::try_from(rule.for_s).unwrap_or(0).saturating_mul(1_000) {
@@ -672,13 +796,21 @@ fn apply_findings(
                     detail: finding.detail.clone(),
                     value: finding.value,
                     notify: rule.notify.clone(),
+                    observed_at: finding.observed_at,
                 };
                 alerts::fire(app, &spec, now)?;
                 state.runtime.lock().pending.remove(&key);
             }
             Verdict::Clear => {
                 state.runtime.lock().pending.remove(&key);
-                alerts::resolve_key(app, &key, now, Some(&finding.detail), &rule.notify)?;
+                alerts::resolve_key(
+                    app,
+                    &key,
+                    now,
+                    finding.observed_at,
+                    Some(&finding.detail),
+                    &rule.notify,
+                )?;
             }
             Verdict::Hold | Verdict::Unknown => {}
         }
@@ -695,6 +827,7 @@ fn apply_findings(
                     app,
                     &alert.dedup_key,
                     now,
+                    None,
                     Some("The thing this alert was about is no longer reported."),
                     &rule.notify,
                 )?;
@@ -737,6 +870,7 @@ pub fn on_config_changed(app: &App, device_id: &str, payload: &Value) -> AppResu
             detail: format!("{added} lines added, {removed} removed."),
             value: None,
             notify: rule.notify.clone(),
+            observed_at: None,
         };
         alerts::fire(app, &spec, now)?;
     }

@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::model::{Alert, AlertState, Severity};
 use crate::notify::{self, Stage};
-use crate::testing::Harness;
+use crate::testing::{Harness, ManualClock};
 
 /// What the listener saw.
 #[derive(Default)]
@@ -102,6 +102,80 @@ impl Listener {
     fn raw(&self) -> Vec<String> {
         self.seen.lock().raw.clone()
     }
+}
+
+impl Listener {
+    /// The `event` of every notification received, once at least `count`
+    /// have arrived — or after five seconds, which is only ever waited out
+    /// by a test that is about to fail: the machine may be busy, and a
+    /// delivery is its own task.
+    async fn events(&self, count: usize) -> Vec<String> {
+        for _ in 0..250 {
+            if self.requests().len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        self.requests()
+            .iter()
+            .map(|(_, body)| body["event"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// The same after a pause long enough for a notification that should
+    /// not have been sent to arrive anyway.
+    async fn events_after_a_pause(&self) -> Vec<String> {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        self.events(0).await
+    }
+}
+
+const MINUTES: Duration = Duration::from_secs(60);
+
+/// A harness on a clock the test steps by hand, with one webhook channel and
+/// a listener behind it. These tests talk to a socket, so they run on real
+/// time, and the hours a maintenance window takes are stepped instead.
+async fn harness_with_a_channel() -> (Harness, Arc<ManualClock>, Listener) {
+    let clock = Arc::new(ManualClock::new(crate::testing::epoch()));
+    let harness = Harness::with_clock(clock.clone()).await;
+    let listener = listen(vec![]).await;
+    harness
+        .rpc(
+            "notify.channels.save",
+            json!({"name": "hook", "kind": "webhook", "url": listener.url}),
+        )
+        .await;
+    (harness, clock, listener)
+}
+
+/// A device with one ICMP check named `web`, watched by the service-down
+/// rule alone.
+async fn a_watched_service(harness: &Harness) -> String {
+    harness.only_rule("builtin.service_check_down").await;
+    let device = harness.device("SW1", "10.0.0.1", json!({})).await;
+    harness
+        .check_on(&device, "web", json!({"kind": "icmp"}), json!({}))
+        .await
+}
+
+async fn window(harness: &Harness, starts_in: Duration, lasts: Duration) -> Value {
+    let starts_at = harness.now() + starts_in.as_millis() as i64;
+    harness
+        .rpc(
+            "maintenance.save",
+            json!({"name": "Evening work", "starts_at": starts_at,
+                   "ends_at": starts_at + lasts.as_millis() as i64}),
+        )
+        .await
+}
+
+async fn raise(harness: &Harness) -> Value {
+    harness
+        .rpc(
+            "alerts.raise",
+            json!({"severity": "critical", "title": "Something", "dedup_key": "k1"}),
+        )
+        .await
 }
 
 fn alert() -> Alert {
@@ -616,4 +690,301 @@ async fn an_email_channel_hands_the_alert_to_a_relay() {
     );
     // The password is base64 inside the AUTH line and nowhere else in the clear.
     assert!(!lines.iter().any(|line| line.contains("hunter2")));
+}
+
+// ------------------------------------------------ muting, decided when due
+
+#[tokio::test]
+async fn an_outage_that_outlasts_its_maintenance_window_is_announced_when_the_window_closes() {
+    // 22:00–23:00 covers SW1; `web` goes down at 22:10 and stays down. The
+    // alert is raised muted, which is right — and used to be the last
+    // chance anybody had of hearing about it.
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    let check = a_watched_service(&harness).await;
+    window(&harness, Duration::ZERO, 60 * MINUTES).await;
+
+    clock.advance(10 * MINUTES);
+    harness.probe.down("10.0.0.1");
+    harness.run_check(&check).await;
+    let raised = harness.open_alerts();
+    assert_eq!(raised.len(), 1);
+    assert!(raised[0].muted_by_maintenance);
+    assert_eq!(raised[0].notified_at, None, "nobody has been told yet");
+    assert!(listener.events_after_a_pause().await.is_empty());
+
+    // 23:03: the window has closed and the service is still down.
+    clock.advance(53 * MINUTES);
+    harness.run_check(&check).await;
+    assert_eq!(listener.events(1).await, ["firing"]);
+    assert_eq!(listener.requests()[0].1["alert"]["id"], json!(raised[0].id));
+    let told = crate::alerts::get(&harness.app, &raised[0].id).unwrap();
+    assert!(!told.muted_by_maintenance);
+    assert_eq!(told.notified_at, Some(harness.now()));
+
+    // Once: the next sighting is not another announcement.
+    clock.advance(5 * MINUTES);
+    harness.run_check(&check).await;
+    assert_eq!(listener.events_after_a_pause().await, ["firing"]);
+
+    // And having been announced, its recovery is too.
+    clock.advance(5 * MINUTES);
+    harness.probe.up("10.0.0.1");
+    harness.run_check(&check).await;
+    assert_eq!(listener.events(2).await, ["firing", "resolved"]);
+}
+
+#[tokio::test]
+async fn an_announcement_held_back_by_a_window_does_not_wait_for_a_slow_check_to_run_again() {
+    // A check that runs once an hour — or a certificate check, once a day —
+    // found the service down inside the window. Until it runs again nothing
+    // new is measured, so nothing is counted; but the announcement is owed
+    // from the moment the window closes, and the next look at the verdict
+    // pays it. Waiting for the next run would leave a live outage unsaid
+    // for as long as the check's interval.
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    harness.only_rule("builtin.service_check_down").await;
+    let device = harness.device("SW1", "10.0.0.1", json!({})).await;
+    harness.probe.down("10.0.0.80");
+    let check = harness
+        .check_on(
+            &device,
+            "web",
+            json!({"kind": "icmp"}),
+            json!({"host": "10.0.0.80", "interval_s": 3_600}),
+        )
+        .await;
+    window(&harness, Duration::ZERO, 60 * MINUTES).await;
+
+    clock.advance(10 * MINUTES);
+    harness.run_check(&check).await;
+    let seen_at = harness.now();
+    let raised = harness.open_alerts();
+    assert_eq!(raised.len(), 1);
+    assert!(raised[0].muted_by_maintenance);
+    // A poll inside the window changes nothing.
+    clock.advance(MINUTES);
+    harness.poll_and_evaluate(&device).await;
+    assert!(listener.events_after_a_pause().await.is_empty());
+
+    // 23:01: the window has closed, the check is not due for another
+    // forty-nine minutes, and the device is polled as it is every minute.
+    clock.advance(50 * MINUTES);
+    harness.poll_and_evaluate(&device).await;
+    assert_eq!(listener.events(1).await, ["firing"]);
+    let told = crate::alerts::get(&harness.app, &raised[0].id).unwrap();
+    assert_eq!(told.notified_at, Some(harness.now()));
+    assert!(!told.muted_by_maintenance);
+    assert_eq!(
+        (told.count, told.last_seen_at),
+        (1, seen_at),
+        "told about, not seen again: nothing new was measured"
+    );
+
+    // Once.
+    clock.advance(MINUTES);
+    harness.poll_and_evaluate(&device).await;
+    assert_eq!(listener.events_after_a_pause().await, ["firing"]);
+}
+
+#[tokio::test]
+async fn a_recovery_is_announced_although_the_alert_was_last_seen_inside_a_window() {
+    // Announced at 21:55, seen again at 22:58 inside the window, recovered
+    // at 23:03 after it. The mute flag of the 22:58 sighting used to
+    // swallow the "resolved", leaving the incident open in the chat.
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    let check = a_watched_service(&harness).await;
+    window(&harness, 5 * MINUTES, 60 * MINUTES).await;
+
+    harness.probe.down("10.0.0.1");
+    harness.run_check(&check).await;
+    assert_eq!(listener.events(1).await, ["firing"]);
+
+    clock.advance(63 * MINUTES);
+    harness.run_check(&check).await;
+    assert!(harness.open_alerts()[0].muted_by_maintenance);
+
+    clock.advance(5 * MINUTES);
+    harness.probe.up("10.0.0.1");
+    harness.run_check(&check).await;
+    assert_eq!(listener.events(2).await, ["firing", "resolved"]);
+    let resolved = &harness.all_alerts()[0];
+    assert_eq!(resolved.state, AlertState::Resolved);
+    assert!(
+        !resolved.muted_by_maintenance,
+        "the record says what was true when it resolved"
+    );
+}
+
+#[tokio::test]
+async fn an_alert_that_was_announced_is_closed_for_its_audience_even_inside_a_window() {
+    // A window that opens after people were told must not leave them with
+    // an incident that never ends: the recovery is the other half of a
+    // notification they already have.
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    let alert = raise(&harness).await;
+    assert_eq!(listener.events(1).await, ["firing"]);
+
+    window(&harness, Duration::ZERO, 60 * MINUTES).await;
+    clock.advance(10 * MINUTES);
+    harness
+        .rpc("alerts.resolve", json!({"id": alert["id"]}))
+        .await;
+    assert_eq!(listener.events(2).await, ["firing", "resolved"]);
+
+    // A snooze is no different.
+    clock.advance(60 * MINUTES);
+    let again = raise(&harness).await;
+    assert_eq!(listener.events(3).await.len(), 3);
+    harness
+        .rpc("alerts.snooze", json!({"id": again["id"], "minutes": 240}))
+        .await;
+    harness
+        .rpc("alerts.resolve", json!({"id": again["id"]}))
+        .await;
+    assert_eq!(
+        listener.events(4).await,
+        ["firing", "resolved", "firing", "resolved"]
+    );
+}
+
+#[tokio::test]
+async fn an_alert_nobody_was_told_about_resolves_without_a_word() {
+    // Raised and resolved inside the window: recorded, and that is all. A
+    // "resolved" for something never announced would be the first anybody
+    // heard of it.
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    window(&harness, Duration::ZERO, 60 * MINUTES).await;
+    let inside = raise(&harness).await;
+    assert_eq!(inside["muted_by_maintenance"], true);
+    assert!(inside["notified_at"].is_null());
+    clock.advance(10 * MINUTES);
+    harness
+        .rpc("alerts.resolve", json!({"id": inside["id"]}))
+        .await;
+
+    // Nor when it resolves after the window without being seen again.
+    let again = raise(&harness).await;
+    clock.advance(60 * MINUTES);
+    let resolved = harness
+        .rpc("alerts.resolve", json!({"id": again["id"]}))
+        .await;
+    assert_eq!(resolved["state"], "resolved");
+    assert!(listener.events_after_a_pause().await.is_empty());
+    assert_eq!(harness.all_alerts().len(), 2, "both are on record");
+}
+
+#[tokio::test]
+async fn a_snooze_holds_an_announcement_back_and_its_end_lets_it_through() {
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    let opened = window(&harness, Duration::ZERO, 60 * MINUTES).await;
+    let alert = raise(&harness).await;
+    harness
+        .rpc("alerts.snooze", json!({"id": alert["id"], "minutes": 30}))
+        .await;
+
+    // The window goes away, but the snooze still stands.
+    harness
+        .rpc("maintenance.delete", json!({"id": opened["id"]}))
+        .await;
+    clock.advance(10 * MINUTES);
+    let seen = raise(&harness).await;
+    assert_eq!(seen["muted_by_maintenance"], false);
+    assert!(seen["notified_at"].is_null());
+    assert!(listener.events_after_a_pause().await.is_empty());
+
+    clock.advance(21 * MINUTES);
+    let seen = raise(&harness).await;
+    assert_eq!(seen["id"], alert["id"]);
+    assert_eq!(seen["notified_at"], json!(harness.now()));
+    assert_eq!(listener.events(1).await, ["firing"]);
+}
+
+#[tokio::test]
+async fn an_alert_somebody_acknowledged_while_it_was_muted_wakes_nobody_afterwards() {
+    // Acknowledged means a person has it. Announcing it to everyone else
+    // once the window closes would be telling them about handled work.
+    let (harness, clock, listener) = harness_with_a_channel().await;
+    window(&harness, Duration::ZERO, 60 * MINUTES).await;
+    let alert = raise(&harness).await;
+    harness.rpc("alerts.ack", json!({"id": alert["id"]})).await;
+
+    clock.advance(61 * MINUTES);
+    let seen = raise(&harness).await;
+    assert_eq!(seen["state"], "acknowledged");
+    assert_eq!(seen["count"], 2);
+    harness
+        .rpc("alerts.resolve", json!({"id": alert["id"]}))
+        .await;
+    assert!(listener.events_after_a_pause().await.is_empty());
+}
+
+#[tokio::test]
+async fn an_alert_from_before_notices_were_tracked_is_not_announced_a_second_time() {
+    // An alert that was open when the application was upgraded has no
+    // `notified_at`. Read as "nobody was told", every such alert would be
+    // announced again at its next sighting — and one that only resolved
+    // would never be closed for the people who had been told.
+    let (harness, _clock, listener) = harness_with_a_channel().await;
+    let old = |id: &str, key: &str, muted: bool| {
+        let mut body = serde_json::to_value(Alert {
+            id: id.into(),
+            dedup_key: key.into(),
+            title: "Something".into(),
+            severity: Severity::Critical,
+            started_at: harness.now() - 600_000,
+            last_seen_at: harness.now() - 60_000,
+            count: 3,
+            muted_by_maintenance: muted,
+            ..Alert::default()
+        })
+        .unwrap();
+        body.as_object_mut().unwrap().remove("notified_at");
+        harness
+            .app
+            .store()
+            .with(|conn| {
+                conn.execute(
+                    "INSERT INTO monitor_alerts
+                     (id, dedup_key, state, severity, device_id, started_at, last_seen_at, body)
+                     VALUES (?1, ?2, 'firing', 4, NULL, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        id,
+                        key,
+                        body["started_at"].as_i64(),
+                        body["last_seen_at"].as_i64(),
+                        body.to_string()
+                    ],
+                )
+            })
+            .unwrap();
+    };
+    old("told", "k1", false);
+    old("quiet", "k2", true);
+    // The next start of the application, and the one after: what the first
+    // wrote down, the second leaves alone.
+    crate::db::init(harness.app.store()).unwrap();
+    crate::db::init(harness.app.store()).unwrap();
+
+    let told = crate::alerts::get(&harness.app, "told").unwrap();
+    assert_eq!(
+        told.notified_at,
+        Some(told.started_at),
+        "raised outside any window: its notice went out then"
+    );
+    assert_eq!(
+        crate::alerts::get(&harness.app, "quiet")
+            .unwrap()
+            .notified_at,
+        None,
+        "last seen inside a window: nothing says anybody was told"
+    );
+
+    let seen = raise(&harness).await;
+    assert_eq!(
+        (seen["id"].as_str(), seen["count"].as_u64()),
+        (Some("told"), Some(4))
+    );
+    assert!(listener.events_after_a_pause().await.is_empty());
+    harness.rpc("alerts.resolve", json!({"id": "told"})).await;
+    assert_eq!(listener.events(1).await, ["resolved"]);
 }

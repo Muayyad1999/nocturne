@@ -29,12 +29,6 @@ const MAINTENANCE_MS: u64 = 3_600_000;
 /// Resolved alerts are kept this long.
 const ALERT_HISTORY_DAYS: i64 = 90;
 
-/// An offset inside an interval, in milliseconds. Stable for an id, evenly
-/// spread across ids.
-///
-/// Used for devices and for service checks alike: a thousand checks on a
-/// 60-second interval are spread across the minute rather than all firing on
-/// the first tick after a start.
 /// Whether a check whose last run *began* at `last_run_at` is due at `now`.
 ///
 /// Its own interval decides and nothing else does: not the device's poll
@@ -42,10 +36,21 @@ const ALERT_HISTORY_DAYS: i64 = 90;
 /// one claim the scheduler makes about cadence that can be stated exactly —
 /// what a check's realised spacing turns out to be also depends on how long
 /// its probe holds the slot, which is not a promise.
+///
+/// The two times only have to be readings of the same clock. The scheduler
+/// hands it readings of the one that cannot go backwards
+/// ([`Clock::monotonic_ms`](crate::clock::Clock::monotonic_ms)); see the
+/// note in [`scheduler`] for why.
 pub(crate) fn check_is_due(last_run_at: i64, interval_ms: i64, now: i64) -> bool {
     last_run_at + interval_ms <= now
 }
 
+/// An offset inside an interval, in milliseconds. Stable for an id, evenly
+/// spread across ids.
+///
+/// Used for devices and for service checks alike: a thousand checks on a
+/// 60-second interval are spread across the minute rather than all firing on
+/// the first tick after a start.
 pub fn jitter(device_id: &str, interval_ms: i64) -> i64 {
     // FNV-1a: small, no dependency, and spreads short ids well.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -77,8 +82,8 @@ async fn scheduler(app: App) {
     // SNMP and no command line can still have service checks on it.
     let mut monitored: HashSet<String> = HashSet::new();
     let mut services: Vec<crate::checks::model::ServiceCheck> = Vec::new();
-    // Zero forces the first tick to read the inventory.
-    let mut listed_at = 0i64;
+    // `None` forces the first tick to read the inventory.
+    let mut listed_at: Option<i64> = None;
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)).await;
         let settings = MonitorSettings::load(&app);
@@ -89,8 +94,34 @@ async fn scheduler(app: App) {
             limit = settings.concurrency;
             gate = Arc::new(Semaphore::new(limit as usize));
         }
-        let now = state.clock.now_ms();
-        if now - listed_at >= INVENTORY_MS {
+        // Everything this loop decides is cadence — has an interval gone by
+        // since the last poll, the last run, the last look at the inventory
+        // — so `now` here is a reading of the clock that only goes forwards,
+        // never the time of day.
+        //
+        // The time of day is the machine's opinion, and the machine changes
+        // it: NTP steps it, a person sets it, a laptop boots an hour fast
+        // and is corrected a minute later. When due-ness was worked out from
+        // it, a clock put back by an hour stopped every poll and every check
+        // for an hour — `last + interval <= now` stays false until `now`
+        // catches up — with no gap and no error to show for it, and devices
+        // added in that hour were never picked up.
+        //
+        // The alternative was to keep the time of day and notice the step:
+        // if `now` is before a stored time, clamp that time. That needs a
+        // rule for each stored time (and a new one for each that is added
+        // later), it re-polls everything at once after the step, and it does
+        // nothing for a step *forwards*, which makes everything due at once.
+        // Asking a clock that cannot step has no such cases. What a poll or
+        // a run *finds* is still stamped with the time of day, by the poll
+        // and the run themselves.
+        let now = state.monotonic();
+        // The list is a few seconds old by design, except across a change
+        // to a check: run from the old copy, an edited check would be
+        // probed once more at the target it has just been taken off (and
+        // the result thrown away, with its turn, when it came back).
+        let checks_changed = std::mem::take(&mut state.runtime.lock().checks_changed);
+        if checks_changed || listed_at.is_none_or(|listed| now - listed >= INVENTORY_MS) {
             match inventory::list(&app, &inventory::DeviceFilter::default()) {
                 Ok(rows) => {
                     let all: Vec<nocturne_app::model::Device> =
@@ -104,7 +135,7 @@ async fn scheduler(app: App) {
                         .into_iter()
                         .filter(|device| device.monitor.enabled && poll::plan(device).any())
                         .collect();
-                    listed_at = now;
+                    listed_at = Some(now);
                 }
                 Err(err) => {
                     tracing::warn!(%err, "the inventory could not be read");
@@ -124,14 +155,14 @@ async fn scheduler(app: App) {
                     continue;
                 }
                 let entry = runtime.devices.entry(device.id.clone()).or_default();
-                if entry.last_poll_at == 0 {
-                    // First sight: put the device in its own slot inside the
-                    // interval rather than polling everything at once.
-                    entry.last_poll_at = now - interval_ms + jitter(&device.id, interval_ms);
-                }
-                let due = entry.last_poll_at + interval_ms <= now;
+                // First sight: put the device in its own slot inside the
+                // interval rather than polling everything at once.
+                let last = *entry
+                    .last_poll_mono
+                    .get_or_insert_with(|| now - interval_ms + jitter(&device.id, interval_ms));
+                let due = last + interval_ms <= now;
                 if due {
-                    entry.last_poll_at = now;
+                    entry.last_poll_mono = Some(now);
                     runtime.in_flight.insert(device.id.clone());
                     if runtime.in_flight.len() == 1 {
                         runtime.cycle_start = now;
@@ -156,7 +187,7 @@ async fn scheduler(app: App) {
                         tracing::debug!(device = %device_id, %err, "a device could not be polled")
                     }
                 }
-                let finished = state.clock.now_ms();
+                let finished = state.monotonic();
                 let mut runtime = state.runtime.lock();
                 runtime.in_flight.remove(&device_id);
                 if runtime.in_flight.is_empty() {
@@ -170,13 +201,17 @@ async fn scheduler(app: App) {
         // The same tick, the same semaphore and the same jitter as the
         // devices above: one scheduler, so a thousand checks cannot escape
         // the concurrency cap by being a different kind of work.
-        if !settings.checks_enabled {
-            continue;
-        }
         for check in &services {
             // Switching monitoring off for a device switches off everything
-            // about it, services included.
-            if !monitored.contains(&check.device_id) {
+            // about it, services included; so do the switches for the whole
+            // installation. One rule, shared with everything else that asks
+            // whether a check is live.
+            let watched = checks::watched(
+                &settings,
+                monitored.contains(&check.device_id),
+                check.enabled,
+            );
+            if watched.is_err() {
                 continue;
             }
             let interval_ms = i64::from(check.interval_s.max(5)) * 1_000;
@@ -189,12 +224,12 @@ async fn scheduler(app: App) {
                     continue;
                 }
                 let entry = runtime.checks.entry(check.id.clone()).or_default();
-                if entry.last_run_at == 0 {
-                    entry.last_run_at = now - interval_ms + jitter(&check.id, interval_ms);
-                }
-                let due = check_is_due(entry.last_run_at, interval_ms, now);
+                let last = *entry
+                    .last_run_mono
+                    .get_or_insert_with(|| now - interval_ms + jitter(&check.id, interval_ms));
+                let due = check_is_due(last, interval_ms, now);
                 if due {
-                    entry.last_run_at = now;
+                    entry.last_run_mono = Some(now);
                     runtime.checks_in_flight.insert(check.id.clone());
                 }
                 due
@@ -268,8 +303,41 @@ async fn events(app: App, mut stream: tokio::sync::broadcast::Receiver<nocturne_
             "devices.changed" if event.payload["change"] == "deleted" => {
                 forget_devices(&app, &event.payload);
             }
+            // Created, updated or imported: any of them can be the moment
+            // monitoring is switched off for a device.
+            "devices.changed" => stand_down_unmonitored(&app, &event.payload),
             _ => {}
         }
+    }
+}
+
+/// Close the rule alerts of every device in a `devices.changed` event whose
+/// monitoring is now off.
+///
+/// Nothing polls such a device or runs its checks, so nothing would ever
+/// evaluate it again and whatever was firing on it would fire for good. This
+/// is the one moment at which something still looks.
+fn stand_down_unmonitored(app: &App, payload: &Value) {
+    let now = app.state::<MonitorState>().now();
+    let mut any = false;
+    for id in payload["ids"].as_array().into_iter().flatten() {
+        let Some(device) = id.as_str().and_then(|id| inventory::get(app, id).ok()) else {
+            continue;
+        };
+        if device.monitor.enabled {
+            continue;
+        }
+        any = true;
+        if let Err(err) = rules::stand_down(app, &device, now) {
+            tracing::warn!(device = %device.id, %err, "the alerts of an unmonitored device could not be closed");
+        }
+    }
+    if any {
+        // Its checks have just stopped counting as up or down.
+        app.publish(
+            "monitor.status_changed",
+            &serde_json::json!({"what": "checks"}),
+        );
     }
 }
 

@@ -26,6 +26,13 @@ pub struct IfCounters {
     pub out_discards: Option<Counter>,
 }
 
+/// Which kind of read produced a set of counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CounterSource {
+    Snmp,
+    Cli,
+}
+
 /// What the previous poll of one device left behind.
 #[derive(Clone, Debug, Default)]
 pub struct DeviceRuntime {
@@ -34,11 +41,18 @@ pub struct DeviceRuntime {
     /// The poller's clock at the previous reading, for `TimeBase::Wall`.
     pub counters_at: i64,
     pub interfaces: HashMap<String, IfCounters>,
-    /// When this device was last polled and when its CLI was last read.
-    pub last_poll_at: i64,
-    pub last_cli_at: i64,
+    /// The read the counters above came from. The two sources run on
+    /// different cadences, so a poll in which SNMP failed says nothing about
+    /// counters the CLI left, and the other way round.
+    pub counters_from: Option<CounterSource>,
+    /// When this device was last polled and when its CLI was last read, as
+    /// readings of [`Clock::monotonic_ms`] and `None` for never. Not times
+    /// of day: these three only ever answer "is it due yet?", and that must
+    /// not depend on what the machine currently believes the date to be.
+    pub last_poll_mono: Option<i64>,
+    pub last_cli_mono: Option<i64>,
     /// When SNMP interfaces were last handed to the collected-data store.
-    pub last_collect_at: i64,
+    pub last_collect_mono: Option<i64>,
 }
 
 impl DeviceRuntime {
@@ -47,13 +61,16 @@ impl DeviceRuntime {
     pub fn reset_counters(&mut self) {
         self.time_base = None;
         self.interfaces.clear();
+        self.counters_from = None;
     }
 }
 
 /// Counts polls over the last minute, for `monitor.status`.
 #[derive(Debug, Default)]
 pub struct PollRate {
-    /// Timestamps of recent polls, oldest first.
+    /// When the recent polls happened, oldest first, as readings of
+    /// [`Clock::monotonic_ms`]: a minute is a length of time, not a stretch
+    /// of the calendar.
     recent: Vec<i64>,
 }
 
@@ -80,7 +97,9 @@ impl PollRate {
 /// state (which is not).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CheckRuntime {
-    pub last_run_at: i64,
+    /// When the last run began, as a reading of [`Clock::monotonic_ms`];
+    /// `None` until the scheduler has given the check its slot.
+    pub last_run_mono: Option<i64>,
 }
 
 #[derive(Default)]
@@ -92,9 +111,12 @@ pub struct Runtime {
     /// same pair of facts the device poller keeps, for the same reasons.
     pub checks: HashMap<String, CheckRuntime>,
     pub checks_in_flight: HashSet<String>,
+    /// A check was saved or deleted since the scheduler last read its list,
+    /// so the copy it holds is not to be run from.
+    pub checks_changed: bool,
     /// How long the last full round of polls took, in milliseconds.
     pub last_cycle_ms: u64,
-    /// When the round now in flight started.
+    /// When the round now in flight started ([`Clock::monotonic_ms`]).
     pub cycle_start: i64,
     pub polls: PollRate,
     /// Conditions that are true but have not yet held for their `for_s`,
@@ -147,8 +169,14 @@ impl MonitorState {
         }
     }
 
+    /// The time of day, for timestamps.
     pub fn now(&self) -> i64 {
         self.clock.now_ms()
+    }
+
+    /// A reading of the clock that only goes forwards, for cadence.
+    pub fn monotonic(&self) -> i64 {
+        self.clock.monotonic_ms()
     }
 
     /// Run `change` on one device's runtime record, creating it if needed.
@@ -164,10 +192,13 @@ impl MonitorState {
     }
 
     /// Forget a check's schedule, so the scheduler gives it a fresh slot
-    /// inside its interval. Called when a check is saved (its interval may
-    /// have changed) or deleted.
+    /// inside its interval, and have the scheduler read its list again
+    /// before it runs anything. Called when a check is saved (its interval
+    /// may have changed, or where it points) or deleted.
     pub fn forget_check(&self, check_id: &str) {
-        self.runtime.lock().checks.remove(check_id);
+        let mut runtime = self.runtime.lock();
+        runtime.checks.remove(check_id);
+        runtime.checks_changed = true;
     }
 
     /// Drop everything remembered about a device (it left the inventory).
@@ -194,7 +225,8 @@ mod tests {
     fn resetting_counters_keeps_the_schedule() {
         let mut device = DeviceRuntime {
             time_base: Some(TimeBase::Ticks(10)),
-            last_poll_at: 500,
+            counters_from: Some(CounterSource::Snmp),
+            last_poll_mono: Some(500),
             ..DeviceRuntime::default()
         };
         device
@@ -202,6 +234,7 @@ mod tests {
             .insert("Gi0/1".into(), IfCounters::default());
         device.reset_counters();
         assert!(device.time_base.is_none() && device.interfaces.is_empty());
-        assert_eq!(device.last_poll_at, 500);
+        assert_eq!(device.counters_from, None);
+        assert_eq!(device.last_poll_mono, Some(500));
     }
 }

@@ -183,8 +183,9 @@ pub enum CheckSpec {
         /// Echoes per run, 1–16; 3 when unset.
         #[serde(default)]
         count: Option<u32>,
-        /// Loss at or above this percentage is down. 100 by default: with
-        /// three echoes, one lost packet is not an outage.
+        /// Loss at or above this percentage is down, from 0 to 100. 100 by
+        /// default: with three echoes, one lost packet is not an outage. 0
+        /// means any loss at all is — never that no loss is.
         #[serde(default)]
         loss_pct_down: Option<f64>,
     },
@@ -240,7 +241,8 @@ pub enum CheckSpec {
         max_offset_ms: Option<f64>,
     },
     /// One SNMP GET over the device's own SNMP credential and port — the
-    /// same session the poller uses, so this costs nothing extra.
+    /// same session the poller uses, so this costs nothing extra. It is the
+    /// one kind that cannot name a `host`: the session is the device's.
     Snmp {
         /// The object to read; `sysUpTime` when unset.
         #[serde(default)]
@@ -299,7 +301,7 @@ pub struct ServiceCheck {
     pub spec: CheckSpec,
     /// The host or address to check. Empty means the device's own address,
     /// which is the usual case; set it for a service that answers on a
-    /// virtual address or under a name.
+    /// virtual address or under a name. Always empty for an SNMP check.
     pub host: String,
     pub enabled: bool,
     /// Seconds between runs.
@@ -373,6 +375,8 @@ pub struct CheckState {
     pub rtt_ms: Option<f64>,
     pub facts: CheckFacts,
     /// When the current status began. With `status`: "down since 09:14".
+    /// After a stretch in which the check was not run it is the first run
+    /// afterwards: what the service did in between is not known.
     pub since: Option<i64>,
     pub last_run_at: Option<i64>,
     /// The last run that found the service up (a warning counts as up).
@@ -399,6 +403,13 @@ pub struct ServiceCheckView {
 
 /// One change of status, which is what a history is made of: the runs in
 /// between said the same thing and are in the `check.up` series instead.
+///
+/// A change *to* `unknown` is the history saying that it stopped knowing:
+/// the check went unrun for longer than its cadence allows (`code`
+/// `not_measured` — the application was closed, the check or its device's
+/// monitoring was switched off), or it was pointed at something else
+/// (`repointed`). It is dated at the last run before that, the last moment
+/// anything was measured, and the next row starts again from `unknown`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CheckEvent {
@@ -409,8 +420,9 @@ pub struct CheckEvent {
     pub status: CheckStatus,
     /// What it was before this change.
     pub previous: CheckStatus,
-    /// How long `previous` had lasted. `None` when that is not known —
-    /// the first change after the check was created, or after a restart.
+    /// How long `previous` had lasted. `None` when that is not known: the
+    /// first change after the check was created, or the first after a
+    /// stretch in which it was not run.
     pub held_s: Option<i64>,
     pub code: String,
     pub message: String,
@@ -419,9 +431,12 @@ pub struct CheckEvent {
 /// How a check spent a window of time.
 ///
 /// The five figures are kept apart on purpose. Time that could not be
-/// measured — before the first run, or while the check could not run — is
-/// neither uptime nor downtime, and is excluded from `availability_pct`
-/// rather than quietly counted as either.
+/// measured — before the first run, while the check could not run, or while
+/// nothing was running it — is neither uptime nor downtime, and is excluded
+/// from `availability_pct` rather than quietly counted as either.
+///
+/// It is added up from every change in the window, whatever number of them
+/// the caller asked to be shown.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct CheckSummary {
     pub up_s: i64,
