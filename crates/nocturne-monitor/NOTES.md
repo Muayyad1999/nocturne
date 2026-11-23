@@ -4,7 +4,7 @@ Spec: `docs/dev/features/monitor.md`. Conventions: `docs/dev/features/README.md`
 
 ## State: complete
 
-263 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
+297 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
 clean, `cargo fmt` applied, no `unsafe`.
 
 ```
@@ -21,14 +21,17 @@ src/
   poll.rs         one poll: reach, read, rates, damping, samples, events; poll_now job
   db.rs           own tables (monitor_interfaces, monitor_alerts) + collections
   interfaces.rs   the interface table, filtered/sorted/paged in SQL
-  alerts.rs       lifecycle keyed on dedup_key; alerts.* RPC
+  ifindex.rs      ifIndex → interface name per device, stored; monitor.ifindex
+  alerts.rs       lifecycle keyed on dedup_key; who is told and when
+                  (announce_if_due, announce_owed); alerts.* RPC
   rules.rs        built-ins, tri-state evaluation, for_s, suppression, alerts.rules.*
   maintenance.rs  windows (one-off and weekly)
   scope.rs        which devices a rule or window covers
   metrics.rs      metrics.* RPC, glob matching, resolution choice
   notify.rs       channels, payload per kind, retries, notify.* RPC
   smtp.rs         a small SMTP submission client on tokio + tokio-rustls
-  scheduler.rs    the scheduler (devices and service checks), the hourly
+  scheduler.rs    the scheduler (devices and service checks, and the pass
+                  over alerts that still owe a notice), the hourly
                   maintenance pass, the event listener
   status.rs       monitor.status / .device / .interfaces / .poll_now
   checks/         per-host service checks
@@ -45,7 +48,9 @@ src/
                   (limits, hosts, stale runs, moves), check_watching
                   (monitoring switched off),
                   check_engines (real listeners), listeners + certificates
-                  (the servers those tests start)
+                  (the servers those tests start),
+                  routing (alerts.raise notify, alerts.clear, lab alerts),
+                  owed (notices paid by the scheduler's pass), ifindex
 ```
 
 ## Decisions worth remembering
@@ -290,6 +295,124 @@ a forwards one stretches the interval and understates one rate. Not fixed.
   passed 10 times in 10 on a loaded machine. `evaluations_of_one_device_
   that_overlap…` (poll rules, every evaluation a sighting) and the
   `alerts.raise` / `alerts.ack` tests failed every time, loaded or not.
+
+### What the other features call (`alerts.raise {notify}`, `alerts.clear`, lab alerts, owed notices)
+
+* **One function decides every firing notice**: `alerts::announce_if_due`.
+  It is asked at a raise, at every later sighting or evaluation, and by the
+  scheduler's pass (`announce_owed`), and it is where each reason to keep
+  quiet is written once: already sent, no longer firing, a window, a snooze,
+  a lab device while `notify_for_lab` is off, raised for nobody. What it
+  cannot read off the alert it is handed as a `Look` (window, lab setting),
+  read before the transaction for the reason the windows always were.
+* **The lab rule is a mute, not a property of the raise.** Like a window it
+  is asked when a notice is due. So switching `notify_for_lab` on announces
+  the lab alerts that are still firing and unannounced (next look or next
+  pass), and switching it off does not strand an announced alert without
+  its "resolved". Freezing it at the raise would have been the mistake the
+  window handling was just cured of. "Lab" is `device.lab` set **or**
+  `transport: sim`; `Alert.lab` records it at the raise, and the pass also
+  asks the device, for alerts stored before `transport` counted.
+* **`notify: []` is "never announce"**, not "announce to an empty list":
+  `notified_at` stays null, the event never carries `notification`, and so
+  the desktop shell is quiet too and no "resolved" follows. That is what
+  the log rules use for a lab device, and it is why the detections do not
+  (it would silence a lab alert even with `notify_for_lab` on).
+* **`Alert.notify` is stored**, because the notice can be due long after
+  the call that named the channels — when the window closes (the pass has
+  no caller to ask) and when `alerts.clear`, which names none, resolves it.
+  A rule's channels are *not* copied onto its alerts: they are looked up
+  when a notice goes out, as before, so editing a rule's routing still
+  takes effect on what is open. `notify::Audience` replaced "a list in
+  which empty means everybody" so that nobody cannot read as its opposite.
+  The audience follows the latest raise until the alert has been announced
+  and is fixed after that.
+* **`alerts.clear` resolves by key in one transaction**, like every other
+  change to an alert. `tests::routing::raises_and_clears_of_one_key…` is
+  probabilistic in the way the other concurrency tests are: with the clear
+  made read-then-write it failed 9 runs in 10 at twelve rounds of eight
+  clearers and 11 in 12 at twenty-four rounds of twelve, on a machine at
+  load 7–8 (the symptom is two clears both answering `true` for one alert;
+  a lost sighting is the rarer one).
+* **`alerts.clear` cannot touch a rule's alert** (`rule_id` set):
+  `forbidden`, rather than `{cleared: false}`, which would read as "nothing
+  was open". The check is made twice — once to choose the answer, once
+  inside the resolving transaction (`Target::Raised`). `alerts.raise` was
+  *not* changed to refuse keys in the `rule:` namespace; a caller that
+  raises under a rule's key still counts a sighting of the rule's alert, as
+  before. The audit entry holds no title, key or note: a log rule builds
+  all three from text its pattern captured off a device.
+* **The pass over owed notices** (`announce_owed`, every 15 s on the
+  scheduler's monotonic tick, before the `monitoring.enabled` switch).
+  Bounded by an index (`monitor_alerts_owed`, partial, on exactly the
+  alerts that owe a notice) and a page of 200 with a place to carry on
+  from. Two things found while building it:
+  the planner, left alone, answers the query from `monitor_alerts_state`
+  — every firing alert, each opened to look inside — so the statement names
+  the index (`INDEXED BY`), and `db::tests` checks the plan; and the pass
+  covers more than the one-shot alerts it was asked for: a threshold alert
+  inside its hysteresis band is evaluated as `Hold`, which never calls
+  `fire`, so nothing paid its notice either.
+* **The index is checked at every start** (`db::ensure_owed_index`, added
+  by the review). `INDEXED BY` makes a pass that cannot use the index an
+  error rather than a scan, and `CREATE INDEX IF NOT EXISTS` keeps whatever
+  index of that name is already there — so the day `alerts::OWED` is
+  edited, every upgraded installation would have failed each pass ("no
+  query solution", a warning in the log) and sent no held-back notice
+  again. The stored definition is compared with the condition this version
+  uses, and the index dropped and made again when they differ.
+* **It waits for one kind of alert**: a rule's, last seen before
+  `MonitorState::started_at`, on a device that will be polled and has not
+  been yet (`DeviceRuntime::evaluated`). Without that, an outage that began
+  in last night's window and ended at four is announced at nine, fifteen
+  seconds before the first poll would have resolved it in silence.
+* **A look is about the alert's own device** (added by the review of this
+  work). `fire` reads the windows and the lab setting for the device the
+  call names, before the transaction, and `alerts.raise` will take an open
+  alert's key with another `device_id` or none. Such a call used to decide
+  the notice on what it had read: a second raise that left the device out
+  announced an alert a window over that device was holding back, and one
+  about a lab device with `notify_for_lab` off. It is now a sighting and
+  nothing more (`about` in `fire`); the pass, which looks the alert's own
+  device up, pays the notice. The rules always name the device their key
+  is built from, so nothing changes for them.
+* **Left as it is:** alerts stored by earlier versions whose `notified_at`
+  was backfilled to null ("last seen inside a window") are announced by the
+  first pass after the upgrade if they are still firing and no window
+  covers them now. For most that is the notice they were owed; for one that
+  was announced before its window opened it is a second announcement.
+
+### The ifIndex map (`ifindex.rs`)
+
+* **A second, two-column walk**, not the poll's own. `read::over_snmp` has
+  every row's index in its hands and returns interfaces by name only;
+  `read.rs` was off limits when this was built (a fix to the health OIDs
+  was queued behind it). Carrying the index on `read::RawIf` would remove
+  the walk and the copy of the naming rule — worth doing when that file is
+  free. Until then the cost is kept down by asking only when something says
+  the map may have moved (a restart, other interface names) and every five
+  minutes otherwise, and drift is kept harmless by keeping a name only if
+  the reading has an interface under it: the map can lose entries, never
+  gain a name nothing else uses. `tests::ifindex` compares it with
+  `monitor.interfaces`.
+* **Asked for last in the poll** (moved by the review): after the samples,
+  the device's state, the transition and `monitor.polled`. It was first
+  placed before `inventory::update_state`, where a request the agent did
+  not answer stood between a poll and the device being marked up or down.
+  The rules still run after `poll_device` returns, so that wait (one SNMP
+  timeout, at most once per five minutes per device) is still in front of
+  the evaluation; carrying the index on `read::RawIf` removes the request
+  altogether.
+* **`at` is when the map was read, not when the device was last polled.**
+  Between reads nothing says it changed. A read that fails is not repeated
+  until the next round (or the next reason), so a restricted agent costs
+  one failed request every five minutes, not one a poll.
+* **One document per device** (`monitor_ifindex`), rewritten only when read,
+  deleted with the device.
+* **Tests that need the name request to misbehave** go through
+  `tests::ifindex::MeddlingSnmp`, a transport in front of the fake agents
+  that fails or pads exactly the two-column walk and passes everything else
+  through. `Harness` is built by hand there, around it.
 
 Still left alone: `checks::run_and_record` has the rules look at *every*
 check of the device after each run. It is harmless (the other checks'

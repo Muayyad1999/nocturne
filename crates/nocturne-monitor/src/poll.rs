@@ -420,6 +420,16 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         "monitor.polled",
         &json!({"device_id": device.id, "at": at, "ok": poll.ok}),
     );
+    // Last, after everything this poll found is stored and said: the map is
+    // for other features, and it is one more request to an agent that can
+    // stop answering between two of them. Asked earlier, that wait would
+    // stand between the poll and the device's state, its transition and
+    // `monitor.polled`.
+    if let Some((read, CounterSource::Snmp)) = &reading
+        && read.interfaces_read
+    {
+        crate::ifindex::refresh(app, &state, &device, read, poll.rebooted, tick, at).await;
+    }
     Ok(poll)
 }
 

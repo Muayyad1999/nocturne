@@ -30,6 +30,7 @@ pub mod alerts;
 pub mod checks;
 pub mod clock;
 mod db;
+pub mod ifindex;
 pub mod interfaces;
 pub mod maintenance;
 pub mod metrics;
@@ -82,6 +83,7 @@ pub fn init(builder: &mut nocturne_app::AppBuilder) {
     builder.state(state::MonitorState::default());
 
     status::register(&mut builder.router);
+    ifindex::register(&mut builder.router);
     metrics::register(&mut builder.router);
     checks::register(&mut builder.router);
     alerts::register(&mut builder.router);

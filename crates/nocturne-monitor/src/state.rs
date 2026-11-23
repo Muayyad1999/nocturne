@@ -53,6 +53,15 @@ pub struct DeviceRuntime {
     pub last_cli_mono: Option<i64>,
     /// When SNMP interfaces were last handed to the collected-data store.
     pub last_collect_mono: Option<i64>,
+    /// When the agent was last asked which ifIndex is which interface
+    /// ([`crate::ifindex`]), and a fingerprint of the interface names the
+    /// poll had read just before: other names are a reason to ask again.
+    pub last_ifindex_mono: Option<i64>,
+    pub ifindex_names: u64,
+    /// Whether the rules have looked at this device since the application
+    /// started. Until they have, an alert of theirs that was open when it
+    /// started says what was known before — see `alerts::announce_owed`.
+    pub evaluated: bool,
 }
 
 impl DeviceRuntime {
@@ -124,6 +133,9 @@ pub struct Runtime {
     pub pending: HashMap<String, i64>,
     /// Whether the built-in rules have been seeded in this process.
     pub seeded: bool,
+    /// Where the last pass over the alerts that still owe a firing notice
+    /// stopped, as (started_at, id); `None` to begin with the oldest.
+    pub owed_after: Option<(i64, String)>,
 }
 
 /// This feature's runtime state, registered on the app.
@@ -137,11 +149,16 @@ pub struct MonitorState {
     /// themselves, and start the scheduler only where it is what is under
     /// test.
     pub autostart: bool,
+    /// The time of day at which this state was made, which is when the
+    /// application started. An alert last seen before it says what was
+    /// known the last time the application ran.
+    pub started_at: i64,
 }
 
 impl Default for MonitorState {
     fn default() -> Self {
         MonitorState {
+            started_at: SystemClock.now_ms(),
             clock: Arc::new(SystemClock),
             probe: Arc::new(NetProbe::new()),
             snmp: Arc::new(RealSnmp),
@@ -160,6 +177,7 @@ impl MonitorState {
         snmp: SharedSnmp,
     ) -> MonitorState {
         MonitorState {
+            started_at: clock.now_ms(),
             clock,
             probe,
             snmp,

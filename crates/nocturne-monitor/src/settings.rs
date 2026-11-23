@@ -36,6 +36,10 @@ pub struct MonitorSettings {
     /// Days of certificate life left at which a TLS or HTTPS check goes to
     /// `warning`. A check may set its own.
     pub cert_warn_days: u32,
+    /// Whether an alert about a lab device is announced at all. Off by
+    /// default: a lab is where things are broken on purpose, and its alerts
+    /// are recorded and shown without waking anybody.
+    pub notify_for_lab: bool,
 }
 
 impl Default for MonitorSettings {
@@ -51,6 +55,7 @@ impl Default for MonitorSettings {
             checks_enabled: true,
             check_history_days: 90,
             cert_warn_days: 14,
+            notify_for_lab: false,
         }
     }
 }
@@ -96,7 +101,8 @@ mod tests {
             stored,
             json!({"enabled": true, "concurrency": 32, "down_after": 2, "cli_interval_s": 300,
                    "retention_days_raw": 7, "retention_days_rollup": 365, "ping_timeout_ms": 1000,
-                   "checks_enabled": true, "check_history_days": 90, "cert_warn_days": 14})
+                   "checks_enabled": true, "check_history_days": 90, "cert_warn_days": 14,
+                   "notify_for_lab": false})
         );
 
         app.rpc(

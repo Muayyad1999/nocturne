@@ -124,12 +124,21 @@ pub struct Alert {
     /// seen, announced or resolved. A record of that moment, not a live
     /// answer.
     pub muted_by_maintenance: bool,
-    /// When the firing notification went out: the first time the rules (or
-    /// `alerts.raise`) found the alert firing, outside every maintenance
-    /// window and not snoozed — whether or not that look counted as a
-    /// sighting. `None` while nobody has been told — and then nobody is
-    /// told when it resolves either.
+    /// When the firing notification went out: the first look — by the rules,
+    /// by `alerts.raise`, or by the scheduler's own pass over what is still
+    /// owed — that found the alert firing, outside every maintenance window,
+    /// not snoozed, and not about a lab device while those are kept quiet.
+    /// `None` while nobody has been told — and then nobody is told when it
+    /// resolves either.
     pub notified_at: Option<i64>,
+    /// The channels `alerts.raise` named for this alert. `None` is the usual
+    /// routing (the rule's channels, or every enabled one), an empty list is
+    /// nobody, and such an alert is never announced. Kept here because the
+    /// notice can be due long after the call that named them: when a window
+    /// closes, and again when the alert resolves.
+    pub notify: Option<Vec<String>>,
+    /// The alert is about a simulated device. Its notices go out only while
+    /// the `notify_for_lab` setting is on.
     pub lab: bool,
     /// What makes two sightings the same alert. Rules build it from
     /// (rule, device, instance); `alerts.raise` takes it from the caller.
@@ -137,9 +146,11 @@ pub struct Alert {
 }
 
 impl Alert {
-    /// Whether this alert's firing notification is held back right now: a
-    /// maintenance window covered it when it was last seen, or it is
-    /// snoozed.
+    /// Whether this alert's firing notification is held back right now by
+    /// something the alert itself records: a maintenance window covered it
+    /// when it was last looked at, or it is snoozed. The lab setting is not
+    /// on the alert, and is asked about where a notice is decided
+    /// (`alerts::announce_if_due`).
     pub fn muted(&self, now: i64) -> bool {
         self.muted_by_maintenance || self.snoozed_until.is_some_and(|until| until > now)
     }

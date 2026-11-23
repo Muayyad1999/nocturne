@@ -10,11 +10,12 @@ use crate::testing::{AgentData, AgentIf, Harness};
 const MINUTE: Duration = Duration::from_secs(60);
 
 /// The methods this feature owns, as the specification lists them.
-const CONTRACT: [&str; 33] = [
+const CONTRACT: [&str; 35] = [
     "monitor.status",
     "monitor.poll_now",
     "monitor.device",
     "monitor.interfaces",
+    "monitor.ifindex",
     "metrics.query",
     "metrics.query_many",
     "metrics.series",
@@ -25,6 +26,7 @@ const CONTRACT: [&str; 33] = [
     "alerts.resolve",
     "alerts.snooze",
     "alerts.raise",
+    "alerts.clear",
     "alerts.summary",
     "alerts.rules.list",
     "alerts.rules.save",

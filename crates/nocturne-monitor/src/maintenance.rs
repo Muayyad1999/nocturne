@@ -35,21 +35,21 @@ pub fn list(app: &App) -> AppResult<Vec<MaintenanceWindow>> {
 /// Whether a device (or, with `None`, the installation as a whole) is inside
 /// an open maintenance window.
 pub fn covers(app: &App, device: Option<&Device>, now: i64) -> AppResult<bool> {
-    for window in list(app)? {
-        if !active(&window, now) {
-            continue;
-        }
-        let covered = match device {
+    Ok(covers_among(&list(app)?, device, now))
+}
+
+/// The same question against windows already read, for a caller that asks
+/// it about many devices in one go.
+pub fn covers_among(windows: &[MaintenanceWindow], device: Option<&Device>, now: i64) -> bool {
+    windows
+        .iter()
+        .filter(|window| active(window, now))
+        .any(|window| match device {
             Some(device) => scope::matches(&window.scope, device, false),
             // An alert about no device in particular is only muted by a
             // window that mutes everything.
             None => scope::is_everything(&window.scope),
-        };
-        if covered {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+        })
 }
 
 /// The windows that are open right now, for `monitor.status`.

@@ -129,8 +129,28 @@ export interface Alert {
   snoozed_until: number | null;
   /** How often the condition has been seen since this alert was raised. */
   count: number;
-  /** True while a maintenance window covers it: recorded, not notified. */
+  /**
+   * Whether a maintenance window covered the alert the last time it was
+   * seen, announced or resolved. A record of that moment, not a live answer.
+   */
   muted_by_maintenance: boolean;
+  /**
+   * When the firing notification went out; `null` while nobody has been
+   * told (a maintenance window, a snooze, a lab device while
+   * `notify_for_lab` is off, or `notify: []`). An alert that was never
+   * announced resolves without a notification too.
+   */
+  notified_at: number | null;
+  /**
+   * The channel ids `alerts.raise` named for this alert: `null` is the usual
+   * routing (the rule's channels, or every enabled one), an empty list is
+   * nobody.
+   */
+  notify: string[] | null;
+  /**
+   * About a simulated device. Its notifications go out only while the
+   * `notify_for_lab` setting is on.
+   */
   lab: boolean;
   /**
    * What makes two sightings the same alert: `rule:<rule>:<device>:<instance>`
@@ -309,7 +329,9 @@ export type CheckStatus = 'unknown' | 'up' | 'warning' | 'down' | 'cannot_run';
  * The stable reason codes a check's `code` can carry. Switch on these; show
  * `message`, which is the engine's own sentence.
  *
- * The ones that mean `cannot_run` are listed last, and are never an outage.
+ * The ones that mean `cannot_run` come after the outage codes, and are never
+ * an outage. The last two are not a run's verdict at all: they appear only on
+ * a history row that says the check stopped knowing.
  */
 export type CheckCode =
   /** All well. */
@@ -372,7 +394,16 @@ export type CheckCode =
   /** The probe could not be attempted (the poller's own reachability layer). */
   | 'probe_unavailable'
   /** Something local failed — out of sockets, not the service's doing. */
-  | 'local_error';
+  | 'local_error'
+  // Below here: only on a history row whose `status` is `unknown`.
+  /**
+   * The check went unrun for longer than its cadence allows (the application
+   * was closed, the check or its device's monitoring switched off). The row
+   * is dated at the last run before the silence.
+   */
+  | 'not_measured'
+  /** The check was pointed at something else, which drops what it had found. */
+  | 'repointed';
 
 /** An HTTP or HTTPS check. No request headers: one would carry a token. */
 export interface HttpCheck {
@@ -738,6 +769,11 @@ export interface MonitorSettings {
    * `warning`. A check may set its own.
    */
   cert_warn_days: number;
+  /**
+   * Whether an alert about a lab device is announced at all. Off by default:
+   * such an alert is raised, listed and shown, and sent to no channel.
+   */
+  notify_for_lab: boolean;
 }
 
 // -------------------------------------------------------------- parameters
@@ -844,6 +880,42 @@ export interface AlertRaiseParams {
   detail?: string;
   /** Required: the same problem seen twice has to be one alert. */
   dedup_key: string;
+  /**
+   * Channel ids. Left out (or `null`): the usual routing. `[]`: nobody. A
+   * list: those channels and no others; an id that is not a channel is
+   * refused with `not_found` and nothing is raised.
+   */
+  notify?: string[] | null;
+}
+
+export interface AlertClearParams {
+  /** The key the alert was raised under. */
+  dedup_key: string;
+  /** Becomes the resolved alert's `detail`. */
+  note?: string;
+}
+
+export interface AlertClearResult {
+  /** `false` when nothing was open under the key. */
+  cleared: boolean;
+}
+
+/** One row of a device's SNMP interface table: its ifIndex and its name. */
+export interface IfIndexEntry {
+  index: number;
+  /** Spelled as `monitor.interfaces` and the metrics spell it. */
+  name: string;
+}
+
+export interface IfIndexMap {
+  /**
+   * When the map was last read off the device. Absent — not `null` — for a
+   * device that was never read over SNMP, which is not the same as a map
+   * with nothing in it.
+   */
+  at?: number;
+  /** Sorted by index. Rows the agent gave no name are not in it. */
+  interfaces: IfIndexEntry[];
 }
 
 export interface AlertSummary {
@@ -994,6 +1066,14 @@ export interface CheckRunResult {
   message?: string;
   rtt_ms?: number | null;
   facts?: CheckFacts;
+  /**
+   * Set when the check was not run because nothing is watching it: the
+   * check is switched off (`disabled`), monitoring is off for its device or
+   * for the installation (`monitoring_off`), or service checks are off
+   * (`checks_off`). `error` then says which switch, and `ran` does not
+   * count it.
+   */
+  skipped?: 'disabled' | 'monitoring_off' | 'checks_off';
   error?: string;
 }
 
@@ -1020,8 +1100,12 @@ export interface CheckHistory {
   since: number;
   until: number;
   current: CheckState;
-  /** The changes in the window, oldest first. */
+  /** The newest `limit` changes in the window, oldest first. */
   events: CheckEvent[];
+  /** How many changes the window holds; `summary` is added up from all of them. */
+  events_total: number;
+  /** Whether `events` was cut to `limit`: page back with `until` before the oldest row. */
+  truncated: boolean;
   summary: CheckSummary;
   /** Where the response times are: `metrics.query` with these. */
   series: {
@@ -1059,6 +1143,10 @@ export interface CheckKindInfo {
  * `InterfaceQueryParams` → `IfStatus[]`.
  */
 /**
+ * `monitor.ifindex` — which SNMP ifIndex is which interface of a device, as
+ * its agent last said. `DeviceIdParams` → `IfIndexMap`.
+ */
+/**
  * `metrics.query` — one series over a time range, gaps left as gaps.
  * `MetricQueryParams` → `MetricSeries`.
  */
@@ -1092,6 +1180,12 @@ export interface CheckKindInfo {
 /**
  * `alerts.raise` — raise an alert from another feature (log rules, insights,
  * configuration), deduplicated on `dedup_key`. `AlertRaiseParams` → `Alert`.
+ */
+/**
+ * `alerts.clear` — the condition another feature raised an alert for is
+ * over: resolve the open alert under that key. `AlertClearParams` →
+ * `AlertClearResult`. Refuses with `forbidden` when the alert belongs to an
+ * alert rule.
  */
 /** `alerts.summary` — open alerts by severity. No params → `AlertSummary`. */
 /**
@@ -1145,9 +1239,21 @@ export interface MonitorInterfacesEvent {
   device_id: string;
 }
 
-/** `alerts.changed` — an alert was raised, counted, acknowledged or resolved. */
+/**
+ * `alerts.changed` — an alert was raised, counted, announced late,
+ * acknowledged, snoozed or resolved.
+ */
 export interface AlertsChangedEvent {
   alert: Alert;
+  /**
+   * `'firing'` on the one event at which the firing notification went to
+   * the channels, `'resolved'` on the one at which the resolved one did,
+   * `null` on every other change. Something that shows its own notification
+   * goes by this field alone — not by `alert.count`, `muted_by_maintenance`
+   * or `lab`: it already accounts for maintenance windows, snoozes, the lab
+   * setting and `notify: []`.
+   */
+  notification: 'firing' | 'resolved' | null;
 }
 
 /** `checks.ran` — one service check has run. Published after every run. */

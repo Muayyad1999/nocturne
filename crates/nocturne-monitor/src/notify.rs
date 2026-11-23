@@ -301,27 +301,63 @@ pub async fn deliver_with_retries(
     Err(last)
 }
 
-/// The channels an alert goes to: the ones the rule names, or every enabled
-/// channel when it names none.
-pub fn targets(app: &App, wanted: &[String]) -> AppResult<Vec<Channel>> {
+/// Who is told about an alert.
+///
+/// Two values rather than a list in which "empty" means everybody: a caller
+/// of `alerts.raise` can ask for nobody, and that must not read as the
+/// opposite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// Every enabled channel.
+    Everyone,
+    /// These channels and no others. An empty list is nobody.
+    Only(Vec<String>),
+}
+
+impl Audience {
+    /// A rule's audience: the channels it names, or everyone when it names
+    /// none.
+    pub fn of_rule(channels: &[String]) -> Audience {
+        if channels.is_empty() {
+            Audience::Everyone
+        } else {
+            Audience::Only(channels.to_vec())
+        }
+    }
+}
+
+/// The channels an alert goes to: the enabled ones among its audience.
+pub fn targets(app: &App, audience: &Audience) -> AppResult<Vec<Channel>> {
     let all: Vec<Channel> = app.store().list(CHANNELS)?;
     Ok(all
         .into_iter()
         .filter(|channel| channel.enabled)
-        .filter(|channel| wanted.is_empty() || wanted.contains(&channel.id))
+        .filter(|channel| match audience {
+            Audience::Everyone => true,
+            Audience::Only(wanted) => wanted.contains(&channel.id),
+        })
         .collect())
+}
+
+/// The first of `wanted` that is not the id of a notification channel.
+pub fn unknown_channel(app: &App, wanted: &[String]) -> AppResult<Option<String>> {
+    let known: Vec<Channel> = app.store().list(CHANNELS)?;
+    Ok(wanted
+        .iter()
+        .find(|id| !known.iter().any(|channel| &channel.id == *id))
+        .cloned())
 }
 
 /// Send an alert to its channels, in the background: a slow webhook must
 /// never hold up polling.
 ///
-/// Whether the alert is muted is not looked at here. That is the alert
-/// lifecycle's to decide, at the moment a notification is due
-/// ([`crate::alerts`]), and the answer differs by stage: a firing notice
-/// waits for a window or a snooze to end, a resolved notice follows the
-/// firing notice it closes.
-pub fn send(app: &App, alert: &Alert, stage: Stage, wanted: &[String]) {
-    let channels = match targets(app, wanted) {
+/// Whether the alert is muted is not looked at here, nor whether it is about
+/// a lab device. That is the alert lifecycle's to decide, at the moment a
+/// notification is due ([`crate::alerts`]), and the answer differs by stage:
+/// a firing notice waits for a window or a snooze to end, a resolved notice
+/// follows the firing notice it closes.
+pub fn send(app: &App, alert: &Alert, stage: Stage, audience: &Audience) {
+    let channels = match targets(app, audience) {
         Ok(channels) => channels,
         Err(err) => {
             tracing::warn!(%err, "notification channels could not be read");

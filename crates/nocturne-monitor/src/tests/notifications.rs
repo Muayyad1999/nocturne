@@ -21,12 +21,12 @@ struct Seen {
 
 /// A one-connection-at-a-time HTTP listener. `statuses` is the status code to
 /// answer each request with, in order; once it runs out, 200.
-struct Listener {
-    url: String,
+pub(super) struct Listener {
+    pub(super) url: String,
     seen: Arc<Mutex<Seen>>,
 }
 
-async fn listen(statuses: Vec<u16>) -> Listener {
+pub(super) async fn listen(statuses: Vec<u16>) -> Listener {
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = socket.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
@@ -95,7 +95,7 @@ async fn listen(statuses: Vec<u16>) -> Listener {
 }
 
 impl Listener {
-    fn requests(&self) -> Vec<(String, Value)> {
+    pub(super) fn requests(&self) -> Vec<(String, Value)> {
         self.seen.lock().requests.clone()
     }
 
@@ -109,7 +109,7 @@ impl Listener {
     /// have arrived — or after five seconds, which is only ever waited out
     /// by a test that is about to fail: the machine may be busy, and a
     /// delivery is its own task.
-    async fn events(&self, count: usize) -> Vec<String> {
+    pub(super) async fn events(&self, count: usize) -> Vec<String> {
         for _ in 0..250 {
             if self.requests().len() >= count {
                 break;
@@ -124,18 +124,18 @@ impl Listener {
 
     /// The same after a pause long enough for a notification that should
     /// not have been sent to arrive anyway.
-    async fn events_after_a_pause(&self) -> Vec<String> {
+    pub(super) async fn events_after_a_pause(&self) -> Vec<String> {
         tokio::time::sleep(Duration::from_millis(250)).await;
         self.events(0).await
     }
 }
 
-const MINUTES: Duration = Duration::from_secs(60);
+pub(super) const MINUTES: Duration = Duration::from_secs(60);
 
 /// A harness on a clock the test steps by hand, with one webhook channel and
 /// a listener behind it. These tests talk to a socket, so they run on real
 /// time, and the hours a maintenance window takes are stepped instead.
-async fn harness_with_a_channel() -> (Harness, Arc<ManualClock>, Listener) {
+pub(super) async fn harness_with_a_channel() -> (Harness, Arc<ManualClock>, Listener) {
     let clock = Arc::new(ManualClock::new(crate::testing::epoch()));
     let harness = Harness::with_clock(clock.clone()).await;
     let listener = listen(vec![]).await;
@@ -158,7 +158,7 @@ async fn a_watched_service(harness: &Harness) -> String {
         .await
 }
 
-async fn window(harness: &Harness, starts_in: Duration, lasts: Duration) -> Value {
+pub(super) async fn window(harness: &Harness, starts_in: Duration, lasts: Duration) -> Value {
     let starts_at = harness.now() + starts_in.as_millis() as i64;
     harness
         .rpc(

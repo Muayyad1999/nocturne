@@ -28,6 +28,19 @@ const INVENTORY_MS: i64 = 5_000;
 const MAINTENANCE_MS: u64 = 3_600_000;
 /// Resolved alerts are kept this long.
 const ALERT_HISTORY_DAYS: i64 = 90;
+/// How often the scheduler looks for firing notices that were held back by
+/// a maintenance window or a snooze and are not any more. An alert nothing
+/// evaluates again is announced at most this long after its window closes.
+const ANNOUNCE_MS: i64 = 15_000;
+
+/// Whether the pass over the alerts that still owe a notice is due.
+///
+/// Like everything else here it is a difference of two readings of the
+/// clock that cannot be set back: a timer armed for "when the window ends"
+/// would be a date, and the machine changes its mind about dates.
+pub(crate) fn announcing_is_due(last: Option<i64>, now: i64) -> bool {
+    last.is_none_or(|last| now - last >= ANNOUNCE_MS)
+}
 
 /// Whether a check whose last run *began* at `last_run_at` is due at `now`.
 ///
@@ -84,8 +97,19 @@ async fn scheduler(app: App) {
     let mut services: Vec<crate::checks::model::ServiceCheck> = Vec::new();
     // `None` forces the first tick to read the inventory.
     let mut listed_at: Option<i64> = None;
+    let mut announced_at: Option<i64> = None;
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)).await;
+        // Before the switch below, not after it: with polling switched off
+        // the log rules, the detections and the insights still raise alerts,
+        // and what those owe is owed all the same.
+        let tick = state.monotonic();
+        if announcing_is_due(announced_at, tick) {
+            announced_at = Some(tick);
+            if let Err(err) = alerts::announce_owed(&app, state.now()) {
+                tracing::warn!(%err, "the alerts that still owe a notification could not be read");
+            }
+        }
         let settings = MonitorSettings::load(&app);
         if !settings.enabled {
             continue;
@@ -357,6 +381,7 @@ fn forget_devices(app: &App, payload: &Value) {
         }
         let _ = checks::store::forget_device(app, id);
         let _ = app.store().delete(crate::db::collections::DEVICES, id);
+        let _ = app.store().delete(crate::db::collections::IFINDEX, id);
     }
 }
 
@@ -375,6 +400,13 @@ mod tests {
         assert!(check_is_due(last, 120_000, last + 120_000));
         // Nor does the device's hourly poll interval come into it.
         assert!(check_is_due(last, 10_000, last + 3_600_000));
+    }
+
+    #[test]
+    fn the_pass_over_owed_notices_comes_round_every_fifteen_seconds() {
+        assert!(announcing_is_due(None, 0), "and at once after a start");
+        assert!(!announcing_is_due(Some(1_000), 15_999));
+        assert!(announcing_is_due(Some(1_000), 16_000));
     }
 
     #[test]

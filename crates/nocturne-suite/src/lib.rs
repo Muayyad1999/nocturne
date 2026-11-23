@@ -116,6 +116,8 @@ mod tests {
             "metrics.top",
             "alerts.list",
             "alerts.ack",
+            "alerts.clear",
+            "monitor.ifindex",
             "alerts.rules.save",
             "maintenance.save",
             "notify.channels.save",

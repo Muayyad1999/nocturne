@@ -51,6 +51,26 @@ rather than lasting for the size of the step.)
   Also feeds `collect::store(.., Kind::Interfaces, .., "snmp")` so topology
   and IPAM see interface state on SNMP-only devices — only from a reading
   SNMP itself produced, never a copy of what the CLI read.
+* **The ifIndex map** (`monitor.ifindex`). A trap says `ifIndex=3` and a
+  flow record says "input interface 3"; the poller is what knows that 3 is
+  `GigabitEthernet0/3`. After an SNMP poll the agent's interface-name
+  columns are read by row index and the pairing is stored per device
+  (collection `monitor_ifindex`), so it is there after a restart, before
+  the device has been polled again. That request is the last thing a poll
+  does, after its samples, the device's state and `monitor.polled` are
+  out: it is for other features, and an agent that stops answering between
+  two requests must not make the poll's own results wait for it. A pair is in the map only if the agent
+  gave the row a name *and* the poll knows an interface by that name,
+  spelled as `monitor.interfaces` and the metrics spell it; a row the agent
+  left nameless (shown on screen as `ifIndex 7`) is not in it. The map is
+  read again when the device restarted (uptime went backwards — the one
+  moment an agent may renumber), when the poll read other interface names
+  than last time, and otherwise every five minutes; `at` is when it was
+  last read. A read that fails leaves the stored map as it was and never
+  fails the poll. A device that has never answered SNMP has no map: `at` is
+  absent and the list is empty, which is a different answer from a map read
+  off an agent with no interfaces (`at` set, list empty). Deleted with the
+  device.
 * **CLI fallback** (devices with CLI access but no SNMP, devices whose SNMP
   is switched on but not answering, and lab devices): `collect::run` for
   `interfaces` + `health` at a slower cadence (`cli_interval_s`, default
@@ -77,8 +97,10 @@ canonical interface name) `if.in_bps`, `if.out_bps`, `if.util_pct`,
 Settings section `monitoring`: `{enabled: true, concurrency: 32,
 down_after: 2, cli_interval_s: 300, retention_days_raw: 7,
 retention_days_rollup: 365, ping_timeout_ms: 1000, checks_enabled: true,
-check_history_days: 90, cert_warn_days: 14}`. A maintenance task calls
-`samples_maintain` hourly and prunes service-check history.
+check_history_days: 90, cert_warn_days: 14, notify_for_lab: false}`. A
+maintenance task calls `samples_maintain` hourly and prunes service-check
+history. `notify_for_lab` decides whether an alert about a lab device is
+announced at all (see Notifications).
 
 ## Service checks
 
@@ -264,13 +286,15 @@ until the check's own next run, on its own schedule.
 | `monitor.poll_now` | `{device_ids}` → `{job_id}` |
 | `monitor.device` | `{device_id}` → `{state: DeviceState, health: {cpu_pct?, mem_pct?, temp_c?, uptime_s?, at?}, interfaces: [IfStatus], checks: [ServiceCheckView], sources: {icmp, snmp, cli}}` |
 | `monitor.interfaces` | `{device_id?, filter?, problem_only?, sort?, limit?, cursor?}` → `[IfStatus{device_id, device, name, description, admin_up, oper_up, speed_bps, in_bps, out_bps, util_pct, in_err_ps, out_err_ps, at}]` |
+| `monitor.ifindex` | `{device_id}` → `{at?, interfaces: [{index, name}]}` — the SNMP ifIndex of each interface the agent named, sorted by index, with when the map was last read. `at` is absent (not null) and the list empty for a device that was never read over SNMP. `not_found` for an unknown device. For the trap and flow decoders |
 | `metrics.query` | `{device_id, metric, instance?, since, until?, step_s?}` → `{points: [[t, v]..], step_s, rollup: raw|5m|1h}` (gaps are gaps) |
 | `metrics.query_many` | `{series: [{device_id, metric, instance?}], since, until?, step_s?}` |
 | `metrics.series` | `{device_id}` → `[{metric, instance, latest: [t, v]?}]` |
 | `metrics.top` | `{metric, limit?: 10, filter?}` → highest current values across devices/interfaces ("top talkers", "hottest", "busiest CPU") |
 | `alerts.list` | `{state?: firing|acknowledged|resolved|open, severity?, device_id?, since?, limit?, cursor?}` → `[Alert]` |
 | `alerts.get` / `alerts.ack {id, note?}` / `alerts.resolve {id, note?}` / `alerts.snooze {id, minutes}` | `alerts.resolve` resolves the alert with that id (not whatever is open under its key) |
-| `alerts.raise` | `{rule?: String, device_id?, instance?, severity, title, detail?, dedup_key}` → `Alert` — for other features (log rules, insights, config) |
+| `alerts.raise` | `{rule?: String, device_id?, instance?, severity, title, detail?, dedup_key, notify?: [channel_id]}` → `Alert` — for other features (log rules, detections, insights, config). `notify` absent or `null` is the usual routing (every enabled channel), `[]` is nobody, a list is those channels and no others; `not_found` for an id that is not a channel, and then nothing is raised |
+| `alerts.clear` | `{dedup_key, note?}` → `{cleared: bool}` — the condition another feature raised an alert for is over: resolves the open alert (firing or acknowledged) under that key, with `note` as its `detail`. `false` when nothing is open under the key. `forbidden` when the open alert belongs to an alert rule. Audited as `alert.clear` when it closed something |
 | `alerts.rules.list` / `.save` / `.delete` / `.test` | |
 | `checks.list` | `{device_id?, status?: up|warning|down|unknown|cannot_run|problem, kind?, filter?, enabled?, limit?, cursor?}` → `[ServiceCheckView{..ServiceCheck, kind, device, state: CheckState}]` |
 | `checks.get` | `{id}` → `ServiceCheckView` |
@@ -286,7 +310,9 @@ until the check's own next run, on its own schedule.
 ```rust
 struct Alert { id, rule_id?, rule_name, device_id?, device?, instance?, severity: info|low|medium|high|critical,
     state: firing|acknowledged|resolved, title, detail, value?, started_at, last_seen_at, resolved_at?,
-    acked_at?, ack_note?, snoozed_until?, count, muted_by_maintenance: bool, notified_at?, lab: bool,
+    acked_at?, ack_note?, snoozed_until?, count, muted_by_maintenance: bool, notified_at?,
+    notify?: [channel_id],   // what `alerts.raise` named: null = the usual routing, [] = nobody
+    lab: bool,               // about a simulated device (a lab's, or any with `transport: sim`)
     dedup_key }
 struct AlertRule { id, name, enabled, builtin, severity, scope: {sites, roles, tags, device_ids, include_lab: false},
     condition: Condition, for_s, notify: [channel_id] }
@@ -329,7 +355,9 @@ check for that device's check rules. An alert is keyed by (rule, device,
 instance): it fires once, counts repeats, resolves itself when the condition
 clears (with `clear_value` hysteresis), and re-fires as a new alert after a
 resolve. When a device is down, its interface/threshold alerts are not raised
-(one cause, one alert). Lab devices alert only when a rule opts in.
+(one cause, one alert). Lab devices alert only when a rule opts in — and
+whoever raises it, an alert about a lab device is announced only when
+`notify_for_lab` says so (see Notifications).
 
 **The rules stand down for a device whose monitoring is off**
 (`rules::stand_down`). An alert is a claim that something is wrong now, kept
@@ -367,23 +395,121 @@ sighting.
 raised.** Maintenance windows and snoozes hold back the *firing* notice and
 never the record:
 
-* the firing notice goes out the first time the alert is evaluated (the
-  raise or any later evaluation that still finds the condition, whether or
-  not it counts as a new sighting) while it is still `firing`, no window
-  covers its device and it is not snoozed; `notified_at` records when. An
-  outage that starts inside a window and outlasts it is therefore announced
-  at the first evaluation after the window closes — once. For a check rule
-  that is the device's next poll or the next run of any of its checks, not
-  the check's own next run, which can be an hour or a day away. Deleting a
-  window or cancelling a snooze has the same effect at the next evaluation.
-  An alert somebody acknowledged while it was muted is not announced
-  afterwards: a person has it.
+* the firing notice goes out the first time the alert is looked at (the
+  raise, any later evaluation that still finds the condition, whether or
+  not it counts as a new sighting, or the scheduler's pass below) while it
+  is still `firing`, no window covers its device and it is not snoozed;
+  `notified_at` records when. An outage that starts inside a window and
+  outlasts it is therefore announced at the first look after the window
+  closes — once. For a check rule that is the device's next poll or the
+  next run of any of its checks, not the check's own next run, which can be
+  an hour or a day away. Deleting a window or cancelling a snooze has the
+  same effect at the next look. An alert somebody acknowledged while it was
+  muted is not announced afterwards: a person has it.
+* **a look is about the alert's own device.** `alerts.raise` takes any key
+  with any `device_id`, so a call can land on an open alert while naming
+  another device, or none. That call is a sighting — counted, with its
+  detail and severity — and decides no notice: the windows and the lab
+  setting it asked about are not the alert's. `muted_by_maintenance` stays
+  as it was, and the scheduler's pass, which asks about the device the
+  alert is about, pays what is owed. Without this a second raise that left
+  the device out announced an alert a window over that device was holding
+  back — or one about a lab device.
+* **an alert nothing looks at again still gets its notice.** A
+  configuration change is its own alert per version; a log rule or a
+  detection raises once; a threshold alert sitting between its two
+  thresholds is evaluated without being sighted. So every 15 s the
+  scheduler passes over the alerts that are open, `firing` and never
+  announced, and sends the notice of each one that nothing holds back any
+  more — at most 15 s after the window closes or the snooze runs out,
+  whether or not anything else ever looks. It asks the same question a
+  sighting asks, in the same place (`alerts::announce_if_due`), sets
+  `notified_at` and publishes `alerts.changed` with `notification:
+  "firing"` like any other announcement, and goes to the channels the
+  alert would have gone to: the ones `alerts.raise` named, else its rule's
+  as the rule stands now. The cadence is a difference of two readings of
+  the clock that cannot be set back, like the rest of the scheduler, and
+  it runs with `monitoring.enabled` off too (other features still raise
+  alerts then). Its cost is bounded: it reads from an index that holds
+  only the alerts still owing a notice, and at most 200 of them a pass,
+  carrying on from where the last pass stopped — so a thousand lab alerts
+  held back for as long as `notify_for_lab` is off cost a pass 200 rows
+  and delay another alert's notice by a few passes at most. The pass names
+  that index, so it can never quietly become a scan; for the same reason
+  the index is made again at start when the one in the database was
+  created with another condition (a pass that cannot use its index fails,
+  and would leave every held-back notice unsent).
+* one alert waits for more than that: a rule's alert last seen **before the
+  application started**, about a device the scheduler polls and has not
+  polled yet since. What the rules knew when the application was closed can
+  be hours old; the device's first poll either sights the problem again
+  (which announces it) or finds it gone and resolves it silently, and the
+  pass does not announce it a few seconds earlier on yesterday's knowledge.
+  An alert raised since the start, an alert no rule owns and an alert about
+  a device nothing polls do not wait.
 * the resolved notice goes out exactly when the firing notice did
   (`notified_at` is set), whatever window or snooze covers the alert by then:
   it closes an incident people already have open in a chat or a pager. An
   alert that was never announced resolves silently.
 * `muted_by_maintenance` is a record of the last sighting, announcement or
   resolve, not a live answer; in between it can be out of date.
+
+**An alert about a lab device reaches no channel unless `notify_for_lab` is
+on** (default off). A lab is where things are broken on purpose. The alert
+is raised, counted, listed and shown like any other (`lab: true`); only its
+notice is held back, by the same function that holds one back for a window
+or a snooze — the one place this is decided, for every source: the
+monitor's own rules, `alerts.raise` from the log rules, the detections and
+the insights. A lab device is an inventory device with `lab` set or with
+`transport: sim`. A `notify` list on `alerts.raise` does not get round it,
+nor does a rule's own channel list, a window closing, a snooze running out,
+a restart, or a later raise under the same key that names another device or
+none (above); and an alert that was never announced resolves without a
+notice, so its end is no way round either.
+Like a window, the setting is asked when a notice is due, not when the alert
+is raised: switching it on announces, at the next look or the next pass, the
+lab alerts that are still firing and were never announced, and switching it
+off leaves an alert that *was* announced with its resolved notice. While it
+is off, `alerts.changed` carries `notification: null` for a lab alert at
+every change, so the desktop shell — which shows a system notification for
+the one event whose `notification` is `"firing"` — shows none; with it on,
+a lab alert's events are those of any other alert.
+
+**Who is told** (`alerts.raise {notify}`). Absent or `null`: the usual
+routing, every enabled channel whose `min_severity` admits the alert. A
+list: those channels and no others (still subject to `enabled` and
+`min_severity`); an id that is not a channel is refused, because an alert
+that quietly reached fewer people than its caller meant is found out during
+the outage it was for. `[]`: nobody — the alert is recorded and shown,
+`notified_at` stays null for good, `alerts.changed` never carries a
+`notification` for it (so the desktop shell stays quiet too), and it
+resolves without a notice. The choice is kept on the alert (`notify`),
+because its notice can be due long after the call that named the channels:
+when a window closes, and again when `alerts.clear` — which names none —
+resolves it. Until the alert has been announced the latest raise decides;
+after that the audience stays, so the resolved notice reaches the people
+who got the firing one. A channel deleted since is simply no longer sent
+to; the alert does not fall back to everybody. A raise under a key whose
+open alert belongs to an alert rule counts a sighting of it, as it always
+has, and cannot change who that alert is announced to.
+
+**Taking an alert back** (`alerts.clear`). A feature that raised an alert
+because of something that has an opposite — a neighbour lost and found, a
+link down and up — clears it under the same `dedup_key`. That resolves the
+open alert, firing or acknowledged, with the note as its detail and its
+resolved notice if its firing notice went out; the audit entry
+(`alert.clear {alert_id, severity}`) says a condition ended, not that a
+person resolved it, and holds neither the title, the key nor the note,
+which can all carry text a device wrote. It answers `{cleared: false}`
+when nothing is open under the key — a clear that arrives twice, or for
+an alert a person already resolved, is not an error. **It cannot close an
+alert an alert rule owns** (`rule_id` set): a rule's alert resolves when
+the rule's own condition clears, and a feature that could close it by
+naming its key (`rule:<rule>:<device>:<instance>`) would hide an outage the
+rule still sees. That is refused with `forbidden`, checked again inside the
+transaction that resolves. A raise and a clear of one key that arrive
+together are each one store transaction: every raise is a sighting of
+exactly one alert, every `cleared: true` closed exactly one.
 
 Notifications: channel kinds `webhook` (generic JSON POST), `slack`,
 `teams`, `discord` (their incoming-webhook formats), `email` (SMTP with
@@ -407,9 +533,11 @@ announced late, acknowledged, snoozed, resolved). `notification` is
 handed to the channels
 (whether or not any channel is configured), `"resolved"` on the one at which
 the resolved notice was, and `null` otherwise — so a consumer that shows its
-own notification (the desktop shell) honours maintenance windows, snoozes and
-late announcements by looking at this field alone, rather than at
-`count == 1` or at `muted_by_maintenance`.
+own notification (the desktop shell) honours maintenance windows, snoozes,
+late announcements, the lab setting and `notify: []` by looking at this
+field alone, rather than at `count == 1`, at `muted_by_maintenance` or at
+`lab`. An alert raised for a list of channels is announced to the desktop
+shell as well: the event says a notice went out, not to whom.
 
 Alerts stored before `notified_at` existed are given one at the first start
 with this version: the time they were raised, unless their last sighting was
@@ -431,7 +559,54 @@ all-clear and a stale sighting arriving after the alert has moved on;
 `alerts.resolve` by id with two alerts under one key; a notice held back by
 a window or a snooze and sent at the first evaluation after it (also when a
 slow check has not run again), a resolved notice paired with its firing
-notice, and the `notification` field of `alerts.changed`; a counter cleared
+notice, and the `notification` field of `alerts.changed`; an alert raised
+once inside a window (through `alerts.raise`, and a configuration change)
+announced by the scheduler's pass after it with nothing else looking, to
+the channels its rule names, once, and its end announced too; a snooze
+running out the same way; nothing announced for an alert acknowledged,
+resolved or cleared while it was held back; a rule's alert from before the
+application started waiting for its device's first poll, which announces
+it if the problem is still there and resolves it silently if not, while a
+log rule's alert of the same night does not wait; the scheduler making the
+pass with polling switched off and the time of day set back an hour; one
+pass reading 200 of 451 owing alerts and the next carrying on; the query
+plan of the pass (the index of owing alerts, not a scan) and what that
+index holds, and an index of that name left with another condition made
+again at the next start; `alerts.raise {notify}` reaching the named channels and no
+others at raise and at resolve, `[]` reaching nobody ever, an unknown
+channel refused with nothing raised, the audience following the latest
+raise until somebody has been told, and a raise "for nobody" under a rule's
+key leaving the rule's alert to be announced; `alerts.clear` resolving by key with
+its note, answering `false` when nothing is open, closing an acknowledged
+alert, refusing a rule's alert, audited without the title, the key or the
+note, and holding under concurrent raises and clears of one key (every
+raise one sighting, every `cleared: true` one alert closed); an alert
+about a lab device — raised through `alerts.raise`, with and without a
+`notify` list, for a device in a lab and one with `transport: sim`, and
+raised by the monitor's own rule (which names the channel itself) —
+reaching a recording channel only with
+`notify_for_lab` on, with the event's `notification` null until then; a lab
+alert raised in a window, snoozed, seen again, raised again under its key
+with no device, another device and a channel named, then cleared and
+resolved, reaching no channel and no `notification` at any of it; a second
+raise that names no device or another one leaving an alert held back by a
+window over its own device unannounced until the pass after the window; a
+snooze made longer moving the notice and one taken off letting it through;
+a notice owed when the application is closed paid once by the next one, and
+not again by the one after, with what was announced before staying
+announced and a lab alert staying quiet across both; an alert cleared and
+raised again being a new alert, announced again, whatever was done to the
+first (snoozed, acknowledged); a clear landing among an acknowledgement and
+a snooze of the same alert leaving it closed; what resolves for
+`alerts.clear` refusing a rule's alert by itself; the index map asked for
+only after `monitor.polled`;
+`monitor.ifindex` against a fake agent (the agent's names as the interface
+table spells them, a nameless row and a row the poll did not read left
+out, no map for a device never read
+over SNMP against an empty map for an agent with no interfaces, read again
+on a restart, on a new port and after five minutes, kept when the read
+fails, and still there after the application is restarted on the same data
+directory); a counter cleared
 on the device
 (CLI text and 64-bit SNMP) as a gap; the CLI fallback keeping its counters
 while SNMP is on and failing; notification payloads per channel kind against a local

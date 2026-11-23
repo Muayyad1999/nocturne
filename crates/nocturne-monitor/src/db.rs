@@ -106,10 +106,51 @@ SET body = json_set(
 WHERE json_type(body, '$.notified_at') IS NULL;
 ";
 
+/// The alerts that still owe their firing notice, and only those: what the
+/// scheduler's pass over them reads (`alerts::announce_owed`). In an
+/// installation where every alert was announced when it was raised this
+/// index is empty, and the pass costs one look at it.
+///
+/// Created after the backfill above, which would otherwise put every alert
+/// of an upgraded database into it and take them out again.
+fn owed_index() -> String {
+    format!(
+        "CREATE INDEX IF NOT EXISTS monitor_alerts_owed ON monitor_alerts (started_at, id)
+         WHERE {};",
+        crate::alerts::OWED
+    )
+}
+
+/// Make the index of owed notices, and make it again when the one the
+/// database holds is not the one this version would create.
+///
+/// SQLite answers from a partial index only when the query repeats its
+/// condition, and the pass names this index so that it can never quietly
+/// become a scan. The price of that is paid here: `IF NOT EXISTS` would keep
+/// an index left by a version whose idea of "owed" read differently, the
+/// pass's statement would then fail to prepare, and every notice held back
+/// from then on would stay unsent with only a warning in the log to show
+/// for it.
+fn ensure_owed_index(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    use rusqlite::OptionalExtension;
+    let held: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'monitor_alerts_owed'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if held.is_some_and(|sql| !sql.contains(crate::alerts::OWED)) {
+        conn.execute_batch("DROP INDEX monitor_alerts_owed;")?;
+    }
+    conn.execute_batch(&owed_index())
+}
+
 pub fn init(store: &Store) -> AppResult<()> {
     store.with(|conn| {
         conn.execute_batch(SCHEMA)?;
-        conn.execute_batch(BACKFILL_NOTIFIED_AT)
+        conn.execute_batch(BACKFILL_NOTIFIED_AT)?;
+        ensure_owed_index(conn)
     })
 }
 
@@ -120,6 +161,9 @@ pub mod collections {
     pub const CHANNELS: &str = "monitor_channels";
     /// One per device: last poll, health and per-source status.
     pub const DEVICES: &str = "monitor_devices";
+    /// One per device that has answered SNMP: which ifIndex is which
+    /// interface.
+    pub const IFINDEX: &str = "monitor_ifindex";
 }
 
 /// The vault id of a channel's secret (its URL, or its SMTP password).
@@ -146,6 +190,109 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tables, 4);
+    }
+
+    #[test]
+    fn the_pass_over_owed_notices_reads_an_index_that_holds_only_those_alerts() {
+        // What bounds the cost of `alerts::announce_owed` in an installation
+        // with a hundred thousand alerts on record: it never looks at one
+        // that was announced, acknowledged or resolved.
+        let store = Store::in_memory().unwrap();
+        init(&store).unwrap();
+        let plan: Vec<String> = store
+            .with(|conn| {
+                let mut statement = conn.prepare(&format!(
+                    "EXPLAIN QUERY PLAN {}",
+                    crate::alerts::owed_query()
+                ))?;
+                statement
+                    .query_map(rusqlite::params![0, "", 200], |row| row.get(3))?
+                    .collect()
+            })
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("monitor_alerts_owed")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "and in the index's own order, with nothing sorted: {plan:?}"
+        );
+
+        // The index holds an alert exactly while a notice is owed for it.
+        let insert = |id: &str, state: &str, body: &str| {
+            store
+                .with(|conn| {
+                    conn.execute(
+                        "INSERT INTO monitor_alerts
+                         (id, dedup_key, state, severity, started_at, last_seen_at, body)
+                         VALUES (?1, ?1, ?2, 2, 1, 1, ?3)",
+                        rusqlite::params![id, state, body],
+                    )
+                })
+                .unwrap();
+        };
+        insert("owed", "firing", r#"{"notified_at":null,"notify":null}"#);
+        insert("named", "firing", r#"{"notified_at":null,"notify":["c1"]}"#);
+        insert("told", "firing", r#"{"notified_at":5,"notify":null}"#);
+        insert("nobody", "firing", r#"{"notified_at":null,"notify":[]}"#);
+        insert(
+            "taken",
+            "acknowledged",
+            r#"{"notified_at":null,"notify":null}"#,
+        );
+        insert("over", "resolved", r#"{"notified_at":null,"notify":null}"#);
+        let mut indexed: Vec<String> = store
+            .with(|conn| {
+                let mut statement = conn.prepare(&format!(
+                    "SELECT id FROM monitor_alerts INDEXED BY monitor_alerts_owed WHERE {}",
+                    crate::alerts::OWED
+                ))?;
+                statement.query_map([], |row| row.get(0))?.collect()
+            })
+            .unwrap();
+        indexed.sort();
+        assert_eq!(indexed, ["named", "owed"]);
+    }
+
+    #[test]
+    fn an_index_of_owed_notices_left_by_another_version_is_made_again() {
+        let store = Store::in_memory().unwrap();
+        init(&store).unwrap();
+        let prepares = |store: &Store| {
+            store.with(|conn| conn.prepare(&crate::alerts::owed_query()).map(|_| ()))
+        };
+        prepares(&store).unwrap();
+
+        // The index as a version with another idea of what is owed would
+        // have left it: same name, a condition the pass does not repeat.
+        store
+            .with(|conn| {
+                conn.execute_batch(
+                    "DROP INDEX monitor_alerts_owed;
+                     CREATE INDEX monitor_alerts_owed ON monitor_alerts (started_at, id)
+                     WHERE state = 'firing' AND json_extract(body, '$.lab') = 0;",
+                )
+            })
+            .unwrap();
+        assert!(
+            prepares(&store).is_err(),
+            "the pass cannot read from that index, which is what makes this worth a test"
+        );
+
+        // The next start.
+        init(&store).unwrap();
+        prepares(&store).unwrap();
+        let condition: String = store
+            .with(|conn| {
+                conn.query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = 'monitor_alerts_owed'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .unwrap();
+        assert!(condition.contains(crate::alerts::OWED), "{condition}");
     }
 
     #[test]

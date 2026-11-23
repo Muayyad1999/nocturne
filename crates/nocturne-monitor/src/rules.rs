@@ -698,6 +698,9 @@ fn evaluate_inner(app: &App, poll: &Poll) -> AppResult<()> {
         let (findings, complete) = evaluate_rule(app, &rule, &facts, now)?;
         apply_findings(app, &state, &rule, &device, &findings, complete, now)?;
     }
+    // From here on what the device's alerts say is from this run of the
+    // application, and a notice they still owe may go out on it.
+    state.device(&device.id, |runtime| runtime.evaluated = true);
     Ok(())
 }
 
@@ -796,6 +799,7 @@ fn apply_findings(
                     detail: finding.detail.clone(),
                     value: finding.value,
                     notify: rule.notify.clone(),
+                    only: None,
                     observed_at: finding.observed_at,
                 };
                 alerts::fire(app, &spec, now)?;
@@ -870,6 +874,7 @@ pub fn on_config_changed(app: &App, device_id: &str, payload: &Value) -> AppResu
             detail: format!("{added} lines added, {removed} removed."),
             value: None,
             notify: rule.notify.clone(),
+            only: None,
             observed_at: None,
         };
         alerts::fire(app, &spec, now)?;
