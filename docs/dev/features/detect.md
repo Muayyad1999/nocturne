@@ -69,7 +69,7 @@ silent.
 | `unplanned_reload` | medium | `logs.signal` with `kind: "reload"`, against `changes.list {device_id}`, the core's jobs of a kind that can change a device (`changes.apply`, `changes.rollback`, `automation.ansible`) and, for a simulated device, the lab's own record of restarting it (audit entries `labs.start`, `labs.reset`, `labs.node.config_set` naming its lab) | "<device> restarted and nothing Nocturne was doing explains it" | a reload on a device that sends no syslog; why it restarted |
 | `host_key_changed` | critical | `connect.host_key_changed {host, port, known, presented}` | "<device> presented a different SSH host key" with both fingerprints | a key that changed between two connections to a device nobody connects to; whether the device was re-keyed or the connection intercepted |
 | `unredacted_config_views` | medium | the audit trail: `config.view_unredacted` entries | "<n> unredacted configuration views in <m> minutes" | who: there are no users (below); an unredacted export to disk, which is one `config.export` entry however many devices it covers |
-| `secrets_changed` | info | the audit trail: `credential.save`, `credential.delete`, `vault.set_password {change}` | a credential was saved (created or replaced — the entry does not say which) or deleted; the vault's master password was set, changed or removed (`high` for removed) | whether a save made a new credential or replaced an old one |
+| `secrets_changed` | info | the audit trail: `credential.save {change, secrets_added, secrets_replaced, secrets_removed}`, `credential.delete`, `vault.set_password {change}` | the secrets of a stored credential were changed (added, replaced or removed) or a credential was deleted; the vault's master password was set, changed or removed (`high` for removed). A new credential is not a hit | a save recorded before the audit entry said what it changed |
 | `failed_unlocks` | high | the audit trail: `vault.wrong_password` entries, and `server.token_refused {bad_token}` entries | "<n> wrong vault passwords in <m> minutes", or "<n> requests to the server with a wrong access token in <m> minutes" — counted apart | an attacker who guesses right the first time; requests with no token at all (recorded, not counted: a scanner is not a guess) |
 | `protected_change_outside_window` | info | `changes.changed` for a finished change with protected hits, against `maintenance.list` | "<change> touched protected resources on <device> outside any maintenance window" | a device whose change `failed`: the summary does not say whether anything was sent to it; when each device of a long change was done: the change is judged at the moment all of it finished |
 
@@ -83,8 +83,13 @@ something that is not so, it was corrected:
   the evidence lists the candidates. The core publishes the event on every
   connection attempt, so the same key from the same host is one hit per
   24 hours (remembered in memory: a restart can repeat it once).
-* `credential.save` is written for a new credential and for a replaced one
-  alike, with no detail, so the detection says "saved (created or replaced)".
+* `credential.save` used to be written for a new credential and for a
+  replaced one alike, with no detail, so the detection fired on both and
+  every first device anybody added came with an alert. The entry now carries
+  `{change: created | updated, secrets_added, secrets_replaced,
+  secrets_removed}` (the names of the parts, never a value), and only an
+  `updated` entry that names a secret is a hit. An entry without the detail
+  is not guessed at.
 * `vault.set_password` used to carry no detail; it now carries `{change:
   set | changed | removed | unchanged}` (below), which is what "`high` for
   removed" is decided from.

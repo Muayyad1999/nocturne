@@ -155,14 +155,37 @@ pub fn unredacted_views(
 /// password was set, changed or removed.
 pub fn secrets_changed(entry: &LogEntry) -> Option<Finding> {
     let (title, severity, key) = match entry.source.as_str() {
-        // Which credential is in the audit entry the evidence names. The
-        // entry does not say whether the save made a new credential or
-        // replaced the secrets of an old one, so neither does this.
-        CREDENTIAL_SAVE => (
-            "A credential was saved (created or replaced)".to_string(),
-            Severity::Info,
-            "credential_saved",
-        ),
+        // Which credential is in the audit entry the evidence names.
+        CREDENTIAL_SAVE => {
+            let body = entry.body.as_ref();
+            let wrote = |part: &str| {
+                body.and_then(|body| body[part].as_array())
+                    .is_some_and(|names| !names.is_empty())
+            };
+            match body.and_then(|body| body["change"].as_str()) {
+                // Somebody setting the application up. It is in the audit
+                // trail; it is not something to be told about. Before this
+                // was told apart every first device anybody added came with
+                // an alert.
+                Some("created") => return None,
+                Some("updated")
+                    if wrote("secrets_replaced")
+                        || wrote("secrets_removed")
+                        || wrote("secrets_added") =>
+                {
+                    (
+                        "The secrets of a stored credential were changed".to_string(),
+                        Severity::Info,
+                        "credential_saved",
+                    )
+                }
+                // A name, a user or a note was edited: no secret moved.
+                Some("updated") => return None,
+                // An entry that does not say what the save was (written by
+                // a version before it did) is not guessed at.
+                _ => return None,
+            }
+        }
         CREDENTIAL_DELETE => (
             "A credential was deleted".to_string(),
             Severity::Info,
@@ -325,6 +348,40 @@ mod tests {
             source: action.into(),
             message: "…".into(),
             body,
+        }
+    }
+
+    #[test]
+    fn a_save_is_a_hit_only_when_it_says_a_stored_credentials_secret_moved() {
+        let save = |body: Option<Value>| secrets_changed(&entry(CREDENTIAL_SAVE, body));
+        let said = |change: &str, added: &[&str], replaced: &[&str], removed: &[&str]| {
+            Some(json!({
+                "change": change, "secrets_added": added,
+                "secrets_replaced": replaced, "secrets_removed": removed,
+            }))
+        };
+        for moved in [
+            said("updated", &[], &["password"], &[]),
+            said("updated", &["enable"], &[], &[]),
+            said("updated", &[], &[], &["snmp_community"]),
+        ] {
+            let finding = save(moved.clone()).unwrap_or_else(|| panic!("{moved:?} is a hit"));
+            assert_eq!(
+                finding.title,
+                "The secrets of a stored credential were changed"
+            );
+            assert_eq!(finding.severity, Severity::Info);
+        }
+        // A new credential, an edit that moved no secret, and an entry from
+        // before the trail said which it was: none is guessed into a hit.
+        for quiet in [
+            said("created", &["password"], &[], &[]),
+            said("updated", &[], &[], &[]),
+            Some(json!({"change": "updated"})),
+            Some(json!({})),
+            None,
+        ] {
+            assert!(save(quiet.clone()).is_none(), "{quiet:?} is not a hit");
         }
     }
 

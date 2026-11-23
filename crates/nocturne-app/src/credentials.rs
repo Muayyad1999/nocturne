@@ -114,15 +114,40 @@ pub fn create(app: &App, input: CredentialInput) -> AppResult<Credential> {
         created_at: now,
         ..Credential::default()
     };
-    apply(app, credential, input)
+    apply(app, credential, input, Saved::Created)
 }
 
 pub fn update(app: &App, id: &str, input: CredentialInput) -> AppResult<Credential> {
     let credential: Credential = app.store().require(CREDENTIALS, id, "credential")?;
-    apply(app, credential, input)
+    apply(app, credential, input, Saved::Updated)
 }
 
-fn apply(app: &App, mut credential: Credential, input: CredentialInput) -> AppResult<Credential> {
+/// What a save was, for the audit trail.
+///
+/// The entry used to say "saved" and nothing else, so nothing reading the
+/// trail could tell somebody setting the application up from somebody
+/// swapping the password of a credential forty devices log in with. The
+/// first is a day's ordinary work; the second is worth being told about.
+#[derive(Clone, Copy)]
+enum Saved {
+    Created,
+    Updated,
+}
+
+/// Which secrets a save wrote, by the name of the part and never its value.
+#[derive(Default)]
+struct Touched {
+    added: Vec<&'static str>,
+    replaced: Vec<&'static str>,
+    removed: Vec<&'static str>,
+}
+
+fn apply(
+    app: &App,
+    mut credential: Credential,
+    input: CredentialInput,
+    saved: Saved,
+) -> AppResult<Credential> {
     if let Some(name) = input.name {
         credential.name = name.trim().to_string();
     }
@@ -178,15 +203,24 @@ fn apply(app: &App, mut credential: Credential, input: CredentialInput) -> AppRe
 
     // Secrets: write the vault first so a locked vault fails before anything is stored.
     let id = credential.id.clone();
-    let set = |part: &str, value: Option<String>, flag: &mut bool| -> AppResult<()> {
+    let mut touched = Touched::default();
+    let mut set = |part: &'static str, value: Option<String>, flag: &mut bool| -> AppResult<()> {
         match value {
             None => {}
             Some(value) if value.is_empty() => {
                 app.vault().delete(&secret_id(&id, part))?;
+                if *flag {
+                    touched.removed.push(part);
+                }
                 *flag = false;
             }
             Some(value) => {
                 app.vault().put(&secret_id(&id, part), &value)?;
+                if *flag {
+                    touched.replaced.push(part);
+                } else {
+                    touched.added.push(part);
+                }
                 *flag = true;
             }
         }
@@ -239,7 +273,16 @@ fn apply(app: &App, mut credential: Credential, input: CredentialInput) -> AppRe
         "credential.save",
         None,
         format!("Saved credential `{}`", credential.name),
-        serde_json::Value::Null,
+        // The names of the parts, never what was put in them.
+        json!({
+            "change": match saved {
+                Saved::Created => "created",
+                Saved::Updated => "updated",
+            },
+            "secrets_added": touched.added,
+            "secrets_replaced": touched.replaced,
+            "secrets_removed": touched.removed,
+        }),
     );
     app.publish("credentials.changed", &json!({"id": credential.id}));
     Ok(credential)
@@ -404,6 +447,85 @@ mod tests {
                 .to_string()
                 .contains("Campus admin")
         );
+    }
+
+    /// The whole core, where the audit trail can be read back.
+    fn whole_core() -> App {
+        let mut builder = AppBuilder::new(AppConfig::in_memory()).unwrap();
+        crate::init(&mut builder);
+        builder.build()
+    }
+
+    /// The `credential.save` entries of the audit trail, oldest first.
+    async fn saves(app: &App) -> Vec<Value> {
+        let audit = app
+            .rpc("audit.list", json!({"text": "credential.save"}))
+            .await
+            .unwrap();
+        let mut entries: Vec<Value> = audit["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["source"] == "credential.save")
+            .cloned()
+            .collect();
+        entries.sort_by_key(|entry| entry["id"].as_i64());
+        entries
+    }
+
+    #[tokio::test]
+    async fn the_audit_trail_tells_a_new_credential_from_one_whose_secrets_were_changed() {
+        let app = whole_core();
+        let created = app
+            .rpc(
+                "credentials.create",
+                json!({"name": "Campus", "username": "netops", "password": "first-Secret!"}),
+            )
+            .await
+            .unwrap();
+        // The password is swapped, an enable secret is added, nothing removed.
+        app.rpc(
+            "credentials.update",
+            json!({"id": created["id"], "password": "second-Secret!", "enable_secret": "en-Secret!"}),
+        )
+        .await
+        .unwrap();
+        // The enable secret is taken away again.
+        app.rpc(
+            "credentials.update",
+            json!({"id": created["id"], "enable_secret": ""}),
+        )
+        .await
+        .unwrap();
+        // A note: no secret is touched.
+        app.rpc(
+            "credentials.update",
+            json!({"id": created["id"], "notes": "rotated in March"}),
+        )
+        .await
+        .unwrap();
+
+        let saves = saves(&app).await;
+        let said: Vec<&Value> = saves.iter().map(|entry| &entry["body"]).collect();
+        assert_eq!(
+            said,
+            [
+                &json!({"change": "created", "secrets_added": ["password"],
+                        "secrets_replaced": [], "secrets_removed": []}),
+                &json!({"change": "updated", "secrets_added": ["enable"],
+                        "secrets_replaced": ["password"], "secrets_removed": []}),
+                &json!({"change": "updated", "secrets_added": [],
+                        "secrets_replaced": [], "secrets_removed": ["enable"]}),
+                &json!({"change": "updated", "secrets_added": [],
+                        "secrets_replaced": [], "secrets_removed": []}),
+            ],
+            "{saves:#?}"
+        );
+        // The names of the parts, and nothing that was put in them.
+        let trail = format!("{saves:?}");
+        for secret in ["first-Secret!", "second-Secret!", "en-Secret!"] {
+            assert!(!trail.contains(secret), "{trail}");
+        }
     }
 
     #[tokio::test]

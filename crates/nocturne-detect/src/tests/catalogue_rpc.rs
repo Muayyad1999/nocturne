@@ -107,16 +107,24 @@ async fn the_list_is_the_fixed_catalogue_and_says_what_each_is_decided_from() {
         assert_eq!(entry.get("unavailable_reason"), None, "{}", entry["id"]);
         assert_eq!(entry.get("last_error"), None, "{}", entry["id"]);
     }
-    // Nothing has fired but the report of the lab's own credential.
+    // Nothing has fired: making the lab's own credential is not a hit.
     for entry in list {
-        if entry["id"] == SECRETS_CHANGED {
-            assert_eq!(entry["hits_24h"], 1);
-            assert!(entry["last_hit_at"].is_i64());
-        } else {
-            assert_eq!(entry["hits_24h"], 0, "{}", entry["id"]);
-            assert_eq!(entry.get("last_hit_at"), None, "{}", entry["id"]);
-        }
+        assert_eq!(entry["hits_24h"], 0, "{}", entry["id"]);
+        assert_eq!(entry.get("last_hit_at"), None, "{}", entry["id"]);
     }
+
+    // And one that has fired says so, and when.
+    let app = &world.app;
+    app.rpc(
+        "credentials.update",
+        json!({"id": world.lab.credential_id, "password": "another-Secret!"}),
+    )
+    .await
+    .unwrap();
+    settle(app).await;
+    let entry = listed(app, SECRETS_CHANGED).await;
+    assert_eq!(entry["hits_24h"], 1);
+    assert!(entry["last_hit_at"].is_i64());
 }
 
 #[tokio::test]
@@ -299,16 +307,16 @@ async fn switched_off_as_a_whole_nothing_fires_and_every_entry_says_so() {
     said_so(app, &sw1, now());
     key_mismatch(app, "10.0.0.1");
     app.rpc(
-        "credentials.create",
-        json!({"name": "Campus", "username": "netops", "password": "pw"}),
+        "credentials.update",
+        json!({"id": world.lab.credential_id, "password": "another-Secret!"}),
     )
     .await
     .unwrap();
     settle(app).await;
 
-    // Only what was there before the switch.
+    // Three things that are each a hit when the detections are on.
     let all = recent(app, json!({})).await;
-    assert_eq!(all.len(), 1, "{all:#?}");
+    assert_eq!(all, Vec::<Value>::new(), "{all:#?}");
     let list = app.rpc("detections.list", Value::Null).await.unwrap();
     for entry in list.as_array().unwrap() {
         assert_eq!(entry["enabled"], false, "{}", entry["id"]);
@@ -342,9 +350,9 @@ async fn recent_is_newest_first_and_filters_by_detection_device_time_and_limit()
     let config = recent(app, json!({"id": UNPLANNED_CONFIG_CHANGE})).await;
     assert_eq!(at(&config), [t0 - MINUTE, t0 - 2 * MINUTE, t0 - 3 * MINUTE]);
 
-    // Everything: the three, the host key, and the lab's credential.
+    // Everything: the three and the host key.
     let all = recent(app, Value::Null).await;
-    assert_eq!(all.len(), 5, "{all:#?}");
+    assert_eq!(all.len(), 4, "{all:#?}");
     assert_eq!(all[0]["detection"], HOST_KEY_CHANGED);
 
     let of_sw2 = recent(app, json!({"device_id": sw2})).await;

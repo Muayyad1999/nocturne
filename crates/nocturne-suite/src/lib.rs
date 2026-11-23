@@ -25,6 +25,13 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_toolbox::init(builder);
     nocturne_topology::init(builder);
     nocturne_monitor::init(builder);
+    // After everything it watches: the log collector's signals, new
+    // configuration versions, the change engine's records, the core's audit
+    // trail, and monitoring, through which every hit is raised as an alert.
+    // It reaches all of them by name, and a detection whose source is not in
+    // the build lists itself as unavailable; `tests/detections.rs` holds the
+    // assembled application to "none is".
+    nocturne_detect::init(builder);
     // After monitoring and the topology, which it asks for alerts, interface
     // rates and links when they are there, and does without when they are not.
     nocturne_insights::init(builder);
@@ -197,6 +204,10 @@ mod tests {
             "notes.save",
             "search.query",
             "audit.search",
+            // detections
+            "detections.list",
+            "detections.set_enabled",
+            "detections.recent",
             "evidence.capture_terminal",
             "evidence.capture_log",
             "evidence.capture_topology",

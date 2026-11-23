@@ -22,6 +22,7 @@ nocturne-assistant.workspace = true
 nocturne-automation.workspace = true
 nocturne-changes.workspace = true
 nocturne-config.workspace = true
+nocturne-detect.workspace = true
 nocturne-discovery.workspace = true
 nocturne-insights.workspace = true
 nocturne-ipam.workspace = true
@@ -41,6 +42,9 @@ serde_json.workspace = true
 # is the only crate where the assistant and the change engine are both real.
 nocturne-app = { workspace = true, features = ["testing"] }
 nocturne-ai.workspace = true
+# `tests/detections.rs` needs a data directory: a vault has a master password
+# only on disk.
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -204,12 +204,12 @@ async fn without_the_config_feature_views_are_unavailable_with_the_reason() {
 // --------------------------------------------------------- secrets_changed
 
 #[tokio::test]
-async fn saving_and_deleting_a_credential_are_each_a_hit_naming_the_audit_entry() {
+async fn changing_a_stored_credentials_secrets_and_deleting_it_are_hits_and_making_one_is_not() {
     let world = world(Build::FULL).await;
     let app = &world.app;
-    // The lab's own credential was saved while the world was assembled.
-    let before = hits_of(app, SECRETS_CHANGED).await.len();
-    assert_eq!(before, 1);
+    // The lab's own credential was made while the world was assembled, and
+    // making a credential is somebody setting the application up.
+    assert_eq!(hits_of(app, SECRETS_CHANGED).await, Vec::<Value>::new());
 
     let credential = app
         .rpc(
@@ -218,26 +218,48 @@ async fn saving_and_deleting_a_credential_are_each_a_hit_naming_the_audit_entry(
         )
         .await
         .unwrap();
+    // A note is edited: no secret moved.
+    app.rpc(
+        "credentials.update",
+        json!({"id": credential["id"], "notes": "used by the access switches"}),
+    )
+    .await
+    .unwrap();
+    settle(app).await;
+    assert_eq!(
+        hits_of(app, SECRETS_CHANGED).await,
+        Vec::<Value>::new(),
+        "a new credential and an edited note are in the audit trail, not in the detections"
+    );
+
+    // The password forty switches log in with is swapped.
+    app.rpc(
+        "credentials.update",
+        json!({"id": credential["id"], "password": "Swapped-Secret!"}),
+    )
+    .await
+    .unwrap();
     app.rpc("credentials.delete", json!({"id": credential["id"]}))
         .await
         .unwrap();
     settle(app).await;
 
     let hits = hits_of(app, SECRETS_CHANGED).await;
-    assert_eq!(hits.len(), before + 2, "{hits:#?}");
+    assert_eq!(hits.len(), 2, "{hits:#?}");
     let (deleted, saved) = (&hits[0], &hits[1]);
     assert_eq!(
         saved["title"],
-        "A credential was saved (created or replaced)"
+        "The secrets of a stored credential were changed"
     );
     assert_eq!(deleted["title"], "A credential was deleted");
     for hit in [saved, deleted] {
         assert_eq!(hit["severity"], "info");
         assert_eq!(hit.get("device_id"), None);
     }
+    // The lab's credential, Campus made, its note, then the swap.
     assert_eq!(
         saved["evidence"]["audit_entry_id"],
-        json!(audit_ids(app, "credential.save")[1])
+        json!(audit_ids(app, "credential.save")[3])
     );
     assert_eq!(
         deleted["evidence"]["audit_entry_id"],
@@ -251,6 +273,7 @@ async fn saving_and_deleting_a_credential_are_each_a_hit_naming_the_audit_entry(
         stored_events(app, SECRETS_CHANGED)
     );
     assert!(!everything.contains("TopSecret!"), "{everything}");
+    assert!(!everything.contains("Swapped-Secret!"), "{everything}");
     assert_eq!(
         world
             .fakes
@@ -493,7 +516,14 @@ async fn the_audit_detections_need_nothing_but_the_core() {
         let entry = listed(app, id).await;
         assert_eq!(entry["available"], true, "{id}");
     }
-    // The lab's credential was reported even here; it just raised no alert.
+    // A swapped password is reported even here; it just raises no alert.
+    app.rpc(
+        "credentials.update",
+        json!({"id": world.lab.credential_id, "password": "another-Secret!"}),
+    )
+    .await
+    .unwrap();
+    settle(app).await;
     let hits = hits_of(app, SECRETS_CHANGED).await;
     assert_eq!(hits.len(), 1, "{hits:#?}");
     assert_eq!(hits[0].get("alert_id"), None);

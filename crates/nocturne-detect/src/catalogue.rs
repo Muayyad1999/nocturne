@@ -64,10 +64,10 @@ pub const CATALOGUE: [Detection; 7] = [
     Detection {
         id: SECRETS_CHANGED,
         name: "Credentials or master password changed",
-        description: "A credential was saved or deleted, or the vault's master password was set, changed or removed.",
+        description: "The secrets of a stored credential were changed, a credential was deleted, or the vault's master password was set, changed or removed. A new credential is not a hit.",
         severity: Severity::Info,
-        decided_from: "The audit trail: `credential.save`, `credential.delete` and `vault.set_password` entries.",
-        cannot_see: "Whether a saved credential is new or replaces an old one: the audit entry does not say. Who did it.",
+        decided_from: "The audit trail: `credential.save` entries that say an existing credential's secrets were added, replaced or removed, `credential.delete` and `vault.set_password` entries.",
+        cannot_see: "A save recorded before the audit entry said what it changed. Who did it.",
     },
     Detection {
         id: FAILED_UNLOCKS,
