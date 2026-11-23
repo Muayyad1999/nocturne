@@ -4146,6 +4146,7 @@ dependencies = [
  "nocturne-automation",
  "nocturne-changes",
  "nocturne-config",
+ "nocturne-detect",
  "nocturne-discovery",
  "nocturne-insights",
  "nocturne-ipam",
@@ -4158,6 +4159,7 @@ dependencies = [
  "nocturne-toolbox",
  "nocturne-topology",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
