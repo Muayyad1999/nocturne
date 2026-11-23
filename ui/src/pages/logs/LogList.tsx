@@ -4,10 +4,14 @@
  *
  * **The tail sticks to the bottom until the reader scrolls up, and then stops
  * fighting them.** That is the whole behaviour contract. Pinning is derived
- * from one number — how far the viewport is from the bottom — so scrolling up
- * unpins, scrolling back down pins again, and the list never yanks a reader
- * who is in the middle of something back to the end. While unpinned the arrived
- * lines still go into the view; they just wait there.
+ * from how far the viewport is from the bottom and which way the last scroll
+ * went (`scrollVerdict`): scrolling up unpins, scrolling back down pins again,
+ * and the list never yanks a reader who is in the middle of something back to
+ * the end. The direction matters because a scroll event is read when it is
+ * dispatched: the list's own jump to its end, read after the tab above it
+ * grew, looks like "not at the end" and must not unpin a tail nobody touched.
+ * While unpinned the arrived lines still go into the view; they just wait
+ * there.
  *
  * Every row is exactly one line high and the widths are in `ch` of the
  * monospace face, so the columns line up and nothing reflows as the list fills.
@@ -32,15 +36,13 @@ import { Icon } from '@/design/Icon';
 import { formatCount } from '@/lib/format';
 import { formatTime } from '@/lib/time';
 import { PAGE } from './data';
-import { clockOf, interfaceOf, tagOf } from './entry';
+import { clockOf, interfaceOf, severityCell, tagOf } from './entry';
 import styles from './Logs.module.css';
 import { bandOf, severityName } from './query';
-import type { Row, Stream } from './stream';
+import { AT_END_PX, scrollVerdict, type Row, type Stream } from './stream';
 
 /** One line, one row. Must match `--log-row` in the stylesheet. */
 const ROW = 22;
-/** Nearer the bottom than this counts as "at the bottom". */
-const AT_BOTTOM = 8;
 
 /** The short word for a severity in a dense row: `err`, `warn`, `dbg`. */
 const SHORT: Record<number, string> = {
@@ -58,6 +60,8 @@ export interface LogListProps {
   stream: Stream;
   /** The live tail is on: the list should sit at the bottom to begin with. */
   tail: boolean;
+  /** What the middle column holds for the stream on screen: `Mnemonic`, `Notification`, … */
+  tagHeader: string;
   /** Device id → name, for the device column. */
   nameOf: (id: string | null | undefined) => string;
   /** The id of the row the drawer is showing, if any. */
@@ -75,6 +79,7 @@ export interface LogListProps {
 export function LogList({
   stream,
   tail,
+  tagHeader,
   nameOf,
   openId,
   onOpen,
@@ -127,7 +132,7 @@ export function LogList({
       return;
     }
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (distance <= AT_BOTTOM) setPinned(true);
+    if (distance <= AT_END_PX) setPinned(true);
   });
 
   useEffect(() => sync(), [rows.length, pinned]);
@@ -149,11 +154,21 @@ export function LogList({
 
   useEffect(() => onPinnedChange(pinned), [pinned, onPinnedChange]);
 
+  /** Where the list was at the previous scroll event: which way a scroll went. */
+  const lastTop = useRef(0);
   const onScroll = () => {
     const element = scroller.current;
     if (!element) return;
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    setPinned(distance <= AT_BOTTOM);
+    const verdict = scrollVerdict({
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      top: element.scrollTop,
+      lastTop: lastTop.current,
+      pinned: pinnedRef.current,
+    });
+    lastTop.current = element.scrollTop;
+    if (verdict === 'pin') setPinned(true);
+    else if (verdict === 'unpin') setPinned(false);
+    else if (verdict === 'restick') element.scrollTop = element.scrollHeight;
     if (element.scrollTop === 0 && hasOlder && !loadingOlder) loadOlder();
   };
 
@@ -164,12 +179,12 @@ export function LogList({
   };
 
   return (
-    <div className={styles.listFrame}>
+    <div className={styles.listFrame} data-empty={rows.length === 0 || undefined}>
       <div className={styles.listHead} aria-hidden="true">
         <span className={styles.colTime}>Received</span>
         <span className={styles.colSeverity}>Sev</span>
         <span className={styles.colDevice}>Device</span>
-        <span className={styles.colTag}>Mnemonic</span>
+        <span className={styles.colTag}>{tagHeader}</span>
         <span className={styles.colMessage}>Message</span>
       </div>
 
@@ -243,11 +258,13 @@ function LineRow({ row, nameOf, open, onOpen }: LineRowProps) {
   const band = bandOf(entry.severity);
   const device = entry.device_id == null ? null : nameOf(entry.device_id);
   const port = interfaceOf(entry);
+  const severity = severityCell(entry);
   return (
     <button
       type="button"
       className={styles.row}
       data-band={band}
+      data-stream={entry.stream}
       data-open={open || undefined}
       onClick={() => onOpen(entry)}
       title={clock.note}
@@ -256,8 +273,19 @@ function LineRow({ row, nameOf, open, onOpen }: LineRowProps) {
         {formatTime(entry.ts)}
         {clock.shown === 'device' && <span className={styles.clockMark}>d</span>}
       </span>
-      <span className={styles.colSeverity} data-band={band}>
-        {entry.severity == null ? '—' : (SHORT[entry.severity] ?? severityName(entry.severity))}
+      {/* Three different things: a severity, a line that gave none (a dash),
+          and a trap, which has none to give (nothing at all). */}
+      <span
+        className={styles.colSeverity}
+        data-band={band}
+        data-severity={severity.kind}
+        title={severity.kind === 'none' ? 'A trap carries no severity' : undefined}
+      >
+        {severity.kind === 'given'
+          ? (SHORT[severity.severity ?? -1] ?? severityName(severity.severity))
+          : severity.kind === 'unsaid'
+            ? '—'
+            : ''}
       </span>
       <span className={styles.colDevice} data-unattributed={device === null || undefined}>
         {device ?? entry.source}

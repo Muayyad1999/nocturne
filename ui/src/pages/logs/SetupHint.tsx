@@ -13,54 +13,46 @@
  *
  * Those lines are text. `logs.device_setup` applies nothing, and neither does
  * this screen: configuration goes through the change pipeline, and the note
- * under the block says so.
+ * under the block says so. The hint is about whichever receiver fills the
+ * stream being looked at: the syslog lines for the syslog stream, the SNMP
+ * notification lines for the trap stream (`DeviceSetup.tsx`).
  *
  * The other half is the addresses that *have* sent and that no device claims.
  * A line filed against no device is still a line, and the inventory entry that
  * would claim it is one click away.
  */
 
-import { CircleAlert, Download, PlugZap, Radio, TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
-import { Link } from 'react-router';
+import { CircleAlert, PlugZap, Radio, TriangleAlert } from 'lucide-react';
 import type { Device } from '@/api/types/core';
-import type { LogSource, LogsStatus } from '@/api/types/logs';
+import type { LogSource } from '@/api/types/logs';
 import { Button } from '@/design/Button';
 import { Card } from '@/design/Card';
-import { CodeBlock } from '@/design/CodeBlock';
-import { Combobox } from '@/design/Combobox';
-import { ErrorState } from '@/design/ErrorState';
 import { Icon } from '@/design/Icon';
 import { Panel } from '@/design/Panel';
 import { Table, type TableColumn } from '@/design/Table';
 import { TimeAgo } from '@/design/TimeAgo';
 import { formatCount, plural } from '@/lib/format';
 import type { Verdict } from './coverage';
-import { useDeviceSetup, useEnableReceiver, useLogSettings, usePull } from './data';
+import { useLogSettings, useSetLogSettings } from './data';
+import { DeviceSetup } from './DeviceSetup';
 import styles from './Logs.module.css';
+import type { Capabilities } from './panes';
+import { enablePatch, wouldBind } from './receivers';
 
 export interface SetupHintProps {
+  /** Which receiver, and what is wrong with it. */
   verdict: Verdict;
-  status: LogsStatus;
+  capabilities: Capabilities;
   devices: readonly Device[];
   /** The device the screen is filtered to, if any: the one to explain first. */
   deviceId: string | null;
 }
 
-export function SetupHint({ verdict, status, devices, deviceId }: SetupHintProps) {
-  const settings = useLogSettings();
-  const enable = useEnableReceiver();
-  const pull = usePull();
-
-  // The device to show the lines for: the one being looked at, else the first
-  // one whose platform is known, because only then are the lines real.
-  const withProfile = devices.filter((device) => device.profile !== '');
-  const [chosen, setChosen] = useState<string | null>(null);
-  const device = chosen ?? deviceId ?? withProfile[0]?.id ?? devices[0]?.id ?? null;
-  const setup = useDeviceSetup(device);
-  const port = setup.data?.udp_port ?? settings.data?.syslog.udp_port;
-
+export function SetupHint({ verdict, capabilities, devices, deviceId }: SetupHintProps) {
+  const settings = useLogSettings(capabilities.settingsRead);
+  const enable = useSetLogSettings('The receiver could not be switched on');
   const tone = verdict.kind === 'failed' ? 'crit' : 'warn';
+  const opens = wouldBind(verdict.receiver, settings.data);
 
   return (
     <Card
@@ -81,102 +73,28 @@ export function SetupHint({ verdict, status, devices, deviceId }: SetupHintProps
             </p>
           )}
         </div>
-        {verdict.kind === 'off' && (
+        {verdict.kind === 'off' && capabilities.settingsWrite && (
           <Button
             variant="primary"
             icon={PlugZap}
             loading={enable.isPending}
             onClick={() =>
-              enable.mutate({ section: 'logs', value: { syslog: { enabled: true } } })
+              enable.mutate({ section: 'logs', value: enablePatch(verdict.receiver, true) })
             }
-            title={
-              settings.data
-                ? `Opens UDP ${settings.data.syslog.udp_port}${
-                    settings.data.syslog.tcp_port === 0
-                      ? ''
-                      : ` and TCP ${settings.data.syslog.tcp_port}`
-                  } on ${settings.data.syslog.bind}`
-                : 'Opens a listening socket on this machine'
-            }
+            title={opens === null ? 'Opens a listening socket on this machine' : `Opens ${opens}`}
           >
             Turn the receiver on
           </Button>
         )}
       </div>
 
-      {devices.length === 0 ? (
-        <p className={styles.hintDetail}>
-          There are no devices yet, so there is no platform to write the lines for.{' '}
-          <Link to="/devices">Add a device</Link> and the exact commands for it appear here.
-        </p>
-      ) : (
-        <div className={styles.hintBody}>
-          <div className={styles.hintRow}>
-            <label className={styles.hintLabel} htmlFor="logs-setup-device">
-              Point this device at Nocturne
-            </label>
-            <Combobox
-              id="logs-setup-device"
-              className={styles.hintPicker}
-              size="sm"
-              aria-label="Device to show the syslog commands for"
-              value={device}
-              onChange={setChosen}
-              options={devices.map((entry) => ({
-                value: entry.id,
-                label: entry.name,
-                description: entry.profile === '' ? 'platform not known yet' : entry.profile,
-              }))}
-              emptyText="No such device"
-            />
-            <Button
-              size="sm"
-              icon={Download}
-              loading={pull.isPending}
-              disabled={device === null}
-              onClick={() => device && pull.mutate({ device_id: device })}
-              title="Reads the device's own log buffer over the read-only CLI. Nothing is configured and nothing is sent."
-            >
-              Read its buffer instead
-            </Button>
-          </div>
-
-          {setup.isError ? (
-            <ErrorState
-              size="compact"
-              title="The lines for this device are not known"
-              error={setup.error}
-            />
-          ) : setup.data ? (
-            <>
-              <CodeBlock
-                code={setup.data.lines.join('\n')}
-                title={`${devices.find((entry) => entry.id === device)?.name ?? 'This device'} · ${setup.data.profile} · syslog to ${setup.data.address}${port === undefined ? '' : `:${port}`}`}
-                copyable
-                lineNumbers
-              />
-              <p className={styles.hintDetail}>
-                {setup.data.address} is {setup.data.address_note}. {setup.data.note}
-              </p>
-            </>
-          ) : null}
-
-          {pull.data && (
-            <p className={styles.hintDetail} data-testid="pull-result">
-              {pull.data.note === ''
-                ? `${pull.data.command}: ${plural(pull.data.read, 'line')} read, ${formatCount(pull.data.stored)} stored, ${formatCount(pull.data.duplicates)} already known, ${formatCount(pull.data.dated_by_device)} dated by the device’s own clock.`
-                : pull.data.note}
-            </p>
-          )}
-        </div>
-      )}
-
-      {status.traps.implemented === false && (
-        <p className={styles.hintFoot}>
-          SNMP traps and flow collection are not in this build, so nothing is listening for them —
-          they are not switched off, they are absent.
-        </p>
-      )}
+      <DeviceSetup
+        id="logs-setup"
+        devices={devices}
+        deviceId={deviceId}
+        show={verdict.receiver === 'traps' ? 'traps' : 'syslog'}
+        capabilities={capabilities}
+      />
     </Card>
   );
 }

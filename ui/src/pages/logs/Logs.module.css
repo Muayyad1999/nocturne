@@ -26,14 +26,14 @@
 
 .search {
   flex: 1 1 260px;
-  min-width: 220px;
+  min-width: 200px;
   max-width: 460px;
 }
 
 /* A select stretches to fill a flex row unless it is told not to. */
 .filterControl {
   flex: 0 0 auto;
-  width: 156px;
+  width: 148px;
 }
 
 .tailSwitch {
@@ -243,6 +243,13 @@
   background-size: 100% 1px;
 }
 
+/* On a short screen the list is what is being read; the chart gives way. */
+@media (max-height: 900px) {
+  .plot {
+    height: 72px;
+  }
+}
+
 .bar {
   display: flex;
   flex: 1 1 0;
@@ -367,11 +374,20 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-height: 260px;
+  /* The list takes what the tab leaves it rather than pushing the page into a
+     scroll of its own: a tail whose newest line is below the fold is not
+     being followed. Inside Monitoring, on a laptop, that is not much. */
+  min-height: 160px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--bg-1);
+}
+
+/* An empty list has a sentence to say, not a tail to follow: it keeps room
+   for the whole of it rather than a scroll bar inside a few rows. */
+.listFrame[data-empty] {
+  min-height: 240px;
 }
 
 .listHead,
@@ -532,4 +548,676 @@
   margin: 0 0 var(--sp-12);
   color: var(--text-2);
   font-size: var(--fs-12);
+}
+
+/* ------------------------------------------------------------------ the panes
+ *
+ * Everything below is the five panes beside the lines. They share one small
+ * vocabulary — a lead paragraph, a card, a list of counters, a note — so the
+ * receivers, the rules, the forwarders, the flows and the detections read as
+ * one screen and not as five.
+ */
+
+.pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-height: 0;
+}
+
+.paneBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+  /* The flow table and its coverage sit side by side only where there is room. */
+  container-type: inline-size;
+}
+
+.paneHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-12);
+}
+
+.paneLead,
+.panelLead {
+  max-width: 110ch;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.panelLead {
+  margin-bottom: var(--sp-8);
+}
+
+/* A plain statement the reader should not miss, without the alarm of an error. */
+.note {
+  max-width: 110ch;
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* What anybody who can reach a port can do, and what has not been verified. */
+.caution {
+  max-width: 110ch;
+  margin: 0;
+  padding: var(--sp-6) var(--sp-8);
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.cardTitle {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-semibold);
+}
+
+.subhead,
+.groupLegend {
+  margin: 0;
+  padding: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.monoText {
+  font-family: var(--font-mono);
+}
+
+.inlineCode {
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-badge);
+  background: var(--bg-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.fieldError {
+  margin: 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
+}
+
+.testOk {
+  margin: 0;
+  padding: var(--sp-6) var(--sp-8);
+  border-left: 3px solid var(--ok);
+  background: var(--ok-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}
+
+.filterControlWide {
+  flex: 0 0 auto;
+  width: 240px;
+}
+
+.badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* ------------------------------------------------------------ the receivers */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+.receiver {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.receiver[data-state='failed'] {
+  border-color: var(--crit);
+}
+
+.receiverHead,
+.detectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.receiverTitle,
+.detectionTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.receiverWhat,
+.receiverLast,
+.receiverLab {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.receiverLab {
+  color: var(--text-3);
+}
+
+.receiverError {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  margin: 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.receiverError > svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.subBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--line);
+}
+
+/* A number and what it counts. Only what the engine gave is ever in here. */
+.counters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-8) var(--sp-12);
+  margin: 0;
+}
+
+.counter {
+  min-width: 0;
+}
+
+.counter dt {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.counter dd {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.counter[data-attention] dd {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
+
+.counterUnit {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.portForm {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-8);
+  align-items: start;
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--line);
+}
+
+.portForm > button {
+  align-self: end;
+  justify-self: start;
+}
+
+.setupBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.memory {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.memory p {
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
+/* --------------------------------------------------------------- the editors */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+}
+
+.form > p {
+  margin: 0;
+}
+
+.formRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin: 0;
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.group > p {
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
+.group > legend {
+  padding: 0 var(--sp-4);
+}
+
+.chosen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-12);
+}
+
+.chosen li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-left: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-badge);
+  background: var(--bg-2);
+}
+
+.testResult {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.testResult > dl {
+  align-self: stretch;
+}
+
+.writeOnly,
+.writeOnlyEdit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.writeOnlyEdit > :first-child {
+  flex: 1 1 260px;
+}
+
+.reveal {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-2);
+  border: 0;
+  border-radius: var(--radius-badge);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.reveal:hover {
+  color: var(--text-1);
+}
+
+.reveal:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.checkLabel {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  align-items: baseline;
+}
+
+.checkLabel > span {
+  font-size: var(--fs-12);
+}
+
+.cellCount[data-attention] {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
+
+.cellError {
+  color: var(--crit);
+}
+
+/* ------------------------------------------------------------------ the flows */
+
+.flowLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: var(--sp-12);
+  align-items: start;
+}
+
+@container (max-width: 860px) {
+  .flowLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.flowTable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.totals {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-4) var(--sp-12);
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.totals > div {
+  display: contents;
+}
+
+.totals dt {
+  color: var(--text-3);
+}
+
+.totals dd {
+  margin: 0;
+  color: var(--text-1);
+}
+
+/* Beside the table, not under a fold: an answer is read with what it covers. */
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.coverage > p {
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
+.coverageList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  margin: 0;
+}
+
+.coverageList dt {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.coverageList dd {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.coverageNote {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+/* ------------------------------------------------------------- the detections */
+
+.catalogue {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: var(--sp-12);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.detection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  height: 100%;
+}
+
+.detection[data-standing='off'],
+.detection[data-standing='off-unavailable'] {
+  background: var(--bg-0);
+}
+
+.detectionWhat {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-13);
+}
+
+.detectionFacts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-8) var(--sp-16);
+  margin: 0;
+}
+
+.detectionFacts dt {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+}
+
+.detectionFacts dd {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.detectionFoot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+  margin: auto 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.hits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.hitDevice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.hitTitle {
+  margin: 0;
+  color: var(--text-1);
+  font-size: var(--fs-14);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ one trap */
+
+.bindings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.bindings > p {
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
+.bindingTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+.bindingTable th {
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  text-align: left;
+}
+
+.bindingTable td {
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.factWithNote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.factWithNote > :last-child {
+  font-size: var(--fs-12);
+}
+
+.rejections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-12);
+}
+
+.rejections li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-2);
+  overflow-wrap: anywhere;
+}
+
+.rejectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-8);
+}
+
+/* A forwarder's last error is a sentence, read whole under the table. */
+.failures,
+.waiting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--crit);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+/* What waits in a queue is a fact, not a failure, and is not coloured as one. */
+.waiting {
+  color: var(--text-2);
+}
+
+.failures strong,
+.waiting strong {
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+}
+
+/*
+ * A switch whose change is on its way. It stays enabled: disabling the
+ * control that has the focus drops the keyboard's focus to the page, and the
+ * reader has to find their way back from the top. The handler ignores input
+ * until the engine has answered.
+ */
+.busySwitch {
+  cursor: progress;
+  opacity: 0.6;
 }

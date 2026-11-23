@@ -145,9 +145,10 @@ export function bandKept(band: SeverityBand, max: number | undefined): boolean {
 
 // ------------------------------------------------------------- the query bar
 
-/** The streams the screen can search. `syslog` is the only one devices fill. */
+/** The streams the screen can search. Devices fill `syslog` and `trap`. */
 export const STREAMS: readonly { value: string; label: string }[] = [
   { value: 'syslog', label: 'Device logs' },
+  { value: 'trap', label: 'SNMP traps' },
   { value: 'event', label: 'Signals' },
   { value: 'audit', label: 'Audit trail' },
   { value: '*', label: 'Every stream' },

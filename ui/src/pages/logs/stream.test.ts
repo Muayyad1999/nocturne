@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LogEntry } from '@/api/types/core';
 import type { LogsAppended } from '@/api/types/logs';
 import { bodyOf, clockOf, interfaceOf, mnemonicOf, rawOf, tagOf, viaOf } from './entry';
-import { adopt, append, entryCount, fromPage, prepend } from './stream';
+import { adopt, append, entryCount, fromPage, prepend, scrollVerdict } from './stream';
 
 function entry(id: number, over: Partial<LogEntry> = {}): LogEntry {
   return {
@@ -91,6 +91,30 @@ describe('the list the screen scrolls', () => {
     stream = append(stream, batch([entry(6)]), 3);
     expect(stream.rows.filter((row) => row.kind === 'missing')).toHaveLength(1);
     expect(stream.rows[0]).toMatchObject({ count: 3 });
+  });
+});
+
+describe('whether the list follows its newest line', () => {
+  it('follows it whenever the list is at its end, however it got there', () => {
+    expect(scrollVerdict({ distance: 0, top: 900, lastTop: 1_200, pinned: false })).toBe('pin');
+    // Half a row of slack for the fractions a high-density screen reports.
+    expect(scrollVerdict({ distance: 7.5, top: 900, lastTop: 900, pinned: false })).toBe('pin');
+  });
+
+  it('stops following when the reader scrolls up, away from the end', () => {
+    expect(scrollVerdict({ distance: 600, top: 300, lastTop: 900, pinned: true })).toBe('unpin');
+  });
+
+  it('does not take the end moving away under its own scroll for the reader leaving', () => {
+    // The list jumped to its end, then a banner above it took 50 px of its
+    // height before the scroll event was read: nothing scrolled up.
+    expect(scrollVerdict({ distance: 50, top: 3_678, lastTop: 3_678, pinned: true })).toBe('restick');
+    // Lines added at the end while it follows: the end moved, the reader did not.
+    expect(scrollVerdict({ distance: 88, top: 3_700, lastTop: 3_650, pinned: true })).toBe('restick');
+  });
+
+  it('leaves a reader who scrolled back where they are', () => {
+    expect(scrollVerdict({ distance: 600, top: 320, lastTop: 300, pinned: false })).toBe('keep');
   });
 });
 

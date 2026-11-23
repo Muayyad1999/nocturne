@@ -2,11 +2,13 @@
  * Reading one stored line.
  *
  * `LogEntry.body` is `unknown` on purpose: the shape depends on the stream and
- * on who wrote the row. The syslog receiver writes {@link SyslogBody}; a lab's
- * simulated devices write their lines straight into the same table with
- * `{line, lab_id, sim_time}` and no `raw`, `via` or mnemonic (see NOTES.md);
- * the `event` stream carries a signal's payload. So every field is read
- * defensively and a missing one is reported as missing, never guessed.
+ * on who wrote the row. The syslog receiver writes {@link SyslogBody}, and so
+ * does `logs.ingest` for a simulated device's line (`via: 'lab'`, and an empty
+ * `source`, because it was sent from no address); a build whose lab writes its
+ * lines itself leaves `{line, lab_id, sim_time}` with no `raw`, `via` or
+ * mnemonic; the `trap` stream has a body of its own (`trap.ts`); the `event`
+ * stream carries a signal's payload. So every field is read defensively and a
+ * missing one is reported as missing, never guessed.
  *
  * The clock is the part worth being careful about. `ts` is **when Nocturne
  * received the line** — a device's own clock is its own business and is wrong
@@ -18,6 +20,7 @@
 
 import type { LogEntry } from '@/api/types/core';
 import type { SyslogBody } from '@/api/types/logs';
+import { trapOf, trapTag } from './trap';
 
 type Body = Partial<SyslogBody> & {
   /** What the lab's simulated devices write instead of `raw`. */
@@ -114,7 +117,9 @@ export function viaOf(entry: LogEntry): 'syslog' | 'pull' | 'lab' | null {
   const body = bodyOf(entry);
   if (body.via === 'pull') return 'pull';
   if (body.via === 'syslog') return 'syslog';
-  if (body.lab_id !== undefined) return 'lab';
+  // The lab hands its lines over (`via: 'lab'`); a build whose lab wrote them
+  // itself says so only by naming the lab.
+  if (body.via === 'lab' || body.lab_id !== undefined) return 'lab';
   return null;
 }
 
@@ -132,8 +137,23 @@ export function interfaceOf(entry: LogEntry): string | null {
 /**
  * What to put in the middle column: the mnemonic, or the application, or the
  * sending address — in that order, because that is the order a reader scans.
- * Never an empty cell with no explanation.
+ * For a trap it is the notification's name, or its OID when the dictionary
+ * has no name for it. Never an empty cell with no explanation.
  */
 export function tagOf(entry: LogEntry): string {
+  const trap = trapOf(entry);
+  if (trap !== null) return trapTag(trap) ?? entry.source;
   return mnemonicOf(entry) ?? bodyOf(entry).app ?? entry.source;
+}
+
+/**
+ * What the severity cell of a row says. Three different things, shown three
+ * different ways: a severity is its short word; a line that came without one
+ * is a dash (unknown — not the same as debug); and a trap is an empty cell,
+ * because a notification has no severity to be unknown.
+ */
+export function severityCell(entry: LogEntry): { kind: 'given' | 'unsaid' | 'none'; severity?: number } {
+  if (entry.stream === 'trap') return { kind: 'none' };
+  if (entry.severity == null) return { kind: 'unsaid' };
+  return { kind: 'given', severity: entry.severity };
 }

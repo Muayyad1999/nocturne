@@ -182,6 +182,54 @@ export function append(stream: Stream, batch: LogsAppended, cap = CAP): Stream {
   };
 }
 
+/** What one scroll of the list means for whether it follows its newest line. */
+export type ScrollVerdict =
+  /** At the end: follow it. */
+  | 'pin'
+  /** The reader moved up, away from the end: stop following. */
+  | 'unpin'
+  /** Followed, and the end moved away without the reader: go back to it. */
+  | 'restick'
+  /** Not followed, and the reader did not come back to the end: as it was. */
+  | 'keep';
+
+/**
+ * How far from the end a list may be and still count as at it: half a row of
+ * slack for fractional scroll positions on high-density screens.
+ */
+export const AT_END_PX = 8;
+
+/**
+ * Whether a scroll keeps, starts or stops following the newest line.
+ *
+ * A scroll event reports where the list is when it is *dispatched*, which
+ * can be after the layout moved: the list scrolled itself to its end, then a
+ * banner or a taller status card above it took some of its height, and the
+ * event arrives reading "not at the end". Only a scroll **upwards** is the
+ * reader leaving; anything else that is not at the end, while following, is
+ * the list's own end having moved, and it goes back there.
+ */
+export function scrollVerdict({
+  distance,
+  top,
+  lastTop,
+  pinned,
+}: {
+  /** How far the viewport's bottom is from the end of the list, in pixels. */
+  distance: number;
+  /** Where the list is scrolled to now. */
+  top: number;
+  /** Where it was at the previous scroll event. */
+  lastTop: number;
+  /** Whether it was following the newest line. */
+  pinned: boolean;
+}): ScrollVerdict {
+  if (distance <= AT_END_PX) return 'pin';
+  // A pixel of slack: a high-density screen reports fractions.
+  if (top < lastTop - 1) return 'unpin';
+  return pinned ? 'restick' : 'keep';
+}
+
 /** How many entries (not marker rows) the view holds. */
 export function entryCount(stream: Stream): number {
   return stream.rows.reduce((count, row) => count + (row.kind === 'entry' ? 1 : 0), 0);

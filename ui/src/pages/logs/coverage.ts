@@ -40,16 +40,31 @@ export interface Window {
   /** `store.oldest_at`: the oldest line kept, or null for an empty store. */
   oldestAt: number | null;
   rows: number;
-  /** Whether the syslog receiver has a socket open right now. */
+  /** Whether whatever fills the stream being looked at can receive right now. */
   listening: boolean;
 }
 
-export function windowOf(status: LogsStatus | undefined, now: number): Window {
+/**
+ * Whether anything can arrive in a stream right now. Each stream is filled
+ * by something different: `syslog` by the syslog receiver, `trap` by the
+ * trap receiver, and `audit` and `event` by the application itself, which is
+ * always there. Every stream at once can receive when either receiver can.
+ */
+export function canReceive(status: LogsStatus | undefined, stream: string): boolean {
+  if (stream === 'audit' || stream === 'event') return true;
+  const syslog = (status?.syslog?.listening?.length ?? 0) > 0;
+  const traps = (status?.traps?.listening?.length ?? 0) > 0;
+  if (stream === 'trap') return traps;
+  if (stream === 'syslog') return syslog;
+  return syslog || traps;
+}
+
+export function windowOf(status: LogsStatus | undefined, now: number, stream = 'syslog'): Window {
   return {
     now,
     oldestAt: status?.store.oldest_at ?? null,
     rows: status?.store.rows ?? 0,
-    listening: (status?.syslog.listening.length ?? 0) > 0,
+    listening: canReceive(status, stream),
   };
 }
 
@@ -200,7 +215,7 @@ export function gapNote(view: HistogramView, window: Window): string | null {
     );
   }
   if (reasons.has('not-listening')) {
-    why.push('the receiver is not listening, so nothing could arrive');
+    why.push('the receiver is not listening, so nothing a device sent could arrive');
   }
   return `${buckets} ${plural} drawn as a gap, not as a zero: ${why.join('; and ')}.`;
 }
@@ -208,6 +223,8 @@ export function gapNote(view: HistogramView, window: Window): string | null {
 // -------------------------------------------------------------- the receiver
 
 export type VerdictKind =
+  /** This build has no such receiver. */
+  | 'absent'
   /** The receiver is switched off. Nothing is listening. */
   | 'off'
   /** Enabled, but the socket could not be opened. The reason is the backend's. */
@@ -220,6 +237,8 @@ export type VerdictKind =
   | 'receiving';
 
 export interface Verdict {
+  /** Which receiver this is about. */
+  receiver: 'syslog' | 'traps';
   kind: VerdictKind;
   /** Whether a screen should offer the "point a device here" instructions. */
   setup: boolean;
@@ -236,10 +255,12 @@ export interface Verdict {
  * are deliberately not persisted, so "nothing received" after a restart is not
  * the same as "nothing has ever arrived" — `store.rows` is what says that.
  */
-export function receiverVerdict(status: LogsStatus): Verdict {
+export function receiverVerdict(status: LogsStatus, stream = 'syslog'): Verdict {
+  if (stream === 'trap') return trapVerdict(status);
   const { syslog, store } = status;
   if (!syslog.enabled) {
     return {
+      receiver: 'syslog',
       kind: 'off',
       setup: true,
       title: 'The syslog receiver is switched off',
@@ -249,6 +270,7 @@ export function receiverVerdict(status: LogsStatus): Verdict {
   }
   if (syslog.listening.length === 0) {
     return {
+      receiver: 'syslog',
       kind: 'failed',
       setup: true,
       title: 'The syslog receiver is on but not listening',
@@ -259,6 +281,7 @@ export function receiverVerdict(status: LogsStatus): Verdict {
   }
   if (store.rows === 0 && syslog.received === 0) {
     return {
+      receiver: 'syslog',
       kind: 'silent',
       setup: true,
       title: `Listening on ${syslog.listening.join(', ')} — nothing has arrived yet`,
@@ -268,6 +291,7 @@ export function receiverVerdict(status: LogsStatus): Verdict {
   }
   if (syslog.received === 0) {
     return {
+      receiver: 'syslog',
       kind: 'stale',
       setup: true,
       title: 'Nothing has arrived since Nocturne started',
@@ -276,11 +300,81 @@ export function receiverVerdict(status: LogsStatus): Verdict {
     };
   }
   return {
+    receiver: 'syslog',
     kind: 'receiving',
     setup: false,
     title: `Listening on ${syslog.listening.join(', ')}`,
     detail: `${syslog.received} lines received since Nocturne started.`,
   };
+}
+
+/**
+ * The same judgement for the trap receiver, which is what fills the `trap`
+ * stream. Two things differ. A build may have no trap receiver at all, and
+ * says so. And the store's row count is syslog lines and traps together, so
+ * "never been sent a trap" cannot be told from "none since this process
+ * started" — the wording claims only the second.
+ */
+function trapVerdict(status: LogsStatus): Verdict {
+  const traps = status.traps;
+  if (traps.implemented === false) {
+    return {
+      receiver: 'traps',
+      kind: 'absent',
+      setup: false,
+      title: 'SNMP traps are not in this build',
+      detail:
+        'This copy of Nocturne has no trap receiver, so nothing is listening for them. It is not switched off: it is absent.',
+      ...(traps.error ? { error: traps.error } : {}),
+    };
+  }
+  if (!traps.enabled) {
+    return {
+      receiver: 'traps',
+      kind: 'off',
+      setup: true,
+      title: 'The SNMP trap receiver is switched off',
+      detail:
+        'Nothing is listening, so no device can send its notifications here. Turning it on opens a listening port on this machine.',
+    };
+  }
+  if (traps.listening.length === 0) {
+    return {
+      receiver: 'traps',
+      kind: 'failed',
+      setup: true,
+      title: 'The SNMP trap receiver is on but not listening',
+      detail:
+        'It is enabled, and the socket could not be opened — until it can, nothing a device sends arrives.',
+      ...(traps.error ? { error: traps.error } : {}),
+    };
+  }
+  if (traps.received === 0) {
+    return {
+      receiver: 'traps',
+      kind: 'silent',
+      setup: true,
+      title: `Listening on ${traps.listening.join(', ')} — no trap has arrived since Nocturne started`,
+      detail:
+        'The port is open and no datagram has reached it. Devices do not send notifications until they are told where to.',
+    };
+  }
+  return {
+    receiver: 'traps',
+    kind: 'receiving',
+    setup: false,
+    title: `Listening on ${traps.listening.join(', ')}`,
+    detail: `${traps.received} datagrams received since Nocturne started, ${traps.stored} stored.`,
+  };
+}
+
+/**
+ * Whether a stream is filled by a receiver at all. The `audit` trail and the
+ * `event` stream are written by the application, so an empty list there is
+ * never a setup problem and gets no "point a device here".
+ */
+export function hasReceiver(stream: string): boolean {
+  return stream !== 'audit' && stream !== 'event';
 }
 
 /**
@@ -292,10 +386,10 @@ export function receiverVerdict(status: LogsStatus): Verdict {
  * empty".
  */
 export function emptyReason(
-  verdict: Verdict,
+  verdict: Pick<Verdict, 'setup'> | null,
   { narrowed, rangeTotal }: { narrowed: boolean; rangeTotal: number },
 ): 'setup' | 'filter' | 'range' {
   if (rangeTotal > 0) return 'filter';
-  if (verdict.setup) return 'setup';
+  if (verdict?.setup) return 'setup';
   return narrowed ? 'filter' : 'range';
 }

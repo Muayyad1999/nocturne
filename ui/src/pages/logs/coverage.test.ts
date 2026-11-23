@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { Bucket, LogsStatus } from '@/api/types/logs';
 import {
   bucketReach,
+  canReceive,
   emptyReason,
   gapNote,
+  hasReceiver,
   histogramView,
   receiverVerdict,
   windowOf,
@@ -25,12 +27,17 @@ function bucket(t: number, counts: Partial<Record<number, number>> = {}, noSever
 
 const LISTENING: Window = { now: 10 * WIDTH, oldestAt: 2 * WIDTH, rows: 400, listening: true };
 
+/**
+ * A `logs.status` as a running server answers it (taken from one, with the
+ * receivers off), with the parts a test is about replaced.
+ */
 function status(over: {
   enabled?: boolean;
   listening?: string[];
   error?: string | null;
   received?: number;
   rows?: number;
+  traps?: Partial<LogsStatus['traps']>;
 } = {}): LogsStatus {
   return {
     syslog: {
@@ -43,9 +50,51 @@ function status(over: {
       queued: 0,
       rate_per_minute: 3,
       last_at: 1_000,
+      from_lab: 0,
     },
-    traps: { enabled: false, implemented: false, error: 'the SNMP trap receiver is not implemented in this build' },
-    flows: { enabled: false, implemented: false, error: 'the flow collector is not implemented in this build' },
+    traps: {
+      enabled: false,
+      implemented: true,
+      listening: [],
+      error: null,
+      received: 0,
+      stored: 0,
+      dropped: 0,
+      queued: 0,
+      rate_per_minute: 0,
+      last_at: null,
+      rejected: 0,
+      unauthenticated: 0,
+      malformed: 0,
+      duplicates: 0,
+      acknowledged: 0,
+      require_known_community: true,
+      rejections: [],
+      lab: 'A simulated device sends no traps, so nothing counted here came from a lab.',
+      ...over.traps,
+    },
+    flows: {
+      enabled: false,
+      implemented: true,
+      listening: [],
+      error: null,
+      received: 0,
+      malformed: 0,
+      records: 0,
+      counted: 0,
+      dropped: 0,
+      drops: { queue_full: 0, no_room: 0, unclaimed: 0, unreadable: 0 },
+      queued: 0,
+      rate_per_minute: 0,
+      last_at: null,
+      sets_without_template: 0,
+      exporters: 0,
+      unattributed_exporters: 0,
+      memory: { minutes: 0, keys: 0, max_keys: 2_000_000, evicted_minutes: 0, oldest_at: null },
+      lab: 'A simulated device exports no flows, so nothing counted here came from a lab.',
+    },
+    rules: { tracked: 0, forgotten: 0, max_per_rule: 10_000, held_back: 0, open_alerts: 0, undelivered: 0 },
+    forwarders: [],
     store: {
       rows: over.rows ?? 400,
       oldest_at: 2 * WIDTH,
@@ -210,5 +259,91 @@ describe('what "nothing here" means', () => {
     expect(emptyReason(off, { narrowed: false, rangeTotal: 0 })).toBe('setup');
     // A filtered-out line is still a line: the setup is not the problem.
     expect(emptyReason(off, { narrowed: true, rangeTotal: 9 })).toBe('filter');
+  });
+});
+
+describe('the trap stream, which is filled by another receiver', () => {
+  it('judges a trap bucket by the trap receiver, not by the syslog one', () => {
+    // Syslog is listening and the trap receiver is off: a quiet minute of
+    // traps is not a measured zero, however healthy the syslog port is.
+    const syslogOnly = status();
+    expect(windowOf(syslogOnly, 10 * WIDTH, 'syslog').listening).toBe(true);
+    expect(windowOf(syslogOnly, 10 * WIDTH, 'trap').listening).toBe(false);
+    expect(bucketReach(bucket(5 * WIDTH), WIDTH, windowOf(syslogOnly, 10 * WIDTH, 'trap'))).toBe(
+      'not-listening',
+    );
+
+    const both = status({ traps: { enabled: true, listening: ['udp 0.0.0.0:1162'] } });
+    expect(bucketReach(bucket(5 * WIDTH), WIDTH, windowOf(both, 10 * WIDTH, 'trap'))).toBe('counted');
+  });
+
+  it('never calls the audit trail or the signals unreceivable: the application writes them itself', () => {
+    const allOff = status({ enabled: false, listening: [] });
+    expect(canReceive(allOff, 'audit')).toBe(true);
+    expect(canReceive(allOff, 'event')).toBe(true);
+    expect(canReceive(allOff, 'syslog')).toBe(false);
+    expect(canReceive(allOff, '*')).toBe(false);
+    // …and an empty audit list is therefore never a setup problem.
+    expect(hasReceiver('audit')).toBe(false);
+    expect(hasReceiver('event')).toBe(false);
+    expect(hasReceiver('trap')).toBe(true);
+  });
+
+  it('says which of its states the trap receiver is in, in its own words', () => {
+    const off = receiverVerdict(status(), 'trap');
+    expect(off).toMatchObject({ receiver: 'traps', kind: 'off', setup: true });
+    expect(off.title).toBe('The SNMP trap receiver is switched off');
+
+    const failed = receiverVerdict(
+      status({
+        traps: {
+          enabled: true,
+          listening: [],
+          error: 'cannot listen for traps on udp 0.0.0.0:1162: address in use: something else is already listening there',
+        },
+      }),
+      'trap',
+    );
+    expect(failed.kind).toBe('failed');
+    expect(failed.error).toContain('already listening there');
+
+    const silent = receiverVerdict(
+      status({ traps: { enabled: true, listening: ['udp 0.0.0.0:1162'] } }),
+      'trap',
+    );
+    expect(silent.kind).toBe('silent');
+    // The store counts lines and traps together, so "never" cannot be claimed.
+    expect(silent.title).toContain('no trap has arrived since Nocturne started');
+
+    const receiving = receiverVerdict(
+      status({ traps: { enabled: true, listening: ['udp 0.0.0.0:1162'], received: 8, stored: 4 } }),
+      'trap',
+    );
+    expect(receiving).toMatchObject({ kind: 'receiving', setup: false });
+  });
+
+  it('tells a build that has no trap receiver from one whose receiver is switched off', () => {
+    const absent = receiverVerdict(
+      status({
+        traps: { implemented: false, error: 'the SNMP trap receiver is not implemented in this build' },
+      }),
+      'trap',
+    );
+    expect(absent.kind).toBe('absent');
+    // Nothing to switch on, so no "point a device here".
+    expect(absent.setup).toBe(false);
+    expect(absent.title).toBe('SNMP traps are not in this build');
+  });
+
+  it('keeps the syslog verdict about the syslog receiver whatever the traps are doing', () => {
+    const verdict = receiverVerdict(
+      status({ enabled: false, listening: [], traps: { enabled: true, listening: ['udp 0.0.0.0:1162'], received: 3 } }),
+    );
+    expect(verdict).toMatchObject({ receiver: 'syslog', kind: 'off' });
+  });
+
+  it('blames nothing on setup when the status is not known', () => {
+    expect(emptyReason(null, { narrowed: false, rangeTotal: 0 })).toBe('range');
+    expect(emptyReason(null, { narrowed: true, rangeTotal: 0 })).toBe('filter');
   });
 });
