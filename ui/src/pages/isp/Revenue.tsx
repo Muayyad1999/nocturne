@@ -32,13 +32,11 @@ import { Panel } from '@/design/Panel';
 import { Select } from '@/design/Select';
 import { Skeleton } from '@/design/Skeleton';
 import { plural } from '@/lib/format';
-import { dayTimeText, monthWindow, periodText, recentMonths } from './calendar';
+import { dayTimeText, periodText, recentMonths, revenueWindow } from './calendar';
 import { useCalendar, useCurrencies, useRevenue } from './data';
 import { Figures, Words } from './Figures';
 import { conversionCaption, formatMoney, quotedRate } from './money';
 import styles from './isp.module.css';
-
-const DAY = 86_400_000;
 
 interface Rate {
   /** The other currency, which the rate must relate to the target. */
@@ -57,13 +55,10 @@ export function Revenue() {
   const [rates, setRates] = useState<Rate[]>([]);
   const [convert, setConvert] = useState<RevenueParams['convert']>(undefined);
 
-  const span = useMemo(() => {
-    const now = Date.now();
-    if (window === '30d') return { since: now - 30 * DAY, until: now + 1 };
-    if (window === '12m') return { since: now - 365 * DAY, until: now + 1 };
-    const month = monthWindow(window, calendar);
-    return month ? { since: month.start, until: month.end } : { since: now - 30 * DAY, until: now + 1 };
-  }, [window, calendar]);
+  // A rolling window's start is fixed when it is chosen and its end is the
+  // engine's, read by read; the line above the figures says the window that
+  // was actually read.
+  const span = useMemo(() => revenueWindow(window, Date.now(), calendar), [window, calendar]);
 
   const currencies = useCurrencies();
   const revenue = useRevenue({ ...span, ...(convert ? { convert } : {}) });

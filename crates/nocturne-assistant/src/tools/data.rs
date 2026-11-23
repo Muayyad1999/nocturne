@@ -120,15 +120,23 @@ async fn collect_data(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
             problems,
         ]);
     }
+    // A problem is the collector's account of what a device answered, and
+    // may quote it: it travels as data like the rest of what a device said.
     let body = if table.is_empty() {
         format!(
-            "The collection finished. {}",
-            shape::one_line(&result.to_string(), 400)
+            "The collection finished and said nothing per device:\n\n{}",
+            shape::data_block(
+                "what the collection job reported",
+                &shape::one_line(&result.to_string(), 400)
+            )
         )
     } else {
         format!(
             "Collected. Read it back with get_collected.\n\n{}",
-            table.render()
+            shape::data_block(
+                "what was collected, and what could not be",
+                &table.render_within(ctx.caps().chars)
+            )
         )
     };
     Ok(ToolOk::new(

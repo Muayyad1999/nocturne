@@ -133,6 +133,9 @@ pub struct NeighborRow {
     pub speed_bps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub util_pct: Option<f64>,
+    /// When monitoring measured `util_pct`, as on the link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub util_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlans: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,6 +193,7 @@ fn neighbors(graph: &Graph, device_id: &str) -> Vec<NeighborRow> {
             status: link.status,
             speed_bps: link.speed_bps,
             util_pct: link.util_pct,
+            util_at: link.util_at,
             vlans: link.vlans.clone(),
             aggregate: link.aggregate.clone(),
             label: link.label.clone(),
@@ -403,10 +407,14 @@ pub fn init(builder: &mut AppBuilder) {
             )
             .await?;
             let rows = neighbors(&graph, &device.id);
+            // A feature that could not answer leaves every peer in the table
+            // short of the same thing, so its warning names no device.
             let warnings = graph
                 .warnings
                 .into_iter()
-                .filter(|warning| warning.contains(&device.name))
+                .filter(|warning| {
+                    warning.contains(&device.name) || graph::about_every_device(warning)
+                })
                 .collect();
             Ok(Neighbors {
                 device_id: device.id,

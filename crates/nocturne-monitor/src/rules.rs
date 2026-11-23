@@ -121,6 +121,21 @@ pub fn builtins() -> Vec<AlertRule> {
             600,
             threshold("if.util_pct", 90.0, 80.0),
         ),
+        // On congestion drops only, and deliberately so. There is no rule
+        // on a class's policer drops, nor on all its drops together: a
+        // policer that drops is the policy doing what it was written to
+        // do, and an alert for it would fire on every rate limit in the
+        // network. A platform that keeps one drop counter for a class has
+        // no `qos.queue_drop_ps` series, and so nothing for this to fire
+        // on; whoever wants an alert there writes one on `qos.drop_ps`,
+        // knowing what it will count.
+        builtin(
+            "qos_class_dropping",
+            "QoS class is dropping (congestion)",
+            Severity::Medium,
+            300,
+            threshold("qos.queue_drop_ps", 10.0, 1.0),
+        ),
         builtin(
             "packet_loss",
             "Packet loss above 20 % for 3 minutes",
@@ -292,6 +307,24 @@ impl Facts<'_> {
         }
     }
 
+    /// Every QoS class the device has, by the instance of its series, when
+    /// `metric` can only name QoS series and these facts are a poll that
+    /// found them all; `None` otherwise.
+    fn qos_classes(&self, metric: &str) -> Option<Vec<String>> {
+        let only_qos = metric
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("qos."));
+        match self {
+            Facts::Live(poll) if only_qos && poll.qos_complete => Some(
+                poll.qos
+                    .iter()
+                    .filter_map(|row| row.instance.clone())
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     /// The interface table, or `None` when this poll did not read it.
     fn interfaces(&self, app: &App) -> AppResult<Option<Vec<IfStatus>>> {
         match self {
@@ -395,10 +428,33 @@ pub fn evaluate_rule(
                 .into_iter()
                 .filter(|(name, _)| glob(wanted, name))
                 .collect();
-            if matching.is_empty() {
+            let classes = facts.qos_classes(metric);
+            if matching.is_empty() && classes.is_none() {
                 // Nothing was measured this time: a gap, not a clear.
                 return Ok((Vec::new(), false));
             }
+            // A QoS read says which classes exist whether or not it could
+            // measure them. One that is there and has no value this time (a
+            // counter cleared, the read after a restart or after a failed
+            // one) is a gap, and says nothing; without this it would be
+            // resolved below as no longer reported, and fire again as a new
+            // alert after `for_s`. One that is not there is gone — the
+            // policy was taken off, the device can no longer be asked — and
+            // is resolved, even when no class at all is left to measure.
+            let measured: std::collections::HashSet<&str> =
+                matching.iter().map(|(name, _)| name.as_str()).collect();
+            let unmeasured: Vec<Finding> = classes
+                .into_iter()
+                .flatten()
+                .filter(|name| !measured.contains(name.as_str()) && glob(wanted, name))
+                .map(|name| Finding {
+                    detail: format!("{metric} on {name} was not measured at this read."),
+                    instance: Some(name),
+                    verdict: Verdict::Unknown,
+                    value: None,
+                    observed_at: None,
+                })
+                .collect();
             let findings = matching
                 .into_iter()
                 .map(|(name, reading)| {
@@ -426,6 +482,7 @@ pub fn evaluate_rule(
                         observed_at: None,
                     }
                 })
+                .chain(unmeasured)
                 .collect();
             Ok((findings, true))
         }

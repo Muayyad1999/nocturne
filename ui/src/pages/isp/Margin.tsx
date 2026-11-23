@@ -40,7 +40,7 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
     id: 'name',
     header: 'Of',
     required: true,
-    width: 180,
+    width: 160,
     sortValue: (row) => row.name.toLowerCase(),
     cell: (row) => (
       <span>
@@ -52,14 +52,14 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
   {
     id: 'revenue',
     header: 'Revenue a month',
-    width: 170,
+    width: 155,
     align: 'right',
     cell: (row) => <Figures totals={row.revenue} empty="nothing is sold on it" />,
   },
   {
     id: 'cost',
     header: 'Bandwidth a month',
-    width: 160,
+    width: 145,
     align: 'right',
     sortValue: (row) => moneySortKey(row.cost),
     cell: (row) =>
@@ -79,7 +79,7 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
   {
     id: 'margin',
     header: 'Margin',
-    width: 170,
+    width: 155,
     align: 'right',
     sortValue: (row) => moneySortKey(row.margin),
     cell: (row) =>
@@ -97,7 +97,7 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
   {
     id: 'per_mbit',
     header: 'Per megabit',
-    width: 150,
+    width: 135,
     align: 'right',
     cell: (row) => {
       if (row.margin === null || row.cost_mbit === null) return <Words>no figure</Words>;
@@ -116,7 +116,7 @@ export const MARGIN_COLUMNS: readonly TableColumn<MarginRow>[] = [
   {
     id: 'unconverted',
     header: 'Not in the margin',
-    width: 190,
+    width: 175,
     align: 'right',
     cell: (row) =>
       row.unconverted.length === 0 ? (

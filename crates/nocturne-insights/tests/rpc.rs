@@ -550,6 +550,81 @@ async fn settings_switch_checks_off_and_move_the_thresholds() {
 }
 
 #[tokio::test]
+async fn a_scan_of_one_check_leaves_what_the_others_last_said_and_calls_none_of_them_switched_off()
+{
+    let lab = mismatched(With::all()).await;
+    let app = &lab.app;
+    let row = |coverage: &serde_json::Value, check: &str| {
+        coverage["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["check"] == check)
+            .unwrap_or_else(|| panic!("no coverage for {check}"))
+            .clone()
+    };
+
+    // The first scan ever is one of a single check: nothing has run the
+    // others, and that is what their coverage says — not that they are off.
+    scan(app, json!({"checks": ["telnet_enabled"]})).await;
+    let first = app.rpc("insights.coverage", json!({})).await.unwrap();
+    let duplex = row(&first, "duplex_mismatch");
+    println!("insights.coverage (first scan, one check) → duplex_mismatch: {duplex}");
+    assert_eq!(duplex["enabled"], true, "{duplex}");
+    assert_eq!(duplex["evaluated"], 0);
+    assert_eq!(duplex["skipped"], 2);
+    let reason = duplex["reasons"][0]["reason"].as_str().unwrap();
+    assert!(reason.contains("not part of this scan"), "{reason}");
+
+    scan(app, json!({})).await;
+    let full = app.rpc("insights.coverage", json!({})).await.unwrap();
+    let duplex = row(&full, "duplex_mismatch");
+    assert_eq!(
+        (duplex["evaluated"].clone(), duplex["findings"].clone()),
+        (json!(2), json!(1))
+    );
+
+    // "Run just this check" from the screen, over everything. A scan is
+    // stamped to the millisecond: without the pause the two could share one
+    // and the stamps would prove nothing.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    scan(app, json!({"checks": ["telnet_enabled"]})).await;
+    let limited = app.rpc("insights.coverage", json!({})).await.unwrap();
+    for check in limited["checks"].as_array().unwrap() {
+        assert_eq!(check["enabled"], true, "nothing was switched off: {check}");
+    }
+    assert_eq!(
+        row(&limited, "duplex_mismatch"),
+        duplex,
+        "what duplex_mismatch said last, when it last ran"
+    );
+    assert_eq!(
+        row(&limited, "duplex_mismatch")["scanned_at"],
+        full["scanned_at"]
+    );
+    assert_eq!(
+        row(&limited, "telnet_enabled")["scanned_at"],
+        limited["scanned_at"]
+    );
+    assert_ne!(full["scanned_at"], limited["scanned_at"]);
+
+    // A check that is switched off is still said to be, whichever scan ran.
+    app.rpc(
+        "settings.set",
+        json!({"section": "insights", "value": {"enabled_checks": {"duplex_mismatch": false}}}),
+    )
+    .await
+    .unwrap();
+    scan(app, json!({"checks": ["telnet_enabled"]})).await;
+    let off = row(
+        &app.rpc("insights.coverage", json!({})).await.unwrap(),
+        "duplex_mismatch",
+    );
+    assert_eq!(off["enabled"], false);
+    assert_eq!(off["reasons"][0]["reason"], "the check is switched off");
+}
+
+#[tokio::test]
 async fn a_scan_can_be_narrowed_to_one_device() {
     let lab = mismatched(With::default()).await;
     let (app, two) = (&lab.app, lab.id("SW2"));

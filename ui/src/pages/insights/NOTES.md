@@ -3,7 +3,9 @@
 Author: screens-insights slice.
 Owned paths: `ui/src/pages/insights/`, `ui/tests/insights.spec.ts`,
 `ui/tests/insights.shots.ts`. `ui/src/api/types/insights.ts` was written by the
-backend's author and is complete; nothing here needed to change it.
+backend's author; the screen added `SettingsProblem` and
+`InsightsSettingsRefusal`, the refusal `settings.set` gives for this section
+(`docs/dev/features/insights.md`, Settings).
 
 ## Shape
 
@@ -21,7 +23,8 @@ DismissDialog.tsx  dismiss with a reason and an expiry
 Checks.tsx         the catalogue, the thresholds and how scans run
 Facets.tsx         the filter chips
 ScanBanner.tsx     the scan while it runs, and its failure afterwards
-insight.ts         severities, categories, verdicts, coverage sums   (unit tested)
+insight.ts         severities, categories, verdicts, coverage sums,
+                   reading and judging thresholds              (unit tested)
 useScan.ts         following `insights.scan`'s job to its end
 data.ts            every query and mutation, and the device index
 ```
@@ -90,6 +93,25 @@ Events: `insights.changed`, `jobs.changed`, `settings.changed`,
   sixteen thresholds, `include_lab`, `auto_scan` and `raise_alerts_from`. A
   threshold is part of what a check means, so each check also shows the
   numbers it compares against (`CHECK_THRESHOLDS`).
+* **A threshold is checked before it is sent, and the engine's answer is
+  said beside it.** Eleven thresholds are whole numbers in the engine (`u32`,
+  `interface_error_min_delta` a `u64`): their fields step by one and refuse a
+  fraction, a negative number and one too large to hold, beside the field,
+  sending nothing (`readThreshold`). An engine from before writes were
+  checked stored `7.5` days as given and then could not read its own
+  section: the catalogue, the list and every scan failed. An emptied field —
+  or text a number field cannot read, `1e` — is no change, never a zero
+  (zero makes most checks match everything). A refusal from `settings.set`
+  goes beside the field that was refused (its own line of
+  `details.problems`), not into a toast; each field has its own mutation, so
+  each gets its own answer. Escape puts the stored value back.
+* **The settings never depend on the catalogue.** `settings.get` hands back
+  what is stored even when the engine cannot read it as the section's type,
+  so "How insights run" and the thresholds stay on screen when
+  `insights.checks` fails; only the catalogue shows its error. A stored value
+  that is wrong (`storedThresholdProblem`) is said beside its field, and the
+  thresholds panel opens by itself while one is: nothing else in the
+  application edits this section.
 * **No "Ask the assistant" button.** The dock has no API for attaching context
   yet (`pages/assistant` exports only the page), and a button that does nothing
   would be worse than none. One line here once the assistant slice offers one.

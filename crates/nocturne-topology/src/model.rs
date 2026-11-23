@@ -230,6 +230,12 @@ pub struct Link {
     pub speed_bps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub util_pct: Option<f64>,
+    /// When monitoring measured `util_pct` (the poll of the busier end). A
+    /// device whose polls stopped keeps its last reading in monitoring's
+    /// table for ever, so without this yesterday's load reads as today's.
+    /// Absent where monitoring gave the reading no time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub util_at: Option<i64>,
     /// VLANs carried, as a compressed list (`1,10-12,99`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlans: Option<String>,

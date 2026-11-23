@@ -5,3 +5,4 @@ export {
   type SeriesSlot,
   type TimeSeriesChartProps,
 } from './TimeSeriesChart';
+export { formatReading } from './readings';

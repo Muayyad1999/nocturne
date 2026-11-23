@@ -88,6 +88,57 @@ impl Throttle {
     }
 }
 
+/// Whether what was done to a notification should bring the window forward.
+/// A click on the notification itself is `tap` on every platform
+/// (`tauri-plugin-notification`); these notifications offer nothing else.
+pub fn brings_the_window_forward(action: &str) -> bool {
+    action == "tap"
+}
+
+/// Turn the engine's alert events into notifications until it stops.
+///
+/// Fed from the engine's own event stream, which only the engine writes to.
+/// The channel the windows listen on is not that: a script in the page may
+/// `emit` on it, and when this read from there, one such call made the shell
+/// announce an outage no device had reported.
+///
+/// Subscribed when this is called, not when the future first runs, so that
+/// nothing published in between is missed.
+pub fn watch(
+    app: &nocturne_suite::App,
+    focused: impl Fn() -> bool + Send + 'static,
+    show: impl Fn(Notification) + Send + 'static,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let mut events = app.subscribe();
+    let shutdown = app.shutdown_token();
+    async move {
+        let mut throttle = Throttle::new();
+        loop {
+            let received = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => return,
+                received = events.recv() => received,
+            };
+            match received {
+                Ok(event) if event.topic == "alerts.changed" => {
+                    if let Some(notification) =
+                        throttle.consider(&event.payload, focused(), Instant::now())
+                    {
+                        show(notification);
+                    }
+                }
+                Ok(_) => {}
+                // An alert missed in a burst is on the Alerts screen; the
+                // next one is announced as usual.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(missed, "alert notifications fell behind the event stream");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +360,84 @@ mod tests {
             throttle
                 .consider(&published[1], false, start + MIN_GAP * 12)
                 .is_some()
+        );
+    }
+
+    /// The notifications come from the engine's own event stream. They used
+    /// to come from the channel the windows listen on, which a script in the
+    /// page could write to as well: one `emit` and the shell announced an
+    /// outage nobody had seen.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_alert_the_engine_raises_reaches_the_person_while_the_window_is_away() {
+        let app = nocturne_suite::start(AppConfig::in_memory()).unwrap();
+        let (sender, mut shown) = tokio::sync::mpsc::unbounded_channel();
+        let watcher = tokio::spawn(watch(
+            &app,
+            || false,
+            move |notification| {
+                let _ = sender.send(notification);
+            },
+        ));
+
+        raise(&app).await;
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(5), shown.recv())
+            .await
+            .expect("the alert became a notification")
+            .expect("the channel is open");
+        assert_eq!(notification.title, "Device down");
+        assert_eq!(notification.body, "critical");
+
+        app.shutdown();
+        tokio::time::timeout(std::time::Duration::from_secs(5), watcher)
+            .await
+            .expect("watching stops with the engine")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nothing_is_shown_while_the_person_is_looking_at_the_window() {
+        let app = nocturne_suite::start(AppConfig::in_memory()).unwrap();
+        let (sender, mut shown) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(watch(
+            &app,
+            || true,
+            move |notification| {
+                let _ = sender.send(notification);
+            },
+        ));
+        raise(&app).await;
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_millis(500), shown.recv()).await;
+        assert!(waited.is_err(), "shown while focused: {waited:?}");
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_click_on_a_notification_brings_the_window_forward() {
+        // `tap` is what the plugin reports for a click on the notification
+        // itself, on every platform; nothing else is offered on one.
+        assert!(brings_the_window_forward("tap"));
+        assert!(!brings_the_window_forward("dismiss"));
+    }
+
+    /// A notification shown before a click handler exists reports nothing
+    /// (`tauri-plugin-notification`, `Notification::on_action`), and on most
+    /// Linux notification servers and on Windows a click on one then does
+    /// nothing at all. Read from the source, because only a notification
+    /// server can click.
+    #[test]
+    fn clicks_are_listened_for_before_the_first_notification_can_be_shown() {
+        let shell = include_str!("lib.rs");
+        let listened = shell
+            .find(".on_action(")
+            .expect("the shell does not listen for clicks on its notifications");
+        let watched = shell
+            .find("notify::watch(")
+            .expect("the shell does not turn alerts into notifications");
+        assert!(listened < watched);
+        assert!(
+            !shell.contains("listen(events::CHANNEL"),
+            "the shell listens to the page-writable channel again"
         );
     }
 

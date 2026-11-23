@@ -16,6 +16,8 @@ mod live;
 mod notifications;
 mod owed;
 mod polling;
+mod profile_blocks;
+mod qos;
 mod routing;
 mod rpc;
 mod scheduling;

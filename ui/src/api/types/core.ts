@@ -883,13 +883,53 @@ export interface CliSpec {
   timeout_s: number;
 }
 
-/** Where to find health data over SNMP. */
+/**
+ * A test on a sibling column of an {@link SnmpEntry}, one row at a time:
+ * exactly one of `is`, `in` and `matches`. Values are text.
+ */
+export interface SnmpTest {
+  oid: string;
+  is?: string;
+  in?: string[];
+  matches?: string;
+}
+
+/**
+ * Where one health reading is taken from, when a bare OID would not say
+ * enough. Only the keys an entry uses are present. See docs/profiles.md,
+ * section `snmp`.
+ */
+export interface SnmpEntry {
+  /** An object (ending in `.0`) or a column. */
+  oid?: string;
+  /** Exactly this OID, fetched as written. */
+  instance?: string;
+  /** The agent sends a signed 32-bit object in an unsigned type. Present only when `true`. */
+  signed?: boolean;
+  where?: SnmpTest[];
+  /** Raw values that mean "no reading". */
+  absent?: number[];
+  si_scale?: string;
+  precision?: string;
+  scale?: number;
+  complement?: number;
+  /** `cpu` only. */
+  combine?: 'mean' | 'max';
+  /** `temperature` only. */
+  label?: string;
+  /** `temperature` only: read only where the entries above gave no sensor. Present only when `true`. */
+  fallback?: boolean;
+}
+
+/** Where to find health data over SNMP: each entry a bare OID or an {@link SnmpEntry}. */
 export interface SnmpSpec {
-  cpu: string[];
-  memory_used: string[];
-  memory_free: string[];
-  memory_total: string[];
-  temperature: string[];
+  cpu: (string | SnmpEntry)[];
+  memory_used: (string | SnmpEntry)[];
+  memory_free: (string | SnmpEntry)[];
+  memory_total: (string | SnmpEntry)[];
+  /** An object that is already "percent of memory in use". */
+  memory_percent: (string | SnmpEntry)[];
+  temperature: (string | SnmpEntry)[];
 }
 
 /** A device type with inheritance applied. */

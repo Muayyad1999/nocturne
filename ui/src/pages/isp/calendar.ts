@@ -128,11 +128,16 @@ export function dayText(at: number | null | undefined, offset: Offset): string {
 /** Date and time on the calendar's wall clock: `2026-10-01 14:03:22`. */
 export function dayTimeText(at: number | null | undefined, offset: Offset): string {
   if (at == null || !Number.isFinite(at) || offset === null) return EMPTY;
+  const time = timeText(at, offset);
+  return time === EMPTY ? EMPTY : `${dayText(at, offset)} ${time}`;
+}
+
+/** The time of day on the calendar's wall clock: `14:03:22`. */
+export function timeText(at: number | null | undefined, offset: Offset): string {
+  if (at == null || !Number.isFinite(at) || offset === null) return EMPTY;
   const clock = wallClock(at, offset);
   if (!clock) return EMPTY;
-  return `${dayText(at, offset)} ${pad(clock.getUTCHours())}:${pad(clock.getUTCMinutes())}:${pad(
-    clock.getUTCSeconds(),
-  )}`;
+  return `${pad(clock.getUTCHours())}:${pad(clock.getUTCMinutes())}:${pad(clock.getUTCSeconds())}`;
 }
 
 /**
@@ -204,6 +209,26 @@ export function monthWindow(value: string, offset: Offset): { start: number; end
     start: Date.UTC(year, month - 1, 1) - offset * MINUTE_MS,
     end: Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1) - offset * MINUTE_MS,
   };
+}
+
+/**
+ * The window a revenue report asks for: `30d` and `12m` back from `now`, or a
+ * month of the calendar (`2026-10`).
+ *
+ * A rolling window gives no end. The engine then ends it one millisecond past
+ * its own now on every read (`isp.revenue`), so the read after a payment was
+ * recorded — the live refetch — counts it; an end fixed when the window was
+ * chosen left out everything written after that moment. A month has both of
+ * its bounds. Anything not understood is the last thirty days.
+ */
+export function revenueWindow(
+  choice: string,
+  now: number,
+  offset: Offset,
+): { since: number; until?: number } {
+  if (choice === '12m') return { since: now - 365 * DAY_MS };
+  const month = choice === '30d' ? null : monthWindow(choice, offset);
+  return month ? { since: month.start, until: month.end } : { since: now - 30 * DAY_MS };
 }
 
 /** The months to offer, newest first, counted in the calendar: `2026-10`, `2026-09`, … */

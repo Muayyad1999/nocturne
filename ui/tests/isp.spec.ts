@@ -210,6 +210,15 @@ test('the rail offers the ISP edition, and the list says who is billed in what',
   await expect(table.getByRole('row').filter({ hasText: 'Zagros Net' })).toContainText('IQD');
   await expect(table.getByRole('row').filter({ hasText: 'Tigris Trading' })).toContainText('USD');
 
+  // The next page began after the last customer on the first, and Previous
+  // goes back to that first page.
+  await page.getByRole('button', { name: 'Previous' }).click();
+  await expect(page.getByText(/1–50 of 63/)).toBeVisible();
+  await expect(table.getByRole('row').filter({ hasText: 'Dohuk Dates' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Previous' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await expect(page.getByText(/51–63 of 63/)).toBeVisible();
+
   // Searching narrows it in the engine too, and resets to the first page.
   const search = page.getByRole('searchbox', { name: 'Search the customers' });
   await search.fill('Zagros');
@@ -608,7 +617,14 @@ test('a credit note issued from an invoice is a figure of its own, and the four 
   await page.getByRole('button', { name: 'Close' }).click();
 
   // In the list what was credited is a figure of its own, in its own words,
-  // under what was paid — so the row adds up too.
+  // under what was paid — so the row adds up too. What was paid is in the
+  // column chooser: the columns shown at first are the ones that fit the
+  // smallest window.
+  await table.getByRole('button', { name: 'Choose columns' }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Paid' }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu', { name: 'Columns' })).toHaveCount(0);
+  await expect(table.getByRole('columnheader', { name: 'Paid' })).toBeVisible();
   const row = table.getByRole('row').filter({ hasText: open });
   await expect(row).toContainText(/25\.00\s*USD\s*100\.00\s*USD credited/);
   await expect(row).toContainText(/125\.00\s*USD/);
@@ -1308,6 +1324,168 @@ test('a list filtered to a month shows that month, however many invoices the mon
   await expect(page.getByText(/1 not shown: its period is another month/)).toBeVisible();
   await period.selectOption(seeded.dates.earliest.name);
   await expect(table.getByRole('row').filter({ hasText: 'Subscriber 0002' })).toBeVisible();
+
+  expect(console.messages).toEqual([]);
+});
+
+/** An amount as the screens write it, to match: `36 000 IQD`, `1 250.00 USD`. */
+function shown(minor: number, digits: number, currency: string): RegExp {
+  const whole = Math.trunc(Math.abs(minor) / 10 ** digits);
+  const groups = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ' ').split(' ');
+  const fraction =
+    digits === 0 ? '' : `\\.${String(Math.abs(minor) % 10 ** digits).padStart(digits, '0')}`;
+  return new RegExp(`${minor < 0 ? '-' : ''}${groups.join('\\s*')}${fraction}\\s*${currency}`);
+}
+
+test('a payment taken while the revenue is open is in it when the panel reads again', async ({
+  page,
+}) => {
+  const console = watchConsole(page);
+  await openIsp(page, 'reports');
+  const revenue = page.getByRole('region', { name: 'Revenue' });
+  await expect(revenue.getByLabel('Window')).toHaveValue('30d');
+  const received = revenue.getByText('Received in the window').locator('..');
+  await expect(received).toContainText(/IQD/);
+
+  // Taken now, with no date, by somebody else: the panel learns of it from
+  // the event and reads the window again. Its end is the engine's now on
+  // that read, not the moment the panel was opened.
+  const subscriber = (
+    await rpc<CustomerPage>('isp.customers', { query: 'Subscriber 0003', limit: 1 })
+  ).customers[0];
+  expect(subscriber).toBeDefined();
+  await rpc('isp.payment.record', {
+    customer_id: subscriber?.id,
+    amount: { currency: 'IQD', minor: 2_000 },
+    method: 'cash',
+  });
+  const now = await rpc<{ received: { currency: string; minor: number; digits: number }[] }>(
+    'isp.revenue',
+    { since: Date.now() - 30 * 86_400_000 },
+  );
+  const iqd = now.received.find((money) => money.currency === 'IQD');
+  expect(iqd).toBeDefined();
+  await expect(received).toContainText(shown(iqd?.minor ?? 0, 0, 'IQD'));
+
+  expect(console.messages).toEqual([]);
+});
+
+test('a customer list that could not read what is owed says so, and not that nothing is', async ({
+  page,
+}) => {
+  const console = watchConsole(page);
+  const settings = await rpc<IspSettings>('settings.get', { section: 'isp' });
+  const owes = await rpc<Arrears>('isp.arrears', { customer_id: seeded.zagros });
+  const debt = owes.customers.find((row) => row.customer_id === seeded.zagros)?.outstanding;
+  expect(debt?.minor).toBeGreaterThan(0);
+
+  // A calendar out of range, as a script can store: every method that ages
+  // an invoice refuses until it is put right, and the list itself still reads.
+  await rpc('settings.set', { section: 'isp', value: { utc_offset_minutes: 2_000 } });
+  try {
+    await openIsp(page, 'customers');
+    await page.getByRole('searchbox', { name: 'Search the customers' }).fill('Zagros');
+    const table = page.getByRole('table', { name: 'Customers' });
+    const row = table.getByRole('row').filter({ hasText: 'Zagros Net' });
+    await expect(row).toContainText('not read');
+    await expect(row).not.toContainText('nothing owed');
+  } finally {
+    await rpc('settings.set', {
+      section: 'isp',
+      value: { utc_offset_minutes: settings.utc_offset_minutes },
+    });
+  }
+  // Put right, the debt is back where it was.
+  const table = page.getByRole('table', { name: 'Customers' });
+  const row = table.getByRole('row').filter({ hasText: 'Zagros Net' });
+  await expect(row).toContainText(shown(debt?.minor ?? 0, debt?.digits ?? 0, 'IQD'));
+
+  // A refused read is the engine's answer, not the page failing.
+  expect(console.messages.filter((message) => !message.includes('utc_offset_minutes'))).toEqual(
+    [],
+  );
+});
+
+test('at the smallest window the billing columns are on screen, not off to the side', async ({
+  page,
+}) => {
+  const console = watchConsole(page);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const screens: [string, string[]][] = [
+    ['invoices', ['Invoices']],
+    ['payments', ['Payments']],
+    ['credits', ['Credit notes']],
+    [
+      'reports',
+      [
+        'Customers, what each was sold and what each is using',
+        'Links, what each was sold and what it carries',
+        'Margin per link',
+      ],
+    ],
+  ];
+  for (const [tab, tables] of screens) {
+    await openIsp(page, tab);
+    for (const name of tables) {
+      const table = page.getByRole('table', { name });
+      await expect(table).toBeVisible();
+      // The table's own box does not scroll sideways: every column it shows
+      // at first is in view.
+      const widths = await table.evaluate((element) => {
+        const scroller = element.parentElement as HTMLElement;
+        return { table: scroller.scrollWidth, box: scroller.clientWidth };
+      });
+      expect(widths.table, `${name} at 1280×720`).toBeLessThanOrEqual(widths.box);
+    }
+  }
+  // Where an invoice stands is among them.
+  await openIsp(page, 'invoices');
+  const invoices = page.getByRole('table', { name: 'Invoices' });
+  for (const header of ['Status', 'Due', 'Outstanding']) {
+    await expect(invoices.getByRole('columnheader', { name: header })).toBeInViewport();
+  }
+  await openIsp(page, 'payments');
+  await expect(
+    page.getByRole('table', { name: 'Payments' }).getByRole('columnheader', { name: 'State' }),
+  ).toBeInViewport();
+  await openIsp(page, 'credits');
+  const credits = page.getByRole('table', { name: 'Credit notes' });
+  for (const header of ['Reason', 'State']) {
+    await expect(credits.getByRole('columnheader', { name: header })).toBeInViewport();
+  }
+
+  expect(console.messages).toEqual([]);
+});
+
+test('a usage report of one page says which customers it covers, and pages through the rest', async ({
+  page,
+}) => {
+  const console = watchConsole(page);
+  // More customers than one page of the report holds.
+  await seedManyCustomers(rpc, 150, { name: 'Usage Probe', code: 'U' });
+  const total = (await rpc<CustomerPage>('isp.customers', { limit: 1 })).matching;
+  expect(total).toBeGreaterThan(200);
+
+  await openIsp(page, 'reports');
+  const usage = page.getByRole('region', { name: 'Used against sold' });
+  await expect(usage).toContainText(
+    `These are customers 1–200 of ${total}, by name, and every count here is of these 200.`,
+  );
+  await expect(usage).toContainText(/of 200 customers have a usage figure/);
+  await expect(usage.getByText(`1–200 of ${total}`, { exact: true })).toBeVisible();
+
+  // The next page begins after the last customer of this one.
+  await usage.getByRole('button', { name: 'Next' }).click();
+  await expect(usage).toContainText(`These are customers 201–${total} of ${total}`);
+  await expect(usage).toContainText(
+    new RegExp(`of ${total - 200} customers? ha(s|ve) a usage figure`),
+  );
+  await expect(
+    usage.getByRole('table').getByRole('row').filter({ hasText: 'Zagros Net' }),
+  ).toBeVisible();
+  await expect(usage.getByRole('button', { name: 'Next' })).toBeDisabled();
+  await usage.getByRole('button', { name: 'Previous' }).click();
+  await expect(usage).toContainText(`These are customers 1–200 of ${total}`);
 
   expect(console.messages).toEqual([]);
 });

@@ -8,10 +8,15 @@ import {
   freshness,
   groupBySeverity,
   isRepeat,
+  readThreshold,
   reasonTotals,
+  refusalOf,
   severityRank,
   STALE_MS,
+  storedThresholdProblem,
   verdict,
+  WHOLE_U32,
+  WHOLE_U64,
   word,
   worstSeverity,
 } from './insight';
@@ -229,5 +234,95 @@ describe('words', () => {
     expect(word(2, 'device')).toBe('devices');
     expect(word(1, 'was', 'were')).toBe('was');
     expect(word(0, 'was', 'were')).toBe('were');
+  });
+});
+
+describe('a threshold typed into its field', () => {
+  it('is no change when the field is left empty: a cleared field is not a zero', () => {
+    expect(readThreshold('', WHOLE_U32)).toEqual({ kind: 'unchanged' });
+    expect(readThreshold('   ')).toEqual({ kind: 'unchanged' });
+  });
+
+  it('is no change when the number field could not read what was typed', () => {
+    // `1e` in a number field reads as '' with `validity.badInput` set.
+    expect(readThreshold('', undefined, true)).toEqual({ kind: 'unchanged' });
+  });
+
+  it('refuses a fraction where the engine counts whole units, and says what was typed', () => {
+    expect(readThreshold('7.5', WHOLE_U32)).toEqual({
+      kind: 'refused',
+      reason: 'Must be a whole number (0 or more), not 7.5.',
+    });
+  });
+
+  it('takes a fraction where the threshold is one', () => {
+    expect(readThreshold('85.5')).toEqual({ kind: 'value', value: 85.5 });
+  });
+
+  it('takes a whole number, zero included', () => {
+    expect(readThreshold(' 30 ', WHOLE_U32)).toEqual({ kind: 'value', value: 30 });
+    expect(readThreshold('0', WHOLE_U32)).toEqual({ kind: 'value', value: 0 });
+  });
+
+  it('refuses a negative number and one too large to hold', () => {
+    expect(readThreshold('-1', WHOLE_U32)).toEqual({ kind: 'refused', reason: 'Must be 0 or more, not -1.' });
+    expect(readThreshold('5000000000', WHOLE_U32)).toMatchObject({ kind: 'refused' });
+    expect(readThreshold(String(WHOLE_U32), WHOLE_U32)).toEqual({ kind: 'value', value: WHOLE_U32 });
+    expect(readThreshold('1e400')).toMatchObject({ kind: 'refused' });
+  });
+});
+
+describe('a threshold as it is stored', () => {
+  it('is fine when it is what the threshold is meant to be', () => {
+    expect(storedThresholdProblem(7, WHOLE_U32)).toBeNull();
+    expect(storedThresholdProblem(85.5)).toBeNull();
+  });
+
+  it('says what is stored when the engine cannot use it', () => {
+    expect(storedThresholdProblem(7.5, WHOLE_U32)).toBe(
+      'Stored as 7.5, which is not a whole number. The checks cannot use it until it is corrected.',
+    );
+    expect(storedThresholdProblem('high')).toBe(
+      'Stored as "high", which is not a number. The checks cannot use it until it is corrected.',
+    );
+    expect(storedThresholdProblem(null)).toMatch(/^Stored as null, which is not a number/);
+    expect(storedThresholdProblem(-1, WHOLE_U32)).toMatch(/below 0/);
+    expect(storedThresholdProblem(5_000_000_000, WHOLE_U32)).toMatch(/more than it can hold/);
+    expect(storedThresholdProblem(1e21, WHOLE_U64)).toMatch(/more than it can hold/);
+  });
+
+  it('says nothing against a value the engine can use, even one this field would not take', () => {
+    // A threshold that can be a fraction is an `f64` in the engine, which
+    // reads a negative number and runs its checks on it.
+    expect(storedThresholdProblem(-5)).toBeNull();
+    // A `u64` holds far more than a field sends exactly.
+    expect(storedThresholdProblem(2 ** 60, WHOLE_U64)).toBeNull();
+  });
+});
+
+describe('a threshold the engine refused to store', () => {
+  const message =
+    '`thresholds.backup_age_days` must be a whole number of days (0 or more), not 7.5; `thresholds.cpu_pct` must be a number, not "high"';
+
+  it("is told with the refusal's own line for that setting", () => {
+    const error = {
+      message,
+      details: {
+        section: 'insights',
+        problems: [
+          { key: 'thresholds.backup_age_days', value: 7.5, message: 'days: a whole number' },
+          { key: 'thresholds.cpu_pct', value: 'high', message: 'cpu: a number' },
+        ],
+      },
+    };
+    expect(refusalOf(error, 'cpu_pct')).toBe('cpu: a number');
+  });
+
+  it('is told with the whole message when the refusal names no line for it', () => {
+    expect(refusalOf({ message }, 'cpu_pct')).toBe(message);
+    expect(refusalOf({ message, details: { problems: 'not a list' } }, 'cpu_pct')).toBe(message);
+    expect(refusalOf({ message, details: { problems: [{ key: 'thresholds.history_hours', message: 'x' }] } }, 'cpu_pct')).toBe(
+      message,
+    );
   });
 });

@@ -4,6 +4,11 @@
 //! These types are the contract the UI and the assistant are written against
 //! (`docs/dev/features/changes.md`), mirrored field for field in
 //! `ui/src/api/types/changes.ts`.
+//!
+//! They are the record as it is *kept*. The lines of an intent and of a plan
+//! are kept exactly as they will be sent, secrets and all, so nothing here
+//! is answered to a caller as it is: every method answers a view made by
+//! `crate::redact`, which says which fields that touches and how.
 
 use nocturne_drivers::hier::TextDiff;
 use nocturne_drivers::session::CommandOutput;
@@ -29,6 +34,12 @@ pub struct Change {
     pub ticket: Option<String>,
     /// The job that is applying (or last applied) this change.
     pub job_id: Option<String>,
+    /// Set by `changes.rollback` on the change it creates: the change this one
+    /// undoes. Its devices are taken back to the configuration they had
+    /// before that change, by commands worked out from what they hold now.
+    pub undoes: Option<String>,
+    /// The latest change `changes.rollback` created to undo this one.
+    pub undone_by: Option<String>,
 }
 
 /// Where the change came from.
@@ -127,6 +138,11 @@ impl Default for Intent {
 }
 
 /// Exactly what will be sent to one device, and what it is predicted to do.
+///
+/// `commands`, `rollback`, `diff` and a hit's `command` are configuration
+/// lines, kept whole. `warnings`, `risk.reasons` and a hit's `subject` and
+/// `why` are sentences about those lines, and are kept with `<hidden>` where
+/// a line they quote holds a secret value.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Plan {
@@ -297,6 +313,12 @@ pub struct Approval {
 }
 
 /// What happened on one device.
+///
+/// Everything in here is written down while the change is applied and holds
+/// no secret value: `<hidden>` stands where one was, in the steps, the
+/// checks, the error, the lines that were sent and the transcript alike. It
+/// is `<hidden>` and not a numbered placeholder because the record is read
+/// long after the table that numbered it is gone.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TargetResult {
@@ -304,7 +326,9 @@ pub struct TargetResult {
     pub started_at: i64,
     pub finished_at: Option<i64>,
     pub steps: Vec<Step>,
-    /// Every configuration line with the device's answer.
+    /// Every configuration line that was sent, with the device's answer —
+    /// the planned lines and whatever a rollback derived on the spot. The
+    /// values in them are hidden; the planned lines are whole in the plan.
     pub sent: Vec<CommandOutput>,
     /// Index into `plan.commands` of the line the device rejected.
     pub failed_line: Option<usize>,
@@ -312,8 +336,13 @@ pub struct TargetResult {
     pub before_version_id: Option<i64>,
     pub after_version_id: Option<i64>,
     pub verification: Vec<Check>,
-    /// Redacted session transcript.
+    /// The session transcript, with the values in it hidden.
     pub transcript: String,
+    /// Whether this was written down with its secret values hidden. Every
+    /// result recorded since the engine hides them says `true`; one that
+    /// does not is a record from before, and is hidden each time it is read
+    /// (so what a method answers always says `true`).
+    pub redacted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

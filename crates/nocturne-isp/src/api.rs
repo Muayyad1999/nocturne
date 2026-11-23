@@ -17,6 +17,7 @@ use serde_json::json;
 use crate::calendar::Calendar;
 use crate::model::{Customer, CustomerState, Invoice, InvoiceView, Settings, Subscription};
 use crate::money::{CURRENCIES, Money, Totals};
+use crate::reports::open_end;
 use crate::{billing, db, network, records, reports};
 
 pub const SETTINGS_SECTION: &str = "isp";
@@ -314,6 +315,9 @@ struct RunResult {
     /// How many customers the run looked at. Every one of them is in
     /// `invoices` or in `skipped`: the two always add up to this.
     considered: u32,
+    /// Customers the run would have looked at and did not, because Nocturne
+    /// began shutting down; nothing was written for them. Zero otherwise.
+    not_reached: u32,
     drafted: u32,
     issued: u32,
     /// What each customer's invoice would say, or does.
@@ -413,12 +417,9 @@ pub fn init(builder: &mut AppBuilder) {
     router.add(
         "isp.customers",
         |app: App, params: db::CustomerQuery| async move {
-            let offset = db::offset_of(params.cursor.as_deref())?;
             let page = db::customers(app.store(), &params)?;
-            let seen = offset + page.customers.len() as i64;
             Ok(CustomerPage {
-                next_cursor: (seen < page.matching as i64 && !page.customers.is_empty())
-                    .then(|| seen.to_string()),
+                next_cursor: page.next_cursor,
                 matching: page.matching,
                 customers: page.customers,
             })
@@ -445,12 +446,18 @@ pub fn init(builder: &mut AppBuilder) {
                     ..db::InvoiceQuery::default()
                 },
             )?;
-            let usage = network::usage(&app, &settings, std::slice::from_ref(&customer), None)
-                .await?
-                .rows
-                .into_iter()
-                .next()
-                .ok_or_else(|| AppError::internal("the usage report lost its only row"))?;
+            let usage = network::usage(
+                &app,
+                &settings,
+                std::slice::from_ref(&customer),
+                network::PageOf::one(),
+                None,
+            )
+            .await?
+            .rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::internal("the usage report lost its only row"))?;
             Ok(json!({
                 "customer": customer,
                 "currency": customer.currency,
@@ -466,17 +473,22 @@ pub fn init(builder: &mut AppBuilder) {
         "isp.customer.save",
         |app: App, params: records::CustomerInput| async move {
             let saved = records::save_customer(&app, params)?;
+            // Filed under no device: a customer's record is not part of the
+            // serving device's history, and that history is read by other
+            // features (an incident's timeline collects every entry filed
+            // under one of its devices).
             app.audit(
                 "isp.customer.save",
-                saved.customer.service.device_id.as_deref(),
+                None,
                 format!(
                     "{} customer {} ({})",
                     if saved.created { "Added" } else { "Updated" },
-                    saved.customer.name,
+                    saved.customer.id,
                     saved.customer.currency
                 ),
                 json!({
                     "customer": saved.customer.id,
+                    "name": saved.customer.name,
                     "currency": saved.customer.currency,
                     "created": saved.created,
                     "warnings": saved.warnings,
@@ -491,24 +503,24 @@ pub fn init(builder: &mut AppBuilder) {
         "isp.customer.state",
         |app: App, params: StateParams| async move {
             let changedstate = records::set_customer_state(&app, &params.id, &params.state)?;
+            // The reason is whatever the operator typed, which may be
+            // anything they know about the customer: it is kept in the
+            // detail, and the message says only what changed.
             app.audit(
                 "isp.customer.state",
-                changedstate.customer.service.device_id.as_deref(),
+                None,
                 format!(
-                    "Set {} from {} to {}{}",
-                    changedstate.customer.name,
+                    "Set customer {} from {} to {}",
+                    changedstate.customer.id,
                     changedstate.was.as_str(),
-                    changedstate.customer.state.as_str(),
-                    if params.reason.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({})", params.reason.trim())
-                    }
+                    changedstate.customer.state.as_str()
                 ),
                 json!({
                     "customer": changedstate.customer.id,
+                    "name": changedstate.customer.name,
                     "was": changedstate.was,
                     "now": changedstate.customer.state,
+                    "reason": params.reason.trim(),
                     "device_changed": false,
                 }),
             );
@@ -527,9 +539,9 @@ pub fn init(builder: &mut AppBuilder) {
                     None,
                     format!(
                         "Deleted customer {} (they had no invoices, payments or credit notes)",
-                        deleted.name
+                        params.id
                     ),
-                    json!({"customer": params.id}),
+                    json!({"customer": params.id, "name": deleted.name}),
                 );
                 changed(&app, &["customers", "subscriptions"]);
             }
@@ -770,8 +782,8 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.invoice.draft",
                 None,
                 format!(
-                    "Drafted an invoice for {} of {} ({} line(s))",
-                    customer.name,
+                    "Drafted an invoice for customer {} of {} ({} line(s))",
+                    customer.id,
                     drafted.invoice.total.text(),
                     drafted.invoice.lines.len()
                 ),
@@ -819,11 +831,56 @@ pub fn init(builder: &mut AppBuilder) {
         let mut totals_complete = true;
         let mut drafted: Vec<Invoice> = Vec::new();
         let mut issued: Vec<Invoice> = Vec::new();
-        // From the first draft written to the audit entry, nothing below may
-        // return early: a run that stopped half way would have billed some
-        // customers and told nobody which. Whatever goes wrong for one
+        // A run that writes is in the trail before its first draft. Each
+        // customer is billed in a transaction of its own, so a run cut off
+        // part way — the process killed, the power gone — leaves numbered
+        // invoices behind it, and they must not be invoices nobody recorded:
+        // this entry says what the run set out to do, and the closing one,
+        // carrying the same `run`, says what it did.
+        let run = util::new_id();
+        if !params.dry_run {
+            app.audit(
+                "isp.invoice.run.start",
+                None,
+                format!(
+                    "Started billing {} customer(s) for {} to {}, {}",
+                    customers.len(),
+                    calendar.date_text(period_start),
+                    calendar.date_text(period_end.saturating_sub(1)),
+                    if params.issue {
+                        "issuing each invoice as it is drafted"
+                    } else {
+                        "leaving each invoice a draft"
+                    }
+                ),
+                json!({
+                    "run": run,
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "utc_offset_minutes": calendar.offset_minutes(),
+                    "considered": customers.len(),
+                    "issue": params.issue,
+                    "named": params.customer_ids,
+                }),
+            );
+        }
+        // From the first draft written to the closing entry, nothing below
+        // may return early: a run that stopped half way would have billed
+        // some customers and told nobody which. Whatever goes wrong for one
         // customer is recorded against that customer and the run goes on.
+        //
+        // The one way it stops is between two customers when Nocturne is
+        // shutting down, which is the only place it can stop and still say
+        // exactly whom it reached. The loop never awaits — a request that is
+        // dropped part way cannot end it — so the token is checked rather
+        // than waited on.
+        let shutdown = app.shutdown_token();
+        let mut reached = 0_usize;
         for customer in &customers {
+            if shutdown.is_cancelled() {
+                break;
+            }
+            reached += 1;
             // A preview only reads. A real run asks "is this period already
             // billed?" and writes the draft as one transaction, so two runs
             // started at the same moment cannot both bill a customer: the
@@ -890,24 +947,52 @@ pub fn init(builder: &mut AppBuilder) {
                  in `not_issued`, and is still a draft"
             ));
         }
+        let not_reached = customers.len() - reached;
+        if not_reached > 0 {
+            warnings.push(format!(
+                "Nocturne began shutting down, so the run stopped after {reached} of {} \
+                 customer(s): the other {not_reached} were not considered and nothing was written \
+                 for them. Run it again to bill them; whoever this run billed is listed then as \
+                 billed already.",
+                customers.len()
+            ));
+        }
         if !params.dry_run {
             app.audit(
                 "isp.invoice.run",
                 None,
-                format!(
-                    "Billed {} of {} customer(s) for {} to {}: {} issued, {} skipped",
-                    rows.len(),
-                    customers.len(),
-                    calendar.date_text(period_start),
-                    calendar.date_text(period_end.saturating_sub(1)),
-                    issued.len(),
-                    skipped.len()
-                ),
+                if not_reached > 0 {
+                    format!(
+                        "Billing for {} to {} stopped after {} of {} customer(s), because \
+                         Nocturne was shutting down: {} billed, {} issued, {} skipped, {} not \
+                         reached",
+                        calendar.date_text(period_start),
+                        calendar.date_text(period_end.saturating_sub(1)),
+                        reached,
+                        customers.len(),
+                        rows.len(),
+                        issued.len(),
+                        skipped.len(),
+                        not_reached
+                    )
+                } else {
+                    format!(
+                        "Billed {} of {} customer(s) for {} to {}: {} issued, {} skipped",
+                        rows.len(),
+                        customers.len(),
+                        calendar.date_text(period_start),
+                        calendar.date_text(period_end.saturating_sub(1)),
+                        issued.len(),
+                        skipped.len()
+                    )
+                },
                 json!({
+                    "run": run,
                     "period_start": period_start,
                     "period_end": period_end,
                     "utc_offset_minutes": calendar.offset_minutes(),
-                    "considered": customers.len(),
+                    "considered": reached,
+                    "not_reached": not_reached,
                     "drafted": rows.len(),
                     "issued": issued.len(),
                     "totals": totals,
@@ -927,7 +1012,8 @@ pub fn init(builder: &mut AppBuilder) {
             period_end,
             utc_offset_minutes: calendar.offset_minutes(),
             dry_run: params.dry_run,
-            considered: u32::try_from(customers.len()).unwrap_or(u32::MAX),
+            considered: u32::try_from(reached).unwrap_or(u32::MAX),
+            not_reached: u32::try_from(not_reached).unwrap_or(u32::MAX),
             drafted: u32::try_from(rows.len()).unwrap_or(u32::MAX),
             issued: u32::try_from(issued.len()).unwrap_or(u32::MAX),
             invoices: rows,
@@ -949,19 +1035,24 @@ pub fn init(builder: &mut AppBuilder) {
     router.add(
         "isp.invoice.line.add",
         |app: App, params: billing::LineInput| async move {
-            let description = params.description.clone();
+            let description = params.description.trim().to_string();
             let amount = params.amount;
             let invoice = billing::add_line(&app, params)?;
             app.audit(
                 "isp.invoice.line.add",
                 None,
                 format!(
-                    "Added `{}` ({}) to a draft invoice for {}",
-                    description,
+                    "Added a line of {} to a draft invoice for customer {}",
                     amount.text(),
-                    invoice.customer_name
+                    invoice.customer_id
                 ),
-                json!({"invoice": invoice.id, "amount": amount, "total": invoice.total}),
+                json!({
+                    "invoice": invoice.id,
+                    "customer": invoice.customer_id,
+                    "description": description,
+                    "amount": amount,
+                    "total": invoice.total,
+                }),
             );
             invoices_changed(&app, "updated", &[&invoice]);
             Ok(invoice)
@@ -976,10 +1067,15 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.invoice.line.remove",
                 None,
                 format!(
-                    "Removed a line from a draft invoice for {}",
-                    invoice.customer_name
+                    "Removed a line from a draft invoice for customer {}",
+                    invoice.customer_id
                 ),
-                json!({"invoice": invoice.id, "line": params.line_id, "total": invoice.total}),
+                json!({
+                    "invoice": invoice.id,
+                    "customer": invoice.customer_id,
+                    "line": params.line_id,
+                    "total": invoice.total,
+                }),
             );
             invoices_changed(&app, "updated", &[&invoice]);
             Ok(invoice)
@@ -996,9 +1092,9 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.invoice.issue",
                 None,
                 format!(
-                    "Issued invoice {} to {} for {}, due {}",
+                    "Issued invoice {} to customer {} for {}, due {}",
                     invoice.number.clone().unwrap_or_default(),
-                    invoice.customer_name,
+                    invoice.customer_id,
                     invoice.total.text(),
                     invoice.due_at.unwrap_or_default()
                 ),
@@ -1033,14 +1129,13 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.invoice.void",
                 None,
                 format!(
-                    "Voided invoice {} for {} ({}): {}",
+                    "Voided invoice {} for customer {} ({})",
                     invoice
                         .number
                         .clone()
                         .unwrap_or_else(|| "draft".to_string()),
-                    invoice.customer_name,
-                    invoice.total.text(),
-                    invoice.void_reason
+                    invoice.customer_id,
+                    invoice.total.text()
                 ),
                 json!({
                     "invoice": invoice.id,
@@ -1062,14 +1157,13 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.invoice.reissue",
                 None,
                 format!(
-                    "Voided invoice {} for {} and drafted its replacement: {}",
+                    "Voided invoice {} for customer {} and drafted its replacement",
                     reissued
                         .voided
                         .number
                         .clone()
                         .unwrap_or_else(|| "a draft".to_string()),
-                    reissued.voided.customer_name,
-                    reissued.voided.void_reason
+                    reissued.voided.customer_id
                 ),
                 json!({
                     "voided": reissued.voided.id,
@@ -1099,11 +1193,12 @@ pub fn init(builder: &mut AppBuilder) {
             app.audit(
                 "isp.payment.record",
                 None,
+                // How it came in is in the ISP's own words, so it goes with
+                // the other things somebody typed: in the detail.
                 format!(
-                    "Recorded {} from customer {} by {}{}{}",
+                    "Recorded {} from customer {}{}{}",
                     payment.amount.text(),
                     payment.customer_id,
-                    payment.method,
                     match (&payment.conversion, &payment.settled) {
                         (Some(conversion), Some(settled)) => format!(
                             " ({})",
@@ -1121,6 +1216,7 @@ pub fn init(builder: &mut AppBuilder) {
                     "customer": payment.customer_id,
                     "invoice": payment.invoice_id,
                     "amount": payment.amount,
+                    "method": payment.method,
                     "conversion": payment.conversion,
                     "settled": payment.settled,
                     "settled_exact": payment.settled_exact,
@@ -1139,10 +1235,9 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.payment.void",
                 None,
                 format!(
-                    "Voided a payment of {} from customer {}: {}",
+                    "Voided a payment of {} from customer {}",
                     payment.amount.text(),
-                    payment.customer_id,
-                    payment.void_reason
+                    payment.customer_id
                 ),
                 json!({
                     "payment": payment.id,
@@ -1174,10 +1269,9 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.credit.issue",
                 None,
                 format!(
-                    "Credited {} to customer {} ({}){}",
+                    "Credited {} to customer {}{}",
                     credit.amount.text(),
                     credit.customer_id,
-                    credit.reason,
                     match &credit.invoice_id {
                         Some(id) => format!(" against invoice {id}"),
                         None => " on account".to_string(),
@@ -1239,10 +1333,10 @@ pub fn init(builder: &mut AppBuilder) {
                 "isp.credit.void",
                 None,
                 format!(
-                    "Voided a credit note of {} to customer {}: {}",
+                    "Voided credit note {} of {} to customer {}",
+                    credit.number,
                     credit.amount.text(),
-                    credit.customer_id,
-                    credit.void_reason
+                    credit.customer_id
                 ),
                 json!({
                     "credit": credit.id,
@@ -1281,10 +1375,13 @@ pub fn init(builder: &mut AppBuilder) {
 
     router.add("isp.usage", |app: App, params: UsageParams| async move {
         let settings = config(&app)?;
-        let customers = match &params.customer_id {
-            Some(id) => vec![db::require_customer(app.store(), id)?],
+        let (customers, page) = match &params.customer_id {
+            Some(id) => (
+                vec![db::require_customer(app.store(), id)?],
+                network::PageOf::one(),
+            ),
             None => {
-                db::customers(
+                let page = db::customers(
                     app.store(),
                     &db::CustomerQuery {
                         query: params.query.clone(),
@@ -1295,14 +1392,20 @@ pub fn init(builder: &mut AppBuilder) {
                         limit: Some(params.limit.unwrap_or(200)),
                         cursor: params.cursor.clone(),
                     },
-                )?
-                .customers
+                )?;
+                (
+                    page.customers.clone(),
+                    network::PageOf {
+                        matching: page.customers.len() as u64,
+                        next_cursor: None,
+                    },
+                )
             }
         };
         let window = params
             .since
             .map(|since| (since, open_end(params.until, util::now_ms())));
-        network::usage(&app, &settings, &customers, window).await
+        network::usage(&app, &settings, &customers, page, window).await
     });
 
     router.add(
@@ -1333,32 +1436,9 @@ pub fn init(builder: &mut AppBuilder) {
     });
 }
 
-/// Where a window that was given no end stops: one millisecond past now.
-///
-/// Windows here are half open, `[since, until)`. Ending one at "now" leaves
-/// out whatever was written in the millisecond the question was asked in, so
-/// a report asked for straight after an invoice was issued did not count that
-/// invoice in "everything so far". That is how it was found: one test, on the
-/// fastest of three machines.
-fn open_end(until: Option<i64>, now: i64) -> i64 {
-    until.unwrap_or_else(|| now.saturating_add(1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_window_with_no_end_takes_in_the_instant_it_is_asked_at() {
-        let now = 1_700_000_000_000;
-        assert!(
-            (0..open_end(None, now)).contains(&now),
-            "what was written this millisecond is part of everything so far"
-        );
-        // An end somebody gave is theirs, also when it is in the past.
-        assert_eq!(open_end(Some(now - 5), now), now - 5);
-        assert_eq!(open_end(None, i64::MAX), i64::MAX);
-    }
 
     #[test]
     fn a_billing_run_previews_unless_it_is_told_otherwise() {

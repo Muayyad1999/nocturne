@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::checks;
 use crate::model::{Category, Severity};
 use crate::report::CheckReport;
-use crate::settings::Settings;
+use crate::settings::{Problem, Settings};
 use crate::world::World;
 
 /// What a check does, over data it declares.
@@ -25,6 +25,10 @@ pub struct Check {
     /// When the check reports "not evaluated" instead of "nothing found".
     pub not_evaluated: &'static str,
     pub default_enabled: bool,
+    /// The thresholds (`settings.thresholds.*`) it compares against. One of
+    /// them that cannot be read stops the check: see
+    /// [`Settings::problems_for`].
+    pub thresholds: &'static [&'static str],
     pub run: fn(&World, &Settings, &mut CheckReport),
 }
 
@@ -39,6 +43,11 @@ pub struct CheckInfo {
     pub enabled: bool,
     pub description: &'static str,
     pub not_evaluated: &'static str,
+    pub thresholds: &'static [&'static str],
+    /// The settings it reads that cannot be used. While there is one it does
+    /// not run, and says so in the coverage.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<Problem>,
 }
 
 pub fn get(id: &str) -> Option<&'static Check> {
@@ -57,6 +66,8 @@ pub fn info(settings: &Settings) -> Vec<CheckInfo> {
             enabled: settings.enabled(check.id),
             description: check.description,
             not_evaluated: check.not_evaluated,
+            thresholds: check.thresholds,
+            problems: settings.problems_for(check),
         })
         .collect()
 }
@@ -79,6 +90,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No link to another managed device, or either end does not report a \
             resolved duplex (`auto`, empty, or a spelling this check does not know).",
         default_enabled: true,
+        thresholds: &[],
         run: checks::physical::duplex_mismatch,
     },
     Check {
@@ -93,6 +105,7 @@ pub static CHECKS: &[Check] = &[
             `duplex_mismatch`.",
         not_evaluated: "No neighbour was collected for the port, or its duplex is not resolved.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::physical::half_duplex_uplink,
     },
     Check {
@@ -106,6 +119,7 @@ pub static CHECKS: &[Check] = &[
             of a link.",
         not_evaluated: "No link, either end is not up, or either end reports no speed.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::physical::speed_mismatch,
     },
     Check {
@@ -120,6 +134,7 @@ pub static CHECKS: &[Check] = &[
             1500 against 1514 is the same link.",
         not_evaluated: "No link, either end is not up, or either end reports no MTU.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::physical::mtu_mismatch,
     },
     Check {
@@ -134,6 +149,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "Only one collection, no error counters, or the counters went backwards \
             (`clear counters`, a reboot, a counter wrap) — none of which can be read as a rate.",
         default_enabled: true,
+        thresholds: &["interface_error_ppm", "interface_error_min_delta"],
         run: checks::physical::interface_errors,
     },
     Check {
@@ -148,6 +164,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "Neither monitoring samples nor log entries exist for the device in the \
             window; a port that was simply never polled is never called stable.",
         default_enabled: true,
+        thresholds: &["flap_transitions_per_hour"],
         run: checks::physical::interface_flapping,
     },
     Check {
@@ -162,6 +179,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No log entries from the device in the window (no syslog receiver, or the \
             device does not send to it), or no interface data to confirm the port is still down.",
         default_enabled: true,
+        thresholds: &["history_hours"],
         run: checks::physical::err_disabled,
     },
     Check {
@@ -180,6 +198,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No neighbour was ever collected for the port, or the port's state is \
             unknown.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::physical::down_uplink,
     },
     Check {
@@ -193,6 +212,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No utilisation samples for the device, or too short a history to call \
             anything sustained.",
         default_enabled: true,
+        thresholds: &["utilisation_pct", "sustained_minutes", "history_hours"],
         run: checks::physical::high_utilisation,
     },
     // ---------------------------------------------------------------- l2
@@ -213,6 +233,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "Either end is not known to be a trunk, or its native VLAN is neither \
             collected nor derivable from a configuration whose grammar this check knows.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l2::native_vlan_mismatch,
     },
     Check {
@@ -231,6 +252,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No link, a configuration grammar the check does not read, or either end \
             has no explicit allowed list.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l2::trunk_vlan_mismatch,
     },
     Check {
@@ -245,6 +267,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No trunk with an explicit allowed list (a trunk that allows everything \
             carries the VLAN), no VLAN list, or a configuration grammar the check does not read.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l2::vlan_not_on_trunk,
     },
     Check {
@@ -259,6 +282,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No VLAN list, or a trunk allows every VLAN, which would make any verdict \
             a guess.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l2::unused_vlan,
     },
     Check {
@@ -272,6 +296,7 @@ pub static CHECKS: &[Check] = &[
             differences of case, spaces, hyphens and underscores are not reported.",
         not_evaluated: "Fewer than two switches have a name for the VLAN.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l2::vlan_name_inconsistent,
     },
     Check {
@@ -285,6 +310,7 @@ pub static CHECKS: &[Check] = &[
             not reported: that is a laptop changing desks or a wireless client roaming.",
         not_evaluated: "Only one MAC-table collection.",
         default_enabled: true,
+        thresholds: &["mac_flap_min_macs"],
         run: checks::l2::mac_flapping,
     },
     // ---------------------------------------------------------------- l3
@@ -303,6 +329,7 @@ pub static CHECKS: &[Check] = &[
             redundancy group is only recognisable from one; or ARP tables collected too far apart \
             to be compared.",
         default_enabled: true,
+        thresholds: &["stale_data_hours", "arp_window_minutes"],
         run: checks::l3::duplicate_ip,
     },
     Check {
@@ -316,6 +343,7 @@ pub static CHECKS: &[Check] = &[
             exactly one address each are compared; secondary addressing is left alone.",
         not_evaluated: "No link, or either end has no address or more than one.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l3::subnet_mask_mismatch,
     },
     Check {
@@ -329,6 +357,7 @@ pub static CHECKS: &[Check] = &[
             loopbacks are excluded.",
         not_evaluated: "Fewer than two addressed interfaces.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l3::overlapping_subnets,
     },
     Check {
@@ -343,6 +372,7 @@ pub static CHECKS: &[Check] = &[
             than a routing table, are excluded.",
         not_evaluated: "No routing table was collected, or the device is a layer-2 switch.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::l3::no_default_route,
     },
     // ------------------------------------------------------------- config
@@ -358,6 +388,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "Either snapshot is missing, or they were not captured close enough \
             together to be compared (the device may have been saved in between).",
         default_enabled: true,
+        thresholds: &["saved_pair_window_minutes"],
         run: checks::config::unsaved_config,
     },
     Check {
@@ -372,6 +403,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "The configuration feature is not installed: nothing is taking backups at \
             all, which is a setup matter and not a finding about a device.",
         default_enabled: true,
+        thresholds: &["backup_age_days"],
         run: checks::config::no_recent_backup,
     },
     Check {
@@ -386,6 +418,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "The changes feature is not installed, or the device has fewer than two \
             stored versions.",
         default_enabled: true,
+        thresholds: &["change_window_minutes", "backup_age_days"],
         run: checks::config::config_changed_outside_nocturne,
     },
     // ----------------------------------------------------------- security
@@ -401,6 +434,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No stored configuration, or a configuration grammar this check does not \
             read (it understands IOS-style configurations only).",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::telnet_enabled,
     },
     Check {
@@ -413,6 +447,7 @@ pub static CHECKS: &[Check] = &[
             over from the factory defaults. HTTPS (`ip http secure-server`) alone is not reported.",
         not_evaluated: "No stored configuration, or a grammar this check does not read.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::http_server_enabled,
     },
     Check {
@@ -427,6 +462,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No stored configuration, a grammar this check does not read, or the \
             community is encrypted in the stored configuration so its value cannot be seen.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::snmp_default_community,
     },
     Check {
@@ -440,6 +476,7 @@ pub static CHECKS: &[Check] = &[
             Type 8 and 9 are not reported.",
         not_evaluated: "No stored configuration, or a grammar this check does not read.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::weak_enable_password,
     },
     Check {
@@ -456,6 +493,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No stored configuration, no `line vty` block, or a grammar this check \
             does not read.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::no_vty_acl,
     },
     Check {
@@ -468,6 +506,7 @@ pub static CHECKS: &[Check] = &[
             is suspect, and correlating an incident across devices stops working.",
         not_evaluated: "No stored configuration, or a grammar this check does not read.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::ntp_not_configured,
     },
     Check {
@@ -480,6 +519,7 @@ pub static CHECKS: &[Check] = &[
             lost at the next reboot.",
         not_evaluated: "No stored configuration, or a grammar this check does not read.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::security::no_syslog_host,
     },
     // ------------------------------------------------------------- fleet
@@ -495,6 +535,7 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "Fewer devices of the model than the group threshold, so there is no \
             majority to be in the minority of; or the model or version was not collected.",
         default_enabled: true,
+        thresholds: &["software_min_group"],
         run: checks::fleet::software_inconsistent,
     },
     Check {
@@ -508,6 +549,7 @@ pub static CHECKS: &[Check] = &[
             uptime that went backwards by more than the time that passed, is not read as a reboot.",
         not_evaluated: "Only one collection of facts, or either one has no uptime.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::fleet::uptime_reset,
     },
     Check {
@@ -520,6 +562,7 @@ pub static CHECKS: &[Check] = &[
             poll. A single spike while the device answers a `show tech` is not a finding.",
         not_evaluated: "No CPU samples for the device, or too short a history.",
         default_enabled: true,
+        thresholds: &["cpu_pct", "sustained_minutes"],
         run: checks::fleet::high_cpu,
     },
     Check {
@@ -532,6 +575,7 @@ pub static CHECKS: &[Check] = &[
             never falls back until the device is restarted.",
         not_evaluated: "No memory samples for the device, or too short a history.",
         default_enabled: true,
+        thresholds: &["memory_pct", "sustained_minutes"],
         run: checks::fleet::high_memory,
     },
     Check {
@@ -544,6 +588,7 @@ pub static CHECKS: &[Check] = &[
             cupboard that is not a comms room.",
         not_evaluated: "No temperature samples for the device, or too short a history.",
         default_enabled: true,
+        thresholds: &["temperature_c", "sustained_minutes"],
         run: checks::fleet::high_temperature,
     },
     // --------------------------------------------------------------- qos
@@ -568,6 +613,7 @@ pub static CHECKS: &[Check] = &[
             definitions, and a listing that stops before its closing `end` is missing whatever \
             it did not print.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::qos::qos_policy_missing,
     },
     Check {
@@ -593,6 +639,7 @@ pub static CHECKS: &[Check] = &[
             sessions RADIUS authorises (a virtual template, a dynamic template, `ip subscriber`, \
             `aaa authorization network`) and can give a policy by name.",
         default_enabled: true,
+        thresholds: &[],
         run: checks::qos::qos_policy_unattached,
     },
     Check {
@@ -617,8 +664,12 @@ pub static CHECKS: &[Check] = &[
         not_evaluated: "No QoS samples for the device — its device type has no QoS read, \
             monitoring is not polling it, the read has never succeeded, or no policy is attached \
             — none inside the window, or samples that stop before now because the read is \
-            failing; and a drop threshold that is not above zero.",
+            failing; samples that could not be read; and a drop threshold that is not above \
+            zero. A class measured too briefly since a gap in its samples to tell sustained \
+            dropping from a burst, or whose own samples stopped while the device's did not, is \
+            not judged, and a finding about it is neither resolved nor repeated.",
         default_enabled: true,
+        thresholds: &["qos_drop_ps", "sustained_minutes", "history_hours"],
         run: checks::qos::qos_class_dropping,
     },
 ];
@@ -657,5 +708,33 @@ mod tests {
         }
         assert!(get("duplex_mismatch").is_some());
         assert!(get("nope").is_none());
+    }
+
+    #[test]
+    fn every_threshold_a_check_names_exists_and_every_threshold_is_named_by_one() {
+        let defaults = serde_json::to_value(crate::settings::Thresholds::default()).unwrap();
+        let thresholds: Vec<&str> = defaults
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for check in CHECKS {
+            for threshold in check.thresholds {
+                assert!(
+                    thresholds.contains(threshold),
+                    "{} names `{threshold}`, which is not a threshold",
+                    check.id
+                );
+            }
+        }
+        for threshold in thresholds {
+            assert!(
+                CHECKS
+                    .iter()
+                    .any(|check| check.thresholds.contains(&threshold)),
+                "no check says it reads `{threshold}`, so a bad value of it would stop nothing"
+            );
+        }
     }
 }

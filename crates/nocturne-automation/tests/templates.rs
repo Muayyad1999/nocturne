@@ -4,7 +4,7 @@
 mod common;
 
 use common::{Changes, lab};
-use nocturne_app::collect;
+use nocturne_app::{collect, inventory};
 use nocturne_drivers::model::Kind;
 use serde_json::{Value, json};
 
@@ -905,4 +905,381 @@ async fn a_template_that_does_not_compile_is_not_saved() {
         .await
         .expect_err("a choice with no choices");
     assert!(err.message.contains("lists no choices"), "{}", err.message);
+}
+
+// ------------------------------------------------ what one rendering may do
+
+fn created(lab: &nocturne_app::testing::Lab) -> usize {
+    lab.app
+        .state::<Changes>()
+        .created
+        .lock()
+        .expect("lock")
+        .len()
+}
+
+#[tokio::test]
+async fn a_rendering_longer_than_any_device_configuration_stops_at_one_mebibyte() {
+    let lab = lab(&["SW1"]).await;
+    // Five thousand interfaces with a thousand-character description: 5 MB.
+    let body =
+        "{% for i in range(5000) %}interface Gi0/{{ i }}\n description {{ d }}\n{% endfor %}";
+    let rendered = render_one(&lab, body, json!({"d": "x".repeat(1000)})).await;
+    assert_eq!(rendered["ok"], json!(false), "{}", rendered["error"]);
+    assert!(rendered["lines"].is_null(), "nothing of it is kept");
+    let error = rendered["error"].as_str().expect("an error");
+    assert!(error.contains("more than 1 MiB"), "{error}");
+
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "long", "name": "Long", "kind": "config", "body": body,
+                   "variables": [{"name": "d", "kind": "string", "required": true}]}),
+        )
+        .await
+        .expect("templates.save");
+    let err = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "long", "device_ids": [lab.id("SW1")],
+                   "vars": {"d": "x".repeat(1000)}}),
+        )
+        .await
+        .expect_err("too long to be a change");
+    assert_eq!(err.code, "invalid");
+    assert!(err.message.contains("more than 1 MiB"), "{}", err.message);
+    assert_eq!(created(&lab), 0, "no change was made of it");
+}
+
+#[tokio::test]
+async fn sixteen_mebibytes_is_the_most_one_call_renders_for_all_its_devices_together() {
+    let names: Vec<String> = (1..=20).map(|n| format!("SW{n}")).collect();
+    let lab = lab(&names.iter().map(String::as_str).collect::<Vec<_>>()).await;
+    // 900 kB a device is within one device's share; twenty of them are not
+    // within one call's.
+    let rendered = lab
+        .app
+        .rpc(
+            "templates.render",
+            json!({"body": "{{ d }}", "filter": {}, "vars": {"d": "x".repeat(900_000)}}),
+        )
+        .await
+        .expect("templates.render");
+    let rendered = rendered.as_array().expect("one per device");
+    assert_eq!(rendered.len(), 20, "every device has an answer");
+    let ok = rendered
+        .iter()
+        .filter(|item| item["ok"] == json!(true))
+        .count();
+    assert_eq!(ok, 18, "18 x 900 kB fit in 16 MiB, a 19th does not");
+    for refused in rendered.iter().filter(|item| item["ok"] == json!(false)) {
+        let error = refused["error"].as_str().expect("an error");
+        assert!(error.contains("16 MiB"), "{error}");
+        assert!(refused["lines"].is_null());
+    }
+}
+
+#[tokio::test]
+async fn a_template_that_keeps_working_without_end_is_stopped_and_says_so() {
+    let lab = lab(&["SW1"]).await;
+    // Nine million turns of a loop that writes nothing.
+    let body = "{% for i in range(3000) %}{% for j in range(3000) %}{% endfor %}{% endfor %}";
+    let rendered = render_one(&lab, body, json!({})).await;
+    assert_eq!(rendered["ok"], json!(false), "{rendered}");
+    let error = rendered["error"].as_str().expect("an error");
+    assert!(error.contains("steps of work"), "{error}");
+}
+
+// ----------------------------------------------- one value, one line, one word
+
+/// What is said when a value is turned away: before rendering (the call
+/// fails) or by the template (the device's `error`). `Err` is what happened
+/// instead: a rendered line above all.
+async fn turned_away(
+    lab: &nocturne_app::testing::Lab,
+    id: &str,
+    vars: &Value,
+) -> Result<String, String> {
+    let outcome = lab
+        .app
+        .rpc(
+            "templates.render",
+            json!({"template_id": id, "device_ids": [lab.id("SW1")], "vars": vars}),
+        )
+        .await;
+    match outcome {
+        Err(err) if err.code == "invalid" => Ok(err.message),
+        Err(err) => Err(format!(
+            "{id} {vars} failed with `{}`: {}",
+            err.code, err.message
+        )),
+        Ok(rendered) => match rendered[0]["error"].as_str() {
+            Some(said) if rendered[0]["ok"] == json!(false) => Ok(said.to_string()),
+            _ => Err(format!("{id} {vars} rendered to {}", rendered[0]["lines"])),
+        },
+    }
+}
+
+#[tokio::test]
+async fn a_line_break_in_a_one_line_value_is_refused_and_a_banner_may_have_them() {
+    let lab = lab(&["SW1"]).await;
+    for (id, vars, label) in [
+        (
+            "ios_vlan",
+            json!({"vlan": 30, "vlan_name": "USERS\ninterface GigabitEthernet0/1\n shutdown"}),
+            "VLAN name",
+        ),
+        (
+            "ios_access_port",
+            json!({"interface": "Gi0/5", "vlan": 10, "description": "phones\n shutdown"}),
+            "Description",
+        ),
+        (
+            "ios_disable_port",
+            json!({"interface": "Gi0/9", "reason": "spare\r shutdown"}),
+            "Reason",
+        ),
+        (
+            "ios_ntp",
+            json!({"servers": ["192.0.2.1\nno ntp server 192.0.2.2"]}),
+            "NTP servers",
+        ),
+        (
+            "routeros_syslog",
+            json!({"host": "10.0.0.5", "topics": "info\n/system reboot"}),
+            "Topics",
+        ),
+        (
+            "ios_dns",
+            json!({"servers": ["1.1.1.1"], "domain": "lab.example\u{1b}[2J"}),
+            "Domain name",
+        ),
+    ] {
+        let err = lab
+            .app
+            .rpc(
+                "templates.render",
+                json!({"template_id": id, "device_ids": [lab.id("SW1")], "vars": vars}),
+            )
+            .await
+            .expect_err("a second line in a one-line value is a second configuration line");
+        assert_eq!(err.code, "invalid", "{id}");
+        assert!(
+            err.message.contains(label) && err.message.contains("one line"),
+            "{id}: {}",
+            err.message
+        );
+    }
+
+    // The one value that is text over several lines says so, and keeps them.
+    let rendered = lab
+        .app
+        .rpc(
+            "templates.render",
+            json!({"template_id": "ios_banner", "device_ids": [lab.id("SW1")],
+                   "vars": {"text": "Authorised use only.\r\nDisconnect now."}}),
+        )
+        .await
+        .expect("templates.render");
+    assert_eq!(
+        rendered[0]["lines"],
+        json!([
+            "banner login ^C",
+            "Authorised use only.",
+            "Disconnect now.",
+            "^C"
+        ])
+    );
+    // Lines, yes; a sequence that moves a cursor, or the banner's own end, no.
+    for text in ["Welcome\u{1b}[2J", "Hello ^C\nno ip routing"] {
+        let said = turned_away(&lab, "ios_banner", &json!({"text": text}))
+            .await
+            .unwrap_or_else(|what| panic!("{what}"));
+        assert!(said.contains("Banner text"), "{said}");
+    }
+}
+
+#[tokio::test]
+async fn a_value_with_more_in_it_than_its_command_takes_is_turned_away() {
+    // One line can still be two things: an interface and a `shutdown`, an
+    // address and a `disabled=yes`, a topic and a second RouterOS command.
+    let lab = lab(&["SW1"]).await;
+    let lan = |extra: Value| {
+        let mut vars = json!({
+            "interface": "vlan30", "address": "10.30.0.1/24", "network": "10.30.0.0/24",
+            "gateway": "10.30.0.1", "pool_from": "10.30.0.100", "pool_to": "10.30.0.200",
+            "dns": ["1.1.1.1"]
+        });
+        vars.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        vars
+    };
+    let cases: Vec<(&str, Value)> = vec![
+        // ----------------------------------- an interface and something more
+        (
+            "ios_ntp",
+            json!({"servers": ["192.0.2.1"], "source": "Gi0/1 shutdown"}),
+        ),
+        (
+            "ios_access_port",
+            json!({"interface": "Gi0/5 shutdown", "vlan": 10}),
+        ),
+        (
+            "ios_access_port",
+            json!({"interface": "range Gi0/1 - 24", "vlan": 10}),
+        ),
+        (
+            "ios_trunk_port",
+            json!({"interface": "Gi0/1 shutdown", "vlans": [30]}),
+        ),
+        ("ios_disable_port", json!({"interface": "Gi0/9;shutdown"})),
+        (
+            "routeros_vlan_bridge",
+            json!({"vlan": 30, "interface": "bridge disabled=yes"}),
+        ),
+        (
+            "routeros_lan_with_dhcp",
+            lan(json!({"interface": "ether2 disabled=yes"})),
+        ),
+        // ---------------------------- a name, a word, a list item that is more
+        ("ios_vlan", json!({"vlan": 30, "vlan_name": "guests extra"})),
+        (
+            "ios_mgmt_acl_vty",
+            json!({"acl_name": "MGMT VTY", "prefixes": ["10.0.0.0/24"]}),
+        ),
+        ("ios_mgmt_acl_vty", json!({"prefixes": ["any"]})),
+        ("ios_mgmt_acl_vty", json!({"prefixes": ["10.0.0.0/24 log"]})),
+        (
+            "ios_dns",
+            json!({"servers": ["1.1.1.1"], "domain": "lab.example shutdown"}),
+        ),
+        ("ios_dns", json!({"servers": ["1.1.1.1 vrf X"]})),
+        ("ios_ntp", json!({"servers": ["192.0.2.1 prefer"]})),
+        (
+            "ios_syslog",
+            json!({"hosts": ["10.0.0.5 transport tcp port 1470"]}),
+        ),
+        (
+            "ios_trunk_port",
+            json!({"interface": "Gi0/1", "vlans": ["30 remove"]}),
+        ),
+        (
+            "routeros_syslog",
+            json!({"host": "10.0.0.5", "topics": "info;/system reset-configuration"}),
+        ),
+        (
+            "routeros_syslog",
+            json!({"host": "10.0.0.5", "topics": "info disabled=yes"}),
+        ),
+        (
+            "routeros_syslog",
+            json!({"host": "10.0.0.5", "action_name": "remote disabled=yes"}),
+        ),
+        (
+            "routeros_syslog",
+            json!({"host": "10.0.0.5", "action_name": "[/system reboot]"}),
+        ),
+        (
+            "routeros_vlan_bridge",
+            json!({"vlan": 30, "vlan_name": "v30 disabled=yes"}),
+        ),
+        (
+            "routeros_lan_with_dhcp",
+            lan(json!({"lease_time": "1d disabled=yes"})),
+        ),
+        (
+            "routeros_lan_with_dhcp",
+            lan(json!({"dns": ["1.1.1.1;/system reboot"]})),
+        ),
+        (
+            "routeros_ntp_client",
+            json!({"servers": ["192.0.2.1;/system reboot"]}),
+        ),
+        ("routeros_ntp_client", json!({"servers": ["$server"]})),
+        (
+            "routeros_mgmt_services",
+            json!({"prefixes": ["10.0.0.0/24 disabled=no"]}),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (id, vars) in &cases {
+        match turned_away(&lab, id, vars).await {
+            Ok(said) if said.contains(char::is_control) => {
+                wrong.push(format!("{id} {vars}: a control character in {said:?}"))
+            }
+            Ok(_) => {}
+            Err(what) => wrong.push(what),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+// ----------------------------------------------------------- device types
+
+#[tokio::test]
+async fn a_template_for_one_device_type_waits_until_a_devices_type_is_known_and_then_follows_it() {
+    let lab = lab(&["SW1"]).await;
+    // Left to detection: nothing says what it is until it has been reached.
+    let gateway = lab
+        .app
+        .rpc(
+            "devices.create",
+            json!({"name": "GW1", "address": "192.0.2.2"}),
+        )
+        .await
+        .expect("devices.create")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let apply = |template: &str, vars: Value| {
+        let app = lab.app.clone();
+        let gateway = gateway.clone();
+        let template = template.to_string();
+        async move {
+            app.rpc(
+                "templates.apply",
+                json!({"template_id": template, "device_ids": [gateway], "vars": vars}),
+            )
+            .await
+        }
+    };
+    let tree = json!({"interface": "ether1", "rate_kbps": 20000});
+    let shaper = json!({"interface": "Gi0/1", "rate_kbps": 50000});
+
+    for (template, vars) in [
+        ("routeros_qos_queue_tree", &tree),
+        ("ios_qos_shaped_uplink", &shaper),
+    ] {
+        let err = apply(template, vars.clone())
+            .await
+            .expect_err("its type is not known");
+        assert_eq!(err.code, "invalid", "{template}");
+        assert!(
+            err.message.contains("GW1") && err.message.contains("not known yet"),
+            "{template}: {}",
+            err.message
+        );
+    }
+    assert_eq!(created(&lab), 0);
+
+    // Detected as RouterOS: the RouterOS template is for it, the IOS one is not.
+    inventory::update_state(&lab.app, &gateway, |state| {
+        state.detected_profile = Some("mikrotik_routeros".into())
+    })
+    .expect("detected");
+    let err = apply("ios_qos_shaped_uplink", shaper)
+        .await
+        .expect_err("written for IOS");
+    assert!(
+        err.message.contains("cisco_ios") && err.message.contains("GW1 (mikrotik_routeros)"),
+        "{}",
+        err.message
+    );
+    let applied = apply("routeros_qos_queue_tree", tree)
+        .await
+        .expect("templates.apply");
+    assert_eq!(applied["change_id"], json!("chg-1"));
+    assert_eq!(created(&lab), 1);
 }

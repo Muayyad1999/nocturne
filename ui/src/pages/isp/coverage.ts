@@ -1,8 +1,8 @@
 /**
- * Used against sold, and the nine different nothings. No React in here.
+ * Used against sold, and the ten different nothings. No React in here.
  *
  * `isp.usage` gives a row per customer in which `used` is `null` unless
- * `coverage === 'measured'`, and {@link Coverage} says which of nine reasons
+ * `coverage === 'measured'`, and {@link Coverage} says which of ten reasons
  * it is. The distinction is the point of the report: a customer whose
  * interface has never been collected is not a customer using nothing, and in
  * a billing dispute that is the difference between a fact and a guess
@@ -21,9 +21,16 @@
  * {@link linkCoverageNote} writes the link's version. See `NOTES.md`.
  */
 
-import type { Coverage, LinkCapacity, UsageFigure, UsedAgainstSold } from '@/api/types/isp';
+import type {
+  Coverage,
+  LinkCapacity,
+  UsageFigure,
+  UsageReport,
+  UsedAgainstSold,
+} from '@/api/types/isp';
 import type { StatusTone } from '@/design/tone';
-import { formatPercent, formatRate } from '@/lib/format';
+import { EMPTY, formatCount, formatPercent, formatRate } from '@/lib/format';
+import { dayText, dayTimeText, timeText, type Offset } from './calendar';
 
 export interface CoverageWords {
   /** Two or three words for a table cell. Never a number, never a dash. */
@@ -77,7 +84,13 @@ export const COVERAGE_WORDS: Record<Coverage, CoverageWords> = {
   no_rate_yet: {
     label: 'No rate yet',
     meaning:
-      'The interface is known and its rate could not be measured — a first poll, a reboot or a failed poll: a gap, not a zero.',
+      'The interface is known and its rate could not be measured — a first poll, a reboot or a failed poll, or one direction of the two the figure needs: a gap, not a zero.',
+    tone: 'warn',
+  },
+  no_recent_reading: {
+    label: 'No recent reading',
+    meaning:
+      'Monitoring has not measured that interface within the usage window: its last reading is what it saw then, not what is passing now — and not a usage of zero.',
     tone: 'warn',
   },
   no_samples_in_window: {
@@ -145,11 +158,51 @@ export function ofPlanTone(of_plan_pct: number | null): StatusTone {
   return 'ok';
 }
 
-/** Which direction the figure is of, and over what — straight from the figure. */
-export function basisText(used: UsageFigure): string {
+/**
+ * When a latest reading was taken, on the business's calendar — `null` for an
+ * average over a window, which says its window instead, and while the
+ * calendar is not known. A latest reading is only as current as this, and a
+ * figure shown without its moment reads as what the customer is pulling now.
+ * Today's readings, which are most of them, give the time alone.
+ */
+export function readingTime(
+  used: UsageFigure,
+  offset: Offset,
+  now: number = Date.now(),
+): string | null {
+  if (used.window) return null;
+  const at = dayTimeText(used.at, offset);
+  if (at === EMPTY) return null;
+  return dayText(used.at, offset) === dayText(now, offset)
+    ? `at ${timeText(used.at, offset)}`
+    : `at ${at}`;
+}
+
+/**
+ * Which direction the figure is of, and over what — straight from the
+ * figure. Given the calendar, a latest reading also says when it was taken.
+ */
+export function basisText(used: UsageFigure, offset?: Offset): string {
   const window = used.window;
-  if (!window) return `${used.basis}, latest reading`;
-  return `${used.basis}, averaged over the window (${window.rollup})`;
+  if (window) return `${used.basis}, averaged over the window (${window.rollup})`;
+  const at = offset === undefined ? null : readingTime(used, offset);
+  return at === null ? `${used.basis}, latest reading` : `${used.basis}, latest reading ${at}`;
+}
+
+/**
+ * What part of the customers a usage report is of. `null` when it is all of
+ * the ones the filters match; otherwise the sentence that says the counts
+ * below are of one page — `first` is the place of its first row in the list.
+ */
+export function usageScopeText(
+  report: Pick<UsageReport, 'customers' | 'matching'>,
+  first: number,
+): string | null {
+  if (report.matching >= report.customers) return null;
+  const last = first + report.customers - 1;
+  return `These are customers ${formatCount(first)}–${formatCount(last)} of ${formatCount(
+    report.matching,
+  )}, by name, and every count here is of these ${formatCount(report.customers)}.`;
 }
 
 export interface CoverageTally {
@@ -199,7 +252,9 @@ export function linkCoverageNote(coverage: Coverage): string {
     case 'interface_never_collected':
       return 'monitoring has never recorded that interface on that device: nobody has looked, which is not the same as nothing passing';
     case 'no_rate_yet':
-      return 'the interface is known but its rate could not be measured (a first poll, a reboot or a failed poll): a gap, not a zero';
+      return 'the interface is known but its rate could not be measured (a first poll, a reboot or a failed poll, or one direction of the two the figure needs): a gap, not a zero';
+    case 'no_recent_reading':
+      return 'monitoring has not measured the link’s interface within the usage window: its last reading is what it saw then, not what the link is carrying now';
     case 'no_samples_in_window':
       return 'nothing was recorded for that interface inside the window asked for';
     case 'monitor_failed':

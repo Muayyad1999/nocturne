@@ -79,6 +79,105 @@ async fn a_small_context_model_gets_the_core_tools_and_tighter_caps() {
     assert_eq!(status["tools"], 10);
 }
 
+/// The core set, by name, sorted.
+const CORE: [&str; 10] = [
+    "get_change",
+    "get_config",
+    "get_device",
+    "list_alerts",
+    "list_devices",
+    "ping",
+    "propose_change",
+    "run_commands",
+    "search_configs",
+    "subnet_calc",
+];
+
+fn names_listed(listed: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = listed
+        .as_array()
+        .expect("ai.tools answers with a list")
+        .iter()
+        .filter_map(|entry| entry["name"].as_str().map(str::to_string))
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+#[tokio::test]
+async fn a_window_of_sixteen_thousand_tokens_is_small_and_the_tool_list_says_what_the_turn_offers()
+{
+    // Configured at exactly the line.
+    let harness = Harness::with(Options {
+        devices: vec!["SW1"],
+        context_window: Some(16_000),
+        ..Options::default()
+    })
+    .await;
+    harness.script(vec![Step::text("hello")]);
+    harness.send("hello").await;
+    let mut offered: Vec<String> = harness.provider().requests()[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    offered.sort_unstable();
+    assert_eq!(offered, CORE, "a 16k model gets the core set");
+    let listed = harness.app().rpc("ai.tools", json!({})).await.unwrap();
+    common::wire("ai.tools entry (a 16k model)", &listed[0]);
+    assert_eq!(names_listed(&listed), CORE);
+    let status = harness.app().rpc("ai.status", json!({})).await.unwrap();
+    assert_eq!(status["tools"], 10);
+
+    // A model on the local network whose window nobody set: the engine
+    // assumes 16,000 tokens for it, and the tool list must not claim more
+    // than the turn then offers.
+    let server = Server::start(vec![Reply::sse_data(&[
+        json!({"choices": [{"delta": {"content":
+        "Hello."}, "finish_reason": "stop"}]}),
+    ])])
+    .await;
+    let local = Harness::with(Options {
+        devices: vec!["SW1"],
+        endpoint: Some((server.url.clone(), "auto")),
+        ..Options::default()
+    })
+    .await;
+    let listed = local.app().rpc("ai.tools", json!({})).await.unwrap();
+    assert_eq!(
+        names_listed(&listed),
+        CORE,
+        "ai.tools lists what an unconfigured local model is offered"
+    );
+    let status = local.app().rpc("ai.status", json!({})).await.unwrap();
+    common::wire(
+        "ai.status (a local model nobody configured a window for)",
+        &status,
+    );
+    assert_eq!(status["tools"], 10, "{status}");
+    let turn = local.send("hello").await;
+    assert_eq!(turn.stop(), "end", "{:#?}", turn.events);
+    let seen = server.seen();
+    let mut sent: Vec<String> = seen[0].body["tools"]
+        .as_array()
+        .expect("native tools are sent")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+        .collect();
+    sent.sort_unstable();
+    assert_eq!(sent, CORE, "and that is what the request carried");
+
+    // One token more is not small: every tool this build has.
+    let roomy = Harness::with(Options {
+        devices: vec!["SW1"],
+        context_window: Some(16_001),
+        ..Options::default()
+    })
+    .await;
+    let listed = roomy.app().rpc("ai.tools", json!({})).await.unwrap();
+    assert!(names_listed(&listed).len() > 50, "{listed}");
+}
+
 #[tokio::test]
 async fn a_model_with_no_tool_calling_works_through_the_prompted_path() {
     // The model never uses a tool-call API: it prints a fenced `tool` block,

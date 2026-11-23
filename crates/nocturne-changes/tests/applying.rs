@@ -99,7 +99,10 @@ async fn a_clean_apply_backs_up_verifies_saves_and_is_audited() {
     let transcript = result["transcript"].as_str().unwrap();
     assert!(transcript.contains("description desk 14"), "{transcript}");
     assert!(!transcript.contains("Sup3rS3cret"), "{transcript}");
-    assert!(transcript.contains("<secret:"), "{transcript}");
+    // Hidden, and without a number: the table that would give a number its
+    // meaning is not kept with the transcript.
+    assert!(transcript.contains("secret 0 <hidden>"), "{transcript}");
+    assert!(!transcript.contains("<secret:"), "{transcript}");
 
     // And it is all in the audit trail.
     let audit = audit(app);
@@ -505,5 +508,110 @@ async fn a_check_the_device_type_cannot_run_is_reported_not_assumed() {
     assert!(
         !lab.fake("SW1").with(|state| state.saved()),
         "the change is in the running configuration only"
+    );
+}
+
+/// On a grammar the engine cannot apply commands to (RouterOS here), nothing
+/// predicts what a change's lines do, so its configuration check used to fail
+/// every time. A change that names the configuration the device must end up
+/// with — a restore, the undo of a change — is checked against that instead.
+#[tokio::test]
+async fn an_exact_configuration_nothing_can_predict_is_checked_against_itself() {
+    let lab = lab_with(
+        &["R1"],
+        &[styled_profile(
+            "test_routeros_style",
+            "routeros",
+            "mikrotik_routeros",
+        )],
+    )
+    .await;
+    let app = &lab.app;
+    app.rpc(
+        "devices.update",
+        json!({"id": lab.id("R1"), "profile": "test_routeros_style"}),
+    )
+    .await
+    .unwrap();
+    load(
+        &lab,
+        "R1",
+        "/interface bridge add name=bridge\n/ip address add address=10.0.0.2/24 interface=bridge\n",
+    );
+    // What the device holds, as the engine reads it: a preview stores it.
+    app.rpc(
+        "changes.preview",
+        json!({"device_id": lab.id("R1"), "intent": {"type": "lines", "lines": ["/ip dns set allow-remote-requests=no"]}}),
+    )
+    .await
+    .unwrap();
+    let (latest, _, _) = versions(app, &lab.id("R1"))[0].clone();
+    let (_, running) = app.store().config_get(latest).unwrap();
+    let options = json!({"guard_minutes": 0, "verify": {"neighbors": false, "interfaces": false}});
+    let wanted = |extra: &str| json!({"type": "intended", "config": format!("{}\n{extra}\n", running.trim_end()), "exact": true});
+
+    // Reached: the device is exactly the configuration asked for.
+    let change = planned(
+        app,
+        &lab.id("R1"),
+        wanted("/ip dns static add name=printer.lab address=10.0.0.40"),
+        options.clone(),
+    )
+    .await;
+    assert_eq!(
+        plan(&change)["predicted_sha256"],
+        "",
+        "the result of the lines is not predicted on this grammar"
+    );
+    let applied = apply(app, &change).await;
+    assert_eq!(target_state(&applied), "applied", "{applied:#}");
+    let check = applied["targets"][0]["result"]["verification"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "configuration")
+        .unwrap()
+        .clone();
+    assert_eq!(check["ok"], true, "{check}");
+    assert!(
+        check["detail"]
+            .as_str()
+            .unwrap()
+            .contains("exactly the intended configuration"),
+        "{check}"
+    );
+
+    // Not reached: somebody adds a line while it is being applied, and the
+    // change is undone with the line named.
+    let (latest, _, _) = versions(app, &lab.id("R1"))[0].clone();
+    let (_, now) = app.store().config_get(latest).unwrap();
+    let fake = lab.fake("R1").clone();
+    when_step(app, "apply", move || {
+        fake.with(|state| {
+            state
+                .apply(&["/ip dns static add name=intruder.lab address=10.0.0.66"])
+                .expect("somebody else's line")
+        });
+    });
+    let change = planned(
+        app,
+        &lab.id("R1"),
+        json!({"type": "intended", "config": format!("{}\n/ip dns static add name=scanner.lab address=10.0.0.41\n", now.trim_end()), "exact": true}),
+        options,
+    )
+    .await;
+    let applied = apply(app, &change).await;
+    assert_ne!(target_state(&applied), "applied", "{applied:#}");
+    let check = applied["targets"][0]["result"]["verification"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "configuration")
+        .unwrap()
+        .clone();
+    assert_eq!(check["ok"], false, "{check}");
+    assert!(
+        check["detail"].as_str().unwrap().contains("intruder.lab"),
+        "{check}"
     );
 }

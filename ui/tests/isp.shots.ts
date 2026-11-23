@@ -8,7 +8,8 @@
  * in dinars against a dollar invoice, a credit note written against that
  * invoice and another on a customer's account, a suspended account, a
  * customer whose interface nobody has ever collected, and a link whose sold
- * megabits are set against what it can carry.
+ * megabits are set against what it can carry — and more customers than one
+ * page of the usage report holds, so the report says which page it is.
  *
  * These are written to `tests/shots/isp/<night|day>/` and are not compared
  * against anything: they exist to be looked at before a change ships.
@@ -75,6 +76,9 @@ test.beforeAll(async () => {
   // Twenty more, so the list looks like a list and the seeded three are
   // still in the picture: fifty to a page, ordered by name in the engine.
   await seedManyCustomers(rpc, 20);
+  // And enough after them, by name, that the usage report is one page of
+  // the customers rather than all of them.
+  await seedManyCustomers(rpc, 190, { name: 'Zz Probe', code: 'Z' });
   // Credit notes, so the pictures show what one does to a figure: one
   // against the dollar invoice, and one on the dinar customer's account,
   // where it reduces nothing yet.
@@ -233,6 +237,32 @@ for (const theme of THEMES) {
     await openIsp(page, theme, 'settings');
     await expect(page.getByRole('region', { name: /The business.s calendar/ })).toBeVisible();
     await shoot(page, theme, 'settings');
+
+    // ------------------------------- what is owed, when it cannot be read
+    // A calendar out of range, as a script can store: the arrears are
+    // refused until it is put right, and the list says so rather than that
+    // nobody owes anything.
+    const stored = await rpc<{ utc_offset_minutes: number }>('settings.get', { section: 'isp' });
+    await rpc('settings.set', { section: 'isp', value: { utc_offset_minutes: 2_000 } });
+    try {
+      await openIsp(page, theme, 'customers');
+      await expect(page.getByRole('table', { name: 'Customers' })).toContainText('not read');
+      await shoot(page, theme, 'customers-arrears-not-read');
+    } finally {
+      await rpc('settings.set', {
+        section: 'isp',
+        value: { utc_offset_minutes: stored.utc_offset_minutes },
+      });
+    }
+
+    // ---------------------- the smallest window, navigation open, no dock
+    // Every list's first columns fit, the billing state among them.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    for (const tab of ['invoices', 'payments', 'credits', 'reports']) {
+      await openIsp(page, theme, tab);
+      await pageLoaded(page);
+      await shoot(page, theme, `${tab}-narrow`);
+    }
 
     // ----------------------------------------- narrow, with the dock open
     await page.setViewportSize({ width: 1280, height: 720 });

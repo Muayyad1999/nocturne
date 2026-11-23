@@ -24,26 +24,53 @@ const COARSE_RES_S: i64 = 3_600;
 const DEFAULT_POINTS: i64 = 500;
 
 /// Does `text` match a glob of `*` and `?`?
+///
+/// The text is usually a device's: an interface, a sensor, a QoS class named
+/// by whoever configured it (on RouterOS a dynamic queue is named after a
+/// subscriber's login), and every threshold rule matches its instance glob
+/// against every instance at every poll. So this is a loop with one place to
+/// go back to, the last `*`: no recursion for a long name to run the thread
+/// out of stack with (one call per byte aborted the process on a 30,000-byte
+/// name), and at worst the text's length times the pattern's, where trying
+/// every split of every star took minutes for a few stars over a few
+/// thousand bytes.
 pub fn glob(pattern: &str, text: &str) -> bool {
-    fn walk(pattern: &[u8], text: &[u8]) -> bool {
-        match pattern.first() {
-            None => text.is_empty(),
-            Some(b'*') => {
-                // Either the star takes nothing, or it takes one more byte.
-                walk(&pattern[1..], text) || (!text.is_empty() && walk(pattern, &text[1..]))
-            }
-            Some(b'?') => !text.is_empty() && walk(&pattern[1..], &text[1..]),
-            Some(byte) => {
-                text.first()
-                    .is_some_and(|first| first.eq_ignore_ascii_case(byte))
-                    && walk(&pattern[1..], &text[1..])
-            }
-        }
-    }
     if pattern.is_empty() {
         return true;
     }
-    walk(pattern.as_bytes(), text.as_bytes())
+    let (pattern, text) = (pattern.as_bytes(), text.as_bytes());
+    let (mut p, mut t) = (0, 0);
+    // The pattern just past the last `*` seen, and how much of the text that
+    // star has taken so far.
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        match pattern.get(p).copied() {
+            Some(b'*') => {
+                star = Some((p + 1, t));
+                p += 1;
+            }
+            Some(b'?') => {
+                p += 1;
+                t += 1;
+            }
+            Some(byte) if byte.eq_ignore_ascii_case(&text[t]) => {
+                p += 1;
+                t += 1;
+            }
+            // A mismatch: the last star takes one more byte and the rest of
+            // the pattern is tried again from there. Giving an earlier star
+            // more instead can never match where this does not.
+            _ => match star {
+                Some((after, taken)) => {
+                    star = Some((after, taken + 1));
+                    p = after;
+                    t = taken + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|byte| *byte == b'*')
 }
 
 /// The latest value of each of a device's series, newest sample only.
@@ -358,6 +385,38 @@ mod tests {
     #[test]
     fn a_pathological_glob_still_terminates() {
         assert!(!glob("*a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaac"));
+    }
+
+    #[test]
+    fn a_long_name_costs_a_glob_neither_its_stack_nor_its_time() {
+        // A queue named by a device, a million bytes of it, judged on a
+        // thread with a small stack: a glob that recursed once a byte runs
+        // out of it, and one that tried every split of every star never
+        // finishes the second pattern.
+        let long = format!("ether1|out|queue simple/{}", "x".repeat(1_000_000));
+        let matched = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                (
+                    glob("*", &long),
+                    glob("*x*x*x*x*x*x*Q", &long),
+                    glob("ether1|*|queue simple/x*x", &long),
+                    glob("*?", &long),
+                    glob("*xQ*", &long),
+                )
+            })
+            .expect("a thread")
+            .join()
+            .expect("no overflow");
+        assert_eq!(matched, (true, false, true, true, false));
+        // And the edges of an empty text.
+        assert!(glob("*", ""));
+        assert!(glob("**", ""));
+        assert!(!glob("?", ""));
+        assert!(!glob("a*", ""));
+        assert!(glob("a*b*c", "aXbYc"));
+        assert!(!glob("a*b*c", "aXbYcZ"));
+        assert!(glob("*/VOICE", "Gi0/1|out|WAN/VOICE"));
     }
 
     #[test]

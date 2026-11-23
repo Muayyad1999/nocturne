@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{Changes, lab, results, state_of, until};
+use std::sync::atomic::Ordering;
+
+use common::{Changes, Gate, app_on, crash_copy, eventually, lab, results, state_of, until};
 use serde_json::{Value, json};
 
 async fn task(lab: &nocturne_app::testing::Lab, action: Value, select: Value) -> Value {
@@ -390,5 +392,158 @@ async fn a_task_that_runs_a_playbook_runs_it() {
             .len(),
         1,
         "history can be read back by task"
+    );
+}
+
+// ------------------------------------------- what a run in flight leaves
+
+#[tokio::test]
+async fn a_task_deleted_or_edited_while_it_runs_is_not_put_back_as_it_was() {
+    let lab = lab(&["SW1"]).await;
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "ntp", "name": "NTP", "kind": "config",
+                   "body": "ntp server {{ server }}",
+                   "variables": [{"name": "server", "kind": "ip", "required": true}]}),
+        )
+        .await
+        .expect("templates.save");
+    let gate = lab.app.state::<Gate>();
+    gate.hold_changes.store(true, Ordering::SeqCst);
+
+    for (what, edit) in [
+        ("deleted", None),
+        (
+            "edited",
+            Some(
+                json!({"name": "Renamed while it ran", "select": {"filter": {}},
+                        "action": {"type": "template", "template_id": "ntp",
+                                   "vars": {"server": "192.0.2.9"}}}),
+            ),
+        ),
+    ] {
+        let saved = task(
+            &lab,
+            json!({"type": "template", "template_id": "ntp", "vars": {"server": "192.0.2.1"}}),
+            json!({"filter": {}}),
+        )
+        .await;
+        let id = saved["id"].as_str().expect("an id").to_string();
+        let calls = gate.calls();
+        let app = lab.app.clone();
+        let running = {
+            let id = id.clone();
+            tokio::spawn(async move { app.rpc("tasks.run", json!({"id": id})).await })
+        };
+        // The template is rendered and `changes.create` has the lines.
+        eventually(10, || gate.calls() == calls + 1).await;
+        match &edit {
+            None => {
+                lab.app
+                    .rpc("tasks.delete", json!({"id": id}))
+                    .await
+                    .expect("tasks.delete");
+            }
+            Some(edit) => {
+                let mut params = edit.clone();
+                params["id"] = json!(id);
+                lab.app.rpc("tasks.save", params).await.expect("tasks.save");
+            }
+        }
+        gate.open(1);
+        running.await.expect("the run finished").expect("tasks.run");
+
+        let stored: Option<Value> = lab
+            .app
+            .store()
+            .get("automation.tasks", &id)
+            .expect("the store answers");
+        match edit {
+            None => assert!(
+                stored.is_none(),
+                "{what}: the run brought it back: {stored:?}"
+            ),
+            Some(_) => {
+                let stored = stored.expect("still there");
+                assert_eq!(stored["name"], json!("Renamed while it ran"), "{what}");
+                assert_eq!(
+                    stored["action"]["vars"]["server"],
+                    json!("192.0.2.9"),
+                    "{what}: the edit was kept"
+                );
+                assert!(
+                    stored["last_run_at"].as_i64().is_some(),
+                    "{what}: the run is recorded"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_run_the_process_did_not_live_through_is_closed_when_it_comes_back() {
+    let dir = tempfile::tempdir().expect("a data directory");
+    let app = app_on(dir.path());
+    let device = app
+        .rpc(
+            "devices.create",
+            json!({"name": "SW9", "address": "192.0.2.9"}),
+        )
+        .await
+        .expect("devices.create");
+    // A playbook that waits an hour holds its run open the whole time.
+    let saved = app
+        .rpc(
+            "tasks.save",
+            json!({"name": "Slow", "select": {"device_ids": [device["id"]]},
+                   "action": {"type": "playbook",
+                              "yaml": "name: Slow\nsteps:\n  - name: Wait\n    pause: 3600\n"}}),
+        )
+        .await
+        .expect("tasks.save");
+    let started = app
+        .rpc("tasks.run", json!({"id": saved["id"]}))
+        .await
+        .expect("tasks.run");
+    let run_id = started["run_id"].as_str().expect("a run id").to_string();
+
+    // The process ends while it waits.
+    let left = crash_copy(dir.path());
+    let restarted = app_on(left.path());
+
+    let detail = restarted
+        .rpc("runner.get", json!({"run_id": run_id}))
+        .await
+        .expect("runner.get");
+    let run = &detail["run"];
+    assert!(
+        run["finished_at"].as_i64().is_some(),
+        "it is no longer running: {run}"
+    );
+    assert_eq!(run["cancelled"], json!(true));
+    assert_eq!(run["devices"], json!(1));
+    assert_eq!(run["skipped"], json!(1), "{run}");
+    assert_eq!(detail["results"].as_array().expect("results").len(), 1);
+    let result = &detail["results"][0];
+    assert_eq!(result["device_id"], device["id"]);
+    assert_eq!(result["name"], json!("SW9"));
+    assert_eq!(result["state"], json!("skipped"));
+    assert!(
+        result["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("Nocturne was closed")),
+        "it says why there is nothing from this device: {result}"
+    );
+
+    let task = restarted
+        .rpc("tasks.get", json!({"id": saved["id"]}))
+        .await
+        .expect("tasks.get");
+    assert_eq!(task["last_run_id"], json!(run_id));
+    assert_eq!(
+        task["last_ok"],
+        json!(false),
+        "a run cut short did not go well: {task}"
     );
 }

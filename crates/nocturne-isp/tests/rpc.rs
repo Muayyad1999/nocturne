@@ -268,6 +268,232 @@ async fn every_mutation_is_in_the_audit_trail_and_no_read_is() {
     assert_eq!(isp.audit().len(), before, "a read is not a mutation");
 }
 
+/// An entry's message is the line other features repeat — an incident's
+/// timeline takes in every entry filed under one of its devices, and a log
+/// search hands messages on — so it names a customer by id and carries
+/// nothing anybody typed about them. Who it was and why are in the entry's
+/// detail, where a person reading the trail finds them. And a customer's
+/// record is not filed under the device that serves them: it is not part of
+/// that device's history.
+#[tokio::test]
+async fn the_trail_names_a_customer_by_id_and_keeps_what_was_typed_about_them_out_of_its_messages()
+{
+    const STATE_REASON: &str = "unpaid since March, rang her on 0770 123 4567";
+    const LINE: &str = "Router for Jane's flat on Rasheed Street";
+    const METHOD: &str = "cash, handed over by her son Ali";
+    const PAYMENT_VOID: &str = "Ali paid it twice, Jane says";
+    const CREDIT: &str = "Jane's line was down for a week";
+    const ON_ACCOUNT: &str = "goodwill after Jane complained";
+    const CREDIT_VOID: &str = "the outage was Jane's own router";
+    const REISSUE: &str = "sent to Jane's old address";
+    const VOID: &str = "Jane moved away";
+
+    let isp = Isp::start(false, &["TOWER-3"]).await;
+    let device = isp.device("TOWER-3");
+    let jane = isp
+        .customer(
+            "Jane Doe",
+            "USD",
+            json!({"device_id": device, "interface": "ether5", "phone": "0770 123 4567"}),
+        )
+        .await;
+    let tariff = isp
+        .tariff("Home 10", 10, "flat", 2_500, "USD", "monthly")
+        .await;
+    isp.subscribe(&jane, &tariff, None).await;
+    isp.ok(
+        "isp.customer.state",
+        json!({"id": jane, "state": "suspended", "reason": STATE_REASON}),
+    )
+    .await;
+    isp.ok("isp.customer.state", json!({"id": jane, "state": "active"}))
+        .await;
+
+    // A draft with a line typed by hand, and one taken off again.
+    let draft = isp
+        .ok(
+            "isp.invoice.draft",
+            json!({"customer_id": jane, "month": "2026-09"}),
+        )
+        .await;
+    let invoice = draft["invoice"]["id"].as_str().expect("an id").to_string();
+    let added = isp
+        .ok(
+            "isp.invoice.line.add",
+            json!({"invoice_id": invoice, "description": LINE,
+                   "amount": {"currency": "USD", "minor": 1_000}}),
+        )
+        .await;
+    let line = list(&added["lines"])
+        .into_iter()
+        .find(|line| line["description"] == json!(LINE))
+        .expect("the line typed by hand");
+    isp.ok(
+        "isp.invoice.line.remove",
+        json!({"invoice_id": invoice, "line_id": line["id"]}),
+    )
+    .await;
+    isp.ok("isp.invoice.issue", json!({"id": invoice})).await;
+
+    // A payment and a credit note against it, each voided with a reason.
+    let payment = isp
+        .ok(
+            "isp.payment.record",
+            json!({"customer_id": jane, "invoice_id": invoice, "method": METHOD,
+                   "amount": {"currency": "USD", "minor": 500}}),
+        )
+        .await;
+    isp.ok(
+        "isp.payment.void",
+        json!({"id": payment["payment"]["id"], "reason": PAYMENT_VOID}),
+    )
+    .await;
+    let credit = isp
+        .ok(
+            "isp.credit.issue",
+            json!({"customer_id": jane, "invoice_id": invoice, "reason": CREDIT,
+                   "amount": {"currency": "USD", "minor": 300}}),
+        )
+        .await;
+    isp.ok(
+        "isp.credit.void",
+        json!({"id": credit["credit"]["id"], "reason": CREDIT_VOID}),
+    )
+    .await;
+    // The invoice reissued, and its replacement voided before it went out.
+    let reissued = isp
+        .ok(
+            "isp.invoice.reissue",
+            json!({"id": invoice, "reason": REISSUE}),
+        )
+        .await;
+    isp.ok(
+        "isp.invoice.void",
+        json!({"id": reissued["draft"]["id"], "reason": VOID}),
+    )
+    .await;
+
+    // A month billed by a run, and a note on the account set against it.
+    let run = isp
+        .ok(
+            "isp.invoice.run",
+            json!({"month": "2026-10", "dry_run": false, "issue": true}),
+        )
+        .await;
+    let billed = run["invoices"][0]["invoice_id"].clone();
+    let on_account = isp
+        .ok(
+            "isp.credit.issue",
+            json!({"customer_id": jane, "reason": ON_ACCOUNT,
+                   "amount": {"currency": "USD", "minor": 200}}),
+        )
+        .await;
+    isp.ok(
+        "isp.credit.allocate",
+        json!({"id": on_account["credit"]["id"], "invoice_id": billed}),
+    )
+    .await;
+
+    // And a customer taken off again before anything was billed.
+    let john = isp.customer("John Roe", "USD", json!({})).await;
+    isp.ok("isp.customer.delete", json!({"id": john})).await;
+
+    let entries: Vec<_> = isp
+        .audit_entries()
+        .into_iter()
+        .filter(|entry| entry.source.starts_with("isp."))
+        .collect();
+    let typed = [
+        "Jane Doe",
+        "Jane",
+        "John Roe",
+        "0770 123 4567",
+        STATE_REASON,
+        LINE,
+        METHOD,
+        PAYMENT_VOID,
+        CREDIT,
+        ON_ACCOUNT,
+        CREDIT_VOID,
+        REISSUE,
+        VOID,
+    ];
+    for entry in &entries {
+        for text in typed {
+            assert!(
+                !entry.message.contains(text),
+                "{} says `{text}` in its message: {}",
+                entry.source,
+                entry.message
+            );
+        }
+        if entry.source.starts_with("isp.customer.") {
+            assert_eq!(
+                entry.device_id, None,
+                "{} is filed under the device that serves the customer",
+                entry.source
+            );
+        }
+    }
+    let under_device: Vec<_> = isp
+        .app
+        .store()
+        .log_query(&nocturne_app::store::LogQuery {
+            stream: Some("audit".to_string()),
+            device_id: Some(device.clone()),
+            ..Default::default()
+        })
+        .expect("the device's trail")
+        .into_iter()
+        .filter(|entry| entry.source.starts_with("isp."))
+        .collect();
+    assert!(
+        under_device.is_empty(),
+        "the serving device's history holds the customer's records: {:?}",
+        under_device
+            .iter()
+            .map(|entry| &entry.message)
+            .collect::<Vec<_>>()
+    );
+
+    // Who and why are still there for a person to read, in the detail.
+    let detail = |source: &str, key: &str| -> Vec<Value> {
+        entries
+            .iter()
+            .filter(|entry| entry.source == source)
+            .filter_map(|entry| entry.body.as_ref().map(|body| body[key].clone()))
+            .collect()
+    };
+    for (source, key, expected) in [
+        ("isp.customer.save", "name", "Jane Doe"),
+        ("isp.customer.state", "reason", STATE_REASON),
+        ("isp.invoice.line.add", "description", LINE),
+        ("isp.payment.record", "method", METHOD),
+        ("isp.payment.void", "reason", PAYMENT_VOID),
+        ("isp.credit.issue", "reason", CREDIT),
+        ("isp.credit.issue", "reason", ON_ACCOUNT),
+        ("isp.credit.void", "reason", CREDIT_VOID),
+        ("isp.invoice.reissue", "reason", REISSUE),
+        ("isp.invoice.void", "reason", VOID),
+        ("isp.customer.delete", "name", "John Roe"),
+    ] {
+        assert!(
+            detail(source, key).contains(&json!(expected)),
+            "{source} keeps no `{key}` of `{expected}` in its detail: {:?}",
+            detail(source, key)
+        );
+    }
+    // The messages say which customer by id.
+    let state = entries
+        .iter()
+        .find(|entry| {
+            entry.source == "isp.customer.state"
+                && entry.message.contains("from active to suspended")
+        })
+        .expect("the suspension");
+    assert!(state.message.contains(&jane), "{}", state.message);
+}
+
 #[tokio::test]
 async fn the_refusals_say_what_to_do_instead() {
     let isp = Isp::start(false, &["RB1"]).await;
@@ -445,6 +671,30 @@ async fn the_refusals_say_what_to_do_instead() {
     );
 }
 
+/// A payment taken with no date is taken now, and "the last thirty days"
+/// asked for straight afterwards — in the same millisecond, as often as not
+/// on a fast machine — includes it.
+#[tokio::test]
+async fn the_summary_counts_a_payment_taken_in_the_millisecond_it_is_asked_in() {
+    let isp = Isp::start(false, &[]).await;
+    let customer = isp.customer("Prompt Payer", "USD", json!({})).await;
+    for round in 1..=300_i64 {
+        isp.ok(
+            "isp.payment.record",
+            json!({"customer_id": customer, "method": "cash",
+                   "amount": {"currency": "USD", "minor": 1}}),
+        )
+        .await;
+        let summary = isp.ok("isp.summary", json!({})).await;
+        assert_eq!(
+            summary["received_30d"][0]["minor"],
+            json!(round),
+            "after {round} payment(s) the last thirty days hold {}",
+            summary["received_30d"]
+        );
+    }
+}
+
 #[tokio::test]
 async fn long_lists_are_paged_and_filtered() {
     let isp = Isp::start(false, &[]).await;
@@ -460,13 +710,19 @@ async fn long_lists_are_paged_and_filtered() {
     let first = isp.ok("isp.customers", json!({"limit": 2})).await;
     assert_eq!(first["matching"], json!(5));
     assert_eq!(list(&first["customers"]).len(), 2);
-    assert_eq!(first["next_cursor"], json!("2"));
+    assert!(first["next_cursor"].is_string(), "{first}");
     let second = isp
-        .ok("isp.customers", json!({"limit": 2, "cursor": "2"}))
+        .ok(
+            "isp.customers",
+            json!({"limit": 2, "cursor": first["next_cursor"]}),
+        )
         .await;
     assert_eq!(list(&second["customers"]).len(), 2);
     let last = isp
-        .ok("isp.customers", json!({"limit": 2, "cursor": "4"}))
+        .ok(
+            "isp.customers",
+            json!({"limit": 2, "cursor": second["next_cursor"]}),
+        )
         .await;
     assert_eq!(list(&last["customers"]).len(), 1);
     assert!(last["next_cursor"].is_null(), "the last page says so");
@@ -475,6 +731,17 @@ async fn long_lists_are_paged_and_filtered() {
             .await
             .code,
         "invalid"
+    );
+    // A count of rows already received is what the cursor used to be. It is
+    // refused rather than read as a position, because it no longer is one.
+    let counted = isp
+        .err("isp.customers", json!({"limit": 2, "cursor": "2"}))
+        .await;
+    assert_eq!(counted.code, "invalid");
+    assert!(
+        counted.message.contains("next_cursor"),
+        "{}",
+        counted.message
     );
 
     // Filters: by currency, by tower, and free text over the details.
@@ -507,4 +774,209 @@ async fn long_lists_are_paged_and_filtered() {
             .code,
         "invalid"
     );
+}
+
+/// Every id in a list result.
+fn ids(rows: &[Value]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row["id"].as_str().expect("an id").to_string())
+        .collect()
+}
+
+/// A list is newest first, so whatever is written between two page requests
+/// sorts in front of the page already read. The next page continues after
+/// the last row the caller received — its `id` is the cursor — rather than
+/// after a count of rows, which would hand back rows already seen.
+#[tokio::test]
+async fn a_page_of_invoices_continues_after_the_last_one_received_whatever_was_drafted_since() {
+    let isp = Isp::start(false, &[]).await;
+    let tariff = isp
+        .tariff("Plan", 10, "flat", 1_000, "USD", "monthly")
+        .await;
+    for index in 0..6 {
+        let customer = isp
+            .customer(&format!("Paged {index}"), "USD", json!({}))
+            .await;
+        isp.subscribe(&customer, &tariff, None).await;
+        isp.ok(
+            "isp.invoice.draft",
+            json!({"customer_id": customer, "month": "2026-08"}),
+        )
+        .await;
+    }
+    let first = list(&isp.ok("isp.invoices", json!({"limit": 3})).await);
+    assert_eq!(first.len(), 3);
+
+    // A run drafts the month after for everybody, and its drafts sort first.
+    isp.ok(
+        "isp.invoice.run",
+        json!({"month": "2026-09", "dry_run": false}),
+    )
+    .await;
+    let cursor = first.last().expect("a last row")["id"].clone();
+    let second = list(
+        &isp.ok("isp.invoices", json!({"limit": 3, "cursor": cursor}))
+            .await,
+    );
+    assert_eq!(second.len(), 3);
+    for id in ids(&second) {
+        assert!(
+            !ids(&first).contains(&id),
+            "invoice {id} was on the page before as well"
+        );
+    }
+    assert!(
+        second
+            .iter()
+            .all(|row| row["period_start"] == first[0]["period_start"]),
+        "the second page is the rest of the month the first page was of"
+    );
+
+    // Walked from the start, every invoice is on exactly one page.
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<Value> = None;
+    loop {
+        let mut params = json!({"limit": 4});
+        if let Some(cursor) = &cursor {
+            params["cursor"] = cursor.clone();
+        }
+        let page = list(&isp.ok("isp.invoices", params).await);
+        if page.is_empty() {
+            break;
+        }
+        cursor = Some(page.last().expect("a last row")["id"].clone());
+        seen.extend(ids(&page));
+    }
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!((seen.len(), unique.len()), (12, 12), "{seen:?}");
+
+    // What the cursor used to be — a count of rows — is not an invoice to
+    // continue after, and is refused rather than guessed at.
+    let counted = isp.err("isp.invoices", json!({"cursor": "3"})).await;
+    assert_eq!(counted.code, "invalid");
+    assert!(counted.message.contains("last"), "{}", counted.message);
+}
+
+#[tokio::test]
+async fn a_page_of_payments_or_credit_notes_continues_after_the_last_one_received() {
+    let isp = Isp::start(false, &[]).await;
+    let customer = isp.customer("Regular Rana", "USD", json!({})).await;
+    let tariff = isp
+        .tariff("Plan", 10, "flat", 10_000, "USD", "monthly")
+        .await;
+    isp.subscribe(&customer, &tariff, None).await;
+    let invoice = isp
+        .ok(
+            "isp.invoice.draft",
+            json!({"customer_id": customer, "month": "2026-08"}),
+        )
+        .await;
+    let invoice = isp
+        .ok("isp.invoice.issue", json!({"id": invoice["invoice"]["id"]}))
+        .await;
+    let earlier = nocturne_app::util::now_ms() - 10 * DAY_MS;
+    for day in 0..4 {
+        isp.ok(
+            "isp.payment.record",
+            json!({"customer_id": customer, "method": "cash", "at": earlier + day * DAY_MS,
+                   "amount": {"currency": "USD", "minor": 100}}),
+        )
+        .await;
+        isp.ok(
+            "isp.credit.issue",
+            json!({"customer_id": customer, "invoice_id": invoice["id"], "reason": "outage",
+                   "at": earlier + day * DAY_MS,
+                   "amount": {"currency": "USD", "minor": 100}}),
+        )
+        .await;
+    }
+    for method in ["isp.payments", "isp.credits"] {
+        let first = list(&isp.ok(method, json!({"limit": 2})).await);
+        assert_eq!(first.len(), 2, "{method}");
+        // One more of each, taken now: the newest, so they sort first.
+        isp.ok(
+            "isp.payment.record",
+            json!({"customer_id": customer, "method": "cash",
+                   "amount": {"currency": "USD", "minor": 100}}),
+        )
+        .await;
+        isp.ok(
+            "isp.credit.issue",
+            json!({"customer_id": customer, "invoice_id": invoice["id"], "reason": "outage",
+                   "amount": {"currency": "USD", "minor": 100}}),
+        )
+        .await;
+        let cursor = first.last().expect("a last row")["id"].clone();
+        let second = list(&isp.ok(method, json!({"limit": 2, "cursor": cursor})).await);
+        assert_eq!(second.len(), 2, "{method}");
+        for id in ids(&second) {
+            assert!(
+                !ids(&first).contains(&id),
+                "{method}: {id} was on the page before as well"
+            );
+        }
+        let oldest_first_page = first.last().expect("a last row")["at"].as_i64();
+        assert!(
+            second
+                .iter()
+                .all(|row| row["at"].as_i64() <= oldest_first_page),
+            "{method}: the second page goes on back in time from where the first stopped"
+        );
+        let unknown = isp
+            .err(method, json!({"cursor": "nothing-like-this"}))
+            .await;
+        assert_eq!(unknown.code, "invalid", "{method}");
+    }
+}
+
+/// Customers are listed by name, and taking one off the first page must not
+/// make the second page start one further on.
+#[tokio::test]
+async fn a_page_of_customers_continues_after_the_last_one_received_when_one_before_it_is_deleted() {
+    let isp = Isp::start(false, &[]).await;
+    let mut by_name = Vec::new();
+    for name in ["Ann", "Ben", "Cat", "Dan", "Eve"] {
+        by_name.push(isp.customer(name, "USD", json!({})).await);
+    }
+    let first = isp.ok("isp.customers", json!({"limit": 2})).await;
+    assert_eq!(ids(&list(&first["customers"])), by_name[..2].to_vec());
+    // Ann had nothing billed, so she can be deleted.
+    isp.ok("isp.customer.delete", json!({"id": by_name[0]}))
+        .await;
+
+    let second = isp
+        .ok(
+            "isp.customers",
+            json!({"limit": 2, "cursor": first["next_cursor"]}),
+        )
+        .await;
+    assert_eq!(
+        ids(&list(&second["customers"])),
+        by_name[2..4].to_vec(),
+        "the page after Ben starts with Cat"
+    );
+    let third = isp
+        .ok(
+            "isp.customers",
+            json!({"limit": 2, "cursor": second["next_cursor"]}),
+        )
+        .await;
+    assert_eq!(ids(&list(&third["customers"])), by_name[4..].to_vec());
+    assert!(third["next_cursor"].is_null(), "{third}");
+
+    // The usage report is paged by the same cursor, so the screen that puts
+    // the two side by side is showing the same customers in both.
+    let usage = isp
+        .ok(
+            "isp.usage",
+            json!({"limit": 2, "cursor": first["next_cursor"]}),
+        )
+        .await;
+    let usage_ids: Vec<String> = list(&usage["rows"])
+        .iter()
+        .map(|row| row["customer_id"].as_str().expect("an id").to_string())
+        .collect();
+    assert_eq!(usage_ids, by_name[2..4].to_vec());
 }

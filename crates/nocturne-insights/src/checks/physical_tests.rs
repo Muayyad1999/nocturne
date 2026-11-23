@@ -615,6 +615,263 @@ fn interface_flapping_falls_back_to_the_devices_own_log() {
     assert_eq!(report.evaluated().len(), 1, "it was decided, not skipped");
 }
 
+/// Five changes of state of one port in the device's own log, ten minutes apart.
+fn logged_flaps(world: &World, interface: &str) {
+    for (index, state) in ["down", "up", "down", "up", "down", "up"]
+        .into_iter()
+        .enumerate()
+    {
+        logged(
+            world,
+            "a",
+            NOW - 55 * 60_000 + index as i64 * 600_000,
+            &format!("%LINK-3-UPDOWN: Interface {interface}, changed state to {state}"),
+        );
+    }
+}
+
+#[test]
+fn an_if_oper_series_with_no_sample_in_it_does_not_hide_the_devices_own_log() {
+    // A read of `if.oper` through `metrics.query` creates the series row
+    // whether or not monitoring records it. Nothing was polled.
+    let mut logging = world(vec![device("a", "SW1").interfaces(vec![port(
+        "GigabitEthernet0/5",
+        1_000_000_000,
+        "full",
+    )])]);
+    logged_flaps(&logging, "GigabitEthernet0/5");
+    logging
+        .store()
+        .series_id("a", "if.oper", "GigabitEthernet0/5")
+        .expect("an empty series");
+    logging.reindex_series();
+
+    let found = run("interface_flapping", &logging);
+    assert_eq!(subjects(&found), ["a:GigabitEthernet0/5"]);
+    assert!(
+        found.findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.value.contains("log entries")),
+        "counted from the log, the only thing that saw it"
+    );
+}
+
+#[test]
+fn a_port_polled_hours_ago_and_not_since_is_not_called_stable() {
+    let minute = 60_000;
+    let mut stale = world(vec![device("a", "SW1").interfaces(vec![port(
+        "GigabitEthernet0/1",
+        1_000_000_000,
+        "full",
+    )])]);
+    // Monitoring stopped polling the device three hours ago.
+    sampled(
+        &mut stale,
+        "a",
+        "GigabitEthernet0/1",
+        &[(NOW - 190 * minute, 1.0), (NOW - 180 * minute, 1.0)],
+    );
+    let report = run("interface_flapping", &stale);
+    assert!(report.findings.is_empty());
+    assert!(
+        report.evaluated().is_empty(),
+        "nothing watched the last hour, so nothing in it is known"
+    );
+    assert_eq!(
+        report.skips().map(|(_, reason)| reason).collect::<Vec<_>>(),
+        ["neither monitoring samples nor log entries for this device in the last hour"]
+    );
+
+    // The same device with its own log in that hour is judged from the log.
+    logged_flaps(&stale, "GigabitEthernet0/1");
+    assert_eq!(
+        subjects(&run("interface_flapping", &stale)),
+        ["a:GigabitEthernet0/1"]
+    );
+}
+
+/// A stored sample whose time is text: SQLite keeps it, and the newest time
+/// of the series cannot be read as a number. The application's own writer
+/// never stores one; it stands in for a read the store could not answer.
+fn unreadable_sample(world: &World, metric: &str, instance: &str) {
+    let series = world
+        .store()
+        .series_id("a", metric, instance)
+        .expect("series");
+    world
+        .store()
+        .with(|conn| {
+            conn.execute(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?1, 'unreadable', 1.0)",
+                rusqlite::params![series],
+            )
+        })
+        .expect("the sample is stored");
+}
+
+#[test]
+fn samples_and_log_entries_that_cannot_be_read_decide_nothing() {
+    let minute = 60_000;
+    // Flapping: the port's samples are there and cannot be read.
+    let mut flapping = world(vec![device("a", "SW1").interfaces(vec![port(
+        "GigabitEthernet0/1",
+        1_000_000_000,
+        "full",
+    )])]);
+    sampled(
+        &mut flapping,
+        "a",
+        "GigabitEthernet0/1",
+        &[
+            (NOW - 50 * minute, 1.0),
+            (NOW - 40 * minute, 0.0),
+            (NOW - 30 * minute, 1.0),
+            (NOW - 20 * minute, 0.0),
+            (NOW - 10 * minute, 1.0),
+        ],
+    );
+    unreadable_sample(&flapping, "if.oper", "GigabitEthernet0/1");
+    let report = run("interface_flapping", &flapping);
+    assert!(report.findings.is_empty());
+    assert!(report.evaluated().is_empty(), "not 'stable'");
+    let reasons: Vec<&str> = report.skips().map(|(_, reason)| reason).collect();
+    assert!(reasons[0].contains("could not be read"), "{reasons:?}");
+
+    // Err-disabled: the device logs, and its err-disable entries cannot be read.
+    let mut down = port("GigabitEthernet0/5", 100_000_000, "full");
+    down.oper_up = Some(false);
+    let disabled = world(vec![device("a", "SW1").interfaces(vec![down])]);
+    disabled
+        .store()
+        .with(|conn| {
+            conn.execute(
+                "INSERT INTO logs (ts, stream, device_id, severity, source, message)
+                 VALUES (?1, 'syslog', 'a', 'unreadable', '10.0.0.2', ?2)",
+                rusqlite::params![
+                    NOW - 600_000,
+                    "%PM-4-ERR_DISABLE: bpduguard error detected on Gi0/5, putting Gi0/5 in \
+                     err-disable state"
+                ],
+            )
+        })
+        .expect("the entry is stored");
+    // The newest entry is a readable one, so the device is known to log.
+    logged(
+        &disabled,
+        "a",
+        NOW - 60_000,
+        "%SYS-5-CONFIG_I: Configured from console by admin",
+    );
+    let report = run("err_disabled", &disabled);
+    assert!(report.findings.is_empty());
+    assert!(report.evaluated().is_empty(), "not 'nothing disabled'");
+    let reasons: Vec<&str> = report.skips().map(|(_, reason)| reason).collect();
+    assert!(reasons[0].contains("could not be read"), "{reasons:?}");
+}
+
+/// A stored log entry whose severity is text: SQLite keeps it, and a query
+/// that reaches it cannot read it back. The application's own writer never
+/// stores one; it stands in for a read the store could not answer.
+fn unreadable_entry(world: &World, at: i64, message: &str) {
+    world
+        .store()
+        .with(|conn| {
+            conn.execute(
+                "INSERT INTO logs (ts, stream, device_id, severity, source, message)
+                 VALUES (?1, 'syslog', 'a', 'unreadable', '10.0.0.2', ?2)",
+                rusqlite::params![at, message],
+            )
+        })
+        .expect("the entry is stored");
+}
+
+#[test]
+fn a_log_that_cannot_be_read_is_not_said_to_be_empty() {
+    let minute = 60_000;
+    // Flapping, on a device monitoring does not poll: its own link log is
+    // the only witness, and it cannot be read. That is not "it logged
+    // nothing".
+    let logging = world(vec![device("a", "SW1").interfaces(vec![port(
+        "GigabitEthernet0/5",
+        1_000_000_000,
+        "full",
+    )])]);
+    logged_flaps(&logging, "GigabitEthernet0/5");
+    unreadable_entry(
+        &logging,
+        NOW - minute,
+        "%LINK-3-UPDOWN: Interface GigabitEthernet0/5, changed state to down",
+    );
+    let report = run("interface_flapping", &logging);
+    assert!(report.findings.is_empty());
+    assert!(report.evaluated().is_empty(), "not 'stable'");
+    let reasons: Vec<&str> = report.skips().map(|(_, reason)| reason).collect();
+    assert!(
+        reasons[0].starts_with("the log entries could not be read"),
+        "{reasons:?}"
+    );
+
+    // The same log beside samples monitoring took in the hour: the samples
+    // are counted, and the log that cannot be read does not stand in the way.
+    let mut polled = world(vec![device("a", "SW1").interfaces(vec![port(
+        "GigabitEthernet0/1",
+        1_000_000_000,
+        "full",
+    )])]);
+    sampled(
+        &mut polled,
+        "a",
+        "GigabitEthernet0/1",
+        &[
+            (NOW - 50 * minute, 1.0),
+            (NOW - 40 * minute, 0.0),
+            (NOW - 30 * minute, 1.0),
+            (NOW - 20 * minute, 0.0),
+            (NOW - 10 * minute, 1.0),
+        ],
+    );
+    unreadable_entry(
+        &polled,
+        NOW - minute,
+        "%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up",
+    );
+    let found = run("interface_flapping", &polled);
+    assert_eq!(subjects(&found), ["a:GigabitEthernet0/1"]);
+    assert!(
+        found.findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.value.contains("samples")),
+        "counted from the samples"
+    );
+
+    // Err-disabled: the err-disable entry can be read, and the device's
+    // newest entry — what says whether it sends its log here at all —
+    // cannot. That is not "the device sent no log entries".
+    let mut down = port("GigabitEthernet0/5", 100_000_000, "full");
+    down.oper_up = Some(false);
+    let disabled = world(vec![device("a", "SW1").interfaces(vec![down])]);
+    logged(
+        &disabled,
+        "a",
+        NOW - 600_000,
+        "%PM-4-ERR_DISABLE: bpduguard error detected on Gi0/5, putting Gi0/5 in err-disable state",
+    );
+    unreadable_entry(
+        &disabled,
+        NOW - minute,
+        "%SYS-5-CONFIG_I: Configured from console by admin",
+    );
+    let report = run("err_disabled", &disabled);
+    assert!(report.findings.is_empty());
+    assert!(report.evaluated().is_empty(), "not 'sends no log'");
+    assert_eq!(
+        report.skips().map(|(_, reason)| reason).collect::<Vec<_>>(),
+        ["the device's log entries could not be read"]
+    );
+}
+
 // ------------------------------------------------------------ err-disabled
 
 fn logged(world: &World, device_id: &str, at: i64, message: &str) {
@@ -877,6 +1134,44 @@ fn high_utilisation_table() {
         )])]),
     );
     assert_eq!(unpolled.skips().count(), 1);
+}
+
+#[test]
+fn utilisation_samples_that_cannot_be_read_are_not_said_to_be_missing() {
+    let minute = 60_000;
+    let mut busy = world(vec![device("a", "SW1").interfaces(vec![port(
+        "GigabitEthernet0/1",
+        1_000_000_000,
+        "full",
+    )])]);
+    utilised(
+        &mut busy,
+        "a",
+        "GigabitEthernet0/1",
+        &(0..12)
+            .map(|index| (NOW - (50 - index * 4) * minute, 92.0))
+            .collect::<Vec<_>>(),
+    );
+    let series = busy
+        .store()
+        .series_id("a", "if.util_pct", "GigabitEthernet0/1")
+        .expect("series");
+    busy.store()
+        .with(|conn| {
+            conn.execute(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?1, ?2, 'unreadable')",
+                rusqlite::params![series, NOW - minute],
+            )
+        })
+        .expect("the sample is stored");
+    let report = run("high_utilisation", &busy);
+    assert!(report.findings.is_empty());
+    assert!(report.evaluated().is_empty());
+    assert_eq!(
+        report.skips().map(|(_, reason)| reason).collect::<Vec<_>>(),
+        ["the utilisation samples could not be read"],
+        "there are samples: what failed was reading them"
+    );
 }
 
 #[test]

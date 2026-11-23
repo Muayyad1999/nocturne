@@ -27,6 +27,98 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// buffer for ever.
 const HELD_MAX: usize = 256 * 1024;
 
+/// The log file's name in `<data_dir>/logs`; older ones are `nocturne.1.log`
+/// (the most recent) to `nocturne.4.log`.
+const FILE_NAME: &str = "nocturne";
+/// How many files are kept, the current one included.
+const KEPT: usize = 5;
+/// How big one file may grow before the next one is started: five of them
+/// are 50 MiB at most, however long `--log-level trace` runs. Days went by
+/// size before — one file a day, unbounded, `nocturne.<date>.log` — which
+/// is neither a limit nor a name anybody can be asked to send.
+const FILE_MAX: u64 = 10 * 1024 * 1024;
+
+/// `nocturne.log`, moved along to `nocturne.1.log` and on as it fills, the
+/// oldest deleted. Written to by the file's worker thread only, a line at a
+/// time, so a line is never split between two files.
+struct Rotating {
+    folder: std::path::PathBuf,
+    file: Option<std::fs::File>,
+    written: u64,
+    cap: u64,
+}
+
+impl Rotating {
+    fn open(folder: &Path, cap: u64) -> io::Result<Rotating> {
+        std::fs::create_dir_all(folder)?;
+        let mut rotating = Rotating {
+            folder: folder.to_path_buf(),
+            file: None,
+            written: 0,
+            cap,
+        };
+        rotating.reopen()?;
+        Ok(rotating)
+    }
+
+    fn path(&self, generation: usize) -> std::path::PathBuf {
+        match generation {
+            0 => self.folder.join(format!("{FILE_NAME}.log")),
+            n => self.folder.join(format!("{FILE_NAME}.{n}.log")),
+        }
+    }
+
+    /// Append to the current file, which another start may have begun.
+    fn reopen(&mut self) -> io::Result<()> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path(0))?;
+        self.written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        // Closed first: Windows renames no file that is open here.
+        self.file = None;
+        let _ = std::fs::remove_file(self.path(KEPT - 1));
+        for generation in (0..KEPT - 1).rev() {
+            let from = self.path(generation);
+            if from.exists() {
+                std::fs::rename(&from, self.path(generation + 1))?;
+            }
+        }
+        self.reopen()
+    }
+}
+
+impl Write for Rotating {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.written > 0 && self.written + bytes.len() as u64 > self.cap {
+            // A file that cannot be moved along is written on rather than
+            // lost: going over the size beats a log that stops.
+            if self.rotate().is_err() && self.file.is_none() {
+                self.reopen()?;
+            }
+        }
+        let file = match &mut self.file {
+            Some(file) => file,
+            None => return Err(io::Error::other("the log file is not open")),
+        };
+        file.write_all(bytes)?;
+        self.written += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.file {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
 /// The log file, before and after there is one.
 enum File {
     /// Not open yet: what has been logged so far.
@@ -121,22 +213,16 @@ impl Logs {
     /// logged before it existed. If it cannot be opened the terminal is all
     /// there is, and that is said there.
     pub fn open_file(&self, data_dir: &Path) {
+        self.open_file_capped(data_dir, FILE_MAX)
+    }
+
+    fn open_file_capped(&self, data_dir: &Path, cap: u64) {
         let mut file = self.file.0.lock();
         if matches!(*file, File::Open(_)) {
             return;
         }
         let logs = data_dir.join("logs");
-        let appender = std::fs::create_dir_all(&logs)
-            .map_err(|err| err.to_string())
-            .and_then(|()| {
-                tracing_appender::rolling::Builder::new()
-                    .rotation(tracing_appender::rolling::Rotation::DAILY)
-                    .filename_prefix("nocturne")
-                    .filename_suffix("log")
-                    .max_log_files(5)
-                    .build(&logs)
-                    .map_err(|err| err.to_string())
-            });
+        let appender = Rotating::open(&logs, cap).map_err(|err| err.to_string());
         match appender {
             Ok(appender) => {
                 let (mut writer, worker) = tracing_appender::non_blocking(appender);
@@ -230,6 +316,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// What somebody is asked to send is `logs/nocturne.log`, and a day of
+    /// `--log-level trace` must not fill the disk on the way.
+    #[test]
+    fn the_log_is_nocturne_log_and_five_files_of_a_bounded_size_are_kept() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cap = 4 * 1024;
+        let (logs, subscriber) = build(Some("info"));
+        tracing::subscriber::with_default(subscriber, || {
+            logs.open_file_capped(data_dir.path(), cap);
+            for line in 0..2_000 {
+                tracing::info!(line, "a line long enough to fill a small file quickly");
+            }
+            tracing::info!("the last line");
+            logs.close();
+        });
+
+        let folder = data_dir.path().join("logs");
+        let mut names: Vec<String> = std::fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "nocturne.1.log",
+                "nocturne.2.log",
+                "nocturne.3.log",
+                "nocturne.4.log",
+                "nocturne.log"
+            ]
+        );
+        for name in &names {
+            let size = std::fs::metadata(folder.join(name)).unwrap().len();
+            assert!(size <= cap, "{name} is {size} bytes, over {cap}");
+        }
+        let newest = std::fs::read_to_string(folder.join("nocturne.log")).unwrap();
+        assert!(newest.contains("the last line"), "{newest}");
+        // The oldest went, rather than the newest being refused.
+        assert!(!everything_in(&folder).contains("line=0\n"));
     }
 
     #[test]

@@ -144,6 +144,18 @@
   font-style: italic;
 }
 
+/*
+ * A sentence that has to be read whole, in a column narrower than it: cut
+ * short, "on the account" reads as a balance somebody can spend. It wraps
+ * instead, and its row grows to hold it.
+ */
+.wraps {
+  display: block;
+  padding: var(--sp-4) 0;
+  line-height: var(--lh-tight);
+  white-space: normal;
+}
+
 .note,
 .quiet {
   margin: 0;

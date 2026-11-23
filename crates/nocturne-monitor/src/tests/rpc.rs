@@ -10,11 +10,12 @@ use crate::testing::{AgentData, AgentIf, Harness};
 const MINUTE: Duration = Duration::from_secs(60);
 
 /// The methods this feature owns, as the specification lists them.
-const CONTRACT: [&str; 35] = [
+const CONTRACT: [&str; 36] = [
     "monitor.status",
     "monitor.poll_now",
     "monitor.device",
     "monitor.interfaces",
+    "monitor.qos",
     "monitor.ifindex",
     "metrics.query",
     "metrics.query_many",
@@ -505,7 +506,7 @@ async fn the_built_in_rules_are_there_and_can_be_changed_but_not_deleted() {
     let harness = Harness::new().await;
     let rules = harness.rpc("alerts.rules.list", json!({})).await;
     let listed = rules.as_array().unwrap();
-    assert_eq!(listed.len(), 13);
+    assert_eq!(listed.len(), 14);
     assert!(listed.iter().all(|rule| rule["builtin"] == true));
     let kinds: Vec<&str> = listed
         .iter()

@@ -152,6 +152,21 @@ the interval away):
 | `qos.drop_pct` | same | drops as a share of packets offered |
 | `qos.queue_len` | same | queue depth, a gauge |
 
+`qos.drop_pct` is drops over the packets classified into the class in the
+interval; it is not written for an interval in which nothing was offered,
+nor where more was dropped than offered.
+
+The instance reads back to exactly its four names. It is split at the
+first two pipes and the last slash, so a `|` in an interface name is
+written `%7C`, a `/` in a class name `%2F` and a `%` in either `%25`; the
+policy is spelled as the device spells it, slashes included. Where one
+policy sits under two classes of a parent on the same interface, the
+classes are told apart by that parent, written before the policy
+(`Gi0/1|out|VLAN10/PER-VLAN/VOICE`). A row carries its own instance
+(`QosStatus.instance`), so nothing has to rebuild the spelling. The rule,
+and what happens to classes nothing tells apart, are in
+`docs/dev/features/monitor.md` ("QoS").
+
 A device with a queue per subscriber can have thousands of classes. Series
 are written for at most `qos_max_series` classes per device (default 256,
 taken in a stable order: interface, direction, policy, class); the current
@@ -160,19 +175,31 @@ capped. Nothing is dropped silently.
 
 | Method | Params → Result |
 |---|---|
-| `monitor.qos` | `{device_id?, interface?, problem_only?, limit?: 200, cursor?}` → `{rows: [QosStatus], next_cursor?, coverage: {devices: [{device_id, state: ok\|unsupported\|failed\|never, at?, unverified, series_capped, error?}]}}` |
+| `monitor.qos` | `{device_id?, interface?, problem_only?, limit?: 200, cursor?}` → `{rows: [QosStatus], next_cursor?, coverage: {devices: [{device_id, state: ok\|unsupported\|failed\|never, at?, unverified, series_capped, error?, classes, series}]}}` |
 
 ```rust
 struct QosStatus { device_id, interface, direction, policy, class, parent?, rate_bps?,
-    bps?, drop_ps?, queue_drop_ps?, drop_pct?, queue_len?,   // None = the interval could not be measured
-    packets?, dropped_packets?,                               // the counters as last read
+    instance?,                                                // of the class's series; None = it has none
+    bps?, drop_ps?, queue_drop_ps?, drop_pct?,                // None = the interval could not be measured
+    queue_len?, packets?, dropped_packets?,                   // as last read
+    dropping: bool,                                           // what `problem_only` selects
     at, unverified: bool }
 ```
+
+Optional fields are `null` in JSON, `next_cursor` included (after the last
+page). `classes` and `series` are how many classes the device has and how
+many of them have series. `error` is why a read `failed`; with `ok` it is
+what a read that worked could not place and left out. `dropping` is
+congestion as far as the device can tell: `queue_drop_ps` above zero, or
+`drop_ps` above zero where the row has nothing to tell congestion from
+policing; a class whose drops are all a policer's is not. A failed read
+keeps the rows and takes their rates away.
 
 Event: `monitor.qos.updated {device_id}`.
 
 One built-in, editable rule: **"QoS class is dropping (congestion)"** — a
-threshold on `qos.queue_drop_ps` above 10/s for 300 s, severity `medium`.
+threshold on `qos.queue_drop_ps` above 10/s for 300 s (clearing below 1/s),
+severity `medium`.
 There is deliberately no built-in rule on policer drops: a policer that
 drops is the policy working.
 

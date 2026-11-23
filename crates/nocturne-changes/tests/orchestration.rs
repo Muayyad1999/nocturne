@@ -243,7 +243,7 @@ async fn one_device_is_never_touched_by_two_changes_at_once() {
 }
 
 #[tokio::test]
-async fn an_applied_change_can_be_rolled_back_on_demand() {
+async fn an_applied_change_is_undone_on_demand_by_a_change_a_person_approves() {
     let lab = lab(&["SW1"]).await;
     let app = &lab.app;
     let before = lab.fake("SW1").running_config();
@@ -256,8 +256,25 @@ async fn an_applied_change_can_be_rolled_back_on_demand() {
             .contains("description desk 14")
     );
 
+    // Asking plans the way back; it is applied like any change once approved.
     let id = change["id"].as_str().unwrap();
-    run_job(app, "changes.rollback", json!({"id": id})).await;
+    let asked = app
+        .rpc("changes.rollback", json!({"id": id}))
+        .await
+        .unwrap();
+    finish(app, &asked).await;
+    let undo = app
+        .rpc("changes.get", json!({"id": asked["change"]["id"]}))
+        .await
+        .unwrap();
+    assert_eq!(undo["state"], "planned", "{undo:#}");
+    assert!(
+        lab.fake("SW1")
+            .running_config()
+            .contains("description desk 14"),
+        "nothing is sent before the undo is approved and applied"
+    );
+    apply(app, &undo).await;
     let after = app.rpc("changes.get", json!({"id": id})).await.unwrap();
 
     assert_eq!(after["state"], "rolled_back");

@@ -1,15 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the interface may reach. Everything Nocturne does goes through the `rpc` command, where the backend's own rules apply; the WebView gets no filesystem, shell or HTTP access of its own. Two things belong to the person's machine rather than to the engine and are lent by the shell: reading text from the clipboard, and opening an http(s) address in the system browser (docs/dev/spec-desktop.md).",
+  "description": "What the interface may reach. Everything Nocturne does goes through the `rpc` command, where the backend's own rules apply; the WebView gets no filesystem, shell or HTTP access of its own, and may listen for events but not emit them. Two things belong to the person's machine rather than to the engine and are lent by the shell: reading text from the clipboard, and opening an http(s) address in the system browser. The dialogs and notifications the shell shows are its own and need nothing here; of their plugins the page may only ask whether notifications are allowed, which the notification plugin's own script does on every load (docs/dev/spec-desktop.md, \"What the shell lends the interface\").",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:event:default",
-    "core:window:allow-start-dragging",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:webview:allow-internal-toggle-devtools",
-    "notification:default",
-    "dialog:default",
+    "notification:allow-is-permission-granted",
     "clipboard-manager:allow-read-text",
     {
       "identifier": "opener:allow-open-url",

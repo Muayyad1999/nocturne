@@ -39,9 +39,9 @@ pub struct FakeMonitor {
 }
 
 impl FakeMonitor {
-    /// Record what an interface is doing. `None` is a gap — the first poll
-    /// after a start, a reboot, a failed poll — exactly as the real monitor
-    /// reports one.
+    /// Record what an interface is doing, as polled just now. `None` is a gap
+    /// — the first poll after a start, a reboot, a failed poll — exactly as
+    /// the real monitor reports one.
     pub fn interface(
         &self,
         device_id: &str,
@@ -49,6 +49,28 @@ impl FakeMonitor {
         in_bps: Option<f64>,
         out_bps: Option<f64>,
         speed_bps: Option<u64>,
+    ) {
+        self.interface_at(
+            device_id,
+            name,
+            in_bps,
+            out_bps,
+            speed_bps,
+            nocturne_app::util::now_ms(),
+        );
+    }
+
+    /// The same, as last polled at `at`. The real monitor keeps a device's
+    /// rows from its last poll that read them, for as long as the device is
+    /// unreachable, so an old row is what a tower that went down leaves.
+    pub fn interface_at(
+        &self,
+        device_id: &str,
+        name: &str,
+        in_bps: Option<f64>,
+        out_bps: Option<f64>,
+        speed_bps: Option<u64>,
+        at: i64,
     ) {
         let row = json!({
             "device_id": device_id,
@@ -67,7 +89,7 @@ impl FakeMonitor {
             "out_disc_ps": null,
             "uplink": false,
             "lab": true,
-            "at": 1_700_000_000_000_i64,
+            "at": at,
         });
         let mut interfaces = self.interfaces.lock().expect("the stub's lock");
         let rows = interfaces.entry(device_id.to_string()).or_default();
@@ -297,6 +319,15 @@ impl Isp {
 
     /// The audit trail, newest first — read, never written, by tests.
     pub fn audit(&self) -> Vec<(String, String)> {
+        self.audit_entries()
+            .into_iter()
+            .map(|entry| (entry.source, entry.message))
+            .collect()
+    }
+
+    /// The whole of each entry: the device it is filed under and its detail
+    /// as well as its message. Newest first.
+    pub fn audit_entries(&self) -> Vec<nocturne_app::store::LogEntry> {
         self.app
             .store()
             .log_query(&nocturne_app::store::LogQuery {
@@ -305,9 +336,6 @@ impl Isp {
                 ..Default::default()
             })
             .expect("the audit trail")
-            .into_iter()
-            .map(|entry| (entry.source, entry.message))
-            .collect()
     }
 }
 

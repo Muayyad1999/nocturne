@@ -19,7 +19,8 @@
  * * **Paging is by offset.** `monitor.interfaces`, `alerts.list` and
  *   `checks.list` return a plain array, so `cursor` is the number of rows
  *   already received, as a decimal string (`"200"`). A page shorter than
- *   `limit` is the last one.
+ *   `limit` is the last one. The exception is `monitor.qos`, which answers
+ *   with an object and a `next_cursor` to pass back.
  * * **A service check that could not run is not one that is down.**
  *   `CheckStatus` has five values for a reason; `cannot_run` means nothing
  *   is known about the service, and showing it as a failure invents an
@@ -72,6 +73,21 @@ export type MetricName =
   | 'if.out_disc_ps'
   /** 1 when the line protocol is up, 0 when it is not. */
   | 'if.oper'
+  /**
+   * QoS, per class of an attached policy. The instance is the class:
+   * `<interface>|<in|out>|<policy>/<class>`, as `QosStatus.instance` gives
+   * it — use that, do not build it.
+   */
+  /** Traffic classified into the class, bits per second. */
+  | 'qos.bps'
+  /** Every drop from the class, packets per second. */
+  | 'qos.drop_ps'
+  /** Congestion drops only. Not written where the device counts one kind of drop. */
+  | 'qos.queue_drop_ps'
+  /** Drops as a share of the packets offered. Not written for an idle interval. */
+  | 'qos.drop_pct'
+  /** Queue depth in packets at the read: a gauge. */
+  | 'qos.queue_len'
   /**
    * Service checks. The instance is the **check's id**, not its name, so a
    * rename does not split the series; `checks.list` maps id to name.
@@ -627,6 +643,110 @@ export interface IfStatus {
   at: number;
 }
 
+/**
+ * One class of a QoS policy as monitoring last read it (`monitor.qos`).
+ * Every key is always present; `null` has two meanings, kept apart below.
+ *
+ * Typed from real answers: a lab router (the simulator's reference campus)
+ * read with the `cisco_ios` profile, in the monitor crate's tests.
+ */
+export interface QosStatus {
+  device_id: string;
+  /**
+   * The interface the policy is attached to, as `monitor.interfaces` spells
+   * it. `''` where the platform attaches a queue to something that is not
+   * an interface (a RouterOS queue on addresses).
+   */
+  interface: string;
+  direction: 'in' | 'out';
+  /** IOS: the policy-map. RouterOS: `queue simple` or `queue tree`. */
+  policy: string;
+  /** The class; on RouterOS the queue. `class-default` is a class like any other. */
+  class: string;
+  /**
+   * The class this one's policy sits in, for a hierarchical policy. A
+   * parent's counters and rates include its children's: add up one level,
+   * never the whole table.
+   */
+  parent: string | null;
+  /**
+   * The instance of this class's `qos.*` series, for `metrics.query`.
+   * `null` when it has none: the class is past `qos_max_series` (the
+   * device's coverage says `series_capped`), or it cannot be told from
+   * another class of the device by name.
+   */
+  instance: string | null;
+  /** The configured rate, where the platform prints one. */
+  rate_bps: number | null;
+  /**
+   * The four rates are `null` when the interval could not be measured —
+   * the first read, a restart, a failed read, a counter cleared on the
+   * device — or the platform does not print the counter. A gap, never a
+   * zero: show "not measured", not 0.
+   */
+  bps: number | null;
+  /** Every drop, packets per second. */
+  drop_ps: number | null;
+  /**
+   * Congestion drops, packets per second. `null` also where the device
+   * keeps one drop counter for a class, and for a class that has a policer
+   * and no queue.
+   */
+  queue_drop_ps: number | null;
+  /** Drops as a percentage of the packets offered; `null` also when none were. */
+  drop_pct: number | null;
+  /** Queue depth in packets at the read. `null`: the platform prints none. */
+  queue_len: number | null;
+  /** The counters as last read. `null`: the platform prints none. */
+  packets: number | null;
+  dropped_packets: number | null;
+  /**
+   * Losing packets to congestion, as far as the device can tell: what
+   * `problem_only` selects. A class whose drops are all a policer's is the
+   * policy working, and is `false`.
+   */
+  dropping: boolean;
+  /**
+   * When the counters were read. Older than the device's coverage `at`
+   * when reads have been failing since.
+   */
+  at: number;
+  /** The read has not been checked against a real device of its platform. */
+  unverified: boolean;
+}
+
+/**
+ * Where a device stands with the QoS read. The three things a screen must
+ * not confuse: `unsupported` (not collected for this device), `never` and
+ * `failed` (nothing known, for now), and `ok` with no rows (read, and no
+ * policy is attached).
+ */
+export type QosState = 'ok' | 'unsupported' | 'failed' | 'never';
+
+/** One device's entry in the coverage of `monitor.qos`. */
+export interface QosDeviceCoverage {
+  device_id: string;
+  state: QosState;
+  /** When the read that `state` describes was made; `null` for `never` and `unsupported`. */
+  at: number | null;
+  /** The device's QoS read has not met a real device of its platform. Known before the first read. */
+  unverified: boolean;
+  /** The device has more classes than `qos_max_series`: series and alert rules cover the first `series` of `classes`. */
+  series_capped: boolean;
+  /**
+   * With `failed`: why. With `ok`: what a read that worked could not place
+   * and left out, or `null`. Text from the collector; render it as text.
+   */
+  error: string | null;
+  /** Classes held for the device, and how many of them have series. */
+  classes: number;
+  series: number;
+}
+
+export interface QosCoverage {
+  devices: QosDeviceCoverage[];
+}
+
 /** The device-level numbers of the last poll that produced them. */
 export interface DeviceHealth {
   cpu_pct: number | null;
@@ -774,6 +894,10 @@ export interface MonitorSettings {
    * such an alert is raised, listed and shown, and sent to no channel.
    */
   notify_for_lab: boolean;
+  /** How often per-class QoS statistics are read over the CLI (lab devices: every 30 s). */
+  qos_interval_s: number;
+  /** The most classes of one device that get time series; the table holds them all. */
+  qos_max_series: number;
 }
 
 // -------------------------------------------------------------- parameters
@@ -803,6 +927,35 @@ export interface InterfaceQueryParams {
   limit?: number;
   /** Rows already received, as a decimal string. */
   cursor?: string;
+}
+
+export interface QosQueryParams {
+  device_id?: string;
+  /**
+   * Only the classes of policies attached to this interface, by any
+   * spelling of its name. `''` asks for the classes attached to no
+   * interface; leave it out for all of them.
+   */
+  interface?: string;
+  /** Only classes that are losing packets to congestion (`QosStatus.dropping`). */
+  problem_only?: boolean;
+  /** Default 200, at most 5000. */
+  limit?: number;
+  /** The `next_cursor` of the page before. */
+  cursor?: string;
+}
+
+/** What `monitor.qos` answers. */
+export interface QosPage {
+  /** By device, then interface, direction, policy and class. */
+  rows: QosStatus[];
+  /** Pass back as `cursor` for the rows after these; `null` after the last. */
+  next_cursor: string | null;
+  /**
+   * What the absence of rows means, per device: the one named, or every
+   * device monitoring watches. The same on every page.
+   */
+  coverage: QosCoverage;
 }
 
 export interface MetricQueryParams {
@@ -1143,6 +1296,12 @@ export interface CheckKindInfo {
  * `InterfaceQueryParams` → `IfStatus[]`.
  */
 /**
+ * `monitor.qos` — the current QoS table, one row per class, with what the
+ * absence of rows means per device. `QosQueryParams` → `QosPage`.
+ * `not_found` for an unknown device, `invalid` for a cursor that is not a
+ * `next_cursor`.
+ */
+/**
  * `monitor.ifindex` — which SNMP ifIndex is which interface of a device, as
  * its agent last said. `DeviceIdParams` → `IfIndexMap`.
  */
@@ -1240,6 +1399,14 @@ export interface MonitorInterfacesEvent {
 }
 
 /**
+ * `monitor.qos.updated` — what `monitor.qos` answers for a device changed:
+ * a read replaced its rows, or a read that failed took their rates away.
+ */
+export interface MonitorQosUpdatedEvent {
+  device_id: string;
+}
+
+/**
  * `alerts.changed` — an alert was raised, counted, announced late,
  * acknowledged, snoozed or resolved.
  */
@@ -1290,6 +1457,7 @@ export type MonitorEvent =
   | { topic: 'devices.state'; payload: DeviceState }
   | { topic: 'monitor.polled'; payload: MonitorPolledEvent }
   | { topic: 'monitor.interfaces'; payload: MonitorInterfacesEvent }
+  | { topic: 'monitor.qos.updated'; payload: MonitorQosUpdatedEvent }
   | { topic: 'alerts.changed'; payload: AlertsChangedEvent }
   | { topic: 'checks.ran'; payload: ChecksRanEvent }
   | { topic: 'monitor.status_changed'; payload: MonitorStatusChangedEvent };

@@ -23,7 +23,14 @@ product's AI and is fixed here:
 * It contains read methods, `changes.create` / `changes.plan` /
   `changes.get` / `changes.list` / `changes.preview`, and
   `changes.assistant_apply` (which enforces the autonomy policy inside the
-  change engine, not here).
+  change engine, not here). Every other method the assembled application
+  registers is on the never-reachable list, `boundary::NEVER`, grouped by
+  the reason it may not be reached; the two lists together are every method
+  there is, and `crates/nocturne-suite/tests/assistant_tools.rs` fails the
+  build for a method that is on neither (one a feature added later), on
+  both, or on a list without being registered. A method joins the
+  allow-list with a tool that shapes its answer for a model, never on its
+  own.
 * It contains exactly three methods that write a record which is not a
   device's configuration — `alerts.ack`, `ipam.address.reserve` and
   `discovery.scan` (`boundary::ASK_FIRST`). The gate passes one only after
@@ -50,17 +57,22 @@ product's AI and is fixed here:
   that writes files, or any method added later unless this list is edited.
   Nor anything that writes beside what the tools read: `evidence.capture_*`
   / `.add_text` / `.rename` / `.attach` / `.detach` / `.delete`;
-  `terminal.snippets.send` / `.import` / `.save` / `.delete`;
-  `detections.set_enabled`; `logs.ingest` / `.clear` / `.pull` / `.restart`,
-  `logs.rules.save` / `.delete` and `logs.forward.*`; every `incidents.*`
-  and `handover.*` method except the three reads; `alerts.raise` /
-  `.resolve` / `.snooze` and `alerts.rules.*`; `checks.save` / `.delete` /
-  `.run_now`; `discovery.add` / `.crawl` / `.ignore` / `.unignore` /
-  `.scan_delete`; `tasks.save` / `.delete` / `.run`, `runner.run` /
-  `.delete` / `.export`, `triggers.*`; `ipam.address.save` / `.delete` and
-  the prefix and VLAN writes; and every `isp.*` method that writes
-  (customer, tariff, subscription, link, invoice, payment and credit
+  `terminal.snippets.send` / `.render` / `.export` / `.import` / `.save` /
+  `.delete` (filling a snippet in is the person's step before anything is
+  typed); `detections.set_enabled`; `logs.ingest` / `.clear` / `.pull` /
+  `.restart`, `logs.rules.save` / `.delete` and `logs.forward.*`; every
+  `incidents.*` and `handover.*` method except the three reads;
+  `alerts.raise` / `.clear` / `.resolve` / `.snooze` (clearing an alert
+  hides a problem from a person) and `alerts.rules.*`; `checks.save` /
+  `.delete` / `.run_now`; `discovery.add` / `.crawl` / `.ignore` /
+  `.unignore` / `.scan_delete`; `tasks.save` / `.delete` / `.run`,
+  `runner.run` / `.delete` / `.export`, `triggers.*`; `ipam.address.save` /
+  `.delete` and the prefix and VLAN writes; and every `isp.*` method that
+  writes (customer, tariff, subscription, link, invoice, payment and credit
   methods) together with `isp.customer.get`, which returns a customer whole.
+  Nor `monitor.ifindex`, an internal mapping between features. Reads no
+  tool is built on — `flows.exporters`, `topology.rates`, `tools.qos.*` and
+  the rest — are on the list as what they are, until a tool needs one.
   A test enumerates every tool's reachable methods and fails on any method
   outside the allow-list; another asserts the forbidden ones are absent.
 * Everything a device printed, every configuration, log line, interface
@@ -79,15 +91,22 @@ product's AI and is fixed here:
   provider records every request sent "to the model" over a conversation
   that reads a fake device's full config and asserts no secret substring
   appears anywhere in any request.
-* **Records another feature already redacted** — evidence, incident
-  timelines, handovers (`boundary::ALREADY_REDACTED`: `incidents.list` /
-  `.get`, `handover.generate`, `evidence.list` / `.get`) — carry that
-  feature's placeholders, numbered in *its* table. To a model they look like
-  this chat's, and a `<secret:1>` copied out of an evidence item into a
-  proposed line would be restored to whatever this chat's first secret is.
-  So the gate turns every placeholder in such an answer into `<hidden>`
-  before this chat's own redaction runs over it; `<hidden>` restores to
-  nothing.
+* **What another feature already redacted** carries that feature's
+  placeholders, numbered in *its* table — one table per answer, for most.
+  Stored configurations (`config.latest` / `.search` / `.diff`), changes
+  (`changes.create` / `.get` / `.preview`, as `features/changes.md` asks),
+  a terminal's screen, log lines, evidence, incident timelines and
+  handovers all come back that way. To a model they look like this chat's,
+  and a `<secret:1>` copied out of one into a proposed line would be
+  restored to whatever this chat's first secret is: another device's value,
+  planned under lines a person reads with that value hidden. No feature ever
+  holds this chat's table, so the gate turns every placeholder in *every*
+  answer, and in every error, into `<hidden>` before this chat's own
+  redaction runs over it; `<hidden>` restores to nothing, a change engine
+  refuses a line that carries it, and the system prompt tells the model it
+  cannot be put back. What a device printed through
+  `devices.exec` comes back whole and is redacted here, so the placeholders
+  the model can reuse are this chat's own.
 
 ## Providers (contract)
 
@@ -106,7 +125,8 @@ struct ProviderEntry { id, name, kind: anthropic|openai|ollama, base_url, model,
 | `ai.providers.test` | `{id}` → `{ok, model, latency_ms, tool_calling: native|prompted|none, error?}` — a tiny real request, including one tool call, so the user learns whether the model can use tools |
 | `ai.providers.models` | `{id}` or `{kind, base_url, api_key?}` → `[ModelInfo]` |
 | `ai.providers.detect_local` | → local runtimes found (Ollama, LM Studio) with their models — one click to add |
-| `ai.status` | → `{configured: bool, default?: ProviderEntry, autonomy, redaction: true}` |
+| `ai.status` | → `{configured: bool, default?: ProviderEntry, autonomy, redaction: true, tools: N}` — `tools` is how many tools a turn with the default provider would be offered now |
+| `ai.tools` | → `[{name, title, touches_device, methods: [rpc method]}]` — the tools a turn with the default provider would be offered now: those whose methods this build registers, the ledger's only while `isp_access` is on, and the core set for a small window. The window is the one a turn uses: the provider's configured one, or else the one the provider assumes (16,000 for an OpenAI-compatible model on the local network nobody configured one for) |
 
 No provider configured is a normal state: `ai.send` then fails with
 `unavailable` and a message that says where to add one; nothing else in
@@ -184,7 +204,7 @@ offered.
 | `topology_neighbors`, `find_path`, `locate_host` | who connects to whom, path, where an IP/MAC is plugged in | `topology.neighbors/path`, `locate.host` |
 | `ipam_search`, `next_free_address`, `subnet_calc`, `vlsm_plan` | addressing | `ipam.search/next_address`, `tools.subnet`, `tools.vlsm` |
 | `ping`, `traceroute`, `port_check`, `dns_lookup`, `tls_inspect`, `device_ping` | probes from here or from a device | `probe.*` (wait for the job, return the report) |
-| `list_templates`, `render_template` | configuration templates | `templates.list/render` |
+| `list_templates`, `render_template` | configuration templates. A placeholder given in `vars` comes back `<hidden>` in the rendered lines, like every placeholder in every answer (below), and the result then says to put it back where `<hidden>` stands when the lines are proposed | `templates.list/render` |
 | `propose_change` | create a change (one or more devices; lines or intended config) and plan it; returns per device the exact commands, predicted diff, risk and protected hits, and the change id | `changes.create` + `changes.plan` (waits for the plan) |
 | `get_change`, `list_changes` | `list_changes {state?, device?, limit?}` reads the change engine's summaries (`devices[].name`), inside a data block | `changes.get/list` |
 | `apply_change` | ask to apply a planned change; the change engine's autonomy policy answers | `changes.assistant_apply` |
@@ -192,8 +212,8 @@ offered.
 | `search_notes` | `{query?, device?, site?}` — the team's runbooks: titles and, when search words are given, the passage they were found in. A list of notes never carries a note's body, and no method that returns one is on the allow-list: the tool says the user can open the note | `notes.list` |
 | `validate_profile` | check a device-type profile the model drafted; returns problems. Saving is the user's click, never a tool. | `profiles.validate` |
 | `explain_terminal` | last lines of the terminal session in context | `terminal.snapshot` |
-| `qos_status` | **not built yet.** Per-class traffic, drops and queue depth on an interface or a device; says when the read is unverified or the interval could not be measured | `monitor.qos` |
-| `top_talkers` | **not built yet.** Who is filling a link: flows by source, destination, conversation, application, interface or DSCP, with what the answer covers | `flows.top` |
+| `qos_status` | `{device?, interface?, problem_only?, limit?}` — per-class QoS as monitoring last read it: interface, direction, policy and class (and parent), configured rate, traffic, drops/s, congestion drops/s, share dropped, queue depth, `dropping`, and the class's series instance (for `get_metrics` with `qos.*`). A rate that is `null` is `not measured` (the interval could not be measured, or the device does not print the counter), never a zero; a figure the device does not print is `-`. Monitoring sets `dropping` only from a drop rate it measured, so beside two drop rates nobody measured it is `unknown`, not `no`, and with `problem_only` an empty answer is "none was measured dropping", never "none is dropping". Per device, what the read covers: read when and how many classes held (`ok`, with nothing held being "no policy is attached"), `unknown` when the device type has no QoS read or there is no command line, when it can be read and has not been, or when the last read failed (with the reason, and the classes kept without rates); what a read that worked left out; `series_capped` (classes listed but not charted or alerted on); a read not yet checked against a real device of its type. Without a device the coverage is counted by state and the devices with a failed read, a cut or a problem are listed | `monitor.qos`; `devices.get` to name the device |
+| `top_talkers` | `{by, device?, exporter?, minutes?: 15, limit?}` — who is filling a link, from the flow records exporters sent: label, bytes, share of the total, packets, flow records and the average over the window; under no key, and the total. What it covers: whether the collector is listening (not listening and nothing counted is `unknown`, never "no traffic"), where data in the window starts, records and exporters added up (a conversation two exporters saw is counted by both), data sets that arrived before their template, and which exporters sample at what rate — sampled figures are as exported and **not** multiplied. By `interface` the rows add up to twice the total, and it says so. A row is a floor. An answer that carries no coverage is `unknown` (no zero is read out of numbers that are not there), and a figure an answer does not carry is `-` | `flows.top`; `devices.get` |
 | `log_bursts` | `{device?, hours?: 24, min_count?: 5, max_severity?, text?, limit?}` — repeated syslog messages folded into one row each (count, first, last, an example, the entry id to pass on), most frequent first | `logs.bursts` |
 | `log_context` | `{entry_id? \| at?, device?, minutes?: 5, limit?}` — what else happened around one moment: log lines oldest first, repeats, signals, and the alerts and changes on the device in the window; each of the last two says `none in the window` or `unknown` (feature absent, read failed) | `logs.around` |
 | `list_detections` | `{detection?, device?, hours?: 24, limit?}` — hits with the records each was decided from, and which detections could not judge (switched off, cannot run, a failed check) | `detections.recent`; `detections.list` when present |
@@ -204,27 +224,30 @@ offered.
 | `discovery_results` | `{scan_id?, only_new?: true, text?, limit?}` — the recent scans and the finds of one (the newest by default): address, name, device type or `not identified`, open ports, whether it is in the inventory | `discovery.scans`, `discovery.scan_get` |
 | `start_discovery` | `{ranges: [..1–16], note?}` — start a sweep of address ranges (CIDR, `first-last` with the lower address first, or one address); **always asks first**, showing every range | `discovery.scan`; `discovery.scans` to report how many addresses were planned |
 | `automation_runs` | `{text?, limit?}` — saved tasks (what each does, on what, last run, last result) and recent runs; read-only: running one stays a person's click. A playbook written into a task and its variables are never quoted | `tasks.list`; `runner.runs` when present |
-| `list_snippets` | **not built yet.** The saved command snippets, to suggest one | `terminal.snippets.list` |
+| `list_snippets` | `{device?, query?, limit?}` — the saved command snippets, to suggest one: name, the device type it is written for, tags, its variables (needs a value / a default / may be left empty), a problem that stops it being used, and its first four lines, with every control character (a tab too: on a command line it is a keystroke), separator and direction mark written out as `<U+XXXX>`, and each line of the text marked `| ` so that none can pass for a heading or a field of the list. With a device, the engine is asked for that device's type — the one it is set to, or else the one detection remembered, the rule a terminal session uses — and the variant it chooses is said for each row (`the one used on SW1`, or which variant is used instead); a device whose type is not known gets every snippet and no claim about which fits, and for one whose type is known an empty list is "no snippet fits", not "none is saved". It never types anything, and says so: a snippet reaches a device only when the person picks it in a terminal, fills it in and confirms the exact lines | `terminal.snippets.list`; `devices.get` |
 | `acknowledge_alert` | `{alert_id, note}` — acknowledge an alert with a note — **always asks first**, showing the alert and the whole note | `alerts.ack`; `alerts.get` to show what is being acknowledged |
 | `reserve_address` | `{prefix_id, address, name, description?}` — record one exact address as reserved in IPAM — **always asks first**, showing the address, the prefix by its own name, and the texts. An address the prefix named does not hold is refused before anybody is asked | `ipam.address.reserve`; `ipam.search` to name the prefix and to check that it holds the address |
 | `isp_overview` | ISP edition only, and only when `isp_access` is on: customers by state, subscriptions, megabits sold, invoices by state, arrears per currency with their age bands, what was received in 30 days, usage coverage. Counts and money, no customer named | `isp.summary` |
 | `isp_customers` | as above: `{name?, state?, limit?}` — customers with id, name, state, plan and balance | `isp.customers`; `isp.subscriptions` for the plan and `isp.arrears` for the balance, per customer shown |
 | `isp_invoices` | as above: `{customer_id?, state?, days?, limit?}` — invoices with number, customer, status, period, total, paid, credited, outstanding, due day and days overdue; no lines, notes or payment references | `isp.invoices` |
 
-Sixty tools in all (43 before this set, 17 in it); the free edition can
-offer 57 of them, and three more rows above are specified and not built
-because the methods they call do not exist yet. A tool that takes a
-`device` looks it up in the inventory first (`devices.get`): the stores it
-then filters are keyed by a device's id, not by its name.
+Sixty-three tools in all (43 before the second set, 17 in it, and the
+three of the third: `qos_status`, `top_talkers`, `list_snippets`); the free
+edition offers 60 of them, every one but the three that read the ISP
+ledger. A tool that takes a `device` looks it up in the inventory first
+(`devices.get`): the stores it then filters are keyed by a device's id, not
+by its name.
 
-**What every tool of this set holds to.** It says plainly when a part of
+**What every tool of the second and third sets holds to.** It says plainly when a part of
 its answer is missing because the feature is not in this build or because
 the read failed (`unknown — …`), and that is never worded as an empty
 list; an empty list is said to be empty (`none`, `none in the window`,
 `no … matches`). Coverage the method gives is passed on (how many
 addresses a scan probed of those planned, how many customers match in all,
 which detections could not run, how many devices have no reachability
-samples, that a list was cut when it was read). And it bounds what it
+samples, that a list was cut when it was read, whether a QoS read worked
+and has met a real device, whether the flow collector is listening and
+what the exporters sample). And it bounds what it
 returns: at most `result_rows` rows and about `result_chars` characters,
 and when something was cut the result says so and says how to narrow it.
 Where a method takes a limit it is asked for no more rows than are shown
@@ -233,7 +256,8 @@ are `runner.runs` (at least twenty, because the name filter is the
 tool's) and `isp.customers` when a name is searched for (five hundred, for
 the reason given under the ledger), and the methods that take no limit at
 all — `tasks.list`, `detections.list`, `handover.generate`,
-`incidents.get`. What comes back is bounded whatever the method returned:
+`incidents.get`, `terminal.snippets.list` (up to 2,000 snippets, which the
+tool cuts to its rows). What comes back is bounded whatever the method returned:
 every field that is a name, an id or a label is held to a line, every text
 to its share, and an answer made of several lists (`log_context`,
 `handover_summary`, `get_incident`) cuts each list for itself, so that a
@@ -241,7 +265,10 @@ long one cannot push the next one's heading out. The agent's own
 last-resort cut (three times `result_chars`, blind to what it cuts
 through) is never what bounds a result. Everything a feature returned is
 inside a `<nocturne:data source="…">` block, whose marker a payload cannot
-close.
+close or open — not in another case either, nor with spaces or invisible
+characters in it (`</NOCTURNE:DATA>`, `< /nocturne:data>`): a model reads
+those as the marker too, so every `<` that begins one is replaced by a
+character that can be seen.
 
 Bounding is of what the model is sent, not of the work: every text of an
 answer is redacted before a tool sees a row of it, which takes between
@@ -351,19 +378,34 @@ in front of a model. No ISP tool writes.
   with the setting off it is exactly what holds, and with it on this
   section is the rule.
 
-Small-context models (`context_window` < 16k) get a core subset
-(`list_devices`, `get_device`, `run_commands`, `get_config`,
+A small-context model — a window of 16,000 tokens or fewer — gets a core
+subset (`list_devices`, `get_device`, `run_commands`, `get_config`,
 `search_configs`, `list_alerts`, `propose_change`, `get_change`,
-`subnet_calc`, `ping`) with shorter descriptions and tighter result caps.
+`subnet_calc`, `ping`) with the short descriptions and tighter result caps
+(at most 20 rows and 2,500 characters). That is what a 16k model is
+offered, and it is what a model on the local network gets when nobody
+configured its window: the engine assumes 16,000 tokens for an
+OpenAI-compatible endpoint there. The ten tools and the system prompt take
+about 3,000 tokens, a quarter of the 11,200 the agent lets that model's
+conversation grow to before compacting it (70% of the window). The window
+decided on is the one a turn uses — the configured one, or else the
+provider's own assumption — and `ai.tools` and `ai.status` answer from the
+same number.
 
 Above that, a model gets every tool, described in the long form only when
 it has the room: the tool set is sent with every request, so the short
 descriptions are used whenever the long ones (with the system prompt) would
 take more than half of what the agent lets a conversation grow to before
-compacting it — 70% of the window. With sixty tools that is any window
-below about 41k tokens, which includes a local model nobody configured a
-window for (the engine assumes 16k). A test holds the short form of the
-whole tool set under 90% of that 16k model's compaction limit.
+compacting it. With sixty-three tools the long form is about 15,350 tokens,
+so the short form is used below about 44k tokens. Just above the line the
+short form of every tool takes about 9,750 tokens, 87% of what a window of
+16,001 tokens may grow to; an Ollama model nobody configured (assumed
+16,384) is there, at 85% — set its window to get the core set, or a larger
+one. A test holds both: the core set in the short form under a third of a
+16k model's compaction limit, and every tool in the short form under 90% of
+the compaction limit of the smallest window that is offered all of them.
+When either fails, the descriptions and schemas are shortened or the line
+is moved; the shares are not raised.
 
 ## Behaviour and settings
 
@@ -471,4 +513,54 @@ in the test build:
   the argument of a "call this method" tool, and through the string inputs
   of the real tools (`tests/boundary.rs`): the stubs put a tripwire on every
   such method the test build does not really have, and the real ones are
-  judged by what they would have changed.
+  judged by what they would have changed;
+* the third set (`tests/traffic_and_snippets.rs`, stand-ins in
+  `common/reach.rs` in the shapes of `nocturne-monitor`'s `monitor.qos`,
+  `nocturne-logs`' `flows.top` and `nocturne-terminal`'s
+  `terminal.snippets.list`): the coverage each method gives is passed on;
+  a device whose type has no QoS read, one never read and one whose read
+  failed are `unknown` and one with no policy is not; an unmeasured rate is
+  not a zero; a collector that is not listening is not "no traffic", and
+  sampled figures are said not to be multiplied; a snippet's variant is the
+  engine's choice for the device's type, a type nobody knows is not
+  guessed, nothing is typed, and an escape character in a snippet is
+  written out; every result is cut to the caps and says how to narrow it;
+  a class whose drops nobody measured is not "not dropping", and an answer
+  without coverage is not "nothing arrived"; and with every name, label,
+  text and error the features return carrying line breaks, both block
+  markers, U+2028/2029, NEL, bidi controls and escape sequences, each
+  result is one block opened and closed by the tool, nothing a feature
+  wrote is outside it, no line of the tool's own (a coverage line, a
+  snippet's heading or fields, a total) is forged, and a snippet's text
+  reaches the model with every such character written out; and the
+  markers written in another case, with spaces or with a zero-width space
+  or byte-order mark in them, after every field, are not markers to a
+  reader who ignores case, spacing and what does not show;
+* a window of exactly 16,000 tokens, and a local model nobody configured a
+  window for, are offered the core set, and `ai.tools` / `ai.status` say so
+  (`tests/models.rs`); one token more is offered every tool; the guard in
+  `tools/mod.rs` holds the core set under a third of a 16k model's
+  compaction limit and every tool's short form under 90% of it at 16,001,
+  32,000 and 41,000 tokens, each of which is offered every tool in the
+  short form;
+* against the real features, in the assembled application
+  (`crates/nocturne-suite/tests/assistant_tools.rs`, in both editions):
+  every registered method is on exactly one side of the boundary; every
+  tool whose feature is in the build is offered and the ledger's only once
+  `isp_access` is on; the tools of the second and third sets (and the
+  older ones beside them that read the same stores) run through a real
+  turn on lab devices with records a person put there, none errs, every
+  answer that quotes a feature holds it in a data block and an order
+  planted in a log line, an incident, an evidence item and a snippet stays
+  inside one; what cannot be known (QoS on a type with no read, flows with
+  the collector off) is `unknown`; `top_talkers` reads what the real
+  collector counted from hand-written NetFlow v5 datagrams sent to it over
+  UDP, one of them sampled 1 in 100, and passes the rate on without
+  multiplying; `qos_status` reads the table real monitoring read off a
+  device (the simulator's synthetic `show policy-map interface`, through
+  the real `cisco_ios` read): rates, coverage, the unverified read, and a
+  first read's `not measured` and `unknown`; a read the real feature
+  refuses is an error result; a placeholder another feature numbered never reaches the
+  model as one this chat would restore; and the three writing tools ask,
+  then write into the real alerts, address plan and discovery, audited as
+  the assistant's.

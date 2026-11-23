@@ -731,3 +731,53 @@ async fn the_other_features_fill_in_lab_links_utilisation_and_alerts() {
         .expect("SW2");
     assert!(other["alerts"].is_null(), "no alerts is not zero alerts");
 }
+
+#[tokio::test]
+async fn a_lab_feature_that_fails_is_said_to_have_failed_and_the_reported_links_are_drawn() {
+    let mut builder = builder();
+    builder.router.add(
+        "labs.links",
+        |_: App, _: nocturne_app::NoParams| async move {
+            Err::<Value, nocturne_app::AppError>(nocturne_app::AppError::unavailable(
+                "the lab store is locked",
+            ))
+        },
+    );
+    let app = builder.build();
+    let one = device(&app, "SW1", "10.0.0.1", "access", "HQ");
+    let two = device(&app, "SW2", "10.0.0.2", "access", "HQ");
+    store(
+        &app,
+        &one,
+        vec![(
+            Kind::Neighbors,
+            vec![neighbor("Gi0/1", "SW2", "Gi0/2", "lldp")],
+        )],
+    );
+    store(
+        &app,
+        &two,
+        vec![(
+            Kind::Neighbors,
+            vec![neighbor("Gi0/2", "SW1", "Gi0/1", "lldp")],
+        )],
+    );
+
+    let graph = call(&app, "topology.get", Value::Null).await;
+    let links = graph["links"].as_array().expect("links");
+    assert_eq!(links.len(), 1, "what the devices report is still drawn");
+    assert_eq!(links[0]["kind"], "lldp");
+    let warnings: Vec<&str> = graph["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        warnings.iter().any(|warning| {
+            warning.starts_with("the lab feature's wiring could not be read")
+                && warning.contains("the lab store is locked")
+        }),
+        "{warnings:?}"
+    );
+}

@@ -9,44 +9,60 @@
  * Everything it reads: `ai.status`, `ai.chats.list/.create/.get/.rename/
  * .delete`, `ai.send`, `ai.cancel`, `ai.approve`, `ai.presets`, `ai.tools`,
  * `ai.usage`, `ai.providers.list/.presets/.save/.delete/.test/.models/
- * .detect_local`, and the `ai.event`, `ai.chats.changed` and
- * `ai.providers.changed` topics.
+ * .detect_local`, `settings.get` / `settings.set` (section `assistant`, in
+ * the ISP edition only), `app.methods`, and the `ai.event`,
+ * `ai.chats.changed`, `ai.providers.changed` and `settings.changed` topics.
  */
 
-import { Coins, Cpu, MessageSquare, Plus } from 'lucide-react';
+import { Coins, Cpu, MessageSquare, Plus, SlidersHorizontal } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
+import { useRpc } from '@/api/hooks';
 import type { LocalEndpoint, ProviderPreset } from '@/api/types/ai';
 import { registerCommand } from '@/app/CommandPalette/commands';
 import { usePageHeader } from '@/app/Header';
 import { Page } from '@/app/Page';
 import { Button } from '@/design/Button';
-import { Tabs } from '@/design/Tabs';
+import { Skeleton } from '@/design/Skeleton';
+import { Tabs, type TabItem } from '@/design/Tabs';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { useCurrentChat } from './chat';
 import { ChatList } from './ChatList';
 import { Conversation } from './Conversation';
+import { ledgerSwitchAvailable } from './ledger';
 import { Providers } from './Providers';
+import { SettingsTab } from './SettingsTab';
 import { useChatBootstrap } from './useChats';
 import { Usage } from './Usage';
 import styles from './Assistant.module.css';
 
-type Tab = 'chat' | 'models' | 'usage';
+type Tab = 'chat' | 'models' | 'usage' | 'settings';
 
-const TABS = [
+const TABS: readonly (TabItem & { id: Tab })[] = [
   { id: 'chat', label: 'Conversation', icon: MessageSquare },
   { id: 'models', label: 'Models', icon: Cpu },
   { id: 'usage', label: 'Usage', icon: Coins },
-] as const;
+  // Holds only what a build has something to set for: the ledger switch.
+  { id: 'settings', label: 'Settings', icon: SlidersHorizontal },
+];
 
-function isTab(value: string | null): value is Tab {
-  return value === 'chat' || value === 'models' || value === 'usage';
+/**
+ * The tab the address asks for. `settings` is honoured while `app.methods`
+ * is still on its way — a link to it must not bounce to the conversation
+ * and back — and dropped once the build turns out to have nothing to set.
+ */
+function tabFor(requested: string | null, settings: boolean | undefined): Tab {
+  if (requested === 'settings') return settings === false ? 'chat' : 'settings';
+  return requested === 'models' || requested === 'usage' ? requested : 'chat';
 }
 
 export default function AssistantPage() {
   const [params, setParams] = useSearchParams();
-  const requested = params.get('tab');
-  const tab: Tab = isTab(requested) ? requested : 'chat';
+  const methods = useRpc<string[]>('app.methods');
+  // A method list that cannot be read offers nothing that depends on it.
+  const settingsAvailable = methods.isError ? false : ledgerSwitchAvailable(methods.data);
+  const tab = tabFor(params.get('tab'), settingsAvailable);
+  const tabs = TABS.filter((entry) => entry.id !== 'settings' || settingsAvailable === true);
   const bootstrap = useChatBootstrap();
   const setChatId = useCurrentChat((state) => state.setChatId);
   const [opening, setOpening] = useState<{ presetId: string | null; baseUrl?: string } | null>(
@@ -99,7 +115,7 @@ export default function AssistantPage() {
         <Tabs
           id="assistant-tabs"
           aria-label="Assistant"
-          tabs={TABS.map(({ id, label, icon }) => ({ id, label, icon }))}
+          tabs={tabs.map(({ id, label, icon }) => ({ id, label, icon }))}
           value={tab}
           onChange={(next) => go(next as Tab)}
         />
@@ -108,7 +124,7 @@ export default function AssistantPage() {
           <Button variant="primary" icon={Plus} onClick={() => setOpening({ presetId: null })}>
             Add a model
           </Button>
-        ) : (
+        ) : tab === 'settings' ? null : (
           <Button variant="primary" icon={Plus} onClick={() => void newChat()}>
             New chat
           </Button>
@@ -136,6 +152,18 @@ export default function AssistantPage() {
       {tab === 'usage' && (
         <div className={styles.scroller}>
           <Usage />
+        </div>
+      )}
+      {tab === 'settings' && (
+        <div className={styles.scroller}>
+          {settingsAvailable ? (
+            <SettingsTab />
+          ) : (
+            <div className={styles.loading} aria-busy="true" aria-label="Loading the assistant’s settings">
+              <Skeleton width="30%" />
+              <Skeleton height={140} shape="block" />
+            </div>
+          )}
         </div>
       )}
     </Page>

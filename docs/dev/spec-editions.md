@@ -66,11 +66,24 @@ There is no edition flag, no licence boolean, no "mode" setting. A client-side
 switch that unlocks paid features is security theatre: anyone who can run the
 binary can flip it, and honest users carry the cost of the checks.
 
-The commercial control is **distribution**. The ISP build is a different
-artefact, and what a customer buys is access to it — plus, for a self-hosted
-ISP server, a signed licence file checked at start-up, which is a receipt
-rather than a lock. If it is hosted, the entitlement is simply the account on
-the hosted service and there is nothing on the client to defeat.
+The commercial control is **distribution**, and nothing else. The ISP build
+is a different artefact, and what a customer buys is access to it. If it is
+hosted, the entitlement is simply the account on the hosted service and there
+is nothing on the client to defeat.
+
+No licence file is read or checked anywhere, by the server or the desktop
+application of either edition: an ISP build starts and serves its billing
+methods exactly as the free build serves its own. A signed licence for a
+self-hosted ISP server has been discussed, as a receipt that names the
+licensee rather than a lock, and would add nothing to the control above. It
+is not built, and this document will say so here until it is.
+
+What the release does verify is that each artefact is the edition it is
+named for (`.github/workflows/release.yml`): every server binary is started
+and asked for its methods, and every desktop installer is unpacked and its
+program asked what it is (`--version`, which says `(ISP edition)` when the
+assembled engine registers the subscriber ledger's methods). An installer or
+binary that is not its edition fails the job and is never uploaded.
 
 This is deliberately a weak technical control and a strong commercial one. The
 alternative — obfuscation, phoning home, time bombs — costs more to build,

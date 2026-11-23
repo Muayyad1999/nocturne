@@ -1,8 +1,9 @@
 # Feature: monitoring (`nocturne-monitor`)
 
 Is everything up, how loaded is it, and what needs a human right now.
-Polls devices (ICMP, SNMP, and the CLI where there is nothing else), keeps
-time series, evaluates alert rules, and notifies.
+Polls devices (ICMP, SNMP, and the CLI where there is nothing else — and
+for per-class QoS statistics, which only the CLI has), keeps time series,
+evaluates alert rules, and notifies.
 
 Engines: `nocturne-netprobe` (`ping::Pinger`, `tcp::check`, and for service
 checks `dns::lookup`, `http::check`, `tls::inspect`, `ntp::query`),
@@ -45,12 +46,46 @@ rather than lasting for the size of the step.)
   `sysUpTime`; IF-MIB `ifName/ifDescr/ifAlias/ifOperStatus/ifAdminStatus/
   ifHighSpeed` + HC octet counters (32-bit fallback on v1 or when the HC
   columns are absent), errors and discards; health from the profile's
-  `snmp:` OIDs (CPU, memory, temperature). Rates are computed from counter
+  `snmp:` block (CPU, memory, temperature; the next point). Rates are
+  computed from counter
   deltas over `sysUpTime` deltas, with counter wrap and device reboot
   (uptime went backwards → discard the interval, never a spike) handled.
   Also feeds `collect::store(.., Kind::Interfaces, .., "snmp")` so topology
   and IPAM see interface state on SNMP-only devices — only from a reading
   SNMP itself produced, never a copy of what the CLI read.
+* **Health over SNMP** reads the profile's `snmp:` block as
+  `docs/profiles.md` (section `snmp`) defines it, the same way for every
+  vendor: which object, which rows and which unit are the profile's to
+  say, and nothing is scaled, turned round or filtered that the entry does
+  not ask for. `cpu`: the first entry that gives a number, its rows
+  combined by its `combine` (`mean`, or `max` for separate processors);
+  the entries after it are not read. `memory_*`: per list, the first number
+  of the first entry that gives one; the figure is used ÷ total, else
+  used ÷ (used + free), else (total − free) ÷ total, else the first number
+  of `memory_percent`. `temperature`: every row of every entry is a sensor,
+  the `temp.c` instance its name (the entry's `label`, `label.<row>`, the
+  row index, or empty for one object), except that an entry marked
+  `fallback` is read only when no entry above it that is not one gave a
+  sensor (an older object for the same sensors). An object the agent does not have
+  is an answer: that figure is unknown. On SNMPv1, where one missing object
+  fails the whole GET with noSuchName, the GET is asked again without the
+  object the error names, so the interfaces and the other figures are still
+  read. A timeout in a health request fails the SNMP read like any other.
+  What the agent answered and cannot be what the entry says is not stored,
+  and is said in `sources.snmp.error` while `sources.snmp.ok` stays `true`
+  (the device page shows it beside the source): a CPU or memory percentage
+  outside 0–100 (each CPU row is judged, not only their mean), a temperature
+  outside −100–300 °C, a negative amount of memory, a Gauge32 amount of
+  4294967295 (RFC 2578: the most it holds, given for that much or more), a
+  health walk that brings back as many rows as one walk takes
+  (`SNMP_TABLE_LIMIT`), and two sensors of one name in one poll — neither
+  is stored, whatever their values, so a series and its alert cannot flip
+  between two sensors from one poll to the next. Sensors of one entry
+  refused for being out of range, and names shared by the same entries, are
+  each one problem with a count, so a large table read in the wrong unit
+  costs one sentence, not one per row. An entry marked `signed` reads a
+  32-bit unsigned value of 2^31 or more as the negative number an agent
+  meant by it (RouterOS before 7.12 sends its gauge table that way).
 * **The ifIndex map** (`monitor.ifindex`). A trap says `ifIndex=3` and a
   flow record says "input interface 3"; the poller is what knows that 3 is
   `GigabitEthernet0/3`. After an SNMP poll the agent's interface-name
@@ -82,6 +117,17 @@ rather than lasting for the size of the step.)
   card re-seated — and the interval is a gap. A counter read off CLI text
   has no known width and never wraps: `clear counters` is a gap, not
   10^17 bit/s.
+* **An uptime printed to the minute** (`uptime is 3 hours, 12 minutes`, as
+  IOS and a lab device print it) says whether the device restarted, but its
+  difference is the real interval rounded by up to a minute either way: 0
+  or 60 s for two reads half a minute apart, four to six minutes for five.
+  Where both readings are whole minutes and the poller's own clock (the one
+  that is never set back) agrees with their difference to within 90 s, the
+  poller's clock measures the interval. Where they disagree — the poller was
+  held up, or it is not a rounding at all — the device's account stands, as
+  it always does for an uptime printed to the second and for `sysUpTime`.
+  This is one rule (`rates::interval`) for interface rates read over the CLI
+  and for QoS.
 * A failed SNMP/CLI poll is a recorded gap, not zeros. The counters held
   from the last reading are dropped when the source that produced them was
   asked again and did not answer — not when the other source failed, and
@@ -92,15 +138,184 @@ Metrics (series = device + metric + instance):
 `mem.pct`, `temp.c` (instance = sensor), and per interface (instance =
 canonical interface name) `if.in_bps`, `if.out_bps`, `if.util_pct`,
 `if.in_err_ps`, `if.out_err_ps`, `if.in_disc_ps`, `if.out_disc_ps`,
-`if.oper` (1/0).
+`if.oper` (1/0), and per QoS class (instance = the class, see QoS below)
+`qos.bps`, `qos.drop_ps`, `qos.queue_drop_ps`, `qos.drop_pct`,
+`qos.queue_len`.
 
 Settings section `monitoring`: `{enabled: true, concurrency: 32,
 down_after: 2, cli_interval_s: 300, retention_days_raw: 7,
 retention_days_rollup: 365, ping_timeout_ms: 1000, checks_enabled: true,
-check_history_days: 90, cert_warn_days: 14, notify_for_lab: false}`. A
+check_history_days: 90, cert_warn_days: 14, notify_for_lab: false,
+qos_interval_s: 300, qos_max_series: 256}`. A
 maintenance task calls `samples_maintain` hourly and prunes service-check
 history. `notify_for_lab` decides whether an alert about a lab device is
-announced at all (see Notifications).
+announced at all (see Notifications). `qos_interval_s` (30 s to a day) and
+`qos_max_series` (0 to 10,000; 0 is a table and no series) are the QoS
+read's cadence and its series cap (see QoS).
+
+## QoS
+
+What each class of each attached policy is doing. The contract shared with
+the other crates — the read, the five series, `monitor.qos`, the rule — is
+`docs/dev/spec-qos.md`; this section is how the poller keeps it, and what
+that specification leaves to it.
+
+**The read** is the collector's `qos` kind over the command line, in the
+poll's own session: a poll at which the CLI fallback is also due asks for
+interfaces, health and QoS in one login, not three. It has its own cadence
+(`qos_interval_s`, default 300; lab devices 30), counted like every other
+cadence here on the clock that is never set back, and it does not look at
+whether SNMP answered: SNMP carries no QoS, so a device whose interfaces are
+polled over SNMP every minute is still logged in to every five. A device is
+asked only if its profile defines the kind and it has a command line
+(`transport` other than `none`); and, like the CLI fallback, not while it
+does not answer the poll's reachability probe. A session that is only for
+QoS waits at most five seconds for another automated session on the device
+(a change, a backup, a collection) to finish, where one that stands in for
+SNMP waits as long as any caller does: the poll it sits in has usually read
+the device over SNMP already, and its results, its slot and its share of the
+concurrency are not held behind somebody's change. Past the wait the read
+is a failed one, and the coverage says the device was busy.
+
+**The interval** is the device's own, by `rates::interval`, the rule the
+interface rates use. The uptime is the one the session itself reads when it
+reads one — it was taken beside the counters — which it does whenever the
+CLI fallback is due in the same poll, and whenever SNMP has not just
+answered (`health` is then asked together with `qos`). On a device whose
+SNMP answered, the session asks for QoS alone and the uptime is the
+`sysUpTime` that poll has just read: to the hundredth of a second, and for
+no further command. A device that prints no uptime leaves the poller's
+clock. A device that restarted, a read after one that failed, a different
+source of the uptime than last time, and the first read of all have no
+interval. The counters are kept in memory only and apart from the interface
+counters, which have another source and another cadence.
+
+**The rates**, per class, from two readings of the row's counters
+(`nocturne_drivers::model::QosClass`). All of them are read off text, so
+none wraps: one that went down was cleared, and what it measures is a gap
+for that class while the other counters keep their rates.
+
+| Series | From | Written |
+|---|---|---|
+| `qos.bps` | `bytes` | when the interval and the counter were measured |
+| `qos.drop_ps` | `dropped_packets` | the same |
+| `qos.queue_drop_ps` | `queue_dropped_packets` | the same — so never for a platform that keeps one drop counter, nor for a class that has a policer and no queue |
+| `qos.drop_pct` | `dropped_packets` over `packets` | the same, and only when a packet was offered in the interval and no more were dropped than offered |
+| `qos.queue_len` | `queued_packets` | at every read that prints it: a gauge needs no interval |
+
+`packets` is what the device classified into the class, before anything is
+dropped from it, so the drops are among them and the share is drops over
+packets. No share is given of nothing offered (an idle class has no drop
+percentage, not 0 %), nor where more was dropped than offered: that is a
+packet counter that leaves drops out, and a percentage built on it would be
+a guess at what the device means.
+
+**The instance** is `<interface>|<in|out>|<policy>/<class>`, and it reads
+back to exactly those four names although interface names are full of
+slashes, policies are named after interfaces (`AutoQoS-Policy-Se0/0/0`) and
+a RouterOS queue can be called anything. The separators are found from the
+outside in: the interface ends at the **first** `|`, so a `|` in an
+interface name is written `%7C`; the direction is `in` or `out`; the class
+begins after the **last** `/`, so a `/` in a class name is written `%2F`;
+the policy is everything in between, exactly as the device spells it. A `%`
+in the interface or the class is written `%25`. Names without those
+characters are spelled as they are, so `GigabitEthernet0/0|out|WAN-QUEUE/VOICE`
+is what it looks like (`qos::instance`, `qos::parse_instance`). A consumer
+that splits at the first two pipes and the last slash without undoing the
+escapes still gets the right four parts, with `%2F` where the class has its
+slash.
+
+One spelling can name two classes: a child policy used under two classes of
+one parent (`class VLAN10` and `class VLAN20`, each with `service-policy
+PER-VLAN`) puts `PER-VLAN/VOICE` on the interface twice. Where that happens
+the classes that have a parent are written with it before the policy —
+`Gi0/1|out|VLAN10/PER-VLAN/VOICE` — and only there, so every other class
+keeps the plain spelling. Classes that even that does not tell apart (the
+same in interface, direction, policy, class and parent) get no series and no
+rates: which of two counters held from last time belongs to which is not
+known. They are still in the table, with their counters. `QosStatus.instance`
+is the instance the row's series are under, or `null` when it has none, so
+nothing has to rebuild the spelling to chart a row.
+
+**The table and the cap.** `monitor_qos` holds every class of the last read
+of every device, in a stable order — interface (natural order: `Gi0/2`
+before `Gi0/10`), direction (`in` first), policy, class, parent — which is a
+function of the names alone, whatever order the device lists in. Series are
+written for the first `qos_max_series` classes of that order that can have
+them (default 256, so at most 1,280 series a device). The rest have their
+rates in the table and `instance: null`; the device's coverage says
+`series_capped: true` with `classes` and `series`. Alert rules and
+`metrics.*` see series, so a class past the cap is listed, is shown as
+dropping, and is not alerted on.
+
+A page carries on from the place its last row has among the names, not
+from a position. Each read replaces the device's rows, and on a router with
+a queue per subscriber some have come or gone at every read: a class that
+came or went before the reader's place would move every position after it,
+and the next page would repeat or skip as many classes. So a class that is
+there before and after a read between two pages is listed exactly once, one
+that arrived after the reader's place is listed, and one that left before
+the reader got to it is not. The cursor is opaque; it holds the names it
+stopped at, so it is as long as they are.
+
+**What the absence of rows means** is the coverage `monitor.qos` returns
+with every page, one entry per device:
+
+* `unsupported` — nothing can be asked: the profile has no QoS read, or the
+  device has no command line. Decided from the device as it is now; rows
+  read under a profile it no longer has are deleted at its next poll.
+* `never` — it can be asked and has not been yet. `unverified` is already
+  the profile's, so a screen can say it above an empty table.
+* `ok` — the last read worked, at `at`. No rows is then an answer: no policy
+  is attached. `error` is `null`, or what the read could not place and left
+  out, in the collector's words (a row that does not say which way it
+  faces): the rows that are there are sound, and nothing was dropped
+  without a word.
+* `failed` — the last read did not work, at `at`, and `error` says why.
+  Also when the read was due and the device was not answering, so that it
+  was not asked: once, when it stops answering, not at every poll after.
+
+**A failed read** writes no sample, drops the counters held (the read after
+it is a baseline, not a rate across the hole), and takes the rates off the
+device's rows while keeping the rows: the classes are still the last ones
+known and their counters still what was read at the row's `at`, but what
+they are doing now is not known, and a rate left standing would go on saying
+"dropping 40 a second" for as long as the read kept failing.
+
+**`problem_only`** lists the rows whose `dropping` is true: classes that are
+losing packets to congestion as far as the device can tell. That is
+`queue_drop_ps` above zero or, where the row says nothing to tell
+congestion from policing (no queue counter and no policer counter: one drop
+counter for the class), `drop_ps` above zero. A class whose drops are all a
+policer's is not: the flag is on the row so that a screen does not have to
+work this out from counters it is not given.
+
+**The rule.** `builtin.qos_class_dropping`, "QoS class is dropping
+(congestion)": `qos.queue_drop_ps` above 10/s for 300 s, clearing below 1/s,
+severity `medium`, editable and disableable like the others. It is an
+ordinary threshold rule, so its alerts are raised, counted, muted, held back
+for lab devices and resolved by the one path every alert takes. The QoS
+measures are among the poll's measures only at a poll that read QoS; at the
+polls in between the rule has nothing to judge and neither fires nor
+resolves. A read that worked also says which classes exist, measured or not,
+and every threshold rule whose metric begins `qos.` goes by it: a class that
+is there with no value at this read — a counter cleared, the read after a
+restart or after a failed read — is a gap, and its alert stays as it is
+rather than being resolved as no longer reported (and raised again as a new
+alert after its `for_s`); a class that is not there is gone, and its alert is
+resolved, also when no class at all is left: the policy taken off the
+interface, or the device's type no longer having the read. A class pushed
+past the cap has no series and is resolved the same way. There is no
+built-in rule on `qos.drop_ps`: a policer that drops is the policy working. A
+class that holds a child policy counts its children's drops, so one
+congested class under a shaper is over the threshold twice, on its own row
+and on the shaper's.
+
+Names are the device's, and nothing limits their length or what they hold:
+a RouterOS queue is named by whoever configured it, a dynamic one after a
+subscriber's login. A name with every separator in it, an empty one or one
+of a hundred thousand bytes is listed, charted, paged and judged like any
+other; matching a rule's instance glob against it is linear in its length.
 
 ## Service checks
 
@@ -284,8 +499,9 @@ until the check's own next run, on its own schedule.
 |---|---|
 | `monitor.status` | → `{enabled, devices_monitored, polls_per_min, last_cycle_ms, ping_method, checks: {total, up, warning, down, unknown, cannot_run, disabled}, problems: [..]}` — `problems` has `checks` for what is down and `checks_blind` for what cannot run, counted apart because a blind spot is not a failure; `disabled` is every check that is not being watched (switched off itself, or by its device's or the installation's monitoring switch), and those are in none of the other figures |
 | `monitor.poll_now` | `{device_ids}` → `{job_id}` |
-| `monitor.device` | `{device_id}` → `{state: DeviceState, health: {cpu_pct?, mem_pct?, temp_c?, uptime_s?, at?}, interfaces: [IfStatus], checks: [ServiceCheckView], sources: {icmp, snmp, cli}}` |
+| `monitor.device` | `{device_id}` → `{state: DeviceState, health: {cpu_pct?, mem_pct?, temp_c?, uptime_s?, at?}, interfaces: [IfStatus], checks: [ServiceCheckView], sources: {icmp, snmp, cli}}`. A source is `{enabled, ok, at, via, error}`; `sources.snmp` can have `ok: true` and an `error`, which then says which health figures the agent's answer could not make (Health over SNMP, above) |
 | `monitor.interfaces` | `{device_id?, filter?, problem_only?, sort?, limit?, cursor?}` → `[IfStatus{device_id, device, name, description, admin_up, oper_up, speed_bps, in_bps, out_bps, util_pct, in_err_ps, out_err_ps, at}]` |
+| `monitor.qos` | `{device_id?, interface?, problem_only?, limit?: 200, cursor?}` → `{rows: [QosStatus], next_cursor, coverage: {devices: [{device_id, state: ok\|unsupported\|failed\|never, at?, unverified, series_capped, error?, classes, series}]}}` — the current QoS table, one row per class, by device and then in the stable class order. `interface` is matched by any spelling of the name (`Gi0/1`), and `""` asks for the classes attached to no interface. `limit` at most 5,000; `next_cursor` is `null` after the last page and is otherwise passed back as `cursor` (`invalid` for anything else); a read that lands between two pages neither repeats nor skips a class that is there before and after it. The coverage is of the device named, or of every device monitoring watches and any other it still holds a read of, and comes with every page. `not_found` for an unknown device. See QoS |
 | `monitor.ifindex` | `{device_id}` → `{at?, interfaces: [{index, name}]}` — the SNMP ifIndex of each interface the agent named, sorted by index, with when the map was last read. `at` is absent (not null) and the list empty for a device that was never read over SNMP. `not_found` for an unknown device. For the trap and flow decoders |
 | `metrics.query` | `{device_id, metric, instance?, since, until?, step_s?}` → `{points: [[t, v]..], step_s, rollup: raw|5m|1h}` (gaps are gaps) |
 | `metrics.query_many` | `{series: [{device_id, metric, instance?}], since, until?, step_s?}` |
@@ -324,6 +540,11 @@ enum Condition {                                   // #[serde(tag = "type", rena
     CheckState { check?: glob, kinds?: [CheckKind], state: down|warning|cannot_run },
     ConfigChanged,                                  // on the event `config.changed`
 }
+struct QosStatus { device_id, interface, direction: in|out, policy, class, parent?, instance?, rate_bps?,
+    bps?, drop_ps?, queue_drop_ps?, drop_pct?,   // null = not measured over the last interval
+    queue_len?, packets?, dropped_packets?,      // as last read; null = the platform does not print it
+    dropping: bool,                              // what `problem_only` selects
+    at, unverified: bool }                       // every key is always present
 struct ServiceCheck { id, device_id, name, spec: CheckSpec, host, enabled, interval_s, timeout_ms }
 struct CheckState { check_id, device_id, status: unknown|up|warning|down|cannot_run, code, message,
     rtt_ms?, facts: CheckFacts, since?, last_run_at?, last_ok_at?, last_down_at?, runs }
@@ -332,7 +553,8 @@ struct CheckState { check_id, device_id, status: unknown|up|warning|down|cannot_
 Built-in rules (editable copies, can be disabled): device down (critical,
 for 0 s after damping), uplink down (high), CPU > 90 % for 5 min, memory
 > 90 % for 10 min, temperature > 70 °C, interface errors > 10/s for 5 min,
-interface utilisation > 90 % for 10 min, packet loss > 20 % for 3 min,
+interface utilisation > 90 % for 10 min, a QoS class dropping to congestion
+(`qos.queue_drop_ps` > 10/s for 5 min, medium), packet loss > 20 % for 3 min,
 RTT > 5× the device's 24 h median for 5 min, configuration changed (info),
 service check down (high), certificate about to expire (low), service check
 cannot run (medium, after 10 min — long enough that saving a credential does
@@ -522,7 +744,10 @@ polling. `notify.channels.test` sends a clearly marked test message.
 
 Events (contract): `devices.state` (from the core), `monitor.polled
 {device_id, at, ok}`, `monitor.interfaces {device_id}` (interface table
-changed), `alerts.changed {alert, notification}`, `monitor.status_changed`
+changed), `monitor.qos.updated {device_id}` (what `monitor.qos` answers for
+the device changed: a read replaced its rows, a read that failed took their
+rates away — once for a device that stays unreachable — or its rows were
+dropped because it can no longer be asked), `alerts.changed {alert, notification}`, `monitor.status_changed`
 (`what` is `rules`, `maintenance`, `channel` or `checks`), and `checks.ran
 {check_id, device_id, name, kind, at, status, previous, changed, code,
 rtt_ms}` after every service-check run.
@@ -650,8 +875,60 @@ the device's recovery (including one recorded while the poll that found the
 device back was still out), and one sighting per run however often it is
 evaluated; a certificate warning that survives a run which never saw the
 certificate; the scheduler running each check on its
-own interval. Live: SNMP polling
+own interval. QoS, against the simulator's reference
+campus (its edge router's `show policy-map interface`, copied before every
+poll to the device the poll reads and parsed by the real `cisco_ios`
+profile: rates that match the simulator's own counters over thirty seconds
+although its uptime is printed to the minute, the policy as a tree, the
+policer not counted as congestion, and the built-in rule raised after five
+minutes), and against hand-written listings in the simulator's layout
+(synthetic, and said so) for what needs one counter set exactly: no rate at
+the first read but the queue depth, rates over the device's uptime, a
+restart, a counter cleared for one class, a failed read as a gap that takes
+the rates off the table, the three kinds of absence, a profile change that
+removes the read, the cap in the stable order, a slash in a class and a
+pipe in an interface, a platform with one drop counter and a row left out,
+cursor paging and the interface filter, the cadence and the one session,
+the rule's five minutes and its silence about a policer and at polls
+without a QoS read, a device that stops answering, and a deleted device;
+5,000 classes paged a thousand at a time with a read between the pages in
+which classes came and went on both sides of the reader's place (none
+twice, none skipped); a counter cleared under a firing alert leaving it open
+and the same alert seen again, with no notice for a lab device at any step;
+a policy taken off the interface and a profile that loses the read each
+resolving the alerts of the classes that went; a device polled over SNMP
+asked for its classes alone, with no health commands beside them, and its
+rates measured on `sysUpTime` against a poller's clock that disagrees; a
+device whose one automated session is held by somebody else not holding
+its SNMP poll up for more than the five seconds; names with every
+separator in all three places, an empty class, a 10,000-character policy
+and a 100,000-character queue, each listed, charted, paged and alerted on
+under its own instance; and the stored order agreeing with the order of
+the names, NUL bytes and prefixes included. Health over SNMP: the `snmp:`
+block of every built-in profile read by its id against rows written by
+hand in the layout published recordings of real devices show (RouterOS's
+main-memory row and celsius gauges, the tenths scalars only where the
+gauge table gave no temperature, and -5 °C whether a release sends the
+table as Gauge32 or Integer32; Linux's busy and available figures; the
+busiest member of a stack and node of a router; test points that are not
+present; fans that are not thermometers; the Junos Routing Engine row, a
+Routing Engine that reads zero, and the zeros of components without a
+sensor); every OID a built-in block names being an object the
+name table knows, named by the comment on its line; each entry key, the
+first entry that answers in `cpu` and in each memory list, a ready-made
+memory percentage only where the amounts give none, the values that cannot
+be what an entry says, a table cut at the walk's limit, two sensors of one
+name, a large table read in the wrong unit or twice as one problem each,
+and a timeout; SNMPv1
+against the in-process agent, where an object it lacks costs only its own
+figure; a block of plain OID lists, one entry a list, reading case by case
+what it read before entries could be mappings; and an alert open on
+RouterOS's old tenfold series resolved as no longer reported at the first
+poll of the new block.
+Live: SNMP polling
 against the in-crate `nocturne_snmp::Agent` (and a private `snmpd` if
-installed), ICMP to 127.0.0.1 where permitted, CLI fallback against a fake
+installed, read with the built-in `linux` profile over SNMPv2c and SNMPv1:
+its memory within 3 points and its CPU within 12 of what /proc said over
+the same moments), ICMP to 127.0.0.1 where permitted, CLI fallback against a fake
 device with canned `show interfaces` output; a 2,000-device simulated cycle
 stays within the concurrency cap and finishes.

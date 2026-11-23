@@ -1,9 +1,10 @@
 /**
  * Following a change through a job.
  *
- * `changes.plan`, `changes.apply` and `changes.rollback` all answer with a job
- * id and then get on with it, so the screen follows the job rather than
- * waiting on the call: live progress from `jobs.changed` and
+ * `changes.plan` and `changes.apply` answer with a job id and then get on
+ * with it, so the screen follows the job rather than waiting on the call (an
+ * undo is applied by `changes.apply` too: `changes.rollback` only creates
+ * it, and the screen opens it): live progress from `jobs.changed` and
  * `changes.progress`, and the outcome reported once, when it stops — taken
  * from the change record, because that is where the truth about the devices
  * is. (`ui/src/pages/devices/useCollect.ts` is the same pattern for
@@ -128,7 +129,7 @@ export function describeOutcome(change: Change): { title: string; detail?: strin
   };
 }
 
-/** Reports a finished plan, apply or rollback as a toast. */
+/** Reports a finished plan or apply (an undo's included) as a toast. */
 export function reportOutcome(change: Change): void {
   const outcome = describeOutcome(change);
   if (outcome.tone === 'ok') toast.success(outcome.title, { description: outcome.detail });

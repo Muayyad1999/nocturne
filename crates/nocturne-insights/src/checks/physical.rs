@@ -588,65 +588,100 @@ pub fn interface_errors(world: &World, settings: &Settings, report: &mut CheckRe
 
 // -------------------------------------------------------------- flapping
 
+/// State *changes* per port, from the device's own link log lines: IOS
+/// reports one flap twice (`%LINK-3-UPDOWN` and `%LINEPROTO-5-UPDOWN`), and
+/// counting lines would halve the threshold without saying so. Counted this
+/// way the figure means the same thing as the sampled one.
+fn changes_logged(events: &[logs::LinkEvent]) -> Vec<(String, u32, i64)> {
+    let mut per_interface: std::collections::BTreeMap<&str, Vec<&logs::LinkEvent>> =
+        Default::default();
+    for event in events {
+        per_interface
+            .entry(event.interface.as_str())
+            .or_default()
+            .push(event);
+    }
+    per_interface
+        .into_iter()
+        .map(|(interface, mut seen)| {
+            seen.sort_by_key(|event| event.at);
+            let mut changes = 0;
+            let mut state: Option<bool> = None;
+            for event in &seen {
+                if state.is_some_and(|was| was != event.up) {
+                    changes += 1;
+                }
+                state = Some(event.up);
+            }
+            let last = seen.last().map(|event| event.at).unwrap_or_default();
+            (interface.to_string(), changes, last)
+        })
+        .collect()
+}
+
 /// A port that went up and down repeatedly within the hour.
 ///
-/// Counted from polled `if.oper` samples where monitoring runs, and otherwise
-/// from the device's own link up/down log lines. A device with neither is not
-/// evaluated: a port nobody watched is not a port that was stable.
+/// Counted from polled `if.oper` samples where monitoring took some in the
+/// hour, and otherwise from the device's own link up/down log lines. A device
+/// with neither is not evaluated: a port nobody watched is not a port that
+/// was stable — and neither is one whose samples stop before the hour starts
+/// (monitoring stopped polling it), or whose samples or log entries could not
+/// be read.
 ///
 /// Look-alike: a port that is **administratively down now** flapped before
 /// somebody shut it; that is history, not a fault, and is not reported.
 pub fn interface_flapping(world: &World, settings: &Settings, report: &mut CheckReport) {
     let since = world.now - 3_600_000;
     let threshold = settings.thresholds.flap_transitions_per_hour;
-    let events = logs::link_events(world.store(), since).unwrap_or_default();
+    // One read for the whole fleet. A failure stays one, so that it reads as
+    // "could not be read" and never as "nothing was logged".
+    let events = logs::link_events(world.store(), since);
 
     for data in world.targets() {
-        let sampled = world.has_metric(data.id(), "if.oper");
-        let logged = events.contains_key(data.id());
-        if !sampled && !logged {
-            report.skip(
-                data.id(),
-                "neither monitoring samples nor log entries for this device in the last hour",
-            );
-            continue;
-        }
-        report.ok(data.id());
-        let mut counted: Vec<(String, u32, i64)> = if sampled {
-            metrics::transitions(world.store(), data.id(), "if.oper", since).unwrap_or_default()
+        let sampled = if world.has_metric(data.id(), "if.oper") {
+            metrics::transitions(world.store(), data.id(), "if.oper", since)
+                .map(|counted| Some(counted).filter(|counted| !counted.is_empty()))
         } else {
-            Vec::new()
+            Ok(None)
         };
-        if !sampled {
-            // State *changes*, not log lines: IOS reports one flap twice
-            // (`%LINK-3-UPDOWN` and `%LINEPROTO-5-UPDOWN`), and counting lines
-            // would halve the threshold without saying so. Counted this way
-            // the figure means the same thing as the sampled one.
-            let mut per_interface: std::collections::BTreeMap<&str, Vec<&logs::LinkEvent>> =
-                Default::default();
-            for event in events.get(data.id()).map(Vec::as_slice).unwrap_or_default() {
-                per_interface
-                    .entry(event.interface.as_str())
-                    .or_default()
-                    .push(event);
+        let logged = events
+            .as_ref()
+            .map(|events| events.get(data.id()).map(Vec::as_slice));
+        let (counted, from_samples) = match (sampled, logged) {
+            (Ok(Some(counted)), _) => (counted, true),
+            (_, Ok(Some(events))) => (changes_logged(events), false),
+            (Err(_), Err(_)) => {
+                report.skip(
+                    data.id(),
+                    "neither the device's `if.oper` samples nor the log entries could be read",
+                );
+                continue;
             }
-            counted = per_interface
-                .into_iter()
-                .map(|(interface, mut seen)| {
-                    seen.sort_by_key(|event| event.at);
-                    let mut changes = 0;
-                    let mut state: Option<bool> = None;
-                    for event in &seen {
-                        if state.is_some_and(|was| was != event.up) {
-                            changes += 1;
-                        }
-                        state = Some(event.up);
-                    }
-                    let last = seen.last().map(|event| event.at).unwrap_or_default();
-                    (interface.to_string(), changes, last)
-                })
-                .collect();
-        }
+            (Err(_), Ok(None)) => {
+                report.skip(
+                    data.id(),
+                    "the device's `if.oper` samples could not be read, and it logged no link \
+                     changes in the last hour to count instead",
+                );
+                continue;
+            }
+            (Ok(None), Err(_)) => {
+                report.skip(
+                    data.id(),
+                    "the log entries could not be read, and monitoring took no `if.oper` samples \
+                     of this device in the last hour",
+                );
+                continue;
+            }
+            (Ok(None), Ok(None)) => {
+                report.skip(
+                    data.id(),
+                    "neither monitoring samples nor log entries for this device in the last hour",
+                );
+                continue;
+            }
+        };
+        report.ok(data.id());
         for (instance, transitions, last) in counted {
             if transitions < threshold {
                 continue;
@@ -682,7 +717,7 @@ pub fn interface_flapping(world: &World, settings: &Settings, report: &mut Check
                 )
                 .evidence(
                     "Source",
-                    if sampled {
+                    if from_samples {
                         "`if.oper` samples from monitoring".to_string()
                     } else {
                         "link up/down log entries from the device".to_string()
@@ -711,9 +746,11 @@ pub fn interface_flapping(world: &World, settings: &Settings, report: &mut Check
 /// since been **shut** deliberately.
 pub fn err_disabled(world: &World, settings: &Settings, report: &mut CheckReport) {
     let since = world.now - i64::from(settings.thresholds.history_hours) * 3_600_000;
-    let events = logs::err_disable_events(world.store(), since).unwrap_or_default();
+    // Failures stay failures: an empty answer here is "nothing was disabled"
+    // and "the device sends no log", both verdicts.
+    let events = logs::err_disable_events(world.store(), since);
     let ids: Vec<&str> = world.targets().map(|data| data.id()).collect();
-    let with_logs = logs::devices_with_logs(world.store(), &ids, since).unwrap_or_default();
+    let with_logs = logs::devices_with_logs(world.store(), &ids, since);
 
     for data in world.targets() {
         if data.interfaces.is_none() {
@@ -723,6 +760,10 @@ pub fn err_disabled(world: &World, settings: &Settings, report: &mut CheckReport
             );
             continue;
         }
+        let (Ok(with_logs), Ok(events)) = (&with_logs, &events) else {
+            report.skip(data.id(), "the device's log entries could not be read");
+            continue;
+        };
         if !with_logs.contains(data.id()) {
             report.skip(
                 data.id(),
@@ -903,14 +944,16 @@ pub fn high_utilisation(world: &World, settings: &Settings, report: &mut CheckRe
             );
             continue;
         }
-        let summary = metrics::summarise(
+        let Ok(summary) = metrics::summarise(
             world.store(),
             data.id(),
             "if.util_pct",
             since,
             thresholds.utilisation_pct,
-        )
-        .unwrap_or_default();
+        ) else {
+            report.skip(data.id(), "the utilisation samples could not be read");
+            continue;
+        };
         if summary.is_empty() {
             report.skip(data.id(), "no utilisation samples inside the window");
             continue;
@@ -933,9 +976,7 @@ pub fn high_utilisation(world: &World, settings: &Settings, report: &mut CheckRe
                 "if.util_pct",
                 &series.instance,
                 history,
-            )
-            .ok()
-            .flatten();
+            );
             let mut finding = Finding::new(
                 "high_utilisation",
                 data.id(),
@@ -970,11 +1011,15 @@ pub fn high_utilisation(world: &World, settings: &Settings, report: &mut CheckRe
                 )
                 .commands([format!("show interfaces {name}")]),
             );
-            if let Some((hour, average)) = peak {
-                finding = finding.evidence(
-                    "Busiest hour",
-                    format!("{hour:02}:00 UTC, averaging {average:.0} %"),
-                );
+            match peak {
+                Ok(Some((hour, average))) => {
+                    finding = finding.evidence(
+                        "Busiest hour",
+                        format!("{hour:02}:00 UTC, averaging {average:.0} %"),
+                    );
+                }
+                Ok(None) => {}
+                Err(_) => finding = finding.evidence("Busiest hour", "could not be read"),
             }
             report.found(finding);
         }

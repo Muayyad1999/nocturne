@@ -7,6 +7,10 @@
  * when it was given — an empty optional variable is *absent*, not an empty
  * string, because `templates.render` is strict about undefined and would
  * rather name the missing variable than quietly render a blank line.
+ *
+ * Every value is one line, because the backend refuses a line break in one:
+ * it would be a second line of configuration. The one exception is a
+ * `string` declared `multiline` (a banner), which gets a text area.
  */
 
 import type { Variable, VariableKind } from '@/api/types/automation';
@@ -15,7 +19,9 @@ import { Field } from '@/design/Field';
 import { Input } from '@/design/Input';
 import { Select } from '@/design/Select';
 import { TagInput } from '@/design/TagInput';
+import { Textarea } from '@/design/Textarea';
 import styles from './Automation.module.css';
+import { spansLines } from './values';
 
 const PLACEHOLDER: Record<VariableKind, string> = {
   string: '',
@@ -88,6 +94,18 @@ export function VariablesForm({ variables, value, onChange }: VariablesFormProps
                 value={Array.isArray(current) ? current.map(String) : []}
                 placeholder={PLACEHOLDER.list}
                 onChange={(next) => set(variable.name, next)}
+              />
+            </Field>
+          );
+        }
+
+        if (spansLines(variable)) {
+          return (
+            <Field key={variable.name} label={label} hint={variable.help} required={variable.required}>
+              <Textarea
+                rows={4}
+                value={typeof current === 'string' ? current : ''}
+                onChange={(event) => set(variable.name, event.target.value)}
               />
             </Field>
           );
@@ -181,6 +199,15 @@ export function Declarations({ value, onChange, undeclared, disabled = false }: 
               >
                 required
               </Checkbox>
+              {variable.kind === 'string' && (
+                <Checkbox
+                  checked={variable.multiline === true}
+                  disabled={disabled}
+                  onChange={(event) => update(index, { multiline: event.target.checked })}
+                >
+                  several lines
+                </Checkbox>
+              )}
               {variable.kind === 'choice' && (
                 <TagInput
                   value={variable.choices}

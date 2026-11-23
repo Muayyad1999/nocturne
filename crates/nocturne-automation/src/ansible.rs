@@ -587,8 +587,11 @@ async fn lines_from_template(
 ) -> AppResult<(String, Vec<(Device, Vec<String>)>)> {
     let template = templates::get(app, template_id)?;
     let devices = select::resolve(app, &params.select)?;
+    // The same refusal `templates.apply` gives: an exported playbook pushes
+    // these lines with the module of each device's own platform.
+    templates::written_for(app, &template, &devices)?;
     let vars = templates::bind(&template.variables, &params.vars)?;
-    let rendered = templates::render_for(app, &template.body, &devices, &vars);
+    let rendered = templates::render_all(app, template.body.clone(), devices.clone(), vars).await?;
     let mut per_device = Vec::new();
     for item in rendered {
         let device = devices

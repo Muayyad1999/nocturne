@@ -274,12 +274,27 @@ collect:
         part_id: PID
         serial: SN
 
+# SNMP health. Written from Cisco's MIB files (CISCO-PROCESS-MIB revision
+# 2020-04-21 and CISCO-ENHANCED-MEMPOOL-MIB revision 2008-12-05, read on
+# 2026-11-23 from github.com/cisco/cisco-mibs). The monitor's tests read it
+# against rows written by hand in the layout published recordings of real
+# routers show. Nobody has pointed it at a router.
 snmp:
   cpu:
-    - 1.3.6.1.4.1.9.9.109.1.1.1.1.7   # cpmCPUTotal1minRev
-  memory_used:
-    - 1.3.6.1.4.1.9.9.221.1.1.1.1.18  # cempMemPoolUsed, the pool MIB XR fills
-  memory_free:
-    - 1.3.6.1.4.1.9.9.221.1.1.1.1.20  # cempMemPoolFree
-  temperature:
-    - 1.3.6.1.2.1.99.1.1.1.4          # entPhySensorValue, over the sensor table
+    # One row per node: each route processor, each line card, and on 64-bit
+    # XR each card's virtual machines. The busiest is the figure.
+    - oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.7        # cpmCPUTotal1minRev
+      combine: max
+  # No memory, on purpose. XR fills cempMemPoolTable with one row per node
+  # and pool, indexed entPhysicalIndex.pool:
+  #   1.3.6.1.4.1.9.9.221.1.1.1.1.18   cempMemPoolHCUsed (64-bit, bytes)
+  #   1.3.6.1.4.1.9.9.221.1.1.1.1.20   cempMemPoolHCFree (64-bit, bytes)
+  # Which row is the route processor is not in that table (it takes a look-up
+  # of entPhysicalName), and in every published recording of a chassis looked
+  # at the lowest index is a line card or the admin virtual machine. Not .7 /
+  # .8 (cempMemPoolUsed / cempMemPoolFree): Gauge32, which cannot carry a pool
+  # of 4 GiB or more.
+  # No temperature, on purpose. The XR agents of those recordings serve no
+  # ENTITY-SENSOR-MIB rows; their sensors are in CISCO-ENTITY-SENSOR-MIB
+  # (1.3.6.1.4.1.9.9.91.1.1.1.1.4), one table for volts, amperes, watts, rpm,
+  # dBm and degrees, with absent sensors reading -32768.

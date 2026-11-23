@@ -116,6 +116,9 @@ pub(crate) struct Outcome {
     /// of theirs counted as clean — a device that dropped out of collection
     /// never resolves its own open findings.
     pub evaluated: BTreeSet<String>,
+    /// Insight ids of the subjects the check could not judge on a device it
+    /// otherwise decided for. Their findings are not counted clean either.
+    pub undecided: BTreeSet<String>,
 }
 
 /// What a scan changed, for the event and for alert raising.
@@ -219,7 +222,8 @@ pub(crate) fn reconcile(
             }
 
             // Findings of this check, on devices this scan decided for, that
-            // were not found this time.
+            // were not found this time — and that it could judge: one it
+            // could not is held, neither seen again nor clean.
             let mut statement = tx.prepare(
                 "SELECT body, clean_scans FROM insights
                  WHERE check_id = ?1 AND state != 'resolved'",
@@ -233,6 +237,7 @@ pub(crate) fn reconcile(
             for (mut insight, clean_scans) in rows {
                 if found_ids.contains(insight.id.as_str())
                     || !outcome.evaluated.contains(&insight.device_id)
+                    || outcome.undecided.contains(&insight.id)
                 {
                     continue;
                 }
@@ -459,6 +464,7 @@ mod tests {
             checks: Vec::new(),
             missing_sources: Vec::new(),
             took_ms: 1,
+            settings_problems: Vec::new(),
         }
     }
 
@@ -494,6 +500,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: vec![found.clone()],
                 evaluated: [String::from("a")].into_iter().collect(),
+                undecided: BTreeSet::new(),
             }],
             &coverage_at(1_000),
         )
@@ -521,6 +528,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: vec![found.clone()],
                 evaluated: evaluated.clone(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -537,6 +545,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: vec![found.clone()],
                 evaluated: evaluated.clone(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -550,6 +559,7 @@ mod tests {
             check: "duplex_mismatch",
             found: Vec::new(),
             evaluated: evaluated.clone(),
+            undecided: BTreeSet::new(),
         };
         let first_clean = reconcile(&store, 3_000, &[clean]).unwrap();
         assert!(first_clean.resolved.is_empty());
@@ -562,6 +572,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: Vec::new(),
                 evaluated: evaluated.clone(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -578,6 +589,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: vec![found.clone()],
                 evaluated: evaluated.clone(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -600,6 +612,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: vec![found.clone()],
                 evaluated: [String::from("a")].into_iter().collect(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -612,11 +625,62 @@ mod tests {
                     check: "duplex_mismatch",
                     found: Vec::new(),
                     evaluated: BTreeSet::new(),
+                    undecided: BTreeSet::new(),
                 }],
             )
             .unwrap();
         }
         assert_eq!(get(&store, &found.id).unwrap().state, State::Open);
+    }
+
+    #[test]
+    fn a_finding_whose_subject_could_not_be_judged_is_neither_seen_again_nor_counted_clean() {
+        let store = store();
+        let found = insight(
+            "qos_class_dropping",
+            "a",
+            "Gi0/0 out WAN/BULK",
+            Severity::Medium,
+        );
+        let evaluated: BTreeSet<String> = [String::from("a")].into_iter().collect();
+        let scan = |at: i64, seen: bool, undecided: bool| {
+            reconcile(
+                &store,
+                at,
+                &[Outcome {
+                    check: "qos_class_dropping",
+                    found: if seen {
+                        vec![found.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                    evaluated: evaluated.clone(),
+                    undecided: if undecided {
+                        [found.id.clone()].into_iter().collect()
+                    } else {
+                        BTreeSet::new()
+                    },
+                }],
+            )
+            .unwrap()
+        };
+        scan(1_000, true, false);
+        // The device was decided for (another class of it was judged), and
+        // this one could not be, three scans running.
+        for at in [2_000, 3_000, 4_000] {
+            let changed = scan(at, false, true);
+            assert!(changed.resolved.is_empty() && changed.opened.is_empty());
+        }
+        let held = get(&store, &found.id).unwrap();
+        assert_eq!(
+            (held.state, held.last_seen, held.occurrences),
+            (State::Open, 1_000, 1),
+            "not seen again either: last_seen is when it was"
+        );
+
+        // Judged again and gone, twice: resolved, as any finding is.
+        scan(5_000, false, false);
+        assert_eq!(scan(6_000, false, false).resolved.len(), 1);
     }
 
     #[test]
@@ -631,6 +695,7 @@ mod tests {
                 check: "telnet_enabled",
                 found: vec![found.clone()],
                 evaluated: evaluated.clone(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -648,6 +713,7 @@ mod tests {
                 check: "telnet_enabled",
                 found: vec![found.clone()],
                 evaluated: evaluated.clone(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -663,6 +729,7 @@ mod tests {
                 check: "telnet_enabled",
                 found: vec![found.clone()],
                 evaluated,
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();
@@ -703,6 +770,7 @@ mod tests {
                 check: "duplex_mismatch",
                 found: findings.clone(),
                 evaluated: BTreeSet::new(),
+                undecided: BTreeSet::new(),
             }],
         )
         .unwrap();

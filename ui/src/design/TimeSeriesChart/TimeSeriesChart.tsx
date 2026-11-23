@@ -18,7 +18,7 @@ import {
 } from '@/lib/capture';
 import { cx } from '@/lib/cx';
 import { download, tellSaved } from '@/lib/download';
-import { formatCompact, formatCount, type Numeric } from '@/lib/format';
+import { formatCount, type Numeric } from '@/lib/format';
 import { formatDate, formatDateTime, formatTime } from '@/lib/time';
 import { IconButton } from '../Button';
 import { DropdownMenu } from '../DropdownMenu';
@@ -28,6 +28,7 @@ import { Skeleton } from '../Skeleton';
 import { Table, type TableColumn } from '../Table';
 import { useTokens } from '../theme';
 import type { StatusTone } from '../tone';
+import { formatReading, holeText, recordedAt } from './readings';
 import styles from './TimeSeriesChart.module.css';
 import uPlot from './uplot';
 
@@ -81,9 +82,16 @@ export interface TimeSeriesChartProps {
   subtitle?: string;
   /** Sample times in milliseconds since the epoch, ascending. */
   timestamps: readonly number[];
-  /** Up to eight series, all in the same unit: one chart has one y-axis. */
+  /**
+   * Up to eight series, all in the same unit: one chart has one y-axis. More
+   * are not drawn (the legend says how many), but the CSV has every one.
+   */
   series: readonly ChartSeries[];
-  /** Formats a value for the axis, the tooltip and the table, e.g. `formatRate`. */
+  /**
+   * Formats a value for the axis, the tooltip and the table, e.g.
+   * `formatRate`. Without one, a value keeps three significant digits below
+   * a thousand (`formatReading`).
+   */
   formatValue?: (value: Numeric) => string;
   /** Height of the plot including its time axis, in pixels. */
   height?: number;
@@ -184,7 +192,7 @@ export function TimeSeriesChart({
   subtitle,
   timestamps,
   series: allSeries,
-  formatValue = formatCompact,
+  formatValue = formatReading,
   height = 220,
   min,
   max,
@@ -448,12 +456,20 @@ export function TimeSeriesChart({
   const hoverTime = hover ? timestamps[hover.index] : undefined;
 
   // The table view: the same numbers, one row per sample. A row is its index.
+  // A time with nothing recorded in any series is the one a screen puts in a
+  // hole to lift the pen: it stays a row, so the hole shows in the numbers
+  // too, but it reads as the hole it is, not as a time that was sampled.
   const tableColumns: TableColumn<number>[] = [
     {
       id: 'time',
       header: utc ? 'Time (UTC)' : 'Time',
       width: 170,
-      cell: (index) => formatDateTime(timestamps[index], { utc }),
+      cell: (index) =>
+        recordedAt(allSeries, index) ? (
+          formatDateTime(timestamps[index], { utc })
+        ) : (
+          <span className={styles.hole}>{holeText(timestamps, allSeries, index)}</span>
+        ),
       sortValue: (index) => timestamps[index],
     },
     ...series.map((entry) => ({
@@ -464,7 +480,14 @@ export function TimeSeriesChart({
       sortValue: (index: number) => entry.values[index],
     })),
   ];
-  const tableRows = useMemo(() => timestamps.map((_, index) => index), [timestamps]);
+  // A run of such times is one hole, and one row: the first of the run.
+  const tableRows = useMemo(
+    () =>
+      timestamps.flatMap((_, index) =>
+        recordedAt(allSeries, index) || index === 0 || recordedAt(allSeries, index - 1) ? [index] : [],
+      ),
+    [timestamps, allSeries],
+  );
 
   /**
    * The chart as a picture: the plot's own canvas, as it is on screen, with
@@ -511,8 +534,10 @@ export function TimeSeriesChart({
         {
           label: 'Save numbers as CSV',
           icon: FileSpreadsheet,
-          // Every series, hidden or not: the file is the numbers, not the view.
-          onSelect: () => download(`${stem}.csv`, chartCsv({ timestamps, series }), 'text/csv;charset=utf-8'),
+          // Every series, hidden or not, drawn or past the eight a chart can
+          // draw: the file is the numbers, not the view.
+          onSelect: () =>
+            download(`${stem}.csv`, chartCsv({ timestamps, series: allSeries }), 'text/csv;charset=utf-8'),
         },
         ...(exportMenu.extra && exportMenu.extra.length > 0
           ? [{ type: 'separator' } as const, ...exportMenu.extra]
@@ -571,6 +596,7 @@ export function TimeSeriesChart({
             <li className={styles.overflow}>
               {formatCount(notShown)} more not shown: a chart reads up to {MAX_SERIES} series. Narrow the
               selection or split it into several charts.
+              {exportMenu && ' The numbers saved as CSV have every one of them.'}
             </li>
           )}
         </ul>
@@ -631,19 +657,28 @@ export function TimeSeriesChart({
               // Read out while navigating with the keyboard, silent under a moving pointer.
               aria-live={focused ? 'polite' : 'off'}
             >
-              <div className={styles.tooltipTime}>
-                {formatDateTime(hoverTime, { utc })}
-                {utc && ' UTC'}
-              </div>
-              {series.map((entry, index) =>
-                hidden.has(entry.id) ? null : (
-                  <div key={entry.id} className={styles.tooltipRow}>
-                    <span className={styles.key} style={{ background: colors[index] }} />
-                    {/* The value leads; the reader already knows which series. */}
-                    <span className={styles.tooltipValue}>{formatValue(entry.values[hover.index])}</span>
-                    <span className={styles.tooltipLabel}>{entry.label}</span>
+              {recordedAt(allSeries, hover.index) ? (
+                <>
+                  <div className={styles.tooltipTime}>
+                    {formatDateTime(hoverTime, { utc })}
+                    {utc && ' UTC'}
                   </div>
-                ),
+                  {series.map((entry, index) =>
+                    hidden.has(entry.id) ? null : (
+                      <div key={entry.id} className={styles.tooltipRow}>
+                        <span className={styles.key} style={{ background: colors[index] }} />
+                        {/* The value leads; the reader already knows which series. */}
+                        <span className={styles.tooltipValue}>{formatValue(entry.values[hover.index])}</span>
+                        <span className={styles.tooltipLabel}>{entry.label}</span>
+                      </div>
+                    ),
+                  )}
+                </>
+              ) : (
+                // The time the pen is lifted at was never sampled: the hole is what is read out.
+                <div className={styles.tooltipTime} data-hole="">
+                  {holeText(timestamps, allSeries, hover.index)}
+                </div>
               )}
             </div>
           )}

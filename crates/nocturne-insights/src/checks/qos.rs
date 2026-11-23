@@ -580,6 +580,23 @@ const STOPPED: &str = "the newest QoS sample is older than the sustained period 
      stopped or it reads QoS less often than that, so what the classes are doing now is not known";
 const NO_THRESHOLD: &str = "`thresholds.qos_drop_ps` is not above zero, so every measured class \
      would count as dropping";
+const UNREADABLE: &str = "the QoS samples could not be read from the store, so whether any class \
+     is dropping is not known";
+const UNDECIDED: &str = "no class could be judged yet: since the last gap in its samples each was \
+     measured too briefly to tell sustained dropping from a burst (fewer than five samples, or \
+     less than `thresholds.sustained_minutes`), or its own samples have stopped";
+/// A figure beside a finding whose series is not there…
+const NOT_RECORDED: &str = "not recorded for this class";
+/// …and one whose series could not be read, which is another thing.
+const NOT_READ: &str = "could not be read";
+
+/// The subject of a class's finding: the series' own name with the
+/// separators made readable. It is what keeps the finding's identity however
+/// the policy and class are told apart, and what a class that could not be
+/// judged is held by.
+fn subject_of(series: &Series) -> String {
+    series.instance.replace('|', " ")
+}
 
 /// A class as monitoring names its series: `<interface>|<in|out>|<policy>/<class>`.
 struct Class<'a> {
@@ -626,6 +643,16 @@ fn class_of(instance: &str) -> Option<Class<'_>> {
 /// * **A series with a hole in it.** A failed read writes no sample. Only
 ///   the run of samples since the last hole is judged, so that the minutes a
 ///   finding quotes are minutes that were measured.
+/// * **A class that cannot be judged now** — measured too briefly since its
+///   last hole, with drops in what was measured, or whose own series stopped
+///   while the device's goes on — is neither dropping nor clean. It is
+///   marked undecided, so that a finding about it is held as it is rather
+///   than resolved on no measurement and opened again as a second
+///   occurrence when the run is long enough once more. A device with no
+///   class that could be judged is not evaluated.
+/// * **A read that failed** is not an empty one: the device is not
+///   evaluated, and a figure beside a finding that could not be read says so
+///   rather than "not recorded".
 ///
 /// Where a device has no congestion series at all — its platform keeps one
 /// drop counter for both reasons, or none of its classes has a queue — there
@@ -659,24 +686,32 @@ pub fn qos_class_dropping(world: &World, settings: &Settings, report: &mut Check
             continue;
         }
         let metric = if separated { QUEUE_DROPS } else { ALL_DROPS };
-        let runs = metrics::summarise_unbroken(
+        let Ok(runs) = metrics::summarise_unbroken(
             world.store(),
             data.id(),
             metric,
             since,
             thresholds.qos_drop_ps,
             hole,
-        )
-        .unwrap_or_default();
+        ) else {
+            report.skip(data.id(), UNREADABLE);
+            continue;
+        };
         let mut newest = runs.iter().map(|series| series.last_at).max();
+        // Classes that are measured now and have no congestion series have no
+        // queue to overflow: that is a verdict, not a gap. So a device whose
+        // queueing policy is gone is still being measured for as long as its
+        // other classes are.
+        let mut queueless = false;
         if separated && newest.is_none_or(|at| at < fresh_from) {
-            // Classes that are measured now and have no congestion series
-            // have no queue to overflow: that is a verdict, not a gap. So a
-            // device whose queueing policy is gone is still being measured
-            // for as long as its other classes are.
-            let any = metrics::summarise(world.store(), data.id(), ALL_DROPS, since, 0.0)
-                .unwrap_or_default();
-            newest = newest.max(any.iter().map(|series| series.last_at).max());
+            let Ok(any) = metrics::summarise(world.store(), data.id(), ALL_DROPS, since, 0.0)
+            else {
+                report.skip(data.id(), UNREADABLE);
+                continue;
+            };
+            let measured = any.iter().map(|series| series.last_at).max();
+            queueless = measured.is_some_and(|at| at >= fresh_from);
+            newest = newest.max(measured);
         }
         match newest {
             None => {
@@ -687,37 +722,50 @@ pub fn qos_class_dropping(world: &World, settings: &Settings, report: &mut Check
                 report.skip(data.id(), STOPPED);
                 continue;
             }
-            Some(_) => report.ok(data.id()),
+            Some(_) => {}
         }
-        let dropping: Vec<&Series> = runs
-            .iter()
-            .filter(|series| {
-                // A class whose own series stopped while the device's did
-                // not is a class that is gone, or whose counters could not
-                // be compared: not one that is known to be dropping now.
-                series.last_at >= fresh_from
-                    && series.points >= 5
-                    && series.span_minutes() >= i64::from(thresholds.sustained_minutes)
-                    && series.over_fraction() >= 0.75
-            })
-            .collect();
+        let mut decided = queueless;
+        let mut dropping: Vec<&Series> = Vec::new();
+        for series in &runs {
+            let long_enough = series.points >= 5
+                && series.span_minutes() >= i64::from(thresholds.sustained_minutes);
+            // A class whose own series stopped while the device's did not is
+            // gone, or its counters could not be compared; one measured too
+            // briefly since a hole, with drops in what was measured, may be
+            // dropping or may have had a burst. A run of samples all under
+            // the threshold is a class not dropping now, however short.
+            if series.last_at < fresh_from || (!long_enough && series.over > 0) {
+                report.undecided(data.id(), &subject_of(series));
+                continue;
+            }
+            decided = true;
+            if long_enough && series.over_fraction() >= 0.75 {
+                dropping.push(series);
+            }
+        }
+        if !decided {
+            report.skip(data.id(), UNDECIDED);
+            continue;
+        }
+        report.ok(data.id());
 
         for series in dropping {
             let class = class_of(&series.instance);
             // The other figures of the class over the stretch its drops were
             // judged over — read only for a class that is reported, so a
             // healthy device costs one query.
-            let beside = |metric: &str| {
-                metrics::summarise_one(
+            let beside =
+                |metric: &str, shown: &dyn Fn(&Series) -> String| match metrics::summarise_one(
                     world.store(),
                     data.id(),
                     metric,
                     &series.instance,
                     series.first_at,
-                )
-                .ok()
-                .flatten()
-            };
+                ) {
+                    Ok(Some(figures)) => shown(&figures),
+                    Ok(None) => NOT_RECORDED.to_string(),
+                    Err(_) => NOT_READ.to_string(),
+                };
             let what = match &class {
                 Some(class) => format!(
                     "Class {} of policy {} ({} on {})",
@@ -758,63 +806,56 @@ pub fn qos_class_dropping(world: &World, settings: &Settings, report: &mut Check
                     "Drops (congestion and policing together)",
                 )
             };
-            let mut finding = Finding::new(
-                "qos_class_dropping",
-                data.id(),
-                // The series' own name with the separators made readable: it
-                // is what keeps the finding's identity however the policy and
-                // class are told apart above.
-                series.instance.replace('|', " "),
-                title,
-            )
-            .severity(severity)
-            .detail(detail)
-            .evidence(
-                drops,
-                format!(
-                    "average {:.1}/s, peak {:.1}/s (threshold {:.1}/s)",
-                    series.avg, series.max, thresholds.qos_drop_ps
-                ),
-            )
-            .evidence(
-                "Window",
-                format!(
-                    "{} samples over {} minutes, {:.0} % of them above the threshold",
-                    series.points,
-                    series.span_minutes(),
-                    series.over_fraction() * 100.0
-                ),
-            )
-            .evidence(
-                "Share of offered packets dropped",
-                match beside(DROP_SHARE) {
-                    Some(share) => format!(
-                        "average {:.1} %, peak {:.1} % (every drop, whatever the reason)",
-                        share.avg, share.max
-                    ),
-                    None => "not recorded for this class".to_string(),
-                },
-            )
-            .evidence(
-                "Traffic in the class",
-                match beside(TRAFFIC) {
-                    Some(traffic) => format!(
-                        "average {}, peak {}",
-                        norm::speed(traffic.avg.max(0.0).round() as u64),
-                        norm::speed(traffic.max.max(0.0).round() as u64)
-                    ),
-                    None => "not recorded for this class".to_string(),
-                },
-            );
-            if let Some((hour, average)) =
-                metrics::busiest_hour(world.store(), data.id(), metric, &series.instance, history)
-                    .ok()
-                    .flatten()
+            let mut finding =
+                Finding::new("qos_class_dropping", data.id(), subject_of(series), title)
+                    .severity(severity)
+                    .detail(detail)
+                    .evidence(
+                        drops,
+                        format!(
+                            "average {:.1}/s, peak {:.1}/s (threshold {:.1}/s)",
+                            series.avg, series.max, thresholds.qos_drop_ps
+                        ),
+                    )
+                    .evidence(
+                        "Window",
+                        format!(
+                            "{} samples over {} minutes, {:.0} % of them above the threshold",
+                            series.points,
+                            series.span_minutes(),
+                            series.over_fraction() * 100.0
+                        ),
+                    )
+                    .evidence(
+                        "Share of offered packets dropped",
+                        beside(DROP_SHARE, &|share| {
+                            format!(
+                                "average {:.1} %, peak {:.1} % (every drop, whatever the reason)",
+                                share.avg, share.max
+                            )
+                        }),
+                    )
+                    .evidence(
+                        "Traffic in the class",
+                        beside(TRAFFIC, &|traffic| {
+                            format!(
+                                "average {}, peak {}",
+                                norm::speed(traffic.avg.max(0.0).round() as u64),
+                                norm::speed(traffic.max.max(0.0).round() as u64)
+                            )
+                        }),
+                    );
+            match metrics::busiest_hour(world.store(), data.id(), metric, &series.instance, history)
             {
-                finding = finding.evidence(
-                    "Peak hour",
-                    format!("{hour:02}:00 UTC, averaging {average:.1} drops/s"),
-                );
+                Ok(Some((hour, average))) => {
+                    finding = finding.evidence(
+                        "Peak hour",
+                        format!("{hour:02}:00 UTC, averaging {average:.1} drops/s"),
+                    );
+                }
+                // No hour with samples in it is no peak to speak of.
+                Ok(None) => {}
+                Err(_) => finding = finding.evidence("Peak hour", NOT_READ),
             }
             let mut suggestion = Suggestion::text(if separated {
                 "Look at what is in the class before giving it more: traffic marked into the \

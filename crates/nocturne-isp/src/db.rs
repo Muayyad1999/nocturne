@@ -231,15 +231,63 @@ fn to_sql<T: serde::Serialize>(value: &T) -> rusqlite::Result<String> {
         .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
 }
 
-/// How many rows to skip, from a cursor that is the number already received.
-pub fn offset_of(cursor: Option<&str>) -> AppResult<i64> {
-    match cursor.map(str::trim).filter(|text| !text.is_empty()) {
-        None => Ok(0),
-        Some(text) => text
-            .parse::<i64>()
-            .map_err(|_| AppError::invalid("the cursor is the number of rows already received"))
-            .map(|offset| offset.max(0)),
-    }
+/// The cursor a caller passed, if it passed one.
+fn cursor_of(cursor: Option<&str>) -> Option<&str> {
+    cursor.map(str::trim).filter(|text| !text.is_empty())
+}
+
+// A page of invoices, payments or credit notes begins after the last row of
+// the page before, by that row's sort key, and not after a count of rows.
+// These lists are newest first, so whatever is written between two page
+// requests — a billing run's drafts, a payment being recorded — sorts in
+// front of the page already read, and a count would hand part of that page
+// back. None of these rows is ever deleted or changes its sort key, so its id
+// is the whole cursor, and a caller has it without being told: it is the last
+// row they received.
+
+/// The sort key of the invoice a page continues after.
+fn invoice_position(conn: &Connection, id: &str) -> rusqlite::Result<Option<(i64, i64)>> {
+    conn.query_row(
+        "SELECT period_start, created_at FROM isp_invoice WHERE id = ?1",
+        params![id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
+
+/// The moment of the payment or credit note a page continues after.
+fn moment_of(conn: &Connection, table: &str, id: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        &format!("SELECT at FROM {table} WHERE id = ?1"),
+        params![id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+fn not_a_row(what: &str, cursor: &str) -> AppError {
+    AppError::invalid(format!(
+        "`cursor` is the id of the last {what} of the page before, and there is no {what} \
+         `{cursor}` to continue after; load the list again from the start"
+    ))
+}
+
+/// The cursor that follows a page of customers: the last one's sort key.
+///
+/// Customers are listed by name, a name can change and a customer with no
+/// ledger can be deleted, so the cursor carries the name and the id it was
+/// made from rather than an id to be looked up again.
+fn customer_cursor(customer: &Customer) -> String {
+    serde_json::to_string(&(&customer.name, &customer.id)).unwrap_or_default()
+}
+
+fn parse_customer_cursor(cursor: &str) -> AppResult<(String, String)> {
+    serde_json::from_str::<(String, String)>(cursor).map_err(|_| {
+        AppError::invalid(
+            "`cursor` is the `next_cursor` the page before ended with, and that is not one; load \
+             the list again from the start",
+        )
+    })
 }
 
 /// What a sum is split at. Each row contributes its quotient by this to one
@@ -277,7 +325,7 @@ pub struct CustomerQuery {
     pub tower: Option<String>,
     pub device_id: Option<String>,
     pub limit: Option<u32>,
-    /// The number of rows already received, as a decimal string.
+    /// The `next_cursor` the page before ended with.
     pub cursor: Option<String>,
 }
 
@@ -378,11 +426,15 @@ pub fn delete_customer(db: &impl Sql, id: &str) -> AppResult<bool> {
 pub struct CustomerPage {
     pub customers: Vec<Customer>,
     pub matching: u64,
+    /// Where the next page begins; `None` on the last one.
+    pub next_cursor: Option<String>,
 }
 
 pub fn customers(db: &impl Sql, query: &CustomerQuery) -> AppResult<CustomerPage> {
-    let limit = i64::from(query.limit.unwrap_or(200).clamp(1, 2_000));
-    let offset = offset_of(query.cursor.as_deref())?;
+    let limit = query.limit.unwrap_or(200).clamp(1, 2_000) as usize;
+    let after = cursor_of(query.cursor.as_deref())
+        .map(parse_customer_cursor)
+        .transpose()?;
     let mut clauses: Vec<String> = Vec::new();
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(state) = &query.state {
@@ -418,33 +470,45 @@ pub fn customers(db: &impl Sql, query: &CustomerQuery) -> AppResult<CustomerPage
             );
         }
     }
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", clauses.join(" AND "))
+    let where_clause = |clauses: &[String]| {
+        if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        }
     };
-    let matching: i64 = db.with(|conn| {
-        conn.query_row(
-            &format!("SELECT COUNT(*) FROM isp_customer{where_clause}"),
+    let counted = where_clause(&clauses);
+    let mut paged = values.clone();
+    if let Some((name, id)) = after {
+        clauses
+            .push("(name COLLATE NOCASE > ? OR (name COLLATE NOCASE = ? AND id > ?))".to_string());
+        paged.extend([name.clone().into(), name.into(), id.into()]);
+    }
+    // One more than asked for says whether another page follows.
+    paged.push(i64::try_from(limit + 1).unwrap_or(i64::MAX).into());
+    let page = where_clause(&clauses);
+    // The count and the page in one hold of the connection, so the two
+    // describe the same list.
+    let (matching, mut customers): (i64, Vec<Customer>) = db.with(|conn| {
+        let matching = conn.query_row(
+            &format!("SELECT COUNT(*) FROM isp_customer{counted}"),
             params_from_iter(values.iter()),
             |row| row.get(0),
-        )
-    })?;
-    let mut paged = values.clone();
-    paged.push(limit.into());
-    paged.push(offset.into());
-    let customers: Vec<Customer> = db.with(|conn| {
+        )?;
         let mut statement = conn.prepare(&format!(
-            "SELECT body FROM isp_customer{where_clause}
-             ORDER BY name COLLATE NOCASE, id LIMIT ? OFFSET ?"
+            "SELECT body FROM isp_customer{page} ORDER BY name COLLATE NOCASE, id LIMIT ?"
         ))?;
-        statement
+        let customers = statement
             .query_map(params_from_iter(paged.iter()), |row| body_of(row, 0))?
-            .collect()
+            .collect::<rusqlite::Result<Vec<Customer>>>()?;
+        Ok((matching, customers))
     })?;
+    let more = customers.len() > limit;
+    customers.truncate(limit);
     Ok(CustomerPage {
-        customers,
+        next_cursor: customers.last().filter(|_| more).map(customer_cursor),
         matching: matching.max(0) as u64,
+        customers,
     })
 }
 
@@ -715,12 +779,14 @@ pub struct InvoiceQuery {
     /// exactly where it begins.
     pub until: Option<i64>,
     pub limit: Option<u32>,
+    /// The id of the last invoice of the page before: this page
+    /// begins after it.
     pub cursor: Option<String>,
 }
 
 pub fn invoices(db: &impl Sql, query: &InvoiceQuery) -> AppResult<Vec<Invoice>> {
     let limit = i64::from(query.limit.unwrap_or(100).clamp(1, 2_000));
-    let offset = offset_of(query.cursor.as_deref())?;
+    let cursor = cursor_of(query.cursor.as_deref());
     let mut clauses: Vec<&str> = Vec::new();
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(customer_id) = &query.customer_id {
@@ -743,22 +809,40 @@ pub fn invoices(db: &impl Sql, query: &InvoiceQuery) -> AppResult<Vec<Invoice>> 
         clauses.push("period_start < ?");
         values.push(until.into());
     }
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", clauses.join(" AND "))
-    };
-    values.push(limit.into());
-    values.push(offset.into());
-    db.with(|conn| {
+    let page = db.with(|conn| {
+        if let Some(cursor) = cursor {
+            let Some((period_start, created_at)) = invoice_position(conn, cursor)? else {
+                return Ok(None);
+            };
+            // After it in `period_start DESC, created_at DESC, id`.
+            clauses.push(
+                "(period_start < ? OR (period_start = ? AND (created_at < ? OR \
+                 (created_at = ? AND id > ?))))",
+            );
+            values.extend([
+                period_start.into(),
+                period_start.into(),
+                created_at.into(),
+                created_at.into(),
+                cursor.to_string().into(),
+            ]);
+        }
+        let where_clause = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        values.push(limit.into());
         let mut statement = conn.prepare(&format!(
             "SELECT body FROM isp_invoice{where_clause}
-             ORDER BY period_start DESC, created_at DESC, id LIMIT ? OFFSET ?"
+             ORDER BY period_start DESC, created_at DESC, id LIMIT ?"
         ))?;
         statement
             .query_map(params_from_iter(values.iter()), |row| body_of(row, 0))?
-            .collect()
-    })
+            .collect::<rusqlite::Result<Vec<Invoice>>>()
+            .map(Some)
+    })?;
+    page.ok_or_else(|| not_a_row("invoice", cursor.unwrap_or_default()))
 }
 
 /// This customer's invoices that are not void and whose period touches
@@ -973,12 +1057,13 @@ pub struct PaymentQuery {
     /// `recorded` or `void`; both by default.
     pub state: Option<String>,
     pub limit: Option<u32>,
+    /// The id of the last payment of the page before: this page
+    /// begins after it.
     pub cursor: Option<String>,
 }
 
 pub fn payments(db: &impl Sql, query: &PaymentQuery) -> AppResult<Vec<Payment>> {
     let limit = i64::from(query.limit.unwrap_or(100).clamp(1, 2_000));
-    let offset = offset_of(query.cursor.as_deref())?;
     let mut clauses: Vec<&str> = Vec::new();
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(customer_id) = &query.customer_id {
@@ -1010,21 +1095,50 @@ pub fn payments(db: &impl Sql, query: &PaymentQuery) -> AppResult<Vec<Payment>> 
         clauses.push("state = ?");
         values.push(state.to_string().into());
     }
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", clauses.join(" AND "))
-    };
-    values.push(limit.into());
-    values.push(offset.into());
-    db.with(|conn| {
+    newest_first(
+        db,
+        "isp_payment",
+        "payment",
+        clauses,
+        values,
+        cursor_of(query.cursor.as_deref()),
+        limit,
+    )
+}
+
+/// A page of a table listed by `at DESC, id`, after the row `cursor` names.
+fn newest_first<T: serde::de::DeserializeOwned>(
+    db: &impl Sql,
+    table: &str,
+    what: &str,
+    mut clauses: Vec<&str>,
+    mut values: Vec<rusqlite::types::Value>,
+    cursor: Option<&str>,
+    limit: i64,
+) -> AppResult<Vec<T>> {
+    let page = db.with(|conn| {
+        if let Some(cursor) = cursor {
+            let Some(at) = moment_of(conn, table, cursor)? else {
+                return Ok(None);
+            };
+            clauses.push("(at < ? OR (at = ? AND id > ?))");
+            values.extend([at.into(), at.into(), cursor.to_string().into()]);
+        }
+        let where_clause = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        values.push(limit.into());
         let mut statement = conn.prepare(&format!(
-            "SELECT body FROM isp_payment{where_clause} ORDER BY at DESC, id LIMIT ? OFFSET ?"
+            "SELECT body FROM {table}{where_clause} ORDER BY at DESC, id LIMIT ?"
         ))?;
         statement
             .query_map(params_from_iter(values.iter()), |row| body_of(row, 0))?
-            .collect()
-    })
+            .collect::<rusqlite::Result<Vec<T>>>()
+            .map(Some)
+    })?;
+    page.ok_or_else(|| not_a_row(what, cursor.unwrap_or_default()))
 }
 
 /// What has been settled against one invoice, in that invoice's currency.
@@ -1150,12 +1264,13 @@ pub struct CreditQuery {
     /// `issued` or `void`; both by default.
     pub state: Option<String>,
     pub limit: Option<u32>,
+    /// The id of the last credit note of the page before: this page
+    /// begins after it.
     pub cursor: Option<String>,
 }
 
 pub fn credits(db: &impl Sql, query: &CreditQuery) -> AppResult<Vec<CreditNote>> {
     let limit = i64::from(query.limit.unwrap_or(100).clamp(1, 2_000));
-    let offset = offset_of(query.cursor.as_deref())?;
     let mut clauses: Vec<&str> = Vec::new();
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(customer_id) = &query.customer_id {
@@ -1187,21 +1302,15 @@ pub fn credits(db: &impl Sql, query: &CreditQuery) -> AppResult<Vec<CreditNote>>
         clauses.push("state = ?");
         values.push(state.to_string().into());
     }
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", clauses.join(" AND "))
-    };
-    values.push(limit.into());
-    values.push(offset.into());
-    db.with(|conn| {
-        let mut statement = conn.prepare(&format!(
-            "SELECT body FROM isp_credit{where_clause} ORDER BY at DESC, id LIMIT ? OFFSET ?"
-        ))?;
-        statement
-            .query_map(params_from_iter(values.iter()), |row| body_of(row, 0))?
-            .collect()
-    })
+    newest_first(
+        db,
+        "isp_credit",
+        "credit note",
+        clauses,
+        values,
+        cursor_of(query.cursor.as_deref()),
+        limit,
+    )
 }
 
 /// What has been credited against one invoice, in that invoice's currency.

@@ -19,7 +19,15 @@
  * `isp.invoices` is paged but, unlike the customers, carries no count of what
  * matches, so paging here is "a full page means there may be more" rather
  * than "1–50 of 3 412". The alternative would be to ask for everything to
- * count it, which is the thing the paging exists to avoid.
+ * count it, which is the thing the paging exists to avoid. Next continues
+ * after the last invoice the engine sent, not after a count of them: the list
+ * is newest period first, so the drafts of a run started meanwhile sort in
+ * front of this page and would otherwise come round again (`paging.ts`).
+ *
+ * The columns shown at first fit the list at the smallest window the
+ * application supports (1280 × 720, navigation open), so the billing state —
+ * Status and Due — is never off to the side. What was paid is in the column
+ * chooser, and the invoice itself shows all four figures.
  *
  * The run and the drawer are driven by the address (`?run=1`, `?invoice=…`)
  * so that both can be reached from the command palette and linked to.
@@ -42,6 +50,7 @@ import { useCalendar, useInvoices, useSummary } from './data';
 import { Amount } from './Figures';
 import { InvoiceDrawer } from './InvoiceDrawer';
 import { formatMoney, moneySortKey } from './money';
+import { cursorAfter, cursorParam, usePages } from './paging';
 import { PaymentDialog } from './PaymentDialog';
 import { RunDialog } from './RunDialog';
 import styles from './isp.module.css';
@@ -57,7 +66,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
   const [state, setState] = useState('');
   const [currency, setCurrency] = useState('');
   const [month, setMonth] = useState('');
-  const [offset, setOffset] = useState(0);
+  const pages = usePages(PAGE);
   const [paying, setPaying] = useState(false);
 
   const calendar = useCalendar();
@@ -72,9 +81,9 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
       // them and are narrowed out below, each by its own calendar.
       ...(window ? { since: window.since, until: window.until } : {}),
       limit: PAGE,
-      ...(offset === 0 ? {} : { cursor: String(offset) }),
+      ...cursorParam(pages.walked),
     }),
-    [state, currency, window?.since, window?.until, offset],
+    [state, currency, window?.since, window?.until, pages.walked],
   );
 
   const invoices = useInvoices(params);
@@ -82,6 +91,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
   // The page as the engine sent it decides whether there is another one;
   // what is shown is the part of it that belongs to the month.
   const page = invoices.data ?? [];
+  const after = cursorAfter(page, PAGE);
   const rows = month === '' ? page : page.filter((row) => periodInMonth(row, month));
   const today = { now: Date.now(), offset: calendar };
   const openId = search.get('invoice');
@@ -99,7 +109,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
       id: 'number',
       header: 'Invoice',
       required: true,
-      width: 140,
+      width: 125,
       sortValue: (row) => row.number ?? '',
       // The number is the way in, as a button: a row that only answers a
       // double-click is a row nobody finds.
@@ -126,21 +136,21 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
       // The name the invoice itself carries, as it was when it was written:
       // said once, in the column's name, rather than under every row.
       header: 'Customer (as written)',
-      width: 200,
+      width: 180,
       sortValue: (row) => row.customer_name.toLowerCase(),
       cell: (row) => <span>{row.customer_name}</span>,
     },
     {
       id: 'period',
       header: 'Period',
-      width: 230,
+      width: 205,
       sortValue: (row) => row.period_start,
       cell: (row) => <span className={styles.amount}>{invoicePeriod(row)}</span>,
     },
     {
       id: 'total',
       header: 'Total',
-      width: 130,
+      width: 125,
       align: 'right',
       sortValue: (row) => moneySortKey(row.total),
       cell: (row) => <Amount money={row.total} />,
@@ -171,7 +181,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
     {
       id: 'outstanding',
       header: 'Outstanding',
-      width: 130,
+      width: 125,
       align: 'right',
       sortValue: (row) => moneySortKey(row.outstanding),
       cell: (row) => <Amount money={row.outstanding} />,
@@ -179,7 +189,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
     {
       id: 'status',
       header: 'Status',
-      width: 110,
+      width: 105,
       sortValue: (row) => row.status,
       cell: (row) => (
         <Badge tone={statusWords(row.status).tone} variant="outline">
@@ -190,7 +200,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
     {
       id: 'due',
       header: 'Due',
-      width: 150,
+      width: 125,
       cell: (row) => (
         <span className={styles.rowSub}>
           {dueText(row, today)}
@@ -223,7 +233,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
           value={state}
           onChange={(event) => {
             setState(event.target.value);
-            setOffset(0);
+            pages.reset();
           }}
           options={[
             { value: '', label: 'Any state' },
@@ -238,7 +248,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
           value={currency}
           onChange={(event) => {
             setCurrency(event.target.value);
-            setOffset(0);
+            pages.reset();
           }}
           options={[
             { value: '', label: 'Any currency' },
@@ -254,7 +264,7 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
           value={month}
           onChange={(event) => {
             setMonth(event.target.value);
-            setOffset(0);
+            pages.reset();
           }}
           options={[{ value: '', label: 'Any period' }, ...months]}
         />
@@ -301,19 +311,23 @@ export function Invoices({ search, setSearch }: InvoicesProps) {
           }
         />
         <div className={styles.paging}>
-          <span className={styles.count}>{pageText(offset, page.length, rows.length)}</span>
+          <span className={styles.count}>
+            {pageText(pages.first - 1, page.length, rows.length)}
+          </span>
           <ToolbarSpacer />
           <Button
             size="sm"
-            disabled={offset === 0 || invoices.isFetching}
-            onClick={() => setOffset(Math.max(0, offset - PAGE))}
+            disabled={!pages.hasPrevious || invoices.isFetching}
+            onClick={pages.previous}
           >
             Previous
           </Button>
           <Button
             size="sm"
-            disabled={page.length < PAGE || invoices.isFetching}
-            onClick={() => setOffset(offset + PAGE)}
+            disabled={after === null || invoices.isFetching}
+            onClick={() => {
+              if (after !== null) pages.next(after);
+            }}
           >
             Next
           </Button>

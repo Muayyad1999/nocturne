@@ -56,9 +56,15 @@ pub struct ConfigTree {
 impl ConfigTree {
     pub fn parse(text: &str, syntax: Syntax) -> ConfigTree {
         match syntax {
-            Syntax::Ios | Syntax::Vrp => ConfigTree {
-                roots: parse_indented(text, syntax),
-            },
+            Syntax::Ios | Syntax::Vrp => {
+                let mut roots = parse_indented(text, syntax);
+                if syntax == Syntax::Ios {
+                    // A configuration somebody wrote reads like the one the
+                    // device prints, so the two compare as equal.
+                    canonical_qos(&mut roots);
+                }
+                ConfigTree { roots }
+            }
             Syntax::Set | Syntax::Routeros | Syntax::Flat => ConfigTree {
                 roots: text
                     .lines()
@@ -209,9 +215,19 @@ pub fn remediate(running: &str, intended: &str, syntax: Syntax) -> Remediation {
     match syntax {
         Syntax::Ios | Syntax::Vrp => {
             let grammar = Grammar::for_syntax(syntax);
-            let running = ConfigTree::parse(running, syntax);
+            let mut running = ConfigTree::parse(running, syntax);
             let intended = ConfigTree::parse(intended, syntax);
             let mut out = Output { grammar: &grammar, commands: Vec::new(), warnings: Vec::new(), open: Vec::new() };
+            if syntax == Syntax::Ios {
+                // What the device refuses to remove while it is in use is
+                // taken off and removed first, in an order it accepts; the
+                // difference that is left is then worked out from there.
+                let teardown = mqc_teardown(&running.roots, &intended.roots, &mut out.warnings);
+                if !teardown.is_empty() {
+                    running.apply(&teardown, syntax);
+                    out.commands.extend(teardown);
+                }
+            }
             diff_level(&running.roots, &intended.roots, &mut Vec::new(), &mut out);
             out.leave_to(0);
             Remediation { commands: out.commands, warnings: out.warnings, supported: true }
@@ -238,6 +254,7 @@ enum Negation {
 }
 
 struct Grammar {
+    syntax: Syntax,
     negate_word: &'static str,
     exit_word: &'static str,
     /// (pattern, replacement) — first match wins; an empty replacement means "cannot be removed".
@@ -259,6 +276,7 @@ impl Grammar {
     fn for_syntax(syntax: Syntax) -> Grammar {
         match syntax {
             Syntax::Vrp => Grammar {
+                syntax,
                 negate_word: "undo",
                 exit_word: "quit",
                 negations: [
@@ -301,6 +319,7 @@ impl Grammar {
                 ordered_sections: compile(&[r"^acl "]),
             },
             _ => Grammar {
+                syntax,
                 negate_word: "no",
                 exit_word: "exit",
                 negations: [
@@ -335,6 +354,12 @@ impl Grammar {
                     // Sequence-numbered ACL entries are removed by number.
                     (r"^(\d+) (?:permit|deny|remark)\b.*", "no $1"),
                     (r"^(name) .*", "no $1"),
+                    // A class of a policy map holds one of each of these, so
+                    // the keyword alone names the one to take away.
+                    (r"^(priority)(?: .*)?$", "no $1"),
+                    (r"^(police)(?: .*)?$", "no $1"),
+                    (r"^(shape (?:average|peak))\b.*", "no $1"),
+                    (r"^(set (?:ip )?dscp)\b.*", "no $1"),
                 ]
                 .into_iter()
                 .map(|(pattern, replacement)| (Regex::new(pattern).expect("ios negation pattern"), replacement))
@@ -398,6 +423,18 @@ impl Grammar {
                     r"^ip tftp source-interface ",
                     r"^ip http client source-interface ",
                     r"^login",
+                    // A class of a policy map: one priority (with or without a
+                    // rate), one policer, one shaper, one marking and one
+                    // child policy each; typing another replaces it, on IOS as
+                    // in the simulator. `priority-queue` is another command.
+                    r"^(priority)(?: |$)",
+                    r"^(police)(?: |$)",
+                    r"^(shape) (?:average|peak)\b",
+                    r"^(set) (?:ip )?dscp ",
+                    // `service-policy CHILD`; an interface's `service-policy
+                    // input|output NAME` has three words and is not replaced
+                    // but refused by the device while another is attached.
+                    r"^(service-policy) \S+$",
                 ]),
                 ordered_sections: compile(&[r"^ip(?:v6)? access-list ", r"^access-list ", r"^class-map ", r"^policy-map "]),
             },
@@ -493,7 +530,15 @@ impl Output<'_> {
 
     /// Add a whole subtree.
     fn add(&mut self, path: &mut Vec<String>, node: &Node) {
-        if node.children.is_empty() {
+        // A section with nothing in it is still entered on the device (a
+        // class of a policy map that only classifies, an empty port), so what
+        // follows has to leave it: it is entered here too. Below the top
+        // level only a nested section is one (`ip vrf forwarding X` in an
+        // interface reads like a section header and is a setting).
+        let syntax = self.grammar.syntax;
+        let enters = opens_section(&node.text, syntax)
+            && (path.is_empty() || opens_nested(&node.text, syntax));
+        if node.children.is_empty() && !enters {
             self.emit(path, node.text.clone());
             return;
         }
@@ -514,19 +559,45 @@ impl Output<'_> {
 }
 
 fn diff_level(running: &[Node], intended: &[Node], path: &mut Vec<String>, out: &mut Output<'_>) {
+    let ios = out.grammar.syntax == Syntax::Ios;
+    // Inside a class of a policy map the actions exclude each other (a
+    // priority class cannot be given a bandwidth or a shaper, nor the other
+    // way round), so what goes is taken away before what comes is added.
+    // Everywhere else additions come first — make before break: replacing a
+    // default route, a logging host or an admin user by removing the old
+    // entry first leaves a window with neither, and if that window cuts the
+    // management session the second half never arrives. That order fails
+    // safe: at worst the device rejects an addition that conflicts with the
+    // entry about to be removed.
+    if ios && is_policy_class(path) {
+        remove_level(running, intended, path, out, false);
+        add_level(running, intended, path, out, false);
+        return;
+    }
     // The allowed-VLAN list is a set spread over several lines; patch it as a set.
     let trunk_handled = diff_allowed_vlans(running, intended, path, out);
-    let is_trunk_line = |text: &str| trunk_handled && text.starts_with(TRUNK_ALLOWED);
+    add_level(running, intended, path, out, trunk_handled);
+    remove_level(running, intended, path, out, trunk_handled);
+}
 
-    // 1. Add what is missing and descend into what both sides have.
-    //
-    //    Additions come before removals — make before break. Replacing a
-    //    default route, a logging host or an admin user by removing the old
-    //    entry first leaves a window with neither, and if that window cuts
-    //    the management session the second half never arrives. The other
-    //    order fails safe: at worst the device rejects an addition that
-    //    conflicts with the entry about to be removed.
-    for node in intended {
+/// Add what is missing and descend into what both sides have.
+fn add_level(
+    running: &[Node],
+    intended: &[Node],
+    path: &mut Vec<String>,
+    out: &mut Output<'_>,
+    trunk_handled: bool,
+) {
+    let is_trunk_line = |text: &str| trunk_handled && text.starts_with(TRUNK_ALLOWED);
+    // A class map before the policy maps that name it, a policy map before
+    // the classes and interfaces that attach it: the device refuses a name it
+    // has not seen yet.
+    let order: Vec<&Node> = if out.grammar.syntax == Syntax::Ios && path.is_empty() {
+        qos_first(intended)
+    } else {
+        intended.iter().collect()
+    };
+    for node in order {
         if is_trunk_line(&node.text) {
             continue;
         }
@@ -534,7 +605,15 @@ fn diff_level(running: &[Node], intended: &[Node], path: &mut Vec<String>, out: 
             None => out.add(path, node),
             Some(existing) if existing.children == node.children => {}
             Some(existing) => {
-                if out.grammar.is_ordered(&node.text) && !is_patchable_in_place(existing, node) {
+                let patchable = if out.grammar.syntax == Syntax::Ios
+                    && path.is_empty()
+                    && policy_map_name(&node.text).is_some()
+                {
+                    policy_patchable(existing, node)
+                } else {
+                    is_patchable_in_place(existing, node)
+                };
+                if out.grammar.is_ordered(&node.text) && !patchable {
                     out.warnings.push(format!(
                         "`{}` is order-sensitive and is rebuilt from scratch; it is briefly absent while the new entries are applied",
                         first_line(&node.text)
@@ -549,9 +628,18 @@ fn diff_level(running: &[Node], intended: &[Node], path: &mut Vec<String>, out: 
             }
         }
     }
+}
 
-    // 2. Remove what should no longer be there — unless a replace-style
-    //    command in the intended config has already overwritten it.
+/// Remove what should no longer be there — unless a replace-style command in
+/// the intended config has already overwritten it.
+fn remove_level(
+    running: &[Node],
+    intended: &[Node],
+    path: &mut Vec<String>,
+    out: &mut Output<'_>,
+    trunk_handled: bool,
+) {
+    let is_trunk_line = |text: &str| trunk_handled && text.starts_with(TRUNK_ALLOWED);
     for node in running {
         if is_trunk_line(&node.text) || intended.iter().any(|other| other.text == node.text) {
             continue;
@@ -969,69 +1057,154 @@ impl ConfigTree {
             return report;
         }
         let grammar = Grammar::for_syntax(syntax);
-        let comment = if syntax == Syntax::Vrp { '#' } else { '!' };
         let mut path: Vec<String> = Vec::new();
-
         for raw in commands {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with(comment) {
-                continue;
-            }
-            if line == grammar.exit_word {
-                path.pop();
-                continue;
-            }
-            if line == "end" || line == "return" {
-                path.clear();
-                continue;
-            }
-            if let Some(target) = line
-                .strip_prefix(grammar.negate_word)
-                .and_then(|rest| rest.strip_prefix(' '))
-            {
-                remove_line(&mut self.roots, &mut path, target.trim());
-                continue;
-            }
-            if let Some(name) = line.strip_prefix("default interface ") {
-                let section = format!("interface {}", name.trim());
-                match self
-                    .roots
-                    .iter_mut()
-                    .find(|node| node.text.eq_ignore_ascii_case(&section))
-                {
-                    Some(node) => node.children.clear(),
-                    None => self.roots.push(Node {
-                        text: section.clone(),
-                        children: Vec::new(),
-                    }),
-                }
-                path.clear();
-                report.warnings.push(format!(
-                    "`{line}` resets the port: the prediction assumes it removes every configuration line of `{section}`, and the device may also put back lines that belong to its defaults."
-                ));
-                continue;
-            }
-            if line.to_ascii_lowercase().starts_with("interface range ") {
-                report.unmodelled.push(line.to_string());
-                continue;
-            }
-            if opens_section(line, syntax) {
-                if opens_nested(line, syntax) && !path.is_empty() {
-                    path.push(line.to_string());
-                } else {
-                    path.clear();
-                    path.push(line.to_string());
-                }
-                children_at(&mut self.roots, &path);
-                continue;
-            }
-            let nodes = children_at(&mut self.roots, &path);
-            if !set_line(nodes, line, &grammar) {
-                report.unmodelled.push(line.to_string());
-            }
+            self.apply_line(&mut path, raw, &grammar, &mut report);
         }
         report
     }
+
+    /// One configuration-mode line; `path` is the section the device is in,
+    /// before and after.
+    fn apply_line(
+        &mut self,
+        path: &mut Vec<String>,
+        raw: &str,
+        grammar: &Grammar,
+        report: &mut ApplyReport,
+    ) {
+        let syntax = grammar.syntax;
+        let comment = if syntax == Syntax::Vrp { '#' } else { '!' };
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(comment) {
+            return;
+        }
+        if line == grammar.exit_word {
+            path.pop();
+            return;
+        }
+        if line == "end" || line == "return" {
+            path.clear();
+            return;
+        }
+        if let Some(target) = line
+            .strip_prefix(grammar.negate_word)
+            .and_then(|rest| rest.strip_prefix(' '))
+        {
+            let target = target.trim();
+            if syntax == Syntax::Ios && remove_qos(&mut self.roots, path, target) {
+                return;
+            }
+            remove_line(&mut self.roots, path, target);
+            return;
+        }
+        if let Some(name) = line.strip_prefix("default interface ") {
+            let section = format!("interface {}", name.trim());
+            match self
+                .roots
+                .iter_mut()
+                .find(|node| node.text.eq_ignore_ascii_case(&section))
+            {
+                Some(node) => node.children.clear(),
+                None => self.roots.push(Node {
+                    text: section.clone(),
+                    children: Vec::new(),
+                }),
+            }
+            path.clear();
+            report.warnings.push(format!(
+                "`{line}` resets the port: the prediction assumes it removes every configuration line of `{section}`, and the device may also put back lines that belong to its defaults."
+            ));
+            return;
+        }
+        if line.to_ascii_lowercase().starts_with("interface range ") {
+            report.unmodelled.push(line.to_string());
+            return;
+        }
+        if opens_section(line, syntax) {
+            enter_section(&mut self.roots, path, line, syntax);
+            return;
+        }
+        let line = if syntax == Syntax::Ios {
+            spelled_in(path, line)
+        } else {
+            line.to_string()
+        };
+        let nodes = children_at(&mut self.roots, path);
+        if !set_line(nodes, &line, grammar) {
+            report.unmodelled.push(raw.trim().to_string());
+        }
+    }
+}
+
+/// Open the section `line` starts, the way the device moves between modes.
+fn enter_section(roots: &mut Vec<Node>, path: &mut Vec<String>, line: &str, syntax: Syntax) {
+    if opens_nested(line, syntax) && !path.is_empty() {
+        // A section of the kind that is open already is its sibling: `class
+        // VIDEO` typed in class VOICE of a policy map moves to class VIDEO,
+        // because IOS reads a command its mode does not have in the mode
+        // above. (`address-family` under `router bgp` alike.)
+        if path
+            .last()
+            .is_some_and(|open| opens_nested(open, syntax) && first_word(open) == first_word(line))
+        {
+            path.pop();
+        }
+        path.push(line.to_string());
+        // IOS keeps `class class-default` the last class of a policy map,
+        // wherever a new class is typed.
+        if syntax == Syntax::Ios
+            && path.len() == 2
+            && policy_map_name(&path[0]).is_some()
+            && class_of(line).is_some_and(|name| name != CLASS_DEFAULT)
+        {
+            let classes = children_at(roots, &path[..1]);
+            if !classes.iter().any(|node| node.text == line) {
+                let at = classes
+                    .iter()
+                    .position(|node| class_of(&node.text) == Some(CLASS_DEFAULT))
+                    .unwrap_or(classes.len());
+                classes.insert(
+                    at,
+                    Node {
+                        text: line.to_string(),
+                        children: Vec::new(),
+                    },
+                );
+            }
+        }
+        children_at(roots, path);
+        return;
+    }
+    path.clear();
+    let mut header = line.to_string();
+    if syntax == Syntax::Ios
+        && let Some(name) = class_map_name(line)
+    {
+        // A class map is one per name: naming it again with a match type
+        // changes the type and keeps its statements, naming it without one
+        // enters it as it is (a new one is `match-all`).
+        let typed = class_map_header(line).unwrap_or_else(|| line.to_string());
+        let explicit = line.split_whitespace().count() == 3;
+        match roots
+            .iter_mut()
+            .find(|node| class_map_name(&node.text) == Some(name))
+        {
+            Some(existing) => {
+                if explicit {
+                    existing.text = typed;
+                }
+                header = existing.text.clone();
+            }
+            None => header = typed,
+        }
+    }
+    path.push(header);
+    children_at(roots, path);
+}
+
+fn first_word(line: &str) -> &str {
+    line.split_whitespace().next().unwrap_or("")
 }
 
 /// `no …` / `undo …`: inside the open section first, as the device does, then
@@ -1055,6 +1228,732 @@ fn remove_line(roots: &mut Vec<Node>, path: &mut Vec<String>, target: &str) {
     if roots.len() != before {
         path.clear();
     }
+}
+
+// ------------------------------------------------------------ modular QoS
+//
+// Class maps, policy maps and the service policies that attach them (the
+// modular QoS command line of the IOS family). Three things about it decide
+// whether a plan can be applied in the order it gives and whether a device
+// that did what was asked matches its prediction:
+//
+// * what depends on what: a policy map uses the class maps its classes name,
+//   an interface (or a class of a parent policy) uses the policy it attaches.
+//   IOS — and the simulator — refuses to remove what is in use, to name a
+//   class map or policy map that does not exist yet, and to attach a second
+//   policy in one direction;
+// * a class holds one priority, bandwidth, policer, shaper, marking and child
+//   policy each: typing another replaces it (the replace-style rules above);
+// * a marking is kept as a code point and printed back by name where it has
+//   one, the values of a `match` statement in ascending order.
+//
+// Only the plain forms are read here (`class-map [match-any|match-all] NAME`,
+// `policy-map NAME`, `service-policy input|output NAME`); `… type …` maps
+// (inspection, control plane) are left to the generic rules.
+
+/// The class a policy map always ends with.
+const CLASS_DEFAULT: &str = "class-default";
+
+/// `class-map [match-any | match-all] NAME` → `NAME`.
+fn class_map_name(text: &str) -> Option<&str> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        ["class-map", "match-any" | "match-all", name] => Some(name),
+        ["class-map", name] if !matches!(*name, "type" | "match-any" | "match-all") => Some(name),
+        _ => None,
+    }
+}
+
+/// The header a device prints a class map with: `match-all` when no type
+/// was typed.
+fn class_map_header(text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        ["class-map", kind @ ("match-any" | "match-all"), name] => {
+            Some(format!("class-map {kind} {name}"))
+        }
+        ["class-map", name] if !matches!(*name, "type" | "match-any" | "match-all") => {
+            Some(format!("class-map match-all {name}"))
+        }
+        _ => None,
+    }
+}
+
+/// `policy-map NAME` → `NAME`.
+fn policy_map_name(text: &str) -> Option<&str> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        ["policy-map", name] if *name != "type" => Some(name),
+        _ => None,
+    }
+}
+
+/// `class NAME` → `NAME`.
+fn class_of(text: &str) -> Option<&str> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        ["class", name] => Some(name),
+        _ => None,
+    }
+}
+
+/// `service-policy input|output NAME` → (`input`|`output`, `NAME`): a policy
+/// attached to the section the line is in (an interface, the control plane).
+fn attachment(text: &str) -> Option<(&str, &str)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        ["service-policy", direction @ ("input" | "output"), name] => Some((direction, name)),
+        _ => None,
+    }
+}
+
+/// `service-policy NAME` in a class: the policy applied to that class's traffic.
+fn child_policy(text: &str) -> Option<&str> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        ["service-policy", name] if !matches!(*name, "input" | "output" | "type") => Some(name),
+        _ => None,
+    }
+}
+
+/// Is `path` a class of a policy map?
+fn is_policy_class(path: &[String]) -> bool {
+    path.len() == 2 && policy_map_name(&path[0]).is_some() && class_of(&path[1]).is_some()
+}
+
+fn find_policy<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Node> {
+    nodes
+        .iter()
+        .find(|node| policy_map_name(&node.text) == Some(name))
+}
+
+fn find_class_map<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Node> {
+    nodes
+        .iter()
+        .find(|node| class_map_name(&node.text) == Some(name))
+}
+
+/// The class names of a policy map, in order.
+fn classes_of(policy: &Node) -> impl Iterator<Item = &str> {
+    policy
+        .children
+        .iter()
+        .filter_map(|class| class_of(&class.text))
+}
+
+/// The policies applied inside the classes of a policy map.
+fn child_policies(policy: &Node) -> impl Iterator<Item = &str> {
+    policy
+        .children
+        .iter()
+        .flat_map(|class| class.children.iter())
+        .filter_map(|action| child_policy(&action.text))
+}
+
+/// The top-level sections in an order a device takes them in: class maps,
+/// then policy maps (one applied inside another before it), then the rest.
+fn qos_first(nodes: &[Node]) -> Vec<&Node> {
+    fn place<'a>(node: &'a Node, policies: &[&'a Node], placed: &mut Vec<&'a Node>, depth: usize) {
+        if depth > 8 || placed.iter().any(|done| std::ptr::eq(*done, node)) {
+            return;
+        }
+        for child in child_policies(node) {
+            if let Some(found) = policies
+                .iter()
+                .find(|policy| policy_map_name(&policy.text) == Some(child))
+            {
+                place(found, policies, placed, depth + 1);
+            }
+        }
+        if !placed.iter().any(|done| std::ptr::eq(*done, node)) {
+            placed.push(node);
+        }
+    }
+    let mut out: Vec<&Node> = nodes
+        .iter()
+        .filter(|node| node.text.starts_with("class-map "))
+        .collect();
+    let policies: Vec<&Node> = nodes
+        .iter()
+        .filter(|node| node.text.starts_with("policy-map "))
+        .collect();
+    let mut placed = Vec::new();
+    for policy in &policies {
+        place(policy, &policies, &mut placed, 0);
+    }
+    out.extend(placed);
+    out.extend(nodes.iter().filter(|node| {
+        !node.text.starts_with("class-map ") && !node.text.starts_with("policy-map ")
+    }));
+    out
+}
+
+/// A policy map can be edited in place when its classes keep their order:
+/// the device adds a new class at the end (before `class-default`), so a
+/// class that is new may only follow every class that stays. Inside a class
+/// the actions are patched: a new value replaces the old one.
+fn policy_patchable(existing: &Node, intended: &Node) -> bool {
+    let classes = |node: &Node| -> Vec<String> {
+        classes_of(node)
+            .filter(|name| *name != CLASS_DEFAULT)
+            .map(str::to_string)
+            .collect()
+    };
+    let (old, new) = (classes(existing), classes(intended));
+    let staying = |list: &[String], other: &[String]| -> Vec<String> {
+        list.iter()
+            .filter(|name| other.contains(name))
+            .cloned()
+            .collect()
+    };
+    if staying(&old, &new) != staying(&new, &old) {
+        return false;
+    }
+    let last_kept = new.iter().rposition(|name| old.contains(name));
+    let first_added = new.iter().position(|name| !old.contains(name));
+    !matches!((last_kept, first_added), (Some(kept), Some(added)) if added < kept)
+}
+
+/// The named code points of RFC 2474, 2597 and 3246, as the IOS family
+/// spells them in a configuration (and the simulator, which prints them back
+/// the same way).
+const DSCP_NAMES: [(u8, &str); 21] = [
+    (0, "default"),
+    (8, "cs1"),
+    (10, "af11"),
+    (12, "af12"),
+    (14, "af13"),
+    (16, "cs2"),
+    (18, "af21"),
+    (20, "af22"),
+    (22, "af23"),
+    (24, "cs3"),
+    (26, "af31"),
+    (28, "af32"),
+    (30, "af33"),
+    (32, "cs4"),
+    (34, "af41"),
+    (36, "af42"),
+    (38, "af43"),
+    (40, "cs5"),
+    (46, "ef"),
+    (48, "cs6"),
+    (56, "cs7"),
+];
+
+/// A marking as typed: a name in any case, or a number from 0 to 63.
+fn dscp_value(text: &str) -> Option<u8> {
+    if let Some((value, _)) = DSCP_NAMES
+        .iter()
+        .find(|(_, name)| name.eq_ignore_ascii_case(text))
+    {
+        return Some(*value);
+    }
+    let digits = !text.is_empty() && text.len() <= 2 && text.bytes().all(|b| b.is_ascii_digit());
+    digits
+        .then(|| text.parse::<u8>().ok())
+        .flatten()
+        .filter(|value| *value <= 63)
+}
+
+fn dscp_text(value: u8) -> String {
+    DSCP_NAMES
+        .iter()
+        .find(|(code, _)| *code == value)
+        .map_or_else(|| value.to_string(), |(_, name)| (*name).to_string())
+}
+
+/// A `match [ip] dscp …` statement: whether it says `ip`, and its code
+/// points in ascending order. `None` for any other line, and for one the
+/// device would refuse (more than eight values, a value it does not know).
+fn dscp_statement(line: &str) -> Option<(bool, Vec<u8>)> {
+    let mut words = line.split_whitespace();
+    if words.next()? != "match" {
+        return None;
+    }
+    let mut word = words.next()?;
+    let ip = word == "ip";
+    if ip {
+        word = words.next()?;
+    }
+    if word != "dscp" {
+        return None;
+    }
+    let mut values = words.map(dscp_value).collect::<Option<Vec<u8>>>()?;
+    if values.is_empty() || values.len() > 8 {
+        return None;
+    }
+    values.sort_unstable();
+    values.dedup();
+    Some((ip, values))
+}
+
+fn dscp_statement_text(ip: bool, values: &[u8]) -> String {
+    let names: Vec<String> = values.iter().map(|value| dscp_text(*value)).collect();
+    format!(
+        "match {}dscp {}",
+        if ip { "ip " } else { "" },
+        names.join(" ")
+    )
+}
+
+/// `set [ip] dscp V` the way the device prints it back.
+fn canonical_set(line: &str) -> Option<String> {
+    let mut words = line.split_whitespace();
+    if words.next()? != "set" {
+        return None;
+    }
+    let mut word = words.next()?;
+    let ip = word == "ip";
+    if ip {
+        word = words.next()?;
+    }
+    if word != "dscp" {
+        return None;
+    }
+    let value = dscp_value(words.next()?)?;
+    if words.next().is_some() {
+        return None;
+    }
+    Some(format!(
+        "set {}dscp {}",
+        if ip { "ip " } else { "" },
+        dscp_text(value)
+    ))
+}
+
+/// The device's spelling of the QoS lines of a parsed configuration.
+fn canonical_qos(roots: &mut [Node]) {
+    for root in roots.iter_mut() {
+        if let Some(header) = class_map_header(&root.text) {
+            root.text = header;
+            for statement in &mut root.children {
+                if let Some((ip, values)) = dscp_statement(&statement.text) {
+                    statement.text = dscp_statement_text(ip, &values);
+                }
+            }
+            // The device keeps one of two statements that say the same.
+            let mut seen: Vec<String> = Vec::new();
+            root.children.retain(|statement| {
+                let fresh = !seen.contains(&statement.text);
+                seen.push(statement.text.clone());
+                fresh
+            });
+        } else if policy_map_name(&root.text).is_some() {
+            for class in root
+                .children
+                .iter_mut()
+                .filter(|class| class_of(&class.text).is_some())
+            {
+                for action in &mut class.children {
+                    if let Some(text) = canonical_set(&action.text) {
+                        action.text = text;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A line typed in `path`, as the device prints it back.
+fn spelled_in(path: &[String], line: &str) -> String {
+    if path.len() == 1
+        && class_map_name(&path[0]).is_some()
+        && let Some((ip, values)) = dscp_statement(line)
+    {
+        return dscp_statement_text(ip, &values);
+    }
+    if is_policy_class(path)
+        && let Some(text) = canonical_set(line)
+    {
+        return text;
+    }
+    line.to_string()
+}
+
+/// The `no …` lines of modular QoS that do something other than remove the
+/// line they repeat. Returns whether `target` was one.
+fn remove_qos(roots: &mut Vec<Node>, path: &mut Vec<String>, target: &str) -> bool {
+    // `no match dscp ef` takes the value out of whichever statements list
+    // it, and a statement left with none goes.
+    if path.len() == 1
+        && class_map_name(&path[0]).is_some()
+        && let Some((ip, values)) = dscp_statement(target)
+    {
+        let statements = children_at(roots, path);
+        for statement in statements.iter_mut() {
+            if let Some((same, listed)) = dscp_statement(&statement.text)
+                && same == ip
+            {
+                let kept: Vec<u8> = listed
+                    .into_iter()
+                    .filter(|value| !values.contains(value))
+                    .collect();
+                statement.text = if kept.is_empty() {
+                    String::new()
+                } else {
+                    dscp_statement_text(ip, &kept)
+                };
+            }
+        }
+        statements.retain(|statement| !statement.text.is_empty());
+        return true;
+    }
+    // A class map is removed by its name, whatever match type the line says.
+    if let Some(name) = class_map_name(target) {
+        let before = roots.len();
+        roots.retain(|node| class_map_name(&node.text) != Some(name));
+        if roots.len() != before {
+            path.clear();
+        }
+        return true;
+    }
+    false
+}
+
+/// What has to come off a device, in an order it accepts, before the rest of
+/// a remediation can be made: what is in use cannot be removed, and an
+/// interface takes one policy per direction.
+///
+/// 1. An attachment (`service-policy input|output P`) whose policy goes, or
+///    that the intended configuration does not have, is taken off.
+/// 2. A policy that goes is taken out of the classes of a parent that stays,
+///    and the class of a class map that goes out of a policy that stays.
+/// 3. Policy maps that go, a parent before the policies inside it.
+/// 4. Class maps that go.
+///
+/// A policy map "goes" when it is removed, when its classes change order (it
+/// is then typed again in full), or when a class map it uses is rebuilt. A
+/// class map goes when it is removed, retyped with another match type, or
+/// changed other than by statements added at the end (the device takes a
+/// value out of every statement that lists it, so statements are not edited
+/// one by one). What is put back — the rebuilt maps, the attachments — is
+/// then ordinary remediation from the configuration this leaves.
+fn mqc_teardown(running: &[Node], intended: &[Node], warnings: &mut Vec<String>) -> Vec<String> {
+    let mut maps_removed: Vec<&str> = Vec::new();
+    let mut maps_rebuilt: Vec<&str> = Vec::new();
+    for node in running {
+        let Some(name) = class_map_name(&node.text) else {
+            continue;
+        };
+        match find_class_map(intended, name) {
+            None => maps_removed.push(name),
+            Some(wanted)
+                if wanted.text != node.text
+                    || (wanted.children != node.children
+                        && !is_patchable_in_place(node, wanted)) =>
+            {
+                maps_rebuilt.push(name)
+            }
+            Some(_) => {}
+        }
+    }
+    let mut policies_down: Vec<&str> = Vec::new();
+    let mut policies_rebuilt: Vec<&str> = Vec::new();
+    for node in running {
+        let Some(name) = policy_map_name(&node.text) else {
+            continue;
+        };
+        match find_policy(intended, name) {
+            None => policies_down.push(name),
+            Some(wanted) => {
+                let reordered = wanted.children != node.children && !policy_patchable(node, wanted);
+                let uses_rebuilt = classes_of(node).any(|class| maps_rebuilt.contains(&class));
+                if reordered || uses_rebuilt {
+                    policies_down.push(name);
+                    policies_rebuilt.push(name);
+                }
+            }
+        }
+    }
+
+    let mut commands: Vec<String> = Vec::new();
+    // 1.
+    for node in running {
+        let wanted = intended.iter().find(|other| other.text == node.text);
+        let off: Vec<&Node> = node
+            .children
+            .iter()
+            .filter(|child| {
+                attachment(&child.text).is_some_and(|(_, policy)| {
+                    policies_down.contains(&policy)
+                        || !wanted.is_some_and(|wanted| {
+                            wanted.children.iter().any(|kept| kept.text == child.text)
+                        })
+                })
+            })
+            .collect();
+        if off.is_empty() {
+            continue;
+        }
+        commands.push(node.text.clone());
+        for child in &off {
+            commands.push(format!("no {}", child.text));
+            let Some((direction, old)) = attachment(&child.text) else {
+                continue;
+            };
+            let next = wanted.and_then(|wanted| {
+                wanted
+                    .children
+                    .iter()
+                    .filter_map(|kept| attachment(&kept.text))
+                    .find(|(dir, policy)| *dir == direction && *policy != old)
+            });
+            if let Some((_, next)) = next {
+                warnings.push(format!(
+                    "`{}` has `service-policy {direction} {old}` taken off before `service-policy {direction} {next}` goes on (the device takes one policy per direction), so for a moment no {direction} policy applies there",
+                    node.text
+                ));
+            }
+        }
+        commands.push("exit".into());
+    }
+    // 2.
+    for node in running {
+        let Some(name) = policy_map_name(&node.text) else {
+            continue;
+        };
+        if policies_down.contains(&name) {
+            continue;
+        }
+        let mut lines: Vec<String> = Vec::new();
+        for class in &node.children {
+            let Some(class_name) = class_of(&class.text) else {
+                continue;
+            };
+            if maps_removed.contains(&class_name) {
+                lines.push(format!("no {}", class.text));
+                continue;
+            }
+            let off: Vec<String> = class
+                .children
+                .iter()
+                .filter(|action| {
+                    child_policy(&action.text).is_some_and(|child| policies_down.contains(&child))
+                })
+                .map(|action| format!("no {}", action.text))
+                .collect();
+            if !off.is_empty() {
+                lines.push(class.text.clone());
+                lines.extend(off);
+                lines.push("exit".into());
+            }
+        }
+        if !lines.is_empty() {
+            commands.push(node.text.clone());
+            commands.extend(lines);
+            commands.push("exit".into());
+        }
+    }
+    // 3.
+    let mut left = policies_down.clone();
+    while !left.is_empty() {
+        let unused = left.iter().position(|name| {
+            !left.iter().any(|other| {
+                other != name
+                    && find_policy(running, other)
+                        .is_some_and(|parent| child_policies(parent).any(|child| child == *name))
+            })
+        });
+        // Policies cannot contain each other; were they to, the last one
+        // goes and the device says what it thinks of that.
+        let at = unused.unwrap_or(left.len() - 1);
+        let name = left.remove(at);
+        commands.push(format!("no policy-map {name}"));
+    }
+    // 4.
+    for node in running {
+        if let Some(name) = class_map_name(&node.text)
+            && (maps_removed.contains(&name) || maps_rebuilt.contains(&name))
+        {
+            commands.push(format!("no {}", node.text));
+        }
+    }
+    for name in &policies_rebuilt {
+        warnings.push(format!(
+            "`policy-map {name}` is removed and typed again in full (its classes change order, or a class map it uses is rebuilt): what attaches it is taken off first and put back afterwards, so for a moment it applies nowhere"
+        ));
+    }
+    for name in &maps_rebuilt {
+        warnings.push(format!(
+            "`class-map {name}` is removed and typed again in full (its statements change other than by one added at the end), and with it every policy map that uses it"
+        ));
+    }
+    commands
+}
+
+/// Where a QoS policy is attached: by `section` (an interface, the control
+/// plane), for traffic leaving (`output`) or arriving.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attached {
+    pub section: String,
+    pub output: bool,
+    pub policy: String,
+}
+
+impl ConfigTree {
+    /// Every `service-policy input|output NAME` of the configuration.
+    pub fn qos_attached(&self) -> Vec<Attached> {
+        let mut found = Vec::new();
+        for node in &self.roots {
+            for child in &node.children {
+                if let Some((direction, policy)) = attachment(&child.text) {
+                    found.push(Attached {
+                        section: node.text.clone(),
+                        output: direction == "output",
+                        policy: policy.to_string(),
+                    });
+                }
+            }
+        }
+        found
+    }
+
+    /// The attachments through which `policy` applies: its own, and those of
+    /// every policy it is applied inside.
+    pub fn qos_applies(&self, policy: &str) -> Vec<Attached> {
+        let mut names = vec![policy.to_string()];
+        let mut at = 0;
+        while at < names.len() && names.len() <= 16 {
+            let name = names[at].clone();
+            for node in &self.roots {
+                if let Some(parent) = policy_map_name(&node.text)
+                    && child_policies(node).any(|child| child == name)
+                    && !names.iter().any(|known| known == parent)
+                {
+                    names.push(parent.to_string());
+                }
+            }
+            at += 1;
+        }
+        self.qos_attached()
+            .into_iter()
+            .filter(|attached| names.contains(&attached.policy))
+            .collect()
+    }
+
+    /// The classes of `policy`, in order, each with the policy applied
+    /// inside it; `None` when the configuration has no such policy map.
+    pub fn qos_classes(&self, policy: &str) -> Option<Vec<(String, Option<String>)>> {
+        let node = find_policy(&self.roots, policy)?;
+        Some(
+            node.children
+                .iter()
+                .filter_map(|class| {
+                    let name = class_of(&class.text)?;
+                    let child = class
+                        .children
+                        .iter()
+                        .find_map(|action| child_policy(&action.text));
+                    Some((name.to_string(), child.map(str::to_string)))
+                })
+                .collect(),
+        )
+    }
+}
+
+/// A hand-written line the device would refuse for a QoS reason that its
+/// answer may not make plain: removing a class map or policy map that is in
+/// use, naming one that does not exist yet, or attaching a second policy in
+/// one direction. The simulator's refusals of the first and the last are not
+/// worded so that the IOS device type's error patterns see them, so such a
+/// change would be sent, half refused and only caught by its verification;
+/// it is refused before anything is sent instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QosRefusal {
+    /// Index into the commands of the line the device would refuse.
+    pub index: usize,
+    pub message: String,
+}
+
+/// The first line of `commands` that the device would refuse on `running`,
+/// for one of those reasons, followed through the lines before it (IOS
+/// syntax).
+pub fn qos_refusal(running: &str, commands: &[String]) -> Option<QosRefusal> {
+    let grammar = Grammar::for_syntax(Syntax::Ios);
+    let mut tree = ConfigTree::parse(running, Syntax::Ios);
+    let mut path: Vec<String> = Vec::new();
+    let mut report = ApplyReport::default();
+    for (index, raw) in commands.iter().enumerate() {
+        if let Some(message) = refusal_of(&tree, &path, raw.trim()) {
+            return Some(QosRefusal { index, message });
+        }
+        tree.apply_line(&mut path, raw, &grammar, &mut report);
+    }
+    None
+}
+
+fn refusal_of(tree: &ConfigTree, path: &[String], line: &str) -> Option<String> {
+    if let Some(target) = line.strip_prefix("no ") {
+        let target = target.trim();
+        if let Some(name) = policy_map_name(target) {
+            let user = tree.qos_applies(name).into_iter().find(|attached| attached.policy == name);
+            if let Some(user) = user {
+                return Some(format!(
+                    "`policy-map {name}` is attached to `{}` ({}), and the device refuses to remove a policy map that is in use: take it off there first (`no service-policy {} {name}`)",
+                    user.section,
+                    if user.output { "output" } else { "input" },
+                    if user.output { "output" } else { "input" },
+                ));
+            }
+            let parent = tree.roots.iter().find_map(|node| {
+                let parent = policy_map_name(&node.text)?;
+                child_policies(node).any(|child| child == name).then_some(parent)
+            });
+            return parent.map(|parent| format!(
+                "`policy-map {name}` is applied inside `policy-map {parent}`, and the device refuses to remove a policy map that is in use: take `service-policy {name}` out of that policy first"
+            ));
+        }
+        if let Some(name) = class_map_name(target) {
+            let user = tree.roots.iter().find_map(|node| {
+                let policy = policy_map_name(&node.text)?;
+                classes_of(node).any(|class| class == name).then_some(policy)
+            });
+            return user.map(|policy| format!(
+                "`class-map {name}` is used by `policy-map {policy}`, and the device refuses to remove a class map that is in use: take `class {name}` out of that policy (or remove the policy) first"
+            ));
+        }
+        return None;
+    }
+    if path.len() == 1
+        && let Some((direction, name)) = attachment(line)
+    {
+        if find_policy(&tree.roots, name).is_none() {
+            return Some(format!(
+                "`policy-map {name}` does not exist at this point: define it before the line that attaches it"
+            ));
+        }
+        let section = tree.roots.iter().find(|node| node.text == path[0])?;
+        let other = section
+            .children
+            .iter()
+            .filter_map(|child| attachment(&child.text))
+            .find(|(dir, other)| *dir == direction && *other != name);
+        return other.map(|(_, other)| format!(
+            "`{}` already has `service-policy {direction} {other}`, and the device refuses a second policy in the same direction: take that one off first (`no service-policy {direction} {other}`)",
+            path[0]
+        ));
+    }
+    if is_policy_class(path)
+        && let Some(child) = child_policy(line)
+        && find_policy(&tree.roots, child).is_none()
+    {
+        return Some(format!(
+            "`policy-map {child}` does not exist at this point: define it before the class that applies it"
+        ));
+    }
+    if path
+        .first()
+        .is_some_and(|open| policy_map_name(open).is_some())
+        && let Some(class) = class_of(line)
+        && class != CLASS_DEFAULT
+        && find_class_map(&tree.roots, class).is_none()
+    {
+        return Some(format!(
+            "`class-map {class}` does not exist at this point: define it before the policy that names it"
+        ));
+    }
+    None
 }
 
 /// One line of a unified diff, for display.
@@ -1860,5 +2759,358 @@ end
             .map(|line| format!("{}{}", line.tag, line.text))
             .collect();
         assert_eq!(shown, vec![" b", "-c", "+C", " d", "@…", " h", "+i"]);
+    }
+
+    // ------------------------------------------------------- modular QoS
+
+    fn applied(running: &str, commands: &[&str]) -> Vec<String> {
+        canonical(&apply_to(running, commands), Syntax::Ios)
+    }
+
+    fn strings(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    /// The commands work on a device in the order given: nothing in use is
+    /// removed, nothing is named before it exists, no interface gets a
+    /// second policy in one direction — and they reach `intended`.
+    fn reaches(running: &str, intended: &str) -> Vec<String> {
+        let commands = remediate(running, intended, Syntax::Ios).commands;
+        assert_eq!(
+            qos_refusal(running, &commands),
+            None,
+            "the device would refuse a line of {commands:#?}"
+        );
+        let refs: Vec<&str> = commands.iter().map(String::as_str).collect();
+        assert_eq!(
+            applied(running, &refs),
+            canonical(intended, Syntax::Ios),
+            "commands: {commands:#?}"
+        );
+        commands
+    }
+
+    const WAN: &str = "\
+class-map match-any WAN-VOICE
+ match dscp ef
+class-map match-any WAN-VIDEO
+ match dscp af41 af42 af43
+policy-map WAN
+ class WAN-VOICE
+  priority percent 10
+ class WAN-VIDEO
+  bandwidth percent 20
+policy-map WAN-SHAPE
+ class class-default
+  shape average 50000000
+  service-policy WAN
+interface GigabitEthernet0/1
+ description wan
+ service-policy output WAN-SHAPE
+";
+
+    #[test]
+    fn a_value_typed_again_into_a_class_replaces_the_one_it_had() {
+        // h2-qos-templates-and-sim-0: the prediction kept the old line beside
+        // the new one, so a device that replaced it — as IOS does — differed.
+        let running = "policy-map P\n class V\n  priority percent 10\n  police 8000\n class class-default\n  shape average 50000000\n  set dscp ef\n  service-policy CHILD\n";
+        assert_eq!(
+            applied(
+                running,
+                &[
+                    "policy-map P",
+                    "class V",
+                    "priority percent 15",
+                    "police cir 16000",
+                    "exit",
+                    "class class-default",
+                    "shape average 40000000",
+                    "set dscp 26",
+                    "service-policy OTHER",
+                ]
+            ),
+            canonical(
+                "policy-map P\n class V\n  priority percent 15\n  police cir 16000\n class class-default\n  shape average 40000000\n  set dscp af31\n  service-policy OTHER\n",
+                Syntax::Ios
+            )
+        );
+        // `priority` with and without a rate is one setting; `priority-queue` is another command.
+        assert_eq!(
+            applied("policy-map P\n class V\n  priority percent 10\n", &["policy-map P", "class V", "priority"]),
+            canonical("policy-map P\n class V\n  priority\n", Syntax::Ios)
+        );
+        assert_eq!(
+            applied("interface Gi0/1\n priority-queue out\n", &["interface Gi0/1", "priority 1"]).len(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_way_back_takes_a_policy_off_and_removes_what_uses_before_what_is_used() {
+        // h2-qos-templates-and-sim-1: removals followed the running order —
+        // class maps first, a child policy before its parent — and the device
+        // refused every one of them while they were in use.
+        let before = "interface GigabitEthernet0/1\n description wan\n";
+        let back = reaches(WAN, before);
+        assert_eq!(
+            back,
+            strings(&[
+                "interface GigabitEthernet0/1",
+                "no service-policy output WAN-SHAPE",
+                "exit",
+                "no policy-map WAN-SHAPE",
+                "no policy-map WAN",
+                "no class-map match-any WAN-VOICE",
+                "no class-map match-any WAN-VIDEO",
+            ])
+        );
+        // And the other way: definitions before what names them, a child
+        // policy before its parent, whatever order the text lists them in.
+        let scrambled = "interface GigabitEthernet0/1\n description wan\n service-policy output WAN-SHAPE\npolicy-map WAN-SHAPE\n class class-default\n  shape average 50000000\n  service-policy WAN\npolicy-map WAN\n class WAN-VOICE\n  priority percent 10\n class WAN-VIDEO\n  bandwidth percent 20\nclass-map match-any WAN-VIDEO\n match dscp af41 af42 af43\nclass-map match-any WAN-VOICE\n match dscp ef\n";
+        reaches(before, scrambled);
+    }
+
+    #[test]
+    fn taking_a_marking_out_of_a_statement_keeps_the_others_in_it() {
+        // h2-qos-templates-and-sim-7: `no match dscp af42` takes the value
+        // out of the statement that lists it, as IOS does.
+        let running = "class-map match-any VIDEO\n match dscp af41 af42 af43\n match ip dscp af42\n";
+        assert_eq!(
+            applied(running, &["class-map match-any VIDEO", "no match dscp af42"]),
+            canonical(
+                "class-map match-any VIDEO\n match dscp af41 af43\n match ip dscp af42\n",
+                Syntax::Ios
+            )
+        );
+        assert_eq!(
+            applied(running, &["class-map match-any VIDEO", "no match dscp 34 36 38"]),
+            canonical("class-map match-any VIDEO\n match ip dscp af42\n", Syntax::Ios),
+            "a statement left with nothing goes"
+        );
+    }
+
+    #[test]
+    fn markings_are_predicted_the_way_the_device_prints_them() {
+        assert_eq!(
+            applied(
+                "",
+                &[
+                    "class-map match-any V",
+                    "match dscp ef 44",
+                    "match dscp EF",
+                    "policy-map P",
+                    "class V",
+                    "set dscp 46",
+                ]
+            ),
+            canonical(
+                "class-map match-any V\n match dscp 44 ef\n match dscp ef\npolicy-map P\n class V\n  set dscp ef\n",
+                Syntax::Ios
+            )
+        );
+        // A configuration somebody wrote reads like one the device printed.
+        assert_eq!(
+            canonical("class-map C\n match dscp 46 10\n match dscp af11 ef\n", Syntax::Ios),
+            canonical("class-map match-all C\n match dscp af11 ef\n", Syntax::Ios)
+        );
+        // What the device would refuse is left as it was typed.
+        assert_eq!(
+            applied("", &["class-map match-any V", "match dscp 64"]),
+            canonical("class-map match-any V\n match dscp 64\n", Syntax::Ios)
+        );
+    }
+
+    #[test]
+    fn a_class_named_from_inside_another_one_moves_to_it() {
+        // Without `exit` between classes, as people type them.
+        assert_eq!(
+            applied(
+                "",
+                &[
+                    "policy-map P",
+                    "class A",
+                    "priority",
+                    "class B",
+                    "bandwidth 100",
+                    "class class-default",
+                    "set dscp 0",
+                ]
+            ),
+            canonical(
+                "policy-map P\n class A\n  priority\n class B\n  bandwidth 100\n class class-default\n  set dscp default\n",
+                Syntax::Ios
+            )
+        );
+        // `class-default` stays the last class.
+        let mut tree = ConfigTree::parse("policy-map P\n class A\n class class-default\n  set dscp default\n", Syntax::Ios);
+        tree.apply(&strings(&["policy-map P", "class C"]), Syntax::Ios);
+        let classes: Vec<&str> = tree.roots[0].children.iter().map(|node| node.text.as_str()).collect();
+        assert_eq!(classes, vec!["class A", "class C", "class class-default"]);
+        // A class map is one per name: typed again with another type it changes.
+        assert_eq!(
+            applied("class-map match-any V\n match dscp ef\n", &["class-map match-all V", "match dscp cs5"]),
+            canonical("class-map match-all V\n match dscp ef\n match dscp cs5\n", Syntax::Ios)
+        );
+        assert_eq!(
+            applied("class-map match-any V\n match dscp ef\n", &["class-map V", "match dscp cs5"]),
+            canonical("class-map match-any V\n match dscp ef\n match dscp cs5\n", Syntax::Ios)
+        );
+    }
+
+    #[test]
+    fn an_attached_policy_whose_classes_keep_their_order_is_edited_where_it_is() {
+        let intended = WAN
+            .replace("priority percent 10", "priority percent 15")
+            .replace("shape average 50000000", "shape average 40000000");
+        assert_eq!(
+            reaches(WAN, &intended),
+            strings(&[
+                "policy-map WAN",
+                "class WAN-VOICE",
+                "priority percent 15",
+                "exit",
+                "exit",
+                "policy-map WAN-SHAPE",
+                "class class-default",
+                "shape average 40000000",
+                "exit",
+                "exit",
+            ]),
+            "nothing is taken off the interface"
+        );
+        // Actions that exclude each other: what goes before what comes.
+        let swapped = WAN.replace("priority percent 10", "bandwidth percent 10");
+        let commands = reaches(WAN, &swapped);
+        let at = |line: &str| commands.iter().position(|sent| sent == line).unwrap();
+        assert!(at("no priority") < at("bandwidth percent 10"), "{commands:?}");
+        // A class added at the end, one taken away.
+        let grown = WAN.replace(
+            "policy-map WAN\n",
+            "class-map match-any WAN-BULK\n match dscp cs1\npolicy-map WAN\n",
+        )
+        .replace(" class WAN-VIDEO\n  bandwidth percent 20\n", " class WAN-VIDEO\n  bandwidth percent 20\n class WAN-BULK\n  bandwidth percent 5\n");
+        let commands = reaches(WAN, &grown);
+        assert!(!commands.iter().any(|line| line.starts_with("no ")), "{commands:?}");
+        let shrunk = WAN
+            .replace("class-map match-any WAN-VIDEO\n match dscp af41 af42 af43\n", "")
+            .replace(" class WAN-VIDEO\n  bandwidth percent 20\n", "");
+        let commands = reaches(WAN, &shrunk);
+        let at = |line: &str| commands.iter().position(|sent| sent == line).unwrap();
+        assert!(at("no class WAN-VIDEO") < at("no class-map match-any WAN-VIDEO"), "{commands:?}");
+        assert!(!commands.iter().any(|line| line.starts_with("no policy-map")), "{commands:?}");
+    }
+
+    #[test]
+    fn a_policy_whose_classes_change_order_is_taken_off_typed_again_and_put_back() {
+        let reordered = WAN.replace(
+            " class WAN-VOICE\n  priority percent 10\n class WAN-VIDEO\n  bandwidth percent 20\n",
+            " class WAN-VIDEO\n  bandwidth percent 20\n class WAN-VOICE\n  priority percent 10\n",
+        );
+        let result = remediate(WAN, &reordered, Syntax::Ios);
+        let commands = reaches(WAN, &reordered);
+        let at = |line: &str| commands.iter().position(|sent| sent == line).unwrap();
+        // WAN is the child of WAN-SHAPE, which stays: it is taken out of the
+        // parent's class, not off the interface.
+        assert!(at("no service-policy WAN") < at("no policy-map WAN"), "{commands:?}");
+        assert!(at("no policy-map WAN") < at("policy-map WAN"), "{commands:?}");
+        assert!(at("policy-map WAN") < at("service-policy WAN"), "{commands:?}");
+        assert!(!commands.contains(&"no service-policy output WAN-SHAPE".to_string()), "{commands:?}");
+        assert!(
+            result.warnings.iter().any(|warning| warning.contains("`policy-map WAN` is removed and typed again")),
+            "{:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn a_class_map_that_changes_takes_the_policies_that_use_it_with_it() {
+        // Taking one value out of a statement takes it out of every statement
+        // that lists it, so a changed class map is typed again, and the
+        // device only lets it go once no policy names it.
+        let moved = WAN.replace(" match dscp ef\n", " match dscp cs5\n");
+        let commands = reaches(WAN, &moved);
+        let at = |line: &str| commands.iter().position(|sent| sent == line).unwrap();
+        assert!(at("no policy-map WAN") < at("no class-map match-any WAN-VOICE"), "{commands:?}");
+        assert!(at("no class-map match-any WAN-VOICE") < at("class-map match-any WAN-VOICE"), "{commands:?}");
+        // An added statement is just added.
+        let more = WAN.replace(" match dscp ef\n", " match dscp ef\n match dscp cs5\n");
+        assert_eq!(
+            reaches(WAN, &more),
+            strings(&["class-map match-any WAN-VOICE", "match dscp cs5", "exit"])
+        );
+    }
+
+    #[test]
+    fn a_second_policy_in_one_direction_goes_on_only_after_the_first_is_off() {
+        let running = "policy-map A\n class class-default\n  shape average 8000000\npolicy-map B\n class class-default\n  shape average 9000000\ninterface Gi0/1\n service-policy output A\n";
+        let intended = running.replace("service-policy output A", "service-policy output B");
+        let result = remediate(running, &intended, Syntax::Ios);
+        let commands = reaches(running, &intended);
+        let at = |line: &str| commands.iter().position(|sent| sent == line).unwrap();
+        assert!(at("no service-policy output A") < at("service-policy output B"), "{commands:?}");
+        assert!(
+            result.warnings.iter().any(|warning| warning.contains("no output policy applies there")),
+            "{:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn a_line_the_device_refuses_for_a_qos_reason_is_named_with_the_reason() {
+        let refusal = |commands: &[&str]| qos_refusal(WAN, &strings(commands));
+        let refused = refusal(&["no policy-map WAN-SHAPE"]).expect("in use on the interface");
+        assert_eq!(refused.index, 0);
+        assert!(refused.message.contains("interface GigabitEthernet0/1"), "{}", refused.message);
+        let refused = refusal(&["no policy-map WAN"]).expect("in use inside WAN-SHAPE");
+        assert!(refused.message.contains("policy-map WAN-SHAPE"), "{}", refused.message);
+        let refused = refusal(&["no class-map match-any WAN-VOICE"]).expect("in use");
+        assert!(refused.message.contains("policy-map WAN"), "{}", refused.message);
+        let refused = refusal(&[
+            "policy-map OTHER",
+            "class class-default",
+            "shape average 8000000",
+            "interface GigabitEthernet0/1",
+            "service-policy output OTHER",
+        ])
+        .expect("a second output policy");
+        assert_eq!(refused.index, 4);
+        assert!(refused.message.contains("no service-policy output WAN-SHAPE"), "{}", refused.message);
+        assert!(refusal(&["interface GigabitEthernet0/1", "service-policy input NOPE"]).is_some());
+        assert!(refusal(&["policy-map X", "class NOPE"]).is_some());
+        assert!(refusal(&["policy-map X", "class class-default", "service-policy NOPE"]).is_some());
+        // In an order the device takes, the same lines are fine.
+        assert_eq!(
+            refusal(&[
+                "policy-map OTHER",
+                "class class-default",
+                "shape average 8000000",
+                "interface GigabitEthernet0/1",
+                "no service-policy output WAN-SHAPE",
+                "service-policy output OTHER",
+                "exit",
+                "no policy-map WAN-SHAPE",
+                "no policy-map WAN",
+                "no class-map match-any WAN-VOICE",
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_child_policy_applies_where_its_parent_is_attached() {
+        let tree = ConfigTree::parse(WAN, Syntax::Ios);
+        let attached = Attached {
+            section: "interface GigabitEthernet0/1".into(),
+            output: true,
+            policy: "WAN-SHAPE".into(),
+        };
+        assert_eq!(tree.qos_attached(), vec![attached.clone()]);
+        assert_eq!(tree.qos_applies("WAN"), vec![attached.clone()]);
+        assert_eq!(tree.qos_applies("WAN-SHAPE"), vec![attached]);
+        assert_eq!(
+            tree.qos_classes("WAN-SHAPE"),
+            Some(vec![("class-default".to_string(), Some("WAN".to_string()))])
+        );
+        assert_eq!(tree.qos_classes("NOPE"), None);
     }
 }

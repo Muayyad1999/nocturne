@@ -258,12 +258,17 @@ function TemplateEditor({
     invalidates: ['templates.'],
   });
 
-  // Validation follows the body, a moment behind the typing.
+  // Validation and the preview follow the body and the values a moment
+  // behind the typing: otherwise every keystroke is a rendering on the backend.
   const [checked, setChecked] = useState(body);
+  const [settledVars, setSettledVars] = useState(vars);
   useEffect(() => {
-    const timer = setTimeout(() => setChecked(body), 500);
+    const timer = setTimeout(() => {
+      setChecked(body);
+      setSettledVars(vars);
+    }, 500);
     return () => clearTimeout(timer);
-  }, [body]);
+  }, [body, vars]);
   const validation = useRpc<TemplateValidation>('templates.validate', {
     body: checked,
     variables,
@@ -275,11 +280,13 @@ function TemplateEditor({
       ? undefined
       : {
           device_ids: [deviceId],
-          ...(template !== undefined && template.body === body ? { template_id: template.id } : { body, variables }),
-          ...(Object.keys(vars).length > 0 ? { vars } : {}),
+          ...(template !== undefined && template.body === checked
+            ? { template_id: template.id }
+            : { body: checked, variables }),
+          ...(Object.keys(settledVars).length > 0 ? { vars: settledVars } : {}),
         };
   const rendered = useRpc<Rendered[]>('templates.render', renderParams, {
-    enabled: renderParams !== undefined && missing.length === 0,
+    enabled: renderParams !== undefined && missingVariables(variables, settledVars).length === 0,
   });
 
   const [kind, setKind] = useState<TemplateKind>(template?.kind ?? 'config');

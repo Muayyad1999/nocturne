@@ -231,13 +231,21 @@ export async function seedIsp(rpc: Rpc): Promise<Seeded> {
   };
 }
 
-/** Adds `count` more customers, so the list is asserted at a size that pages. */
-export async function seedManyCustomers(rpc: Rpc, count: number): Promise<void> {
+/**
+ * Adds `count` more customers, so the list is asserted at a size that pages.
+ * A second batch needs a name and a code of its own: account codes are
+ * unique.
+ */
+export async function seedManyCustomers(
+  rpc: Rpc,
+  count: number,
+  batch: { name: string; code: string } = { name: 'Subscriber', code: 'S' },
+): Promise<void> {
   const towns = ['Erbil', 'Baghdad', 'Basra', 'Mosul', 'Dohuk', 'Kirkuk'];
   for (let index = 0; index < count; index += 1) {
     await rpc('isp.customer.save', {
-      name: `Subscriber ${String(index + 1).padStart(4, '0')}`,
-      code: `S-${String(index + 1).padStart(4, '0')}`,
+      name: `${batch.name} ${String(index + 1).padStart(4, '0')}`,
+      code: `${batch.code}-${String(index + 1).padStart(4, '0')}`,
       currency: index % 3 === 0 ? 'USD' : 'IQD',
       site: towns[index % towns.length],
       tower: index % 2 === 0 ? 'Tower A' : 'Tower B',

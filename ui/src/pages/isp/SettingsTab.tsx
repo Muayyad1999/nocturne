@@ -271,6 +271,22 @@ function TermsPanel({
             />
           </Field>
         </div>
+        <div className={styles.pair}>
+          <TextSetting
+            label="Usage window, in hours"
+            hint="How old an interface’s latest reading may be and still be taken for what a customer is using. Monitoring keeps the last reading of a device it can no longer reach; an older one is shown as no recent reading, not as a figure."
+            stored={String(settings.usage_window_hours)}
+            saving={saving}
+            parse={(text) => parseWholeNumber(text, 1, 8760)}
+            invalid="A whole number of hours, from 1 to 8760."
+            onSave={(hours) =>
+              set(
+                { usage_window_hours: hours },
+                `A latest reading counts for ${hours} hour${hours === 1 ? '' : 's'} now`,
+              )
+            }
+          />
+        </div>
         <p className={styles.quiet}>
           None of these rewrites anything already issued: an issued invoice is frozen, with the
           due date and the number it was given.

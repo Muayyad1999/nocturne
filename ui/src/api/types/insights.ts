@@ -266,7 +266,34 @@ export interface InsightsSettings {
   auto_scan_delay_ms: number;
 }
 
-/** Every number a check compares against. */
+/**
+ * A setting of the section that cannot be used as it is: refused on write, or
+ * read back wrong (stored before writes were checked, or by hand).
+ */
+export interface SettingsProblem {
+  /** Dotted, from the section: `thresholds.backup_age_days`. */
+  key: string;
+  /** What was sent, or what is stored. */
+  value: unknown;
+  /** "`thresholds.backup_age_days` must be a whole number of days (0 or more), not 7.5" */
+  message: string;
+}
+
+/**
+ * The `details` of `settings.set {section: 'insights'}` when it refuses a
+ * write (`invalid`): one problem per setting, sorted by key. Nothing of a
+ * refused write is stored.
+ */
+export interface InsightsSettingsRefusal {
+  section: 'insights';
+  problems: SettingsProblem[];
+}
+
+/**
+ * Every number a check compares against. The engine counts some in whole
+ * units (`u32`; `interface_error_min_delta` is a `u64`) and refuses a
+ * fraction for them; the ratios, rates and temperatures are fractions.
+ */
 export interface InsightsThresholds {
   /** Up/down transitions within an hour that count as flapping. Default 4. */
   flap_transitions_per_hour: number;

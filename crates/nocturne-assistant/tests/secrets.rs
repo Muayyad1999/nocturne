@@ -268,6 +268,53 @@ async fn restoring_a_placeholder_cannot_be_turned_into_a_way_of_reading_it() {
 }
 
 #[tokio::test]
+async fn a_secret_rendered_into_a_template_comes_back_hidden_and_the_model_is_told_how_to_use_it() {
+    let harness = harness_with_secrets().await;
+    harness.script(vec![
+        // Read a configuration, so the chat has placeholders of its own.
+        Step::tool("get_config", json!({"device": "SW1"})),
+        Step::tool(
+            "render_template",
+            json!({"template_id": "access-port", "devices": ["SW1"],
+                   "vars": {"interface": "GigabitEthernet0/5", "vlan": 40,
+                            "community": "<secret:1>"}}),
+        ),
+        Step::tool(
+            "render_template",
+            json!({"template_id": "access-port", "devices": ["SW1"],
+                   "vars": {"interface": "GigabitEthernet0/5", "vlan": 40}}),
+        ),
+        Step::text("Rendered."),
+    ]);
+    let turn = harness
+        .send("render the access port with SW1's community")
+        .await;
+    assert_eq!(turn.stop(), "end", "{:#?}", turn.kinds());
+    let results = harness.results_sent_to_model();
+    let (rendered, is_error) = &results[1];
+    assert!(!is_error, "{rendered}");
+    // What the template engine answered is an answer like any other: the
+    // placeholder in it is hidden, and could not be told from one another
+    // feature numbered. The model is told, so that it does not propose the
+    // lines as they stand, and what to do instead.
+    assert!(
+        rendered.contains("snmp-server community <hidden> RO") && !rendered.contains("<secret:"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Put your own placeholder back where `<hidden>` stands"),
+        "{rendered}"
+    );
+    // Rendering without a secret says nothing about one.
+    let (plain, _) = &results[2];
+    assert!(!plain.contains("<hidden>"), "{plain}");
+    assert!(!plain.contains("placeholder"), "{plain}");
+    for secret in SECRETS.iter().chain(VAULT_SECRETS) {
+        assert!(!harness.sent_to_model().contains(secret), "`{secret}`");
+    }
+}
+
+#[tokio::test]
 async fn a_placeholder_the_model_invented_is_not_quietly_sent_to_a_device() {
     let harness = harness_with_secrets().await;
     harness.script(vec![

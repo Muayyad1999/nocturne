@@ -48,8 +48,10 @@ file is the contract as it now stands; this is the log.
   optional caller-supplied conversion, and the personal-detail-free summary.
 * `network.rs` — used against sold, oversubscription, margin. Reaches
   `monitor.interfaces` and `metrics.query` **by name** and copes with
-  `unknown_method`; `Coverage` keeps nine kinds of "no figure" apart from a
-  zero.
+  `unknown_method`; `Coverage` keeps ten kinds of "no figure" apart from a
+  zero, among them a latest reading older than the usage window
+  (`no_recent_reading`) and one direction missing where the basis needs it
+  (`no_rate_yet`, with a note naming the direction).
 * `api.rs` — 38 methods, four events, settings. No background task: nothing
   here needs a clock, and a watcher would only have invented one.
 * `ui/src/api/types/isp.ts`; `cargo test`, `clippy -D warnings` and `fmt`

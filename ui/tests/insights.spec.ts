@@ -501,6 +501,130 @@ test('a check that is switched off reads as off, not as clear', async ({ page })
   expect(console.messages).toEqual([]);
 });
 
+interface StoredThresholds {
+  thresholds: { backup_age_days: unknown; cpu_pct: unknown };
+}
+
+test('a threshold counted in whole days refuses a fraction beside the field, and a cleared one changes nothing', async ({
+  page,
+  request,
+}) => {
+  const console = watchConsole(page);
+  const rpc = rpcFor(request, backend);
+  const thresholds = async () =>
+    (await rpc<StoredThresholds>('settings.get', { section: 'insights' })).thresholds;
+
+  await openApp(page, '/insights?view=checks', { backend });
+  await page.getByRole('button', { name: 'Thresholds' }).click();
+  const days = page.getByRole('spinbutton', { name: 'Backup age' });
+  await expect(days).toHaveValue('7');
+
+  // A fraction of a day is refused where it was typed, and not sent: an
+  // engine that stored it could no longer read its own settings.
+  await days.fill('7.5');
+  await days.press('Tab');
+  await expect(days).toHaveAttribute('aria-invalid', 'true');
+  await expect(days).toHaveAccessibleDescription(/^Must be a whole number \(0 or more\), not 7\.5\.$/);
+  await expect(days).toHaveValue('7.5');
+  expect((await thresholds()).backup_age_days).toBe(7);
+  // Escape puts the stored value back.
+  await days.focus();
+  await page.keyboard.press('Escape');
+  await expect(days).toHaveValue('7');
+  await expect(days).not.toHaveAttribute('aria-invalid', 'true');
+
+  // Text a number field cannot read is no change either: the field reports
+  // it as empty, and an empty field once saved a zero, after which every
+  // device's CPU counted as high. Typed key by key, as a person would.
+  const cpu = page.getByRole('spinbutton', { name: 'CPU' });
+  await expect(cpu).toHaveValue('85');
+  await cpu.fill('');
+  await cpu.pressSequentially('1e');
+  await cpu.press('Tab');
+  await expect(cpu).toHaveValue('85');
+  expect((await thresholds()).cpu_pct).toBe(85);
+
+  // A cleared field is not a zero, which would make every backup too old.
+  await days.fill('');
+  await days.press('Tab');
+  await expect(days).toHaveValue('7');
+  expect((await thresholds()).backup_age_days).toBe(7);
+
+  // A whole number is saved, by Enter as by leaving the field.
+  await days.fill('30');
+  await days.press('Enter');
+  await expect.poll(async () => (await thresholds()).backup_age_days).toBe(30);
+  const badge = page.locator('article', { hasText: 'no_recent_backup' }).first();
+  await expect(badge).toContainText('Backup age: 30 days');
+
+  // Where the engine keeps a fraction, a fraction is what it gets.
+  await cpu.fill('85.5');
+  await cpu.press('Tab');
+  await expect.poll(async () => (await thresholds()).cpu_pct).toBe(85.5);
+
+  // Put both back, from the screen, for the tests after this one.
+  await days.fill('7');
+  await days.press('Tab');
+  await cpu.fill('85');
+  await cpu.press('Tab');
+  await expect.poll(async () => await thresholds()).toMatchObject({ backup_age_days: 7, cpu_pct: 85 });
+  // The catalogue still answers: nothing that could break it was stored.
+  await expect(page.getByRole('searchbox', { name: 'Search checks' })).toBeVisible();
+
+  expect(console.messages).toEqual([]);
+});
+
+test('a stored value the engine cannot read leaves the thresholds on screen to put it right', async ({
+  page,
+  request,
+}) => {
+  const console = watchConsole(page);
+  const rpc = rpcFor(request, backend);
+  // An engine that checks writes refuses this, in the words the field would
+  // show. One from before stored it as given, after which it could not read
+  // the section: that state is what the screen has to survive, and only such
+  // an engine (or a hand edit) can still produce it. `Checks.test.tsx` holds
+  // the screen to it either way.
+  const stored = await rpc('settings.set', {
+    section: 'insights',
+    value: { thresholds: { backup_age_days: 7.5 } },
+  }).then(
+    () => true,
+    (error: unknown) => {
+      expect(String(error)).toContain(
+        'invalid — `thresholds.backup_age_days` must be a whole number of days (0 or more), not 7.5',
+      );
+      return false;
+    },
+  );
+
+  try {
+    await openApp(page, '/insights?view=checks', { backend });
+    const days = page.getByRole('spinbutton', { name: 'Backup age' });
+    if (stored) {
+      // The panel opens by itself, on the value that is wrong.
+      await expect(days).toBeVisible();
+      await expect(days).toHaveValue('7.5');
+      await expect(days).toHaveAccessibleDescription(/^Stored as 7\.5, which is not a whole number\./);
+      await days.fill('7');
+      await days.press('Tab');
+      await expect(days).not.toHaveAttribute('aria-invalid', 'true');
+      await expect
+        .poll(async () => (await rpc<StoredThresholds>('settings.get', { section: 'insights' })).thresholds.backup_age_days)
+        .toBe(7);
+    }
+    // Either way, the catalogue answers once the value is right.
+    await expect(page.getByRole('searchbox', { name: 'Search checks' })).toBeVisible();
+    await expect(page.locator('article', { hasText: 'no_recent_backup' }).first()).toBeVisible();
+  } finally {
+    if (stored) {
+      await rpc('settings.set', { section: 'insights', value: { thresholds: { backup_age_days: 7 } } });
+    }
+  }
+
+  expect(console.messages).toEqual([]);
+});
+
 test('a fix drafts a change and does not touch the device', async ({ page, request }) => {
   const console = watchConsole(page);
   const rpc = rpcFor(request, backend);
@@ -572,6 +696,57 @@ test('dismissing asks for a reason and an end date, and reopening undoes it', as
   await expect(card(page, DUPLEX_TITLE)).toHaveCount(0);
   await page.getByRole('combobox', { name: 'State' }).selectOption('open');
   await expect(card(page, DUPLEX_TITLE)).toBeVisible();
+
+  expect(console.messages).toEqual([]);
+});
+
+test('by keyboard, the dismiss dialog gives the focus back, and keeps it among the findings when the card goes', async ({
+  page,
+  request,
+}) => {
+  const console = watchConsole(page);
+  const rpc = rpcFor(request, backend);
+  await openApp(page, '/insights', { backend });
+
+  const dismiss = card(page, DUPLEX_TITLE).getByRole('button', { name: 'Dismiss…' });
+  await dismiss.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Dismiss this finding' });
+  await expect(dialog).toBeVisible();
+  // Backing out: the focus is back on the button that opened it.
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(dismiss).toBeFocused();
+
+  // Going through with it: the card leaves the open list, and the button the
+  // focus would have gone back to leaves with it.
+  await page.keyboard.press('Enter');
+  await dialog.getByRole('textbox', { name: 'Reason' }).fill('keyboard: the patch panel');
+  await dialog.getByRole('button', { name: 'Dismiss', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(card(page, DUPLEX_TITLE)).toHaveCount(0);
+
+  // The focus is not dropped on the page, where the next Tab would start at
+  // the top: it is on a control of the findings, where the card was.
+  const where = async () =>
+    page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        body: active === document.body || active === null,
+        inFindings: Boolean(active?.closest('[role="tabpanel"]')),
+      };
+    });
+  await expect.poll(where).toEqual({ body: false, inFindings: true });
+
+  // Put it back for the tests after this one.
+  const dismissed = await rpc<{ insights: { id: string }[] }>('insights.list', {
+    check: 'duplex_mismatch',
+    state: 'dismissed',
+    include_lab: true,
+  });
+  const id = dismissed.insights[0]?.id;
+  expect(id, 'the duplex mismatch was dismissed').toBeDefined();
+  await rpc('insights.reopen', { id });
 
   expect(console.messages).toEqual([]);
 });

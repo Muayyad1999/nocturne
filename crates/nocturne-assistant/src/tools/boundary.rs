@@ -6,19 +6,17 @@
 //! influences can become a method call — and every tool declares the subset it
 //! may use, which the gate enforces call by call.
 //!
-//! What this list must never contain: `changes.approve`, `changes.apply`,
-//! `changes.update`, `credentials.*`, `vault.*`, `hostkeys.*`, `settings.set`,
-//! `profiles.save`/`.delete`, `devices.create`/`.update`/`.delete`,
-//! `terminal.input*` (typing into a human's terminal would bypass the command
-//! policy), `sftp.*`, `tftp.*`, `labs.expose`, `schedules.*`, `ansible.run`,
-//! anything that writes a file, and anything added later unless this list is
-//! edited deliberately.
+//! Every other method the application registers is on [`NEVER`], with the
+//! reason it may not be reached. The two lists together are every method the
+//! assembled application has: `crates/nocturne-suite/tests/assistant_tools.rs`
+//! holds them to that, so a method a feature adds later fails that test until
+//! somebody decides, here, which side of the line it is on.
 //!
-//! `changes.assistant_apply` is on the list; whether it actually applies
+//! `changes.assistant_apply` is on the allow-list; whether it actually applies
 //! anything is decided inside the change engine's autonomy policy, never here
 //! and never by the model.
 //!
-//! Three kinds of method are on the list under a condition, and the gate
+//! Two kinds of method are on the list under a condition, and the gate
 //! (`ToolCtx::rpc`) holds each to it call by call:
 //!
 //! * [`ASK_FIRST`] — the three that write a record which is not a device's
@@ -29,14 +27,13 @@
 //! * [`LEDGER`] — the ISP edition's customer ledger: other people's data.
 //!   Reachable only while the `isp_access` setting is on, and what comes back
 //!   is cut down to an allow-list of fields by the tools that read it.
-//! * [`ALREADY_REDACTED`] — records another feature redacted before it kept
-//!   them. Their placeholders are numbered in that feature's own table, not
-//!   in this chat's, so the gate takes the numbers away before a model can
-//!   hand one back and have a different secret restored in its place.
 //!
-//! Everything else that writes stays off the list: nothing here adds to an
-//! incident, captures or deletes evidence, runs automation, switches a
-//! detection off, types into a terminal, or touches the ISP ledger.
+//! And one rule holds for every answer: the placeholders in it are another
+//! table's. Configurations, changes, terminal screens, log lines, evidence and
+//! incident timelines are redacted by the feature that holds them, each in a
+//! table of its own; the gate takes the numbers off before a model can hand
+//! one back and have this chat's secret of the same number restored in its
+//! place (`redact::without_foreign_placeholders`).
 
 /// An RPC method a tool is allowed to call.
 ///
@@ -139,6 +136,10 @@ methods! {
     DISCOVERY_SCAN_GET => "discovery.scan_get",
     TASKS_LIST => "tasks.list",
     RUNNER_RUNS => "runner.runs",
+    // --- what the traffic is doing, and the team's snippets: reads -----------
+    MONITOR_QOS => "monitor.qos",
+    FLOWS_TOP => "flows.top",
+    TERMINAL_SNIPPETS_LIST => "terminal.snippets.list",
     // --- records the assistant may write, each only after a yes --------------
     ALERTS_GET => "alerts.get",
     ALERTS_ACK => "alerts.ack",
@@ -167,131 +168,174 @@ pub const LEDGER: &[Method] = &[
     ISP_INVOICES,
 ];
 
-/// Methods whose answers were redacted by the feature that stores them,
-/// with placeholders from that feature's own table.
-pub const ALREADY_REDACTED: &[Method] = &[
-    INCIDENTS_LIST,
-    INCIDENTS_GET,
-    HANDOVER_GENERATE,
-    EVIDENCE_LIST,
-    EVIDENCE_GET,
-];
-
-pub fn asks_first(method: Method) -> bool {
-    ASK_FIRST.contains(&method)
-}
-
-pub fn is_ledger(method: Method) -> bool {
-    LEDGER.contains(&method)
-}
-
-pub fn already_redacted(method: Method) -> bool {
-    ALREADY_REDACTED.contains(&method)
-}
-
-/// Is this method name on the allow-list? For tests and for the `ai.tools`
-/// method; the gate itself compares [`Method`] values, not strings.
-pub fn is_allowed(name: &str) -> bool {
-    ALLOWED.iter().any(|method| method.name() == name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_forbidden_methods_are_absent() {
-        for forbidden in [
+/// Every method the application registers that no tool may reach, grouped by
+/// the reason it may not.
+///
+/// This is not a filter the gate consults — the gate only ever lets through
+/// what is in [`ALLOWED`] — it is the other half of a decision that has to be
+/// made for every method. A method that is in neither list is one nobody has
+/// decided about; the suite's test refuses the build until somebody does.
+pub const NEVER: &[(&str, &[&str])] = &[
+    (
+        "A change is approved by a person, bound to its plan's hash; whether one is applied is \
+         the change engine's decision (`changes.assistant_apply`); an undo is a change a person \
+         starts; and a change a person made is theirs to edit, withdraw or delete.",
+        &[
             "changes.approve",
+            "changes.unapprove",
             "changes.apply",
             "changes.update",
-            "changes.unapprove",
             "changes.rollback",
             "changes.cancel",
             "changes.delete",
+        ],
+    ),
+    (
+        "Configures a device, or runs automation that may, outside the change pipeline: the \
+         assistant changes a configuration only by drafting a change.",
+        &[
+            "compliance.remediate",
+            "config.restore",
+            "config.drift.fix",
+            "insights.fix",
+            "templates.apply",
+            "ansible.run",
+            "playbooks.run",
+            "runner.run",
+            "tasks.run",
+            "schedules.run_now",
+            "triggers.fire_now",
+            "labs.node.config_set",
+        ],
+    ),
+    (
+        "A person's terminal and file transfer: typing into, opening, steering, attaching to (its \
+         scrollback is raw and unredacted) or recording a session, and moving files to or from a \
+         device. Each would go around the device type's command policy.",
+        &[
+            "terminal.open",
+            "terminal.close",
+            "terminal.attach",
+            "terminal.input",
+            "terminal.input_many",
+            "terminal.resize",
+            "terminal.send_break",
+            "terminal.logging",
+            "terminal.snippets.send",
+            "sftp.open",
+            "sftp.close",
+            "sftp.list",
+            "sftp.stat",
+            "sftp.mkdir",
+            "sftp.remove",
+            "sftp.rename",
+            "sftp.read_text",
+            "sftp.write_text",
+            "sftp.download",
+            "sftp.upload",
+            "sftp.sessions",
+            "tftp.start",
+            "tftp.status",
+            "tftp.stop",
+        ],
+    ),
+    (
+        "Logins, keys and secrets, and the trust that guards them: never in front of a model, not \
+         even as a list.",
+        &[
             "credentials.list",
             "credentials.create",
             "credentials.update",
             "credentials.delete",
+            "vault.state",
             "vault.unlock",
             "vault.lock",
             "vault.set_password",
-            "vault.state",
             "hostkeys.list",
             "hostkeys.trust",
             "hostkeys.forget",
-            "settings.set",
-            "settings.get",
+            "keys.generate",
+            "tools.keys.generate",
+            "tools.password",
+            "tools.secret.decode",
+            "tools.secret.encode",
+            "tools.secret.identify",
+        ],
+    ),
+    (
+        "What the assistant and Nocturne may do and what they watch: settings (the assistant's \
+         own limits among them), device types (which commands are read-only), alert, log and \
+         compliance rules, maintenance windows that mute alerts, detections, schedules, triggers \
+         and who is notified. Never written from here, and not read either: a notification \
+         channel's address can carry a token.",
+        &[
             "settings.all",
+            "settings.get",
+            "settings.set",
             "profiles.save",
             "profiles.delete",
-            "devices.create",
-            "devices.update",
-            "devices.delete",
-            "devices.bulk_update",
-            "devices.import",
-            "devices.export",
-            "terminal.input",
-            "terminal.input_many",
-            "terminal.open",
-            "terminal.close",
-            "terminal.send_break",
-            "sftp.open",
-            "sftp.download",
-            "tftp.status",
-            "tftp.stop",
-            "labs.expose",
-            "labs.create",
-            "labs.delete",
-            "labs.start",
-            "labs.stop",
-            "labs.node.config",
-            "schedules.list",
-            "schedules.run_now",
-            "ansible.run",
-            "playbooks.run",
-            "runner.run",
-            "config.export",
-            "config.restore",
-            "config.delete",
-            "compliance.remediate",
-            "insights.fix",
-            "templates.save",
-            "notes.save",
-            "keys.generate",
-            "ai.send",
-            "ai.providers.save",
-            "app.rpc",
-            // Evidence is read, never captured, renamed, attached or deleted.
-            "evidence.capture_terminal",
-            "evidence.capture_log",
-            "evidence.capture_topology",
-            "evidence.capture_chart",
-            "evidence.add_text",
-            "evidence.rename",
-            "evidence.attach",
-            "evidence.detach",
-            "evidence.delete",
-            // Snippets are suggested; sending one types into a terminal.
-            "terminal.snippets.send",
-            "terminal.snippets.import",
-            "terminal.snippets.save",
-            "terminal.snippets.delete",
-            // Switching a detection off is how an intruder would start.
-            "detections.set_enabled",
-            // Log lines are evidence: nothing writes one, clears them or
-            // sends them elsewhere.
-            "logs.ingest",
-            "logs.clear",
-            "logs.pull",
-            "logs.restart",
+            "alerts.rules.save",
+            "alerts.rules.delete",
             "logs.rules.save",
             "logs.rules.delete",
-            "logs.forward.list",
-            "logs.forward.save",
-            "logs.forward.delete",
-            "logs.forward.test",
-            // Incidents and handovers are a person's record of what happened.
+            "compliance.policies.save",
+            "compliance.policies.delete",
+            "compliance.policies.duplicate",
+            "maintenance.save",
+            "maintenance.delete",
+            "detections.set_enabled",
+            "schedules.save",
+            "schedules.delete",
+            "triggers.save",
+            "triggers.delete",
+            "notify.channels.list",
+            "notify.channels.save",
+            "notify.channels.delete",
+            "notify.channels.test",
+        ],
+    ),
+    (
+        "The assistant itself: its chats, its providers and its approvals. A tool that could \
+         answer `ai.approve` would say yes to its own questions.",
+        &[
+            "ai.approve",
+            "ai.cancel",
+            "ai.send",
+            "ai.status",
+            "ai.tools",
+            "ai.usage",
+            "ai.presets",
+            "ai.chats.create",
+            "ai.chats.delete",
+            "ai.chats.get",
+            "ai.chats.list",
+            "ai.chats.rename",
+            "ai.providers.list",
+            "ai.providers.save",
+            "ai.providers.delete",
+            "ai.providers.test",
+            "ai.providers.models",
+            "ai.providers.presets",
+            "ai.providers.detect_local",
+        ],
+    ),
+    (
+        "Hides a problem from a person, or undoes their decision about one: clearing, resolving \
+         or snoozing an alert, dismissing or reopening an insight. Raising an alert is for rules \
+         and detections, not for a model.",
+        &[
+            "alerts.clear",
+            "alerts.resolve",
+            "alerts.snooze",
+            "alerts.raise",
+            "insights.dismiss",
+            "insights.reopen",
+        ],
+    ),
+    (
+        "Writes a person's record of what happened, or the evidence for it: incidents, handovers, \
+         notes, evidence, log lines and service checks.",
+        &[
             "incidents.create",
             "incidents.update",
             "incidents.delete",
@@ -302,39 +346,51 @@ mod tests {
             "incidents.assign",
             "incidents.resolve",
             "incidents.reopen",
-            "incidents.export",
             "handover.save",
             "handover.delete",
-            "handover.export",
-            // Acknowledging asks first; everything else about an alert or a
-            // check stays a person's.
-            "alerts.raise",
-            "alerts.resolve",
-            "alerts.snooze",
-            "alerts.rules.save",
-            "alerts.rules.delete",
+            "notes.save",
+            "notes.delete",
+            "evidence.capture_terminal",
+            "evidence.capture_log",
+            "evidence.capture_topology",
+            "evidence.capture_chart",
+            "evidence.add_text",
+            "evidence.rename",
+            "evidence.attach",
+            "evidence.detach",
+            "evidence.delete",
+            "logs.ingest",
+            "logs.clear",
+            "logs.pull",
             "checks.save",
             "checks.delete",
-            "checks.run_now",
-            // A scan of a range asks first; adding what it found, crawling
-            // through managed devices and forgetting a scan do not exist here.
+        ],
+    ),
+    (
+        "Sends what Nocturne collects somewhere else, or restarts what receives it: log \
+         forwarding and the receivers.",
+        &[
+            "logs.forward.list",
+            "logs.forward.save",
+            "logs.forward.delete",
+            "logs.forward.test",
+            "logs.restart",
+        ],
+    ),
+    (
+        "Changes the inventory, the address plan, the topology, a lab or another store a person \
+         keeps, or stops a person's job. A lab is changed like any network: through a change.",
+        &[
+            "devices.create",
+            "devices.update",
+            "devices.delete",
+            "devices.bulk_update",
+            "devices.import",
             "discovery.add",
             "discovery.crawl",
             "discovery.ignore",
             "discovery.unignore",
             "discovery.scan_delete",
-            // Running automation stays a person's click.
-            "tasks.save",
-            "tasks.delete",
-            "tasks.run",
-            "runner.run",
-            "runner.delete",
-            "runner.export",
-            "triggers.save",
-            "triggers.delete",
-            "triggers.fire_now",
-            // Reserving asks first; the rest of the address plan is not
-            // written from here.
             "ipam.address.save",
             "ipam.address.delete",
             "ipam.prefix.save",
@@ -342,10 +398,112 @@ mod tests {
             "ipam.prefix.split",
             "ipam.vlan.save",
             "ipam.vlan.delete",
-            "ipam.sync",
+            "ipam.import",
             "ipam.learn",
-            // The ISP ledger: every method that writes, and the one that
-            // returns a customer whole.
+            "ipam.sync",
+            "topology.layout.save",
+            "topology.manual.save",
+            "topology.manual.delete",
+            "topology.view_save",
+            "topology.view_delete",
+            "templates.save",
+            "templates.delete",
+            "templates.duplicate",
+            "playbooks.save",
+            "playbooks.delete",
+            "tasks.save",
+            "tasks.delete",
+            "runner.delete",
+            "reports.save",
+            "reports.delete",
+            "probe.history.delete",
+            "terminal.logs.delete",
+            "terminal.snippets.save",
+            "terminal.snippets.delete",
+            "terminal.snippets.import",
+            "config.delete",
+            "config.pin",
+            "config.unpin",
+            "config.intended.set",
+            "config.intended.clear",
+            "jobs.cancel",
+            "jobs.clear",
+            "labs.create",
+            "labs.update",
+            "labs.delete",
+            "labs.duplicate",
+            "labs.import",
+            "labs.start",
+            "labs.stop",
+            "labs.reset",
+            "labs.speed",
+            "labs.capture",
+            "labs.twin",
+            "labs.link.add",
+            "labs.link.remove",
+            "labs.node.add",
+            "labs.node.update",
+            "labs.node.move",
+            "labs.node.remove",
+            "labs.flow.add",
+            "labs.flow.remove",
+            "labs.fault.inject",
+            "labs.fault.clear",
+            "labs.unexpose",
+        ],
+    ),
+    ("Puts a lab device on the real network.", &["labs.expose"]),
+    (
+        "Writes files, or hands a whole store out as a document: what a person exports is theirs \
+         to send on.",
+        &[
+            "config.export",
+            "ansible.export_playbook",
+            "devices.export",
+            "ipam.export",
+            "labs.export",
+            "runner.export",
+            "handover.export",
+            "incidents.export",
+            "terminal.snippets.export",
+            "design.export",
+        ],
+    ),
+    (
+        "Starts work on devices or on the network that no tool needs, or that a tool does in its \
+         own way: a poll, a login test, a check, a compliance run, a scan or a report run now; a \
+         probe from a device (the tools run the device's own command, under its command \
+         policy); a sweep of addresses (`start_discovery` asks first); any URL; a lookup at an \
+         outside service; a wake-on-LAN packet; a syslog listener; a lab trace; a live log tail \
+         held open on the server.",
+        &[
+            "monitor.poll_now",
+            "checks.run_now",
+            "devices.test",
+            "compliance.run",
+            "insights.scan",
+            "reports.generate",
+            "probe.device.ping",
+            "probe.device.traceroute",
+            "probe.sweep",
+            "probe.http",
+            "probe.ntp",
+            "probe.whois",
+            "probe.wol",
+            "probe.syslog.start",
+            "probe.syslog.stop",
+            "probe.syslog.status",
+            "probe.syslog.messages",
+            "labs.trace",
+            "logs.follow",
+            "logs.unfollow",
+        ],
+    ),
+    (
+        "The ISP ledger beyond the five reads behind `isp_access`: every method that writes, \
+         `isp.customer.get` (a customer whole, contact details included), and reads that no tool \
+         shapes from an allow-list of fields.",
+        &[
             "isp.customer.get",
             "isp.customer.save",
             "isp.customer.state",
@@ -359,6 +517,7 @@ mod tests {
             "isp.link.delete",
             "isp.invoice.draft",
             "isp.invoice.run",
+            "isp.invoice.get",
             "isp.invoice.line.add",
             "isp.invoice.line.remove",
             "isp.invoice.issue",
@@ -369,11 +528,301 @@ mod tests {
             "isp.credit.issue",
             "isp.credit.allocate",
             "isp.credit.void",
+            "isp.capacity",
+            "isp.credits",
+            "isp.currencies",
+            "isp.links",
+            "isp.margin",
+            "isp.payments",
+            "isp.revenue",
+            "isp.tariffs",
+            "isp.usage",
+        ],
+    ),
+    (
+        "The audit trail: the record of what people, and the assistant, did. It is evidence, not \
+         something to put in front of a model that may be steered by what it reads.",
+        &["audit.actions", "audit.list", "audit.search"],
+    ),
+    (
+        "Internal plumbing between features, not an answer for anybody: ifIndex numbers, the \
+         method table.",
+        &["monitor.ifindex", "app.methods"],
+    ),
+    (
+        "A note, a stored handover or a recorded terminal session whole: the team's own text and \
+         what a device printed to one person. The tools show notes as titles and matching \
+         passages; a person opens the rest.",
+        &[
+            "notes.get",
+            "handover.get",
+            "handover.list",
+            "terminal.logs.list",
+            "terminal.logs.read",
+        ],
+    ),
+    (
+        "Fills a snippet in: that is the person's step before anything is typed. The assistant \
+         suggests a snippet (`list_snippets`); it does not prepare text for a terminal.",
+        &["terminal.snippets.render"],
+    ),
+    (
+        "A read no tool is built on. A method joins the allow-list together with a tool that \
+         shapes its answer for a model, never on its own.",
+        &[
+            "alerts.rules.list",
+            "alerts.rules.test",
+            "alerts.summary",
+            "ansible.status",
+            "app.info",
+            "checks.get",
+            "checks.history",
+            "checks.kinds",
+            "collect.status",
+            "compliance.policies.get",
+            "compliance.policies.list",
+            "compliance.policies.validate",
+            "compliance.runs",
+            "compliance.test",
+            "config.compare",
+            "config.devices",
+            "config.drift",
+            "config.get",
+            "config.intended.get",
+            "config.missing",
+            "config.unsaved",
+            "config.versions",
+            "design.examples",
+            "design.validate",
+            "devices.facets",
+            "devices.import_preview",
+            "discovery.ignored",
+            "discovery.preview",
+            "discovery.suggest",
+            "flows.exporters",
+            "incidents.suggest_links",
+            "insights.checks",
+            "insights.coverage",
+            "insights.get",
+            "ipam.address.get",
+            "ipam.conflicts",
+            "ipam.next_prefix",
+            "ipam.prefix.get",
+            "ipam.prefixes",
+            "ipam.reconcile",
+            "ipam.summary",
+            "ipam.vlans",
+            "jobs.list",
+            "labs.catalog",
+            "labs.examples",
+            "labs.exposed",
+            "labs.fault.list",
+            "labs.flow.list",
+            "labs.get",
+            "labs.links",
+            "labs.node.config",
+            "labs.node.metrics",
+            "labs.node.tables",
+            "labs.packets",
+            "logs.device_setup",
+            "logs.histogram",
+            "logs.rules.list",
+            "logs.rules.test",
+            "logs.sources",
+            "logs.status",
+            "logs.top",
+            "maintenance.list",
+            "metrics.query_many",
+            "metrics.series",
+            "metrics.top",
+            "monitor.status",
+            "overview.get",
+            "playbooks.get",
+            "playbooks.list",
+            "playbooks.run_get",
+            "playbooks.runs",
+            "playbooks.validate",
+            "probe.history",
+            "probe.history.get",
+            "probe.local",
+            "profiles.get",
+            "profiles.list",
+            "reports.get",
+            "reports.kinds",
+            "reports.list",
+            "runner.compare",
+            "runner.get",
+            "runner.search",
+            "schedules.list",
+            "schedules.preview",
+            "search.query",
+            "tasks.devices",
+            "tasks.get",
+            "templates.get",
+            "templates.validate",
+            "terminal.classify",
+            "terminal.list",
+            "terminal.serial_ports",
+            "topology.autolayout",
+            "topology.changes",
+            "topology.export",
+            "topology.get",
+            "topology.manual.list",
+            "topology.rates",
+            "topology.views",
+            "triggers.get",
+            "triggers.list",
+            "tools.base64",
+            "tools.contains",
+            "tools.convert",
+            "tools.diff",
+            "tools.hash",
+            "tools.interface",
+            "tools.ip.convert",
+            "tools.ip.range",
+            "tools.list",
+            "tools.mac",
+            "tools.mtu",
+            "tools.oid",
+            "tools.oui",
+            "tools.overlaps",
+            "tools.qos.marking",
+            "tools.qos.voice",
+            "tools.reference",
+            "tools.reference.tables",
+            "tools.regex",
+            "tools.subnet.split",
+            "tools.supernet",
+            "tools.transfer_time",
+            "tools.wildcard",
+            "tools.wildcard.acl",
+        ],
+    ),
+];
+
+pub fn asks_first(method: Method) -> bool {
+    ASK_FIRST.contains(&method)
+}
+
+pub fn is_ledger(method: Method) -> bool {
+    LEDGER.contains(&method)
+}
+
+/// Is this method name on the allow-list? For tests and for the `ai.tools`
+/// method; the gate itself compares [`Method`] values, not strings.
+pub fn is_allowed(name: &str) -> bool {
+    ALLOWED.iter().any(|method| method.name() == name)
+}
+
+/// Why `name` may never be reached from a tool, when it is on [`NEVER`].
+pub fn never_reachable(name: &str) -> Option<&'static str> {
+    NEVER
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .map(|(reason, _)| *reason)
+}
+
+/// Every name on [`NEVER`], in the order the list gives them.
+pub fn never_names() -> impl Iterator<Item = &'static str> {
+    NEVER.iter().flat_map(|(_, names)| names.iter().copied())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_forbidden_methods_are_absent() {
+        // The ones the specification names, and a few a model might hope for.
+        for forbidden in [
+            "changes.approve",
+            "changes.apply",
+            "changes.update",
+            "changes.unapprove",
+            "changes.rollback",
+            "changes.cancel",
+            "changes.delete",
+            "credentials.list",
+            "vault.unlock",
+            "hostkeys.trust",
+            "settings.set",
+            "settings.get",
+            "profiles.save",
+            "profiles.delete",
+            "devices.create",
+            "devices.update",
+            "devices.delete",
+            "terminal.input",
+            "terminal.input_many",
+            "terminal.open",
+            "sftp.open",
+            "tftp.start",
+            "labs.expose",
+            "schedules.run_now",
+            "ansible.run",
+            "playbooks.run",
+            "runner.run",
+            "config.export",
+            "config.restore",
+            "keys.generate",
+            "ai.send",
+            "ai.approve",
+            "app.rpc",
+            "alerts.clear",
+            "monitor.ifindex",
+            "logs.ingest",
+            "logs.forward.list",
+            "detections.set_enabled",
+            "terminal.snippets.send",
+            "terminal.snippets.render",
+            "terminal.snippets.import",
+            "evidence.add_text",
+            "isp.customer.get",
         ] {
             assert!(
                 !is_allowed(forbidden),
                 "`{forbidden}` must never be reachable from a tool"
             );
+        }
+        // Every name on the never-reachable list is off the allow-list, has
+        // a reason, and is there once.
+        let mut names: Vec<&str> = never_names().collect();
+        for name in &names {
+            assert!(!is_allowed(name), "`{name}` is on both lists");
+            assert!(
+                never_reachable(name).is_some_and(|reason| reason.len() > 20),
+                "`{name}` has no reason"
+            );
+        }
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "a method is on the never list twice");
+        // The methods the specification names are on it by name, not only
+        // absent from the other list.
+        for named in [
+            "alerts.clear",
+            "monitor.ifindex",
+            "logs.ingest",
+            "logs.forward.list",
+            "logs.forward.save",
+            "logs.forward.delete",
+            "logs.forward.test",
+            "flows.exporters",
+            "detections.set_enabled",
+            "terminal.snippets.render",
+            "terminal.snippets.send",
+            "terminal.snippets.export",
+            "terminal.snippets.import",
+            "evidence.capture_terminal",
+            "evidence.delete",
+            "tools.qos.marking",
+            "tools.qos.voice",
+            "topology.rates",
+            "changes.rollback",
+            "changes.approve",
+        ] {
+            assert!(never_reachable(named).is_some(), "`{named}` is not named");
         }
     }
 
@@ -416,6 +865,7 @@ mod tests {
                 "discovery.scans",
                 "evidence.get",
                 "evidence.list",
+                "flows.top",
                 "handover.generate",
                 "incidents.get",
                 "incidents.list",
@@ -439,6 +889,7 @@ mod tests {
                 "metrics.query",
                 "monitor.device",
                 "monitor.interfaces",
+                "monitor.qos",
                 "notes.list",
                 "probe.dns",
                 "probe.ping",
@@ -451,6 +902,7 @@ mod tests {
                 "templates.list",
                 "templates.render",
                 "terminal.snapshot",
+                "terminal.snippets.list",
                 "tools.subnet",
                 "tools.vlsm",
                 "topology.neighbors",

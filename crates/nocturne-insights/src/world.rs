@@ -206,9 +206,10 @@ pub struct World {
     pub config_feature: bool,
     /// Applied Nocturne changes per device, newest first `(device_id, [(change_id, title, at)])`.
     pub applied_changes: Option<HashMap<String, Vec<AppliedChange>>>,
-    /// `(device, metric)` pairs that monitoring records, read in one query:
-    /// asking per device and metric is thousands of round trips on a campus,
-    /// for a question one `DISTINCT` answers.
+    /// `(device, metric)` pairs that monitoring records — a series holding a
+    /// sample, see [`crate::metrics::present`] — read in one query: asking per
+    /// device and metric is thousands of round trips on a campus, for a
+    /// question one `DISTINCT` answers.
     pub(crate) series: std::collections::HashSet<(String, String)>,
     pub(crate) store: Arc<Store>,
 }
@@ -258,8 +259,10 @@ impl World {
         self.series = crate::metrics::present(&self.store).unwrap_or_default();
     }
 
-    /// Does monitoring record this metric for this device? The difference
-    /// between "nothing is over the threshold" and "nothing was measured".
+    /// Does monitoring record this metric for this device — has any series of
+    /// it a sample? The difference between "nothing is over the threshold"
+    /// and "nothing was measured". It says nothing about *when*: a check that
+    /// reasons about now still has to find samples in its own window.
     pub fn has_metric(&self, device_id: &str, metric: &str) -> bool {
         self.series
             .contains(&(device_id.to_string(), metric.to_string()))

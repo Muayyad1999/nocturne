@@ -340,10 +340,28 @@ collect:
         # No `age`: Junos's ARP table has no age column. The `Flags` column
         # ("none", "permanent") has nowhere to go in the model.
 
+# SNMP health. Written from Juniper's chassis MIB (mib-jnx-chassis, revision
+# 2016-05-16, read on 2026-11-23 from juniper.net): jnxOperatingTable, one
+# row per chassis component. The monitor's tests read it against rows
+# written by hand in the layout published recordings of real devices show.
+# Nobody has pointed it at a device.
 snmp:
+  # The Routing Engine's figure is its CPU use over the last 5 seconds, and
+  # Juniper's documentation of jnxBoxAnatomy says the object "returns a zero
+  # value if the data is not available": zero is no reading, as for the
+  # temperature below.
   cpu:
-    - 1.3.6.1.4.1.2636.3.1.13.1.21   # jnxOperatingCPU, over the operating table
-  memory_used:
-    - 1.3.6.1.4.1.2636.3.1.13.1.11   # jnxOperatingBuffer, percent of memory used
+    - oid: 1.3.6.1.4.1.2636.3.1.13.1.8          # jnxOperatingCPU: "The CPU utilization in percentage of this subject"
+      where:
+        - {oid: 1.3.6.1.4.1.2636.3.1.13.1.5, matches: '^(Routing Engine|Host)( \d+)?$'}   # jnxOperatingDescr: a Routing Engine ("Host n" on T-series)
+        - {oid: 1.3.6.1.4.1.2636.3.1.13.1.6, is: 2}                                       # jnxOperatingState = running(2): the master, not a standby(7)
+      absent: [0]                               # "Zero if unavailable or inapplicable"
+      combine: max
+  # No memory, on purpose. jnxOperatingBuffer (1.3.6.1.4.1.2636.3.1.13.1.11)
+  # is a percentage, but Juniper's documentation of jnxBoxAnatomy calls it
+  # buffer pool utilisation, "valid for the FPC and Control Board"; that the
+  # Routing Engine's row is its memory in use is how other tools read it, not
+  # something Juniper says.
   temperature:
-    - 1.3.6.1.4.1.2636.3.1.13.1.7    # jnxOperatingTemp, degrees Celsius
+    - oid: 1.3.6.1.4.1.2636.3.1.13.1.7          # jnxOperatingTemp: degrees Celsius, one row per chassis component
+      absent: [0]                               # "Zero if unavailable or inapplicable"

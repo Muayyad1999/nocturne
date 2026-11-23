@@ -352,9 +352,12 @@ collect:
         status: STATUS
         interfaces: INTERFACES
 snmp:
-  cpu: [1.3.6.1.4.1.2021.11.11.0]
-  memory_total: [1.3.6.1.4.1.2021.4.5.0]
-  memory_free: [1.3.6.1.4.1.2021.4.11.0]
+  # hrProcessorLoad: one row per core, each the percentage of the last minute
+  # that core was not idle; the rows are averaged. (What one published
+  # recording of an EOS 4.15 agent serves. The built-in arista_eos profile leaves it out
+  # until it has been read from a switch, and leaves memory out because the
+  # only pairs that agent serves count the page cache as used.)
+  cpu: [1.3.6.1.2.1.25.3.3.1.2]
 ```
 
 ## The file, field by field
@@ -517,9 +520,135 @@ never filed under a name left over from the interface before it.
 
 ### `snmp`
 
-Lists of OIDs for `cpu`, `memory_used`, `memory_free`, `memory_total` and
-`temperature`, tried in order. Put the vendor's own OIDs first and the
-standard ones after.
+Where the monitor reads CPU, memory and temperature without a login. Six
+lists, each of entries:
+
+```yaml
+snmp:
+  cpu:            [entry, …]   # a CPU percentage, busy
+  memory_used:    [entry, …]   # memory quantities, in any unit as long as
+  memory_free:    [entry, …]   #   the three agree
+  memory_total:   [entry, …]
+  memory_percent: [entry, …]   # an object that is already "percent of memory in use"
+  temperature:    [entry, …]   # degrees Celsius
+```
+
+**Nothing is scaled, turned round or filtered unless the entry says so.**
+An object that is idle rather than busy, free rather than used, in tenths,
+or one kind of row among several must say so, or be left out. A figure that
+no documented object gives honestly is left out of the block and stays
+unknown; it is never approximated from something near it.
+
+An entry is a bare OID, or a mapping:
+
+| Key | Meaning |
+|---|---|
+| `oid` | As a bare OID: text ending in `.0` is one object, fetched with GET; anything else is a column, walked, and every row counts. |
+| `instance` | Exactly this OID, fetched with GET whatever it ends in (`hrStorageUsed.65536`). An agent that does not have it gives no reading, which is not an error. Give `oid` or `instance`, not both. |
+| `signed` | `true` when the agent sends a signed 32-bit object in an unsigned type, as RouterOS before 7.12 sends `mtxrGaugeValue` (−1 °C as 4294967295): a Counter32, Gauge32 or TimeTicks value of 2^31 or more is read as value − 2^32, the negative number it is. |
+| `where` | Tests on sibling columns, read in the same walk and matched by row index: `{oid: <column>, is: <value>}`, `{oid: <column>, in: [<value>, …]}` or `{oid: <column>, matches: '<regex>'}`. A row counts only if every test holds; a row whose test cell is missing does not count. Values are compared as text with the cell's plain rendering: integers in decimal, object identifiers dotted with no leading dot, strings trimmed. A column only. |
+| `absent` | Raw values the MIB defines as "no reading" (`[0]`, `[-1000000000, 1000000000]`). Such a row is dropped before any arithmetic. |
+| `si_scale` | A sibling column holding an RFC 3433 `EntitySensorDataScale` (units(9) = 10^0, milli(8) = 10^-3 …): value × 10^(3·(n − 9)). A row without the cell, or with n outside 1–17, is dropped. A column only. |
+| `precision` | A sibling column holding an RFC 3433 `EntitySensorPrecision`: value ÷ 10^n for n in 1–9; −8 to 0 leave the value. A row without the cell, or with n outside −8–9, is dropped. A column only. |
+| `scale` | Multiply: `0.1` for tenths, `0.001` for thousandths. |
+| `complement` | The reading is this number minus the value: `100` for a percentage that is idle or free. |
+| `combine` | `cpu` only, a column only: `mean` (the default; the rows are cores of one machine) or `max` (the rows are separate processors, such as stack members or line cards: the busiest is the figure). |
+| `label` | `temperature` only: the sensor's name in the series, the label itself for one object and `<label>.<row index>` for a column. Without it the name is the row index, or empty for one object. Two entries of one list may not share a label. |
+| `fallback` | `temperature` only: `true` reads the entry only when none of the entries above it that are not fallbacks gave a sensor. For an older object that reports the same sensors as a newer one, which listed plainly beside it would count every sensor twice. It needs an entry above it that is not a fallback. |
+
+The arithmetic runs in the order raw → `signed` → `absent` → `si_scale` →
+`precision` → `scale` → `complement`.
+
+How the lists are read:
+
+* **`cpu`**: the entries are tried in order, and the first that gives a
+  number is the reading, its rows combined by its `combine`; the entries
+  after it are not read. Put the object that answers on current releases
+  first and an older one after it, for the releases that lack the first.
+* **`memory_*`**: per list, the first number of the first entry that gives
+  one. The figure is used ÷ total, else used ÷ (used + free), else
+  (total − free) ÷ total; only when none of these gives one is the first
+  number of `memory_percent` the figure. Pair columns only when their first
+  rows are the same row, or name the rows with `instance`.
+* **`temperature`**: every entry is read and every row it gives is a sensor.
+  Two entries are two sensors, so never list two objects that report the
+  same sensors side by side: mark the older one `fallback: true`, and it is
+  read only where the entries above it gave no sensor.
+
+An object the agent does not have is an answer, not an error: that figure
+is unknown, and over SNMPv1 too, where an agent refuses the whole request
+for one missing object (the monitor asks again without it). A timeout fails
+the read, as it does for the interfaces. What the agent answered but cannot
+be what the entry says is not stored, and the reason is shown on the
+device's SNMP source (`sources.snmp.error`, while `sources.snmp.ok` stays
+true): a CPU or memory percentage outside 0–100, a temperature outside
+−100–300 °C, a negative amount of memory, a Gauge32 amount of
+4294967295 (the value an agent gives for that much or more; to a `signed`
+entry it is −1), a table with as many rows as one walk takes, and two
+sensors of one name (neither is stored). Many sensors of one entry refused
+for one reason, or many names shared by the same entries, are one problem,
+said once with how many there were.
+
+```yaml
+# profile
+id: example_snmp_entries
+name: Example (entries that say which row and what unit)
+description: Each key of an SNMP entry once; not advice for any platform.
+maturity: experimental
+snmp:
+  cpu:
+    - oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.7         # cpmCPUTotal1minRev: one row per processor
+      combine: max
+    - oid: 1.3.6.1.4.1.2021.11.11.0              # ssCpuIdle.0: idle, turned round
+      complement: 100
+  memory_used:
+    - oid: 1.3.6.1.2.1.25.2.3.1.6                # hrStorageUsed, the RAM row
+      where:
+        - {oid: 1.3.6.1.2.1.25.2.3.1.2, is: 1.3.6.1.2.1.25.2.1.2}   # hrStorageType = hrStorageRam
+  memory_total:
+    - oid: 1.3.6.1.2.1.25.2.3.1.5                # hrStorageSize, the same test, so the same row
+      where:
+        - {oid: 1.3.6.1.2.1.25.2.3.1.2, is: 1.3.6.1.2.1.25.2.1.2}
+  memory_percent:
+    - 1.3.6.1.4.1.9.9.305.1.1.2.0                # cseSysMemoryUtilization.0, percent
+  temperature:
+    - oid: 1.3.6.1.2.1.99.1.1.1.4                # entPhySensorValue
+      where:
+        - {oid: 1.3.6.1.2.1.99.1.1.1.1, is: 8}   # entPhySensorType = celsius(8)
+      si_scale: 1.3.6.1.2.1.99.1.1.1.2           # entPhySensorScale
+      precision: 1.3.6.1.2.1.99.1.1.1.3          # entPhySensorPrecision
+      absent: [-1000000000, 1000000000]
+    - oid: 1.3.6.1.4.1.14988.1.1.3.100.1.3       # mtxrGaugeValue, sent unsigned by some releases
+      signed: true
+      where:
+        - {oid: 1.3.6.1.4.1.14988.1.1.3.100.1.4, is: 1}   # mtxrGaugeUnit = celsius(1)
+      label: gauge                               # its row numbers would otherwise meet the table's above
+    - instance: 1.3.6.1.4.1.14988.1.1.3.10.0     # mtxrHlTemperature.0, tenths
+      scale: 0.1
+      label: board
+      fallback: true                             # only where the table above gave none
+```
+
+(The memory pair above is a form, not advice: on net-snmp the RAM row of
+hrStorageTable counts the page cache as used.)
+
+**What the built-in blocks rest on.** No SNMP walk recorded from a device is
+in this repository, and `maturity` does not cover the block (see
+[Maturity](#maturity-how-far-to-trust-a-profile)). The blocks of
+`cisco_ios`, `cisco_nxos`, `cisco_xr`, `hp_procurve`, `juniper_junos` and
+`mikrotik_routeros` are written from the vendors' MIB files, read on
+2026-11-23 and named with their revisions in the comment above each block,
+and the monitor's tests read them against rows written by hand in the layout
+that published recordings of real devices show. That says the block asks
+for the objects its comments name and that the arithmetic is right for rows
+laid out like those; it says nothing about a device. The `linux` block is
+the only one a test reads from a real agent: net-snmp on the machine that
+runs the tests, its CPU and memory compared with `/proc`. Its temperature
+entry has not been read from an agent with a sensor. Every OID a built-in
+block names must be an object the application's own name table knows, with
+that object's name as the first word of the comment on its line; the
+monitor's tests check that. Rows written by hand in the layout of a
+recording are synthetic, whoever made the recording.
 
 ## Parsers
 
@@ -873,6 +1002,12 @@ reported; it does not count as covering the kind.
 and the UI says which you are using. Be honest: a wrong `verified` is worse
 than an honest `experimental`, because somebody will trust it at two in the
 morning.
+
+`maturity` and `unverified` speak for what a profile reads over the command
+line. The `snmp` block is covered by neither: say in a comment above it what
+it was written from (the MIB, its revision or the date you read it) and
+what, if anything, it has been read from. A `verified` profile whose block
+has never met a device says that in its first sentence.
 
 ### One read that has not met a real device: `unverified`
 

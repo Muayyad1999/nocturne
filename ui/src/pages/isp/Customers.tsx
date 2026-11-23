@@ -4,8 +4,10 @@
  * `isp.customers` is paged and filtered in the engine (`ORDER BY name`, a
  * `LIKE` over the searchable text, `matching` for the count), so this screen
  * asks for one page at a time and never pulls the whole book down to count
- * it. The filters go into the request; the page offset is the backend's own
- * cursor, which is the number of rows already seen.
+ * it. The filters go into the request; Next sends the engine's own
+ * `next_cursor`, which continues after the last customer on screen, so a
+ * customer deleted from this page does not make the next one skip a row
+ * (`paging.ts`).
  *
  * Two columns come from elsewhere, because a customer record does not carry
  * them:
@@ -19,18 +21,15 @@
  *   are shown as two.
  *
  * While either is still in flight the cell is a skeleton, not a dash and not
- * a zero: "we have not asked yet" is not "nothing".
+ * a zero: "we have not asked yet" is not "nothing". And when either could not
+ * be read the cell says "not read" — never "nothing owed", which is a fact
+ * about the ledger that a failed read has not established.
  */
 
 import { Plus, UserPlus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import type {
-  Customer,
-  CustomerState,
-  Money,
-  UsedAgainstSold,
-} from '@/api/types/isp';
+import type { Customer, CustomerState, UsedAgainstSold } from '@/api/types/isp';
 import { Badge } from '@/design/Badge';
 import { Button } from '@/design/Button';
 import { confirm } from '@/design/Dialog';
@@ -46,6 +45,7 @@ import { formatCount } from '@/lib/format';
 import { CustomerDialog } from './CustomerDialog';
 import {
   useArrears,
+  useCalendar,
   useCustomers,
   useDeleteCustomer,
   useLinks,
@@ -54,7 +54,16 @@ import {
   useUsage,
 } from './data';
 import { Figures, Words } from './Figures';
-import { coverageWords, isMeasured, ofPlanText, soldText, usageText } from './coverage';
+import {
+  coverageWords,
+  isMeasured,
+  ofPlanText,
+  readingTime,
+  soldText,
+  usageText,
+} from './coverage';
+import { owedById, owedCell } from './ageing';
+import { cursorParam, usePages } from './paging';
 import { STATE_WORDS } from './records';
 import styles from './isp.module.css';
 
@@ -72,7 +81,8 @@ export function Customers() {
   const navigate = useNavigate();
   const [filters, setFilters] = useState<Filters>({ query: '', state: '', currency: '', tower: '' });
   const [typed, setTyped] = useState('');
-  const [offset, setOffset] = useState(0);
+  const pages = usePages(PAGE);
+  const calendar = useCalendar();
   const [editing, setEditing] = useState<{ open: boolean; customer: Customer | null }>({
     open: false,
     customer: null,
@@ -86,7 +96,7 @@ export function Customers() {
     if (typed === filters.query) return;
     const timer = setTimeout(() => {
       setFilters((current) => ({ ...current, query: typed }));
-      setOffset(0);
+      pages.reset();
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [typed, filters.query]);
@@ -98,9 +108,9 @@ export function Customers() {
       ...(filters.currency === '' ? {} : { currency: filters.currency }),
       ...(filters.tower === '' ? {} : { tower: filters.tower }),
       limit: PAGE,
-      ...(offset === 0 ? {} : { cursor: String(offset) }),
+      ...cursorParam(pages.walked),
     }),
-    [filters, offset],
+    [filters, pages.walked],
   );
 
   const page = useCustomers(params);
@@ -117,16 +127,7 @@ export function Customers() {
     return index;
   }, [usage.data]);
 
-  /** What each customer owes, per currency: a customer may owe in two. */
-  const owedById = useMemo(() => {
-    const index = new Map<string, Money[]>();
-    for (const row of arrears.data?.customers ?? []) {
-      const found = index.get(row.customer_id);
-      if (found) found.push(row.outstanding);
-      else index.set(row.customer_id, [row.outstanding]);
-    }
-    return index;
-  }, [arrears.data]);
+  const owed = useMemo(() => owedById(arrears.data), [arrears.data]);
 
   const towers = useMemo(() => {
     const names = new Set<string>();
@@ -140,8 +141,8 @@ export function Customers() {
   const currencies = summary.data?.by_currency.map((entry) => entry.currency) ?? [];
   const matching = page.data?.matching ?? 0;
   const rows = page.data?.customers ?? [];
-  const from = rows.length === 0 ? 0 : offset + 1;
-  const to = offset + rows.length;
+  const from = rows.length === 0 ? 0 : pages.first;
+  const to = pages.first - 1 + rows.length;
 
   const columns: readonly TableColumn<Customer>[] = [
     {
@@ -209,10 +210,13 @@ export function Customers() {
         if (!isMeasured(found.coverage)) {
           return <Words title={found.coverage_note}>{coverageWords(found.coverage).label}</Words>;
         }
+        const when = found.used ? readingTime(found.used, calendar) : null;
         return (
           <span className={styles.amount}>
             {usageText(found)}
-            <span className={styles.rowSub}>{ofPlanText(found.of_plan_pct)} of the plan</span>
+            <span className={styles.rowSub}>
+              {ofPlanText(found.of_plan_pct)} of the plan{when === null ? '' : `, ${when}`}
+            </span>
           </span>
         );
       },
@@ -223,9 +227,17 @@ export function Customers() {
       width: 150,
       align: 'right',
       cell: (row) => {
-        if (arrears.isPending) return <Skeleton width={90} />;
-        const owed = owedById.get(row.id);
-        return owed ? <Figures totals={owed} /> : <Words>nothing owed</Words>;
+        const cell = owedCell(arrears, owed, row.id);
+        switch (cell.kind) {
+          case 'pending':
+            return <Skeleton width={90} />;
+          case 'not_read':
+            return <Words title={arrears.error?.message}>not read</Words>;
+          case 'nothing':
+            return <Words>nothing owed</Words>;
+          case 'owes':
+            return <Figures totals={cell.amounts} />;
+        }
       },
     },
     {
@@ -269,7 +281,7 @@ export function Customers() {
           value={filters.state}
           onChange={(event) => {
             setFilters({ ...filters, state: event.target.value });
-            setOffset(0);
+            pages.reset();
           }}
           options={[
             { value: '', label: 'Any state' },
@@ -284,7 +296,7 @@ export function Customers() {
           value={filters.currency}
           onChange={(event) => {
             setFilters({ ...filters, currency: event.target.value });
-            setOffset(0);
+            pages.reset();
           }}
           options={[
             { value: '', label: 'Any currency' },
@@ -298,7 +310,7 @@ export function Customers() {
             value={filters.tower}
             onChange={(event) => {
               setFilters({ ...filters, tower: event.target.value });
-              setOffset(0);
+              pages.reset();
             }}
             options={[
               { value: '', label: 'Any tower' },
@@ -404,15 +416,18 @@ export function Customers() {
           <ToolbarSpacer />
           <Button
             size="sm"
-            disabled={offset === 0 || page.isFetching}
-            onClick={() => setOffset(Math.max(0, offset - PAGE))}
+            disabled={!pages.hasPrevious || page.isFetching}
+            onClick={pages.previous}
           >
             Previous
           </Button>
           <Button
             size="sm"
             disabled={page.data?.next_cursor == null || page.isFetching}
-            onClick={() => setOffset(Number(page.data?.next_cursor ?? offset))}
+            onClick={() => {
+              const cursor = page.data?.next_cursor;
+              if (cursor != null) pages.next(cursor);
+            }}
           >
             Next
           </Button>

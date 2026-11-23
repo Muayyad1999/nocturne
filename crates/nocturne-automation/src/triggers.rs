@@ -14,7 +14,7 @@ use nocturne_app::error::{AppError, AppResult};
 use nocturne_app::util::{new_id, now_ms};
 use nocturne_app::{App, AppBuilder, Event, NoParams};
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
@@ -27,8 +27,11 @@ use crate::state::AutomationState;
 /// How often pending triggers are checked.
 const TICK: Duration = Duration::from_millis(250);
 
-/// Events this crate publishes itself, which a trigger must never watch: a
-/// trigger on `automation.runs.changed` that starts a run is a loop.
+/// Events a trigger's own run publishes, which a trigger must never watch: a
+/// trigger on `automation.runs.changed` that starts a run is a loop. Job
+/// events are among them because every method a trigger may call starts a
+/// job, and the core announces each one on `jobs.changed` as it starts, moves
+/// and ends: a trigger on them is set off by its own job, again and again.
 const OWN_TOPICS: &[&str] = &[
     "automation.",
     "schedules.",
@@ -36,7 +39,31 @@ const OWN_TOPICS: &[&str] = &[
     "tasks.",
     "templates.",
     "playbooks.",
+    "jobs.",
 ];
+
+/// Is this an event a trigger's own run could have published?
+fn is_own(topic: &str) -> bool {
+    OWN_TOPICS
+        .iter()
+        .any(|own| topic.starts_with(own) || topic == own.trim_end_matches('.'))
+}
+
+/// Could a trigger on this pattern be set off by one of those events? A
+/// prefix pattern covers every topic that starts with it, so `*`, `t*` and
+/// `jobs.` are refused as surely as `jobs.changed` is.
+fn takes_in_own(pattern: &str) -> bool {
+    let pattern = pattern.trim();
+    let prefix = pattern
+        .strip_suffix('*')
+        .or_else(|| pattern.ends_with('.').then_some(pattern));
+    match prefix {
+        Some(prefix) => OWN_TOPICS
+            .iter()
+            .any(|own| own.starts_with(prefix) || prefix.starts_with(own)),
+        None => is_own(pattern),
+    }
+}
 
 pub fn topic_matches(topic: &str, pattern: &str) -> bool {
     let pattern = pattern.trim();
@@ -65,20 +92,42 @@ pub fn payload_matches(payload: &Value, wanted: &Value) -> bool {
     })
 }
 
-/// A device the event was about, if it names one.
-fn device_of(payload: &Value) -> Option<String> {
-    ["/device_id", "/device/id", "/id"]
-        .into_iter()
+/// A device the event was about, if it names one. An event's own `id` is a
+/// device only when the event is about devices: an alert or a change has an
+/// id of its own, and passed on as a device it names none.
+fn device_of(topic: &str, payload: &Value) -> Option<String> {
+    let pointers: &[&str] = if topic.starts_with("devices.") {
+        &["/device_id", "/device/id", "/id"]
+    } else {
+        &["/device_id", "/device/id"]
+    };
+    pointers
+        .iter()
         .find_map(|pointer| payload.pointer(pointer).and_then(Value::as_str))
         .map(str::to_string)
 }
 
-#[derive(Debug, Default, Clone)]
+/// A burst a trigger is collecting. It is also written to the store (as
+/// `db::TRIGGER_PENDING`, under the trigger's id), so a restart inside the
+/// window still fires it.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 struct Pending {
+    trigger_id: String,
     fire_at: i64,
     device_ids: Vec<String>,
     events: u64,
     topic: String,
+}
+
+fn keep(app: &App, id: &str, pending: &Pending) {
+    if let Err(err) = app.store().put(db::TRIGGER_PENDING, id, pending) {
+        tracing::warn!(trigger = id, %err, "a trigger's burst could not be kept on disk");
+    }
+}
+
+fn forget(app: &App, id: &str) {
+    let _ = app.store().delete(db::TRIGGER_PENDING, id);
 }
 
 #[derive(Default)]
@@ -89,12 +138,11 @@ pub fn check(app: &App, trigger: &Trigger) -> AppResult<()> {
     if topic.is_empty() {
         return Err(AppError::invalid("a trigger needs an event topic to watch"));
     }
-    if OWN_TOPICS
-        .iter()
-        .any(|own| topic.starts_with(own) || topic == own.trim_end_matches('.'))
-    {
+    if takes_in_own(topic) {
         return Err(AppError::invalid(format!(
-            "`{topic}` is published by automation itself; a trigger on it would run in a loop"
+            "`{topic}` takes in events a trigger's own run publishes (automation's own, and \
+             `jobs.changed`, which every action's job announces itself on); a trigger on it \
+             would run in a loop"
         )));
     }
     if trigger.debounce_s > 3600 {
@@ -112,6 +160,11 @@ pub fn check(app: &App, trigger: &Trigger) -> AppResult<()> {
 
 /// Note an event against every trigger that wants it.
 fn observe(app: &App, event: &Event) {
+    // Never, whatever a stored trigger says: one saved before a topic was
+    // refused, or by hand, must not loop either.
+    if is_own(&event.topic) {
+        return;
+    }
     let settings = Settings::load(app);
     if !settings.triggers_enabled {
         return;
@@ -129,22 +182,27 @@ fn observe(app: &App, event: &Event) {
         {
             continue;
         }
-        let mut pending = pendings.0.lock();
-        let entry = pending
-            .entry(trigger.id.clone())
-            .or_insert_with(|| Pending {
-                fire_at: now + trigger.debounce_s as i64 * 1000,
-                topic: event.topic.clone(),
-                ..Pending::default()
-            });
-        entry.events += 1;
-        entry.topic = event.topic.clone();
-        if trigger.pass_device
-            && let Some(device_id) = device_of(&event.payload)
-            && !entry.device_ids.contains(&device_id)
-        {
-            entry.device_ids.push(device_id);
-        }
+        let kept = {
+            let mut pending = pendings.0.lock();
+            let entry = pending
+                .entry(trigger.id.clone())
+                .or_insert_with(|| Pending {
+                    trigger_id: trigger.id.clone(),
+                    fire_at: now + trigger.debounce_s as i64 * 1000,
+                    topic: event.topic.clone(),
+                    ..Pending::default()
+                });
+            entry.events += 1;
+            entry.topic = event.topic.clone();
+            if trigger.pass_device
+                && let Some(device_id) = device_of(&event.topic, &event.payload)
+                && !entry.device_ids.contains(&device_id)
+            {
+                entry.device_ids.push(device_id);
+            }
+            entry.clone()
+        };
+        keep(app, &trigger.id, &kept);
     }
 }
 
@@ -165,32 +223,58 @@ async fn sweep(app: &App) {
             .filter_map(|id| pending.remove(&id).map(|entry| (id, entry)))
             .collect()
     };
+    // Switched off while a window was open, or before a restart that brought
+    // one back: the burst is let go, as one arriving now would never be kept.
+    let listening = Settings::load(app).triggers_enabled;
     for (id, entry) in due {
-        let Ok(mut trigger) = db::trigger(app, &id) else {
+        if !listening {
+            forget(app, &id);
+            continue;
+        }
+        let Ok(trigger) = db::trigger(app, &id) else {
+            forget(app, &id);
             continue;
         };
         if !trigger.enabled {
+            forget(app, &id);
             continue;
         }
         // Still running from last time: hold the burst for another window
         // rather than losing it, and never run two at once.
         let Some(guard) = state.start_firing(&trigger.id) else {
-            let mut pending = pendings.0.lock();
-            pending.insert(
-                id,
-                Pending {
-                    fire_at: now + (trigger.debounce_s.max(5) as i64 * 1000),
-                    ..entry
-                },
-            );
+            let held = Pending {
+                fire_at: now + (trigger.debounce_s.max(5) as i64 * 1000),
+                ..entry
+            };
+            keep(app, &id, &held);
+            pendings.0.lock().insert(id, held);
             continue;
         };
+        // The burst is spent and the firing counted before anything is
+        // called, on the record as it is stored: a process that dies in the
+        // action does not fire the same burst again when it comes back.
+        forget(app, &id);
+        let counted = {
+            let _records = state.records();
+            match db::trigger(app, &id) {
+                Ok(mut stored) => {
+                    stored.last_fired_at = Some(now);
+                    stored.fired_count += 1;
+                    app.store()
+                        .put(db::TRIGGERS, &stored.id, &stored)
+                        .ok()
+                        .map(|_| stored)
+                }
+                Err(_) => None,
+            }
+        };
+        let Some(trigger) = counted else {
+            continue;
+        };
+        app.publish("triggers.changed", &trigger);
 
         let extra =
             (!entry.device_ids.is_empty()).then(|| json!({"device_ids": entry.device_ids.clone()}));
-        trigger.last_fired_at = Some(now);
-        trigger.fired_count += 1;
-
         let app = app.clone();
         tokio::spawn(async move {
             let _guard = guard;
@@ -215,8 +299,22 @@ async fn sweep(app: &App) {
                     None
                 }
             };
-            trigger.last_job_id = job_id.clone();
-            let _ = app.store().put(db::TRIGGERS, &trigger.id, &trigger);
+            // Onto the record as it is now: deleted while the action ran, it
+            // stays deleted; edited, it keeps the edit.
+            let stored = {
+                let state = app.state::<AutomationState>();
+                let _records = state.records();
+                match db::trigger(&app, &trigger.id) {
+                    Ok(mut stored) => {
+                        stored.last_job_id = job_id.clone();
+                        app.store()
+                            .put(db::TRIGGERS, &stored.id, &stored)
+                            .ok()
+                            .map(|_| stored)
+                    }
+                    Err(_) => None,
+                }
+            };
             app.publish(
                 "triggers.fired",
                 &json!({
@@ -227,7 +325,9 @@ async fn sweep(app: &App) {
                     "device_ids": entry.device_ids,
                 }),
             );
-            app.publish("triggers.changed", &trigger);
+            if let Some(stored) = stored {
+                app.publish("triggers.changed", &stored);
+            }
             // Held until the work it started is done, so the next burst waits.
             schedules::wait_for(&app, &job_id).await;
         });
@@ -296,6 +396,8 @@ pub fn register(builder: &mut AppBuilder) {
 
     router.add("triggers.save", |app: App, params: SaveParams| async move {
         let name = db::require_name(&params.name, "trigger")?;
+        let state = app.state::<AutomationState>();
+        let records = state.records();
         let existing = params
             .id
             .as_ref()
@@ -325,6 +427,7 @@ pub fn register(builder: &mut AppBuilder) {
         };
         check(&app, &trigger)?;
         app.store().put(db::TRIGGERS, &trigger.id, &trigger)?;
+        drop(records);
         app.audit(
             "triggers.save",
             None,
@@ -339,9 +442,15 @@ pub fn register(builder: &mut AppBuilder) {
     });
 
     router.add("triggers.delete", |app: App, params: IdParams| async move {
-        let trigger = db::trigger(&app, &params.id)?;
-        app.store().delete(db::TRIGGERS, &params.id)?;
+        let trigger = {
+            let state = app.state::<AutomationState>();
+            let _records = state.records();
+            let trigger = db::trigger(&app, &params.id)?;
+            app.store().delete(db::TRIGGERS, &params.id)?;
+            trigger
+        };
         app.state::<Pendings>().0.lock().remove(&params.id);
+        forget(&app, &params.id);
         app.audit(
             "triggers.delete",
             None,
@@ -385,7 +494,39 @@ pub fn register(builder: &mut AppBuilder) {
     );
 }
 
+/// Bursts the previous process was still collecting when it ended. Each fires
+/// when its window closes, or at the first sweep if it closed while nothing
+/// was running; one that closed longer ago than a schedule would catch up on
+/// is let go, and the log says so.
+fn restore(app: &App) {
+    let Ok(kept) = app.store().list::<Pending>(db::TRIGGER_PENDING) else {
+        return;
+    };
+    let state = app.state::<AutomationState>();
+    let window_ms = Settings::load(app).catch_up_within_s as i64 * 1000;
+    let now = state.now_ms();
+    let pendings = app.state::<Pendings>();
+    for pending in kept {
+        let id = pending.trigger_id.clone();
+        if db::trigger(app, &id).is_err() {
+            forget(app, &id);
+            continue;
+        }
+        if now - pending.fire_at > window_ms {
+            tracing::warn!(
+                trigger = %id,
+                events = pending.events,
+                "a trigger's burst closed too long before this start to be fired now"
+            );
+            forget(app, &id);
+            continue;
+        }
+        pendings.0.lock().insert(id, pending);
+    }
+}
+
 pub fn spawn(app: &App) {
+    restore(app);
     // Subscribed here rather than inside the task, so nothing published
     // between `spawn` and the task's first poll is missed.
     app.spawn(
@@ -421,13 +562,49 @@ mod tests {
     #[test]
     fn the_device_an_event_is_about_is_found_where_events_put_it() {
         assert_eq!(
-            device_of(&json!({"device_id": "d1"})).as_deref(),
+            device_of("alerts.raised", &json!({"device_id": "d1"})).as_deref(),
             Some("d1")
         );
         assert_eq!(
-            device_of(&json!({"device": {"id": "d2"}})).as_deref(),
+            device_of("alerts.raised", &json!({"device": {"id": "d2"}})).as_deref(),
             Some("d2")
         );
-        assert_eq!(device_of(&json!({"nothing": true})), None);
+        assert_eq!(device_of("alerts.raised", &json!({"nothing": true})), None);
+        // An event about a device may name it by its own id; any other event's
+        // id is its own (an alert's, a change's, a job's).
+        assert_eq!(
+            device_of("devices.changed", &json!({"id": "d3"})).as_deref(),
+            Some("d3")
+        );
+        assert_eq!(device_of("alerts.raised", &json!({"id": "alert-17"})), None);
+        assert_eq!(device_of("changes.changed", &json!({"id": "chg-1"})), None);
+    }
+
+    #[test]
+    fn a_pattern_is_refused_when_it_takes_in_what_a_trigger_s_own_run_publishes() {
+        for pattern in [
+            "jobs.changed",
+            "jobs.",
+            "jobs.*",
+            "jobs",
+            "job*",
+            "*",
+            "t*",
+            "auto*",
+            "automation.runs.changed",
+            "tasks",
+        ] {
+            assert!(takes_in_own(pattern), "{pattern}");
+        }
+        for pattern in [
+            "alerts.raised",
+            "alerts.",
+            "alerts.*",
+            "devices.state",
+            "changes.",
+        ] {
+            assert!(!takes_in_own(pattern), "{pattern}");
+        }
+        assert!(is_own("jobs.changed") && is_own("triggers.fired") && !is_own("alerts.raised"));
     }
 }

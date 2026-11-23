@@ -21,9 +21,10 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::db::collections;
-use crate::model::{DeviceHealth, DeviceRecord, IfStatus, Sources};
-use crate::rates::{self, Interval};
-use crate::read::{self, Reading};
+use crate::model::{DeviceHealth, DeviceRecord, IfStatus, QosStatus, Sources};
+use crate::qos::{self, QosReading};
+use crate::rates::{self, Interval, TimeBase};
+use crate::read::{self, QosRead, Reading};
 use crate::settings::{LAB_CLI_INTERVAL_S, MonitorSettings, PING_COUNT};
 use crate::state::{CounterSource, DeviceRuntime, MonitorState};
 
@@ -73,6 +74,17 @@ pub struct Poll {
     pub sources: Sources,
     /// The device's uptime went backwards: counters were discarded.
     pub rebooted: bool,
+    /// Whether this poll asked for the per-class QoS statistics and got
+    /// them: `None` when it did not ask (not due, or nothing to ask).
+    pub qos_read: Option<bool>,
+    /// The classes it read, with the rates of the interval that ended with
+    /// this read.
+    pub qos: Vec<QosStatus>,
+    /// Whether `qos` is every class the device has as of this poll: after a
+    /// read that worked, and when the device can no longer be asked and its
+    /// classes were dropped (`qos` is then empty). What lets the rules tell
+    /// a class that is gone from one this read could not measure.
+    pub qos_complete: bool,
 }
 
 impl Poll {
@@ -228,6 +240,12 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         match read::over_snmp(app, &device, &state.snmp, &state.sessions).await {
             Ok(read) => {
                 poll.sources.snmp.ok = Some(true);
+                // The agent answered, so the source is fine; what it said
+                // that a health figure could not be made of is said on the
+                // source, which the device's page shows beside it.
+                if !read.health_problems.is_empty() {
+                    poll.sources.snmp.error = Some(read.health_problems.join("; "));
+                }
                 if !poll.ok {
                     // SNMP answering is proof the device is there.
                     poll.ok = true;
@@ -248,22 +266,73 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
 
     let cli_due = cli_due(&state, &device, &plan, &settings, reading.is_some(), tick);
     poll.sources.cli.enabled = plan.cli && (plan.lab || !plan.snmp);
-    if cli_due && (poll.ok || !plan.icmp) {
-        poll.sources.cli.at = Some(at);
-        state.device(&device.id, |runtime| runtime.last_cli_mono = Some(tick));
-        match read::over_cli(app, &device.id).await {
-            Ok(read) => {
-                poll.sources.cli.ok = Some(true);
+    // QoS is read over the command line whatever the interfaces are read
+    // over, on its own cadence, from devices whose profile has the read.
+    let platform = nocturne_app::profiles::registry(app).get(&device.profile);
+    let qos_asked_of = plan.cli && platform.as_deref().is_some_and(qos::reads);
+    let qos_unverified = platform
+        .as_deref()
+        .is_some_and(|platform| platform.profile.is_unverified(Kind::Qos));
+    let qos_due = qos_asked_of
+        && qos::due(
+            plan.lab,
+            &settings,
+            state.device(&device.id, |runtime| runtime.last_qos_mono),
+            tick,
+        );
+    // The command line of a device that does not answer is not tried.
+    let reachable = poll.ok || !plan.icmp;
+    // The device's own account of its time, for the QoS interval: the
+    // `sysUpTime` this poll has just read where SNMP answered, to the
+    // hundredth of a second and for no further command; the uptime the
+    // session itself reads otherwise.
+    let snmp_base = reading.as_ref().and_then(|(read, _)| read.time_base);
+    let want = read::Want {
+        interfaces: cli_due && reachable,
+        qos: qos_due && reachable,
+        uptime: snmp_base.is_none(),
+    };
+    let mut qos_read: Option<QosRead> = None;
+    let mut qos_base = snmp_base;
+    if want.interfaces || want.qos {
+        if want.interfaces {
+            poll.sources.cli.at = Some(at);
+        }
+        state.device(&device.id, |runtime| {
+            if want.interfaces {
+                runtime.last_cli_mono = Some(tick);
+            }
+            if want.qos {
+                runtime.last_qos_mono = Some(tick);
+            }
+        });
+        // One session for everything this poll wants of the command line.
+        match read::over_cli(app, &device.id, want).await {
+            Ok(answer) => {
+                if want.interfaces {
+                    poll.sources.cli.ok = Some(true);
+                }
                 if !poll.ok {
                     poll.ok = true;
                     poll.via = Some("cli".into());
                     poll.error = None;
                 }
-                reading = Some((read, CounterSource::Cli));
+                // The session's own reading of the uptime was taken beside
+                // the counters, so it is the one they are measured against.
+                qos_base = answer.time_base.or(qos_base);
+                qos_read = answer.qos;
+                if let Some(read) = answer.reading {
+                    reading = Some((read, CounterSource::Cli));
+                }
             }
             Err(error) => {
-                poll.sources.cli.ok = Some(false);
-                poll.sources.cli.error = Some(error.message.clone());
+                if want.interfaces {
+                    poll.sources.cli.ok = Some(false);
+                    poll.sources.cli.error = Some(error.message.clone());
+                }
+                if want.qos {
+                    qos_read = Some(QosRead::Failed(error.message.clone()));
+                }
                 if !poll.ok && poll.error.is_none() {
                     poll.error = Some(error.message);
                 }
@@ -273,7 +342,7 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
 
     // ------------------------------------------------------- rates and gaps
     if let Some((reading, source)) = &reading {
-        let outcome = state.device(&device.id, |runtime| apply(runtime, reading, *source, at));
+        let outcome = state.device(&device.id, |runtime| apply(runtime, reading, *source, tick));
         poll.rebooted = outcome.rebooted;
         poll.interfaces_read = reading.interfaces_read;
         poll.health = DeviceHealth {
@@ -336,6 +405,72 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         });
     }
 
+    // ------------------------------------------------------------------ QoS
+    let qos_outcome = match qos_read {
+        Some(QosRead::Classes { classes, left_out }) => {
+            let mut applied = state.device(&device.id, |runtime| {
+                qos::apply(
+                    &mut runtime.qos,
+                    &QosReading {
+                        device_id: &device.id,
+                        classes: &classes,
+                        base: qos_base.unwrap_or(TimeBase::Wall),
+                        tick,
+                        at,
+                        unverified: qos_unverified,
+                    },
+                    settings.qos_max_series as usize,
+                )
+            });
+            // Among the poll's measures, so the rules judge them like any
+            // other and they are written with the rest.
+            poll.measures.append(&mut applied.measures);
+            poll.qos = applied.rows.clone();
+            poll.qos_read = Some(true);
+            poll.qos_complete = true;
+            Some(qos::Outcome::Read {
+                applied,
+                left_out,
+                unverified: qos_unverified,
+            })
+        }
+        Some(QosRead::Failed(error)) => {
+            // The counters held from the last read are now next to an
+            // unknown stretch of time, as an interface's are after a failed
+            // poll: the next read is a baseline, not a rate across the gap.
+            state.device(&device.id, |runtime| runtime.qos.forget());
+            poll.qos_read = Some(false);
+            Some(qos::Outcome::Failed {
+                error,
+                unverified: qos_unverified,
+            })
+        }
+        None if qos_due => {
+            // Due, and the device was not answering: not asked, and for the
+            // counters that is the same as asked and lost.
+            state.device(&device.id, |runtime| runtime.qos.forget());
+            Some(qos::Outcome::NotReached {
+                error: match &poll.error {
+                    Some(error) => format!(
+                        "the device was not answering, so its QoS statistics were not read: {error}"
+                    ),
+                    None => "the device was not answering, so its QoS statistics were not read"
+                        .to_string(),
+                },
+                unverified: qos_unverified,
+            })
+        }
+        None if !qos_asked_of => {
+            // Nothing can be asked: the device has no classes as far as
+            // anything here is concerned, and what it last left to subtract
+            // from would be a baseline from before a hole of any length.
+            state.device(&device.id, |runtime| runtime.qos.forget());
+            poll.qos_complete = true;
+            Some(qos::Outcome::Unsupported)
+        }
+        None => None,
+    };
+
     poll.measures
         .push(Measure::new("up", "", if poll.ok { 1.0 } else { 0.0 }));
 
@@ -372,6 +507,10 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
         record.up_since = Some(state.now());
     }
     poll.up_since = record.up_since;
+    let qos_changed = match &qos_outcome {
+        Some(outcome) => qos::settle(app, &mut record.qos, &device.id, at, outcome)?,
+        None => false,
+    };
     app.store().put(collections::DEVICES, &device.id, &record)?;
 
     // ------------------------------------------------------------- storing
@@ -379,6 +518,9 @@ pub async fn poll_device(app: &App, device_id: &str) -> AppResult<Poll> {
     if poll.interfaces_read {
         crate::interfaces::replace(app, &device.id, &poll.interfaces)?;
         app.publish("monitor.interfaces", &json!({"device_id": device.id}));
+    }
+    if qos_changed {
+        qos::announce(app, &device.id);
     }
     store_collected(app, &state, &device, &reading, &settings, tick)?;
 
@@ -485,15 +627,18 @@ pub struct ReadingOutcome {
 
 /// Turn a reading plus what the previous poll left into rates, and leave the
 /// new counters behind for the next one.
+///
+/// `tick` is the poller's own clock at this reading, one that is never set
+/// back ([`crate::clock::Clock::monotonic_ms`]).
 pub fn apply(
     runtime: &mut DeviceRuntime,
     reading: &Reading,
     source: CounterSource,
-    at: i64,
+    tick: i64,
 ) -> ReadingOutcome {
     let elapsed = match (runtime.time_base, reading.time_base) {
         (Some(previous), Some(current)) => {
-            rates::interval(previous, current, at - runtime.counters_at)
+            rates::interval(previous, current, tick - runtime.counters_at)
         }
         _ => Interval::Unusable,
     };
@@ -544,7 +689,7 @@ pub fn apply(
         .map(|raw| (raw.name.clone(), raw.counters))
         .collect();
     runtime.time_base = reading.time_base;
-    runtime.counters_at = at;
+    runtime.counters_at = tick;
     runtime.counters_from = Some(source);
     ReadingOutcome {
         interfaces,

@@ -12,7 +12,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nocturne_app::model::{Credential, Device, SnmpAccess};
 use nocturne_app::{App, AppError, AppResult, credentials};
-use nocturne_snmp::{Auth, AuthParts, AuthProblem, Client, ClientConfig, Oid, Value, VarBind};
+use nocturne_snmp::{
+    Auth, AuthParts, AuthProblem, Client, ClientConfig, Oid, SnmpError, Value, VarBind,
+};
 
 /// One row of a walked table: the index below the column OIDs, and the value
 /// of each column that had one.
@@ -43,6 +45,22 @@ impl TableRow {
 #[async_trait]
 pub trait SnmpSession: Send + Sync {
     async fn get(&mut self, oids: &[Oid]) -> Result<Vec<VarBind>, String>;
+    /// GET, with an object the agent does not have as an answer rather than
+    /// an error: one value per OID asked, in order, `None` where there is no
+    /// such object or instance. Only a failure of the request itself (a
+    /// timeout, an error status other than SNMPv1's noSuchName) is an error.
+    async fn get_each(&mut self, oids: &[Oid]) -> Result<Vec<Option<Value>>, String> {
+        let binds = self.get(oids).await?;
+        Ok(oids
+            .iter()
+            .map(|oid| {
+                binds
+                    .iter()
+                    .find(|bind| bind.oid == *oid && !bind.value.is_exception())
+                    .map(|bind| bind.value.clone())
+            })
+            .collect())
+    }
     /// Walk several columns of one table and pivot by row index.
     async fn table(&mut self, columns: &[Oid], limit: usize) -> Result<Vec<TableRow>, String>;
     /// Whether this session can ask for 64-bit counters (v2c and v3 can, v1 cannot).
@@ -78,6 +96,59 @@ struct ClientSession {
 impl SnmpSession for ClientSession {
     async fn get(&mut self, oids: &[Oid]) -> Result<Vec<VarBind>, String> {
         self.client.get(oids).await.map_err(|err| err.to_string())
+    }
+
+    /// SNMPv1 has no exception values: one missing object fails the whole
+    /// request with noSuchName and the error-index of the culprit. That OID
+    /// is set aside as absent and the rest asked again, so one object a
+    /// release does not have cannot cost the others, or the poll.
+    async fn get_each(&mut self, oids: &[Oid]) -> Result<Vec<Option<Value>>, String> {
+        const NO_SUCH_NAME: u32 = 2; // RFC 1157
+        let mut answers: Vec<Option<Value>> = vec![None; oids.len()];
+        // Positions in `oids` still to be asked for, in order.
+        let mut pending: Vec<usize> = (0..oids.len()).collect();
+        while !pending.is_empty() {
+            let asked: Vec<Oid> = pending.iter().map(|&at| oids[at].clone()).collect();
+            match self.client.get(&asked).await {
+                Ok(binds) => {
+                    for (&at, bind) in pending.iter().zip(binds) {
+                        if bind.oid == oids[at] && !bind.value.is_exception() {
+                            answers[at] = Some(bind.value);
+                        }
+                    }
+                    break;
+                }
+                Err(SnmpError::Agent { status, index, .. }) if status == NO_SUCH_NAME => {
+                    match (index as usize).checked_sub(1) {
+                        Some(blamed) if blamed < pending.len() => {
+                            pending.remove(blamed);
+                        }
+                        // No usable index: nothing says which one it was,
+                        // so each is asked on its own.
+                        _ => {
+                            for &at in &pending {
+                                match self.client.get(std::slice::from_ref(&oids[at])).await {
+                                    Ok(binds) => {
+                                        answers[at] = binds
+                                            .into_iter()
+                                            .find(|bind| {
+                                                bind.oid == oids[at] && !bind.value.is_exception()
+                                            })
+                                            .map(|bind| bind.value);
+                                    }
+                                    Err(SnmpError::Agent { status, .. })
+                                        if status == NO_SUCH_NAME => {}
+                                    Err(err) => return Err(err.to_string()),
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        Ok(answers)
     }
 
     async fn table(&mut self, columns: &[Oid], limit: usize) -> Result<Vec<TableRow>, String> {

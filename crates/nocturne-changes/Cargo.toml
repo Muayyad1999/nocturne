@@ -27,6 +27,10 @@ async-trait.workspace = true
 # Tests need one device that is *not* a lab device: a fake switch served over
 # a real SSH socket on localhost.
 nocturne-transport.workspace = true
+# And a router that refuses what IOS refuses: a QoS change is rehearsed on the
+# simulator, which will not remove a policy map in use or attach a second
+# policy in one direction. An engine, not a feature.
+nocturne-netsim.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -23,7 +23,7 @@ NewChange.tsx      the three-step wizard: devices → what to do → review and 
 TemplatePicker.tsx `templates.*`, when a build has them (this one does not)
 change.ts          states, tones, words, the stepper          (unit tested)
 approval.ts        the approval gate and the hash binding     (unit tested)
-useChangeJob.ts    following plan / apply / rollback to the end
+useChangeJob.ts    following a plan or an apply to the end
 methods.ts         `app.methods`, to leave out what a build cannot do
 ```
 
@@ -36,6 +36,21 @@ Events: `changes.changed`, `changes.progress`, `jobs.changed`,
 `devices.changed`, `audit.appended`.
 
 ## Decisions
+
+* **"Roll back…" sends nothing** (r9). It used to call `changes.rollback`,
+  which derived commands from the device and sent them at once: the person
+  was asked "Roll back on N devices?" and never saw the lines. Now
+  `changes.rollback` answers a new change (`undoes` set, `{change, job_id}`)
+  and the page opens it. Its page says what it undoes, with a link, and that
+  nothing has been sent and it is approved like any change (`undoNotices` in
+  `change.ts`, unit tested); from there it is the ordinary page — commands,
+  predicted diff, risk, protected hits, the approve bar, Apply. The original
+  names its undo (`undone_by`): waiting, applied, or did not go through. The
+  button is not offered while an undo of the change is waiting (the engine
+  refuses a second), and its candidates are the engine's (`guard_fired`
+  included). It is not offered on an undo either: the engine does not undo
+  an undo, and an applied undo's page says to plan the original again
+  instead.
 
 * **The typed confirmation names the device, and the screen agrees with the
   engine character for character.** `typedConfirmationOk` trims and compares

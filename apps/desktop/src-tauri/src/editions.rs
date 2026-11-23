@@ -24,14 +24,23 @@ fn free() -> Value {
 }
 
 /// The ISP edition's configuration as the packager sees it: its file laid
-/// over the base one, key by key.
+/// over the base one, key by key and all the way down, as `--config` merges
+/// (a JSON merge patch).
 fn isp() -> Value {
+    fn lay(base: &mut Value, over: &Value) {
+        match (base.as_object_mut(), over.as_object()) {
+            (Some(base), Some(over)) => {
+                for (key, value) in over {
+                    lay(base.entry(key.clone()).or_insert(Value::Null), value);
+                }
+            }
+            _ => *base = over.clone(),
+        }
+    }
     let mut merged = free();
     let over: Value = serde_json::from_str(include_str!("../tauri.isp.conf.json"))
         .expect("tauri.isp.conf.json is JSON");
-    for (key, value) in over.as_object().expect("an object") {
-        merged[key] = value.clone();
-    }
+    lay(&mut merged, &over);
     merged
 }
 
@@ -82,6 +91,39 @@ fn both_editions_can_be_installed_on_one_machine() {
         free["identifier"], isp["identifier"],
         "one identifier would make the two editions each other's \"already running\" copy"
     );
+}
+
+/// Both editions keep their data in one folder, `%APPDATA%\Nocturne` on
+/// Windows, and the server opens it too. The Windows uninstaller's "Delete
+/// the application data" box removes only the folders named after the
+/// identifier; the hook says where the rest stayed. It must never delete
+/// that folder: uninstalling one edition would take the other's inventory,
+/// credentials and key with it.
+#[test]
+fn uninstalling_one_edition_says_where_the_shared_data_stays_and_deletes_none_of_it() {
+    for edition in [free(), isp()] {
+        assert_eq!(
+            edition["bundle"]["windows"]["nsis"]["installerHooks"], "./windows/hooks.nsh",
+            "{}",
+            edition["productName"]
+        );
+    }
+    let hooks = include_str!("../windows/hooks.nsh");
+    assert!(hooks.contains("!macro NSIS_HOOK_POSTUNINSTALL"));
+    assert!(hooks.contains(r"$APPDATA\Nocturne"));
+    let commands: Vec<String> = hooks
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| !line.starts_with(';'))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    for deleting in ["rmdir", "delete", "deleteregkey"] {
+        assert!(
+            !commands.iter().any(|command| command == deleting),
+            "the uninstaller hook runs `{deleting}`"
+        );
+    }
 }
 
 #[test]

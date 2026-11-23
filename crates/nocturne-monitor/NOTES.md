@@ -4,7 +4,7 @@ Spec: `docs/dev/features/monitor.md`. Conventions: `docs/dev/features/README.md`
 
 ## State: complete
 
-297 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
+381 tests, `cargo clippy -p nocturne-monitor --all-targets -- -D warnings`
 clean, `cargo fmt` applied, no `unsafe`.
 
 ```
@@ -17,9 +17,13 @@ src/
   probe.rs        Reachability trait (ping + tcp) over nocturne-netprobe
   snmp.rs         SnmpSession / SnmpTransport traits, RealSnmp, per-device session cache
   read.rs         one `Reading` shape from either SNMP or the CLI collector
-  rates.rs        counter deltas over uptime deltas: wrap, reboot, unusable
+  rates.rs        counter deltas over uptime deltas: wrap, reboot, unusable,
+                  an uptime printed to the minute
+  qos.rs          per-class QoS: the series instance, rates from two reads,
+                  the cap, the monitor_qos table, coverage, monitor.qos
   poll.rs         one poll: reach, read, rates, damping, samples, events; poll_now job
-  db.rs           own tables (monitor_interfaces, monitor_alerts) + collections
+  db.rs           own tables (monitor_interfaces, monitor_qos, monitor_alerts,
+                  monitor_checks, monitor_check_events) + collections
   interfaces.rs   the interface table, filtered/sorted/paged in SQL
   ifindex.rs      ifIndex → interface name per device, stored; monitor.ifindex
   alerts.rs       lifecycle keyed on dedup_key; who is told and when
@@ -42,6 +46,7 @@ src/
     rpc.rs        checks.* (list/get/save/delete/run_now/history/kinds)
   testing.rs      fake probe, fake SNMP agents, Harness
   tests/          polling, counters, health, lifecycle, scheduling, notifications,
+                  profile_blocks (the `snmp:` block of every built-in profile),
                   live (in-process SNMP Agent + CLI), snmpd (real net-snmp), rpc,
                   checks (the five states, history, alerting, scheduling),
                   check_history (what the history may claim), check_definitions
@@ -50,7 +55,9 @@ src/
                   check_engines (real listeners), listeners + certificates
                   (the servers those tests start),
                   routing (alerts.raise notify, alerts.clear, lab alerts),
-                  owed (notices paid by the scheduler's pass), ifindex
+                  owed (notices paid by the scheduler's pass), ifindex,
+                  qos (the simulator's edge router end to end; hand-written
+                  listings for restarts, cleared counters and failed reads)
 ```
 
 ## Decisions worth remembering
@@ -438,6 +445,158 @@ when a run started, but `CheckState` does not keep it.
   to drop the CLI's counters, so the fallback never produced a rate. The
   same knowledge stops a CLI reading being re-filed in the collected store
   as `snmp` (it used to be, with most of its fields gone).
+
+### Health over SNMP (`read.rs`; the format in `docs/profiles.md`, section `snmp`)
+
+* **Every vendor fact is in the profile.** The reader knows SNMP, the
+  arithmetic an entry may ask for (`absent`, `si_scale`, `precision`,
+  `scale`, `complement`), and what cannot be a CPU load, a memory figure or
+  a temperature. The one it replaced read every OID of a list, averaged
+  CPU over all of them, took memory's "first" with every scalar before
+  every column, and kept every row of a temperature column as a sensor:
+  that is how RouterOS showed 330 °C for 33.0, Linux 80 % for a saturated
+  host and its free memory as used, Junos a five-minute load averaged with
+  the zeros of fans, and ProCurve fans as 0 °C thermometers.
+* **One CPU row out of range spoils the entry**, not only their mean: 20
+  and 170 average to a plausible 95.
+* **Two sensors of one name store neither**, whatever their values, and
+  that is decided before the range check, so the outcome cannot change
+  from one poll to the next.
+* **The tolerant GET is `ClientSession::get_each`**: on SNMPv1's
+  noSuchName the object the error-index names is set aside and the rest
+  asked again (without an index, one at a time). The trait's default goes
+  through `get`, so the fakes did not change. The reader asks one entry
+  per request, so a missing object can only ever cost its own figure.
+* **`fallback` (temperature only) was not in the audit's design.** It is
+  there so a RouterOS board older than the gauge table keeps its
+  temperature from the tenths scalars, without a board that has both
+  reporting every sensor twice.
+* **`FakeSession::table` answers as an agent does**: an OID under a column
+  is a cell of the row named by the rest of it (one arc or several), the
+  cells of one index are one row, rows come in index order, and no more
+  than `limit` of them. It used to file every scalar as a one-cell row of
+  its own, by its last arc only.
+* **How the tests were checked.** Each rule of the reader and each block
+  was broken on purpose, one at a time, and the test named for it failed
+  (26 such breaks). The old reader, put back as it was, passes
+  `a_plain_block_with_one_entry_a_list_reads_as_it_always_did` and fails
+  the tests of what changed; with the old blocks as well, every test of a
+  built-in block fails except the two written as guards
+  (`a_routeros_without_row_65536…`, `ios_memory_is_still_the_processor_pool`).
+* **The real-agent tests ask whether `snmpd` answers with the `generic`
+  profile** before they read it with `linux`. Waiting for it with the
+  profile under test turned a read that profile broke into "snmpd would not
+  start here", a skipped test, which is how one break got past them once.
+  For the same reason the memory check asks the agent itself whether it
+  serves memSysAvail.0 (review): "no memory figure" passes only for an agent
+  without it, so a block that stopped reading it cannot pass for an old one.
+* **Problems are said once per group** (review). Out-of-range sensors of
+  one entry are one sentence with a count, and so are the names shared by
+  the same entries; sharing is counted in one pass. Before, every row was a
+  sentence and every name was compared with every other: a 19,999-row
+  column read in the wrong unit took 3.9 s and put 2.4 MB in
+  `sources.snmp.error`, the same column listed twice 23.5 s and 4.1 MB, on
+  the poll's task, at every poll. Now 0.3 s and one sentence each.
+* **`signed`** (review). RouterOS before 7.12 sends `mtxrGaugeValue` as a
+  Gauge32 (7.12's changelog: "changed mtxrGaugeValue type to integer"; a
+  7.6 board showed -1 °C as 4294967295), so an outdoor board below zero on
+  6.47 to 7.11 lost its temperature to the range check, and the tenths
+  scalar that would have said it was never read (the table had answered).
+  The entry key reads the 32-bit two's complement back; the series keep
+  their names on both sides of zero.
+* **Junos CPU: zero is no reading** (review), as it already was for the
+  temperature: Juniper documents jnxOperatingCPU as returning zero "if the
+  data is not available", and its own examples show running Routing
+  Engines at 3 to 74 % and the standby ones at 0.
+
+### QoS (`qos.rs`; contract in `docs/dev/spec-qos.md`, the poller's part in monitor.md)
+
+* **One CLI session per poll.** `read::over_cli` takes a `Want` and asks the
+  collector for the union: interfaces + health when the CLI fallback is due,
+  qos when QoS is due, health alone beside qos when nothing else has told
+  the device's uptime. On an SNMP-polled device the uptime *is* this poll's
+  `sysUpTime`, so the QoS session sends the QoS commands and nothing else.
+* **An uptime printed to the minute** would have made every QoS rate on IOS
+  wrong by up to 20 % at the five-minute cadence, and on a lab device (30 s)
+  a gap every other read and half the true rate in between: two readings in
+  the same minute are 0 s apart by the device's account, the next pair 60.
+  This was already true of interface rates read over the CLI and nobody had
+  looked. `rates::interval` now lets the poller's monotonic clock measure
+  the interval when both uptimes are whole minutes and the two clocks agree
+  to within 90 s (a minute of rounding, half a minute of login jitter); the
+  device's account stands otherwise. "Whole minutes both times" is inferred
+  from the numbers, not from the vendor: an uptime printed to the second
+  hits it one time in 3,600, and then the poller's clock is still right to
+  within a login. `DeviceRuntime::counters_at` became a monotonic reading
+  for the same reason (it was a time of day).
+* **The instance is escaped as little as possible** so that what insights
+  already parses (`splitn(3, '|')`, then `rsplit_once('/')`) stays right:
+  only `|` in the interface, `/` in the class and `%` in either. The policy
+  is verbatim — it is the middle, and the middle needs no escaping when the
+  two ends cannot contain their separator.
+* **A class is identified by five names for counters and by its instance
+  for series**, and they are checked separately. Counters are paired across
+  reads on (interface, direction, policy, class, parent); two rows equal in
+  all five get no rates. Instances that collide get the parent written
+  before the policy, and those still colliding get none. `parent` names
+  only the class, not its policy, so a three-level policy that repeats a
+  policy under two classes of the same name cannot be told apart — it gets
+  the table and nothing else, on purpose.
+* **Parents are not filtered out.** A class that holds a child policy counts
+  its children's drops, so a congested child is over the rule's threshold on
+  its own row and on the shaper's: two alerts for one cause. Dropping the
+  parent's `qos.queue_drop_ps` would need to know which rows are parents,
+  and `parent` matches by class name alone (`class-default` at two levels
+  both look like the parent of the inner classes) — a wrong guess would
+  silence the leaf class where congestion drops actually land. Noise was
+  chosen over a missed alert. Fixing it properly needs the parent's policy
+  on the row (drivers).
+* **A due read on a device that does not answer is a failed read, once.**
+  The CLI is not tried (as for the CLI fallback), the held counters are
+  dropped and the rates come off the table; `settle` reports a change only
+  on the transition from `ok`, so a device that is down for a day publishes
+  one `monitor.qos.updated`, not 1,440. A device never read stays `never`.
+* **`drop_pct` trusts the model's definition of `packets`** (classified into
+  the class, drops included). IOS counts that way. RouterOS's `packets` has
+  not been checked against a real device (its read is `unverified`); if it
+  leaves drops out the share is overstated, and above 50 % loss it is not
+  written at all (more dropped than offered).
+* **The fake device is always a lab device** (the core's `SimConnector`), so
+  the tests run the 30 s lab cadence end to end and the 300 s default is
+  covered at `qos::due`. The SNMP-polled path does run end to end: a lab
+  device with a fake agent, and the QoS and CLI-fallback phases put out of
+  step (`qos_alone_due` in the tests), which is what a device on the real
+  network has at every QoS read.
+* **Pages carry on from a place, not a position** (review). `seq` is the
+  row's position at the last read; on a router with a queue per subscriber
+  classes come and go at every read, and a cursor that was a position
+  skipped or repeated as many classes as had come or gone before it (seen:
+  nine skipped out of 5,000). The cursor is now the last row's
+  `qos::sort_key` — the stable order spelled as bytes that compare as the
+  names do, stored in `monitor_qos.sort_key` — with `seq` only to tell
+  apart classes nothing else does. It is as long as the names it holds.
+* **The rules know which classes exist** (review). `Poll::qos_complete`
+  says `poll.qos` is every class the device has (a read that worked, or a
+  device that can no longer be asked, with no rows). A threshold whose
+  metric begins `qos.` then treats a class that is there and unmeasured as a
+  gap (`Verdict::Unknown`) and one that is not there as gone. Before, a
+  counter cleared on one congested class resolved its alert as "no longer
+  reported" while the others were measured (and it fired anew after
+  `for_s`), and a policy taken off left its alerts open for good, since a
+  read with no measures said nothing at all. Only for `qos.`-prefixed
+  metrics: a glob like `*` mixes namespaces, and the interface rules keep
+  their old behaviour.
+* **A QoS-only session waits 5 s for the device's gate** (review;
+  `QOS_SESSION_WAIT_S`). `collect::run` waits 90 s for another automated
+  session on the device; inside an SNMP poll that held the poll's results,
+  its slot and a concurrency permit behind any change or backup on the
+  device, every time QoS fell due. A session that stands in for SNMP still
+  waits the ordinary 90 s.
+* **`metrics::glob` is a loop** (review). The recursive matcher went one
+  frame deeper per byte of the text (a 30,000-byte instance aborted the
+  process on a 2 MiB stack in a debug build) and tried every split of
+  every star (a few stars over a few thousand bytes ran for minutes). QoS
+  instances carry names a device chose, so that was reachable from outside.
 
 ### Polling and alerts
 

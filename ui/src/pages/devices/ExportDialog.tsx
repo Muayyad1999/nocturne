@@ -45,6 +45,14 @@ export function ExportDialog({ open, onClose, selection }: ExportDialogProps) {
   const [format, setFormat] = useState('csv');
   const [scope, setScope] = useState<'all' | 'selected'>(selection.length > 0 ? 'selected' : 'all');
 
+  // The list mounts this dialog once, before anything is ticked, and only
+  // opens and closes it: the default is the selection as it is when it opens.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setScope(selection.length > 0 ? 'selected' : 'all');
+  }
+
   const ids = scope === 'selected' && selection.length > 0 ? [...selection] : undefined;
   const params: ExportParams = { format, ...(ids ? { ids } : {}) };
   const exported = useRpc<ExportResult>('devices.export', params, { enabled: open });

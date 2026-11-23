@@ -7,10 +7,16 @@
 //! that decided calls [`CheckReport::ok`]. Only a device marked `ok` counts
 //! as a clean scan for the resolve logic, so a device that drops out of
 //! collection never silently resolves its own open findings.
+//!
+//! The same holds one level down. A check that decided for a device may still
+//! have been unable to judge one thing on it — one class of a QoS policy
+//! measured too briefly since a failed read — and says so with
+//! [`CheckReport::undecided`]: a finding about that thing is then neither
+//! seen again nor counted clean.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::Finding;
+use crate::model::{Finding, insight_id};
 
 /// One check's outcome over the devices of a scan.
 #[derive(Clone, Debug, Default)]
@@ -19,6 +25,8 @@ pub struct CheckReport {
     pub findings: Vec<Finding>,
     evaluated: BTreeSet<String>,
     skipped: BTreeMap<String, &'static str>,
+    /// Insight ids of the subjects it could not judge.
+    undecided: BTreeSet<String>,
 }
 
 impl CheckReport {
@@ -42,6 +50,20 @@ impl CheckReport {
         if !self.skipped.contains_key(device_id) {
             self.skipped.insert(device_id.to_string(), reason);
         }
+    }
+
+    /// The check could not judge `subject` on this device in this scan,
+    /// whatever it decided about the rest of the device. An open finding
+    /// about it stays as it is: a scan that could not look is not a scan in
+    /// which the problem was gone.
+    pub fn undecided(&mut self, device_id: &str, subject: &str) {
+        self.undecided
+            .insert(insight_id(self.check, device_id, subject));
+    }
+
+    /// The insight ids of the subjects this check could not judge.
+    pub fn undecided_ids(&self) -> &BTreeSet<String> {
+        &self.undecided
     }
 
     /// Record a finding. Its device, and every device it names as related,
@@ -87,6 +109,18 @@ mod tests {
             [("b", "no interface data")]
         );
         assert_eq!(report.evaluated().len(), 1);
+    }
+
+    #[test]
+    fn a_subject_that_could_not_be_judged_is_held_by_its_insight_id_and_decides_nothing() {
+        let mut report = CheckReport::new("qos_class_dropping");
+        report.undecided("a", "Gi0/0 out WAN/BULK");
+        let finding = Finding::new("qos_class_dropping", "a", "Gi0/0 out WAN/BULK", "x");
+        assert!(report.undecided_ids().contains(&finding.id()));
+        assert!(
+            report.evaluated().is_empty() && report.skips().count() == 0,
+            "the device itself is neither decided nor skipped by it"
+        );
     }
 
     #[test]

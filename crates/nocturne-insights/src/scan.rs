@@ -24,8 +24,13 @@ use crate::db;
 use crate::links;
 use crate::model::{Category, Finding, Insight, Severity, State};
 use crate::report::CheckReport;
-use crate::settings::{self, Settings};
+use crate::settings::{self, Problem, Settings};
 use crate::world::{self, AppliedChange, LoadRequest, World};
+
+/// How the reason of a check that a setting kept from running begins. A
+/// scan limited to other checks keeps a check's last row only if that row
+/// is what the check said when it ran, which this is not.
+const COULD_NOT_RUN: &str = "it could not run, because a setting it reads cannot be used";
 
 /// Scans in progress, and devices waiting for the next automatic one.
 #[derive(Default)]
@@ -48,6 +53,11 @@ pub struct CheckCoverage {
     pub findings: usize,
     /// Why it could not decide, worst first: `(reason, devices)`.
     pub reasons: Vec<Reason>,
+    /// When the scan this row is from ran. A scan limited to some checks
+    /// keeps every other check's row from the last scan that ran it, so the
+    /// rows of one coverage need not all be from the same scan.
+    #[serde(default)]
+    pub scanned_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +78,10 @@ pub struct Coverage {
     /// Features that were not there, and the checks that wanted them.
     pub missing_sources: Vec<String>,
     pub took_ms: u64,
+    /// Stored settings this scan could not use: each took its default, and
+    /// the checks that read one did not run.
+    #[serde(default)]
+    pub settings_problems: Vec<Problem>,
 }
 
 /// What a scan did, as the job result and the event payload.
@@ -80,6 +94,8 @@ pub struct Summary {
     pub findings: usize,
     pub checks_run: usize,
     pub took_ms: u64,
+    /// As in the coverage.
+    pub settings_problems: Vec<Problem>,
 }
 
 /// Turn a check's [`Finding`] into the insight the ledger keeps.
@@ -116,37 +132,115 @@ pub(crate) fn to_insight(
     }
 }
 
-fn wanted(settings: &Settings, only: &[String], check: &Check) -> bool {
-    if !only.is_empty() {
-        return only.iter().any(|id| id == check.id);
+/// The row of a check that did not run in this scan, for one reason given
+/// for every device.
+fn not_run(check: &Check, world: &World, enabled: bool, reasons: Vec<String>) -> CheckCoverage {
+    CheckCoverage {
+        check: check.id.to_string(),
+        title: check.title.to_string(),
+        category: check.category,
+        enabled,
+        evaluated: 0,
+        skipped: world.target_count(),
+        findings: 0,
+        reasons: reasons
+            .into_iter()
+            .map(|reason| Reason {
+                reason,
+                devices: world.target_count(),
+            })
+            .collect(),
+        scanned_at: world.now,
     }
-    settings.enabled(check.id)
+}
+
+/// A check whose settings cannot all be used: one reason per bad setting.
+/// It is not switched off — whether it is meant to run is the user's — so it
+/// counts as on and as having evaluated nothing.
+fn could_not_run(check: &Check, world: &World, problems: &[Problem]) -> CheckCoverage {
+    let reasons = problems
+        .iter()
+        .map(|problem| format!("{COULD_NOT_RUN}: {}", problem.message))
+        .collect();
+    not_run(check, world, true, reasons)
+}
+
+/// What a check said the last time a scan ran it, for a scan that was asked
+/// to run others. Only a row of the check having run: one that said it was
+/// switched off, or that a setting kept it from running, is about the
+/// settings of then, and they may have changed since.
+fn last_said(check: &Check, previous: Option<&Coverage>) -> Option<CheckCoverage> {
+    let previous = previous?;
+    let row = previous.checks.iter().find(|row| row.check == check.id)?;
+    if !row.enabled
+        || row
+            .reasons
+            .iter()
+            .any(|reason| reason.reason.starts_with(COULD_NOT_RUN))
+    {
+        return None;
+    }
+    let mut row = row.clone();
+    if row.scanned_at == 0 {
+        // Stored before rows carried their own time: all of them were from
+        // the scan the coverage was.
+        row.scanned_at = previous.scanned_at;
+    }
+    Some(row)
 }
 
 /// Run the checks over a world that is already loaded. Pure apart from the
 /// metric and log queries the checks make themselves, and the one thing a
 /// scan writes: the ledger.
-fn run_checks(world: &World, settings: &Settings, only: &[String]) -> (Vec<db::Outcome>, Coverage) {
+///
+/// `only` names the checks to run, switched off or not: the operator is
+/// explicit. The others are not run, and their rows say why — switched off
+/// if they are, and otherwise what they said the last time they ran
+/// (`previous`), never that they are switched off when they are not.
+fn run_checks(
+    world: &World,
+    settings: &Settings,
+    only: &[String],
+    previous: Option<&Coverage>,
+) -> (Vec<db::Outcome>, Coverage) {
     let mut outcomes = Vec::new();
     let mut coverage = Vec::new();
-    let mut missing: BTreeSet<String> = BTreeSet::new();
 
     for check in catalogue::CHECKS {
-        let enabled = wanted(settings, only, check);
-        if !enabled {
-            coverage.push(CheckCoverage {
-                check: check.id.to_string(),
-                title: check.title.to_string(),
-                category: check.category,
-                enabled: false,
-                evaluated: 0,
-                skipped: world.target_count(),
-                findings: 0,
-                reasons: vec![Reason {
-                    reason: "the check is switched off".into(),
-                    devices: world.target_count(),
-                }],
+        let problems = settings.problems_for(check);
+        let switched_off = settings.switch_readable(check.id) && !settings.enabled(check.id);
+        let runs = if only.is_empty() {
+            !switched_off
+        } else {
+            only.iter().any(|id| id == check.id)
+        };
+        if !runs {
+            coverage.push(if switched_off {
+                not_run(
+                    check,
+                    world,
+                    false,
+                    vec!["the check is switched off".into()],
+                )
+            } else if !problems.is_empty() {
+                could_not_run(check, world, &problems)
+            } else {
+                last_said(check, previous).unwrap_or_else(|| {
+                    not_run(
+                        check,
+                        world,
+                        true,
+                        vec!["not part of this scan, which was limited to other checks".into()],
+                    )
+                })
             });
+            continue;
+        }
+        // Run on a default nobody chose, it would answer the wrong question,
+        // and every finding it did not see would count towards resolving.
+        // Left alone, its findings stay as they were.
+        if !problems.is_empty() {
+            coverage.push(could_not_run(check, world, &problems));
             continue;
         }
         let mut report = CheckReport::new(check.id);
@@ -164,11 +258,6 @@ fn run_checks(world: &World, settings: &Settings, only: &[String]) -> (Vec<db::O
             })
             .collect();
         reasons.sort_by(|a, b| b.devices.cmp(&a.devices).then(a.reason.cmp(&b.reason)));
-        for reason in &reasons {
-            if reason.reason.contains("feature is not installed") {
-                missing.insert(format!("{}: {}", check.id, reason.reason));
-            }
-        }
 
         let found: Vec<Insight> = report
             .findings
@@ -195,14 +284,27 @@ fn run_checks(world: &World, settings: &Settings, only: &[String]) -> (Vec<db::O
             skipped: report.skips().count(),
             findings: found.len(),
             reasons,
+            scanned_at: world.now,
         });
         outcomes.push(db::Outcome {
             check: check.id,
             found,
             evaluated: report.evaluated().clone(),
+            undecided: report.undecided_ids().clone(),
         });
     }
 
+    // From every row, kept ones too: what was missing when a check last ran
+    // is still the reason its row says what it says.
+    let missing: BTreeSet<String> = coverage
+        .iter()
+        .flat_map(|row| {
+            row.reasons
+                .iter()
+                .filter(|reason| reason.reason.contains("feature is not installed"))
+                .map(move |reason| format!("{}: {}", row.check, reason.reason))
+        })
+        .collect();
     let coverage = Coverage {
         scanned_at: world.now,
         devices: world.target_count(),
@@ -212,6 +314,7 @@ fn run_checks(world: &World, settings: &Settings, only: &[String]) -> (Vec<db::O
         missing_sources: missing.into_iter().collect(),
         // Set by the caller, which knows when the scan started.
         took_ms: 0,
+        settings_problems: settings.problems.clone(),
     };
     (outcomes, coverage)
 }
@@ -286,6 +389,14 @@ pub async fn run(app: &App, device_ids: Vec<String>, checks: Vec<String>) -> App
     let _serialised = state.running.lock().await;
     let settings = settings::load(app)?;
     let external = ask_other_features(app).await;
+    // A scan of some checks keeps what the others said last. Read under the
+    // lock, so it is the coverage of the scan before this one. One that
+    // cannot be read leaves those rows saying they were not part of the scan.
+    let previous = if checks.is_empty() {
+        None
+    } else {
+        coverage(app).ok().flatten()
+    };
 
     let app_for_scan = app.clone();
     let for_scan = settings.clone();
@@ -314,7 +425,7 @@ pub async fn run(app: &App, device_ids: Vec<String>, checks: Vec<String>) -> App
                 world.link_source = "neighbors";
             }
         }
-        let (outcomes, coverage) = run_checks(&world, &settings, &checks);
+        let (outcomes, coverage) = run_checks(&world, &settings, &checks, previous.as_ref());
         // Timed before the findings are stored rather than after, because the
         // coverage goes into the same transaction as them: the two must agree,
         // and `took_ms` missing the cost of its own write is a far smaller
@@ -346,6 +457,7 @@ pub async fn run(app: &App, device_ids: Vec<String>, checks: Vec<String>) -> App
         findings,
         checks_run,
         took_ms: coverage.took_ms,
+        settings_problems: coverage.settings_problems.clone(),
     };
     app.publish(
         "insights.changed",
@@ -407,6 +519,12 @@ pub fn start_job(app: &App, device_ids: Vec<String>, checks: Vec<String>) -> App
         .origin("user");
     let job = jobs::start(app, spec, move |ctx| async move {
         let summary = run(ctx.app(), device_ids, checks).await?;
+        for problem in &summary.settings_problems {
+            ctx.warn(format!(
+                "a setting could not be used, so the checks that read it did not run: {}",
+                problem.message
+            ));
+        }
         ctx.info(format!(
             "{} finding(s) over {} device(s): {} new, {} resolved",
             summary.findings, summary.devices, summary.opened, summary.resolved

@@ -131,6 +131,12 @@ fn calls() -> Vec<(String, Value)> {
         ("get_evidence".into(), json!({"id": "ev-term"})),
         ("discovery_results".into(), json!({})),
         ("automation_runs".into(), json!({})),
+        ("qos_status".into(), json!({"device": "SW1"})),
+        (
+            "top_talkers".into(),
+            json!({"by": "conversation", "minutes": 30}),
+        ),
+        ("list_snippets".into(), json!({"device": "SW1"})),
     ]
 }
 
@@ -230,6 +236,15 @@ async fn every_tool_answers_with_something_shaped_for_a_model() {
         ),
         ("10.0.10.77", "what a discovery scan found"),
         ("Nightly version check", "the saved automation tasks"),
+        ("WAN-OUT/class-default", "a QoS class"),
+        (
+            "10.0.0.5 <-> 192.0.2.80",
+            "a conversation the flow records hold",
+        ),
+        (
+            "Port bounce — for test_ios",
+            "the snippet variant for the device",
+        ),
     ] {
         assert!(
             sent.contains(fragment),

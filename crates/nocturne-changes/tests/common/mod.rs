@@ -52,13 +52,63 @@ pub fn verified_profile() -> String {
     )
 }
 
+/// A device type for the fake switch that reads its configuration in another
+/// grammar (`syntax`) and hides what the built-in `secrets_of` hides: its
+/// `config.secrets` are taken from that device type as it ships, not copied,
+/// so a test written with it follows the profile when the profile changes.
+/// The fake keeps any line it does not know as a line of its own, which is
+/// enough of a RouterOS export, a Junos `set` listing or a file of
+/// `key=value` for the change pipeline to plan, send and read back.
+pub fn styled_profile(id: &str, syntax: &str, secrets_of: &str) -> String {
+    let (registry, _) = nocturne_drivers::profile::Registry::builtin();
+    let secrets = &registry
+        .get(secrets_of)
+        .unwrap_or_else(|| panic!("no built-in device type `{secrets_of}`"))
+        .profile
+        .config
+        .secrets;
+    assert!(!secrets.is_empty(), "`{secrets_of}` hides nothing");
+    let list: String = secrets
+        .iter()
+        .map(|pattern| format!("\n    - '{}'", pattern.replace('\'', "''")))
+        .collect();
+    let yaml = testing::LAB_IOS
+        .replace("id: test_ios", &format!("id: {id}"))
+        .replace(
+            "  syntax: ios",
+            &format!("  syntax: {syntax}\n  secrets:{list}"),
+        )
+        // The fake frames its listing the way IOS does; in another grammar
+        // those two lines would be read as configuration.
+        .replace(
+            r"ignore: ['^Building configuration', '^Current configuration\s*:']",
+            r"ignore: ['^Building configuration', '^Current configuration\s*:', '^!$', '^end$']",
+        );
+    assert!(
+        yaml.contains(&format!("id: {id}"))
+            && yaml.contains(&format!("syntax: {syntax}"))
+            && yaml.contains("'^end$'"),
+        "the fake's device type no longer has the shape this expects:\n{yaml}"
+    );
+    format!("{yaml}\nmaturity: verified\n")
+}
+
 /// An app with `nocturne-changes` registered and `names` as fake devices.
 pub async fn lab(names: &[&str]) -> Lab {
+    lab_with(names, &[]).await
+}
+
+/// [`lab`], with more device types (whole profiles) registered beside the
+/// verified IOS one.
+pub async fn lab_with(names: &[&str], profiles: &[String]) -> Lab {
     let mut builder = testing::builder();
     nocturne_changes::init(&mut builder);
     // Registered as a built-in: only built-in device types may call
     // themselves verified.
     nocturne_app::profiles::register(&mut builder, &verified_profile());
+    for profile in profiles {
+        nocturne_app::profiles::register(&mut builder, profile);
+    }
     let lab = testing::lab(builder, names).await;
     for name in names {
         lab.app
@@ -309,6 +359,90 @@ pub fn versions(app: &App, device_id: &str) -> Vec<(i64, String, String)> {
         .into_iter()
         .map(|version| (version.id, version.source, version.note))
         .collect()
+}
+
+/// Serve the lab's fake devices named `names` through a tap that keeps every
+/// byte the engine types to them from now on, so a test can hold what was
+/// typed against what was planned and approved. A device not named is no
+/// longer reachable.
+pub fn tap(lab: &Lab, names: &[&str]) -> std::sync::Arc<parking_lot::Mutex<Vec<u8>>> {
+    let typed = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    lab.app
+        .state::<nocturne_app::connect::ConnectState>()
+        .set_sim_connector(std::sync::Arc::new(Tap {
+            fakes: names.iter().map(|name| lab.fake(name).clone()).collect(),
+            typed: typed.clone(),
+        }));
+    typed
+}
+
+struct Tap {
+    fakes: Vec<nocturne_app::testing::FakeDevice>,
+    typed: std::sync::Arc<parking_lot::Mutex<Vec<u8>>>,
+}
+
+#[async_trait::async_trait]
+impl nocturne_app::connect::SimConnector for Tap {
+    async fn open(
+        &self,
+        _app: &App,
+        lab: &nocturne_app::model::LabRef,
+        _cols: u16,
+        _rows: u16,
+    ) -> AppResult<Connection> {
+        use nocturne_transport::{Backend, Input};
+        let fake = self
+            .fakes
+            .iter()
+            .find(|fake| fake.hostname().eq_ignore_ascii_case(&lab.node))
+            .ok_or_else(|| nocturne_app::AppError::not_found(format!("lab node `{}`", lab.node)))?;
+        let device = fake.connection();
+        let (engine, Backend { mut input, output }) = Connection::pair(device.info().clone(), 256);
+        let (writer, mut reader) = device.split();
+        let typed = self.typed.clone();
+        tokio::spawn(async move {
+            while let Some(item) = input.recv().await {
+                match item {
+                    Input::Data(bytes) => {
+                        typed.lock().extend_from_slice(&bytes);
+                        if writer.send(bytes).await.is_err() {
+                            break;
+                        }
+                    }
+                    Input::Close => {
+                        writer.close().await;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(item) = reader.recv().await {
+                if output.send(item).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(engine)
+    }
+}
+
+/// What was typed between entering and leaving configuration mode, each
+/// time, in `typed` (the bytes a [`tap`] kept).
+pub fn configuration_sessions(typed: &str) -> Vec<String> {
+    let mut sessions = Vec::new();
+    let mut rest = typed;
+    while let Some(at) = rest.find("configure terminal\n") {
+        let inside = &rest[at + "configure terminal\n".len()..];
+        let Some(end) = inside.find("\nend\n") else {
+            sessions.push(inside.to_string());
+            break;
+        };
+        sessions.push(inside[..=end].to_string());
+        rest = &inside[end + 1..];
+    }
+    sessions
 }
 
 /// Make the pipeline give up quickly on a device that has gone away.

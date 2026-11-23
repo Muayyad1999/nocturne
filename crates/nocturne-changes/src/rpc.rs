@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::model::{
     Approval, Change, ChangeState, ChangeSummary, Intent, Options, Origin, Plan, Target,
 };
+use crate::redact::{self, ChangeView, Hider};
 use crate::settings::Settings;
 use crate::{apply, autonomy, db, plan, rollback};
 
@@ -30,8 +31,32 @@ fn check_intent(intent: &Intent, device: &str) -> AppResult<()> {
         Intent::Intended { config, .. } if config.trim().is_empty() => Err(AppError::invalid(
             format!("the intended configuration for `{device}` is empty"),
         )),
-        _ => Ok(()),
+        _ => refuse_placeholders(intent, device),
     }
+}
+
+/// A change is read with placeholders where its secret values are, and a
+/// screen (or a model) that sends those lines back would have the
+/// placeholder itself configured as the community or the key. What is sent
+/// to a device is exactly what is given here, so this is where it stops.
+///
+/// Hand-written lines are held to both forms. An intended configuration is
+/// held to the numbered form only, which no device prints: one that was read
+/// from a device that masks its own secrets may say `<hidden>` on lines that
+/// are not going to change, and the planner refuses a `<hidden>` in the lines
+/// it would actually send.
+fn refuse_placeholders(intent: &Intent, device: &str) -> AppResult<()> {
+    let copied = match intent {
+        Intent::Lines { lines } => lines.iter().any(|line| redact::has_placeholder(line)),
+        Intent::Intended { config, .. } => redact::has_numbered_placeholder(config),
+    };
+    if !copied {
+        return Ok(());
+    }
+    Err(AppError::invalid(format!(
+        "the configuration for `{device}` contains a redaction placeholder (`<secret:…>` or `<hidden>`): it was copied from a view that hides secret values. \
+         Read the change with `redact: false` and edit that, so that the real values are sent."
+    )))
 }
 
 /// Resolve the devices of a change, by id or by name, and refuse duplicates.
@@ -119,6 +144,14 @@ struct IdParams {
 }
 
 #[derive(Deserialize)]
+struct GetParams {
+    id: String,
+    /// `false`: the lines exactly as they will be sent. Audited.
+    #[serde(default)]
+    redact: Option<bool>,
+}
+
+#[derive(Deserialize)]
 struct ApproveParams {
     id: String,
     #[serde(default)]
@@ -146,6 +179,9 @@ struct PreviewParams {
     intent: Intent,
     #[serde(default)]
     options: Option<Options>,
+    /// `false`: the lines exactly as they would be sent. Audited.
+    #[serde(default)]
+    redact: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -155,7 +191,7 @@ struct Started {
 
 #[derive(Serialize)]
 struct CreatedWithJob {
-    change: Change,
+    change: ChangeView,
     job_id: String,
 }
 
@@ -192,6 +228,7 @@ fn start_planning(app: &App, change: &mut Change) -> AppResult<Planning> {
             let app = ctx.app().clone();
             let mut change = db::get(&app, &change_id)?;
             let options = change.options.clone();
+            let undoes = change.undoes.clone();
             let work: Vec<(usize, String, Intent)> = change
                 .targets
                 .iter()
@@ -202,6 +239,7 @@ fn start_planning(app: &App, change: &mut Change) -> AppResult<Planning> {
                 .for_each(work, lanes, |ctx, (index, device_id, intent)| {
                     let app = ctx.app().clone();
                     let options = options.clone();
+                    let undoes = undoes.clone();
                     async move {
                         let settings = Settings::read(&app);
                         let mut cli = connect::cli(
@@ -217,7 +255,10 @@ fn start_planning(app: &App, change: &mut Change) -> AppResult<Planning> {
                         .await?;
                         let planned = plan::plan_on(&app, &mut cli, &intent, &options).await;
                         cli.close().await;
-                        let planned = planned?;
+                        let mut planned = planned?;
+                        if let Some(original) = &undoes {
+                            rollback::review(&app, original, &device_id, &intent, &mut planned);
+                        }
                         ctx.device(
                             &device_id,
                             "info",
@@ -241,6 +282,9 @@ fn start_planning(app: &App, change: &mut Change) -> AppResult<Planning> {
                 .await;
 
             let mut failures: Vec<Value> = Vec::new();
+            // For the audit trail: which device and what kind of failure, not
+            // the words of it.
+            let mut failed: Vec<Value> = Vec::new();
             for (result, (index, device_id)) in results.into_iter().zip(
                 change
                     .targets
@@ -253,8 +297,12 @@ fn start_planning(app: &App, change: &mut Change) -> AppResult<Planning> {
                     Ok((at, planned)) => change.targets[at].plan = Some(planned),
                     Err(err) => {
                         change.targets[index].plan = None;
-                        ctx.device(&device_id, "error", err.message.clone());
-                        failures.push(json!({"device_id": device_id, "error": err.message}));
+                        // A refusal quotes the line it refuses, and a failed
+                        // read can quote what the device printed last.
+                        let message = Hider::for_device(&app, &device_id).text(&err.message);
+                        ctx.device(&device_id, "error", message.clone());
+                        failures.push(json!({"device_id": device_id, "error": message}));
+                        failed.push(json!({"device_id": device_id, "code": err.code}));
                     }
                 }
             }
@@ -275,7 +323,7 @@ fn start_planning(app: &App, change: &mut Change) -> AppResult<Planning> {
                     "change_id": change.id,
                     "risk": summary.risk,
                     "protected_hits": summary.protected_hits,
-                    "failed": failures,
+                    "failed": failed,
                 }),
             );
             if !failures.is_empty() {
@@ -312,8 +360,13 @@ pub fn register(builder: &mut AppBuilder) {
         db::list(&app, &filter)
     });
 
-    router.add("changes.get", |app: App, params: IdParams| async move {
-        db::get(&app, &params.id)
+    router.add("changes.get", |app: App, params: GetParams| async move {
+        let change = db::get(&app, &params.id)?;
+        Ok(if params.redact.unwrap_or(true) {
+            redact::change(&app, &change)
+        } else {
+            redact::change_unredacted(&app, &change)
+        })
     });
 
     router.add(
@@ -343,6 +396,10 @@ pub fn register(builder: &mut AppBuilder) {
                 }),
                 ticket: params.ticket,
                 job_id: None,
+                // Only `changes.rollback` makes an undo: its lines are the
+                // engine's, never the caller's.
+                undoes: None,
+                undone_by: None,
             };
             let planning = if params.plan {
                 Some(start_planning(&app, &mut change)?)
@@ -364,6 +421,7 @@ pub fn register(builder: &mut AppBuilder) {
                 ),
                 json!({"change_id": change.id, "origin": change.origin, "ticket": change.ticket}),
             );
+            let change = redact::change(&app, &change);
             match job_id {
                 Some(job_id) => Ok(serde_json::to_value(CreatedWithJob { change, job_id })?),
                 None => Ok(serde_json::to_value(change)?),
@@ -376,6 +434,15 @@ pub fn register(builder: &mut AppBuilder) {
         |app: App, params: UpdateParams| async move {
             let mut change = db::get(&app, &params.id)?;
             editable(&change)?;
+            if params.targets.is_some() && change.undoes.is_some() {
+                // What makes it an undo is that its lines are the engine's,
+                // worked out from the configuration stored before the change
+                // it undoes; edited by hand it would be some other change.
+                return Err(AppError::invalid(format!(
+                    "`{}` is an undo: what it puts on each device is the configuration that device had before the change it undoes, and that is not replaced by hand. Create a new change for anything else.",
+                    change.title
+                )));
+            }
             if let Some(title) = params.title {
                 let title = title.trim().to_string();
                 if title.is_empty() {
@@ -416,11 +483,15 @@ pub fn register(builder: &mut AppBuilder) {
                 format!("Edited change `{}`", change.title),
                 json!({"change_id": change.id, "plans_discarded": invalidated}),
             );
-            Ok(change)
+            Ok(redact::change(&app, &change))
         },
     );
 
     router.add("changes.plan", |app: App, params: IdParams| async move {
+        // Whether a change may be planned again depends on the undos there
+        // are, which are created under this lock.
+        let state = app.state::<db::ChangesState>();
+        let _undoing = state.undoing.lock();
         let mut change = db::get(&app, &params.id)?;
         if matches!(change.state, ChangeState::Applying) {
             return Err(AppError::conflict(format!(
@@ -442,14 +513,26 @@ pub fn register(builder: &mut AppBuilder) {
                 change.state.as_str().replace('_', " ")
             )));
         }
+        let relink = rollback::may_plan_again(&app, &change)?;
         if change.state.is_finished() {
             for target in &mut change.targets {
                 target.result = None;
             }
+            // Its undo undid what those results recorded. Planned again, the
+            // change starts over, and a screen must not say it was undone.
+            change.undone_by = None;
+            // With its results gone it is a draft until its plan is in — and
+            // an undo planned again counts as waiting from now, not from
+            // when the planning finishes.
+            change.state = ChangeState::Draft;
         }
         let planning = start_planning(&app, &mut change)?;
         change.approval = None;
         db::save(&app, &mut change)?;
+        if let Some(mut original) = relink {
+            original.undone_by = Some(change.id.clone());
+            db::save(&app, &mut original)?;
+        }
         let _ = planning.go.send(());
         Ok(Started {
             job_id: planning.job_id,
@@ -505,10 +588,14 @@ pub fn register(builder: &mut AppBuilder) {
                         .or_else(|| params.confirm.get(&target.device_id));
                     let ok = typed.is_some_and(|typed| typed.trim().eq_ignore_ascii_case(&name));
                     if !ok {
+                        // The hits name the commands that touch what is
+                        // protected, and a command that touches a login is
+                        // a command with a secret in it.
+                        let hide = Hider::for_profiles(&app, std::slice::from_ref(&plan.profile));
+                        let hits = hide.hits(&plan.protected_hits);
                         return Err(AppError::forbidden(format!(
                             "this change touches protected resources on `{name}` ({}). To approve it, type the device's name exactly: `{name}`.",
-                            plan.protected_hits
-                                .iter()
+                            hits.iter()
                                 .map(|hit| hit.subject.as_str())
                                 .collect::<Vec<_>>()
                                 .join(", ")
@@ -517,7 +604,7 @@ pub fn register(builder: &mut AppBuilder) {
                             "device_id": target.device_id,
                             "device_name": name,
                             "needs": "typed_confirmation",
-                            "protected_hits": plan.protected_hits,
+                            "protected_hits": hits,
                         })));
                     }
                     confirmed.push(name.clone());
@@ -558,7 +645,7 @@ pub fn register(builder: &mut AppBuilder) {
                     "note": approval.note,
                 }),
             );
-            Ok(change)
+            Ok(redact::change(&app, &change))
         },
     );
 
@@ -581,7 +668,7 @@ pub fn register(builder: &mut AppBuilder) {
                 format!("Withdrew the approval of change `{}`", change.title),
                 json!({"change_id": change.id}),
             );
-            Ok(change)
+            Ok(redact::change(&app, &change))
         },
     );
 
@@ -595,18 +682,31 @@ pub fn register(builder: &mut AppBuilder) {
         "changes.assistant_apply",
         |app: App, params: IdParams| async move {
             let mut change = db::get(&app, &params.id)?;
-            if change.state == ChangeState::Approved {
-                // A human has already signed it off; the assistant may start it.
+            let approved = match change.state {
+                ChangeState::Approved => {
+                    require_approved(&change)?;
+                    true
+                }
+                ChangeState::Planned => false,
+                state => {
+                    return Err(AppError::conflict(format!(
+                        "`{}` is {}; plan it before applying it",
+                        change.title,
+                        state.as_str().replace('_', " ")
+                    )));
+                }
+            };
+            // Asked of an approved change too: a person's approval is consent
+            // to the plan, not leave for the assistant to start it, and it
+            // grants no more than the autonomy setting does. The refusal says
+            // why in the plan's own words.
+            let by = autonomy::decide(&app, &change)
+                .map_err(|err| redact::hider_for(&app, &change).error(err))?;
+            if approved {
+                // The approval stays the person's; `start_apply` records that
+                // the assistant is the one who started it.
                 return start_apply(&app, change, "assistant").await;
             }
-            if change.state != ChangeState::Planned {
-                return Err(AppError::conflict(format!(
-                    "`{}` is {}; plan it before applying it",
-                    change.title,
-                    change.state.as_str().replace('_', " ")
-                )));
-            }
-            let by = autonomy::decide(&app, &change)?;
             change.approval = Some(Approval {
                 by: by.clone(),
                 at: now_ms(),
@@ -635,48 +735,104 @@ pub fn register(builder: &mut AppBuilder) {
 
     router.add(
         "changes.rollback",
+        // Sends nothing. The way back is a new change, planned from what the
+        // devices hold now and applied only once a person approves that plan.
         |app: App, params: RollbackParams| async move {
-            let mut change = db::get(&app, &params.id)?;
-            if change.state == ChangeState::Applying {
-                return Err(AppError::conflict(format!(
-                    "`{}` is being applied right now; cancel it first",
-                    change.title
-                )));
-            }
             let mut device_ids = Vec::new();
             for reference in &params.device_ids {
                 device_ids.push(inventory::find(&app, reference)?.id);
             }
-            let candidates = rollback::candidates(&change, &device_ids);
-            if candidates.is_empty() {
-                return Err(AppError::invalid(format!(
-                    "there is nothing to roll back in `{}`: no device of it was applied with a backup of what it had before",
-                    change.title
-                )));
-            }
-            let claim = db::claim(&app, &change, "rolled back")?;
-            let change_id = change.id.clone();
-            let title = change.title.clone();
-            let (go, wait) = tokio::sync::oneshot::channel::<()>();
-            let job = jobs::start(
-                &app,
-                JobSpec::new("changes.rollback", format!("Rolling back `{title}`"))
-                    .devices(&candidates),
-                move |ctx| async move {
-                    let claim = claim;
-                    wait.await.map_err(|_| {
-                        AppError::internal("the change was not stored before the rollback started")
-                    })?;
-                    let app = ctx.app().clone();
-                    let outcome = rollback::run(app, ctx, change_id, device_ids).await;
-                    drop(claim);
-                    outcome
-                },
+            let (original, undo, job_id) = {
+                let state = app.state::<db::ChangesState>();
+                let _one_at_a_time = state.undoing.lock();
+                // Read with the lock held: an undo of it that finishes in the
+                // meantime marks this record rolled back, and the link written
+                // below must not write an older copy over that.
+                let mut original = db::get(&app, &params.id)?;
+                if original.state == ChangeState::Applying {
+                    return Err(AppError::conflict(format!(
+                        "`{}` is being applied right now; cancel it first",
+                        original.title
+                    )));
+                }
+                if let Some(undone) = &original.undoes {
+                    // Undoing an undo would make the change it undid again,
+                    // under an undo's exemption from `allow_unverified_writes`
+                    // and with that change's record still reading rolled back.
+                    let undone = db::get(&app, undone).map_or_else(
+                        |_| "the change it undid".to_string(),
+                        |change| format!("`{}`", change.title),
+                    );
+                    return Err(AppError::invalid(format!(
+                        "`{}` is itself an undo, and an undo is not undone in turn. To have {undone} back, plan it again (or create a change for what the devices should hold): it is planned from what they hold now and approved like any other change.",
+                        original.title
+                    )));
+                }
+                if let Some(open) = rollback::open_undo(&app, &original)? {
+                    return Err(AppError::conflict(format!(
+                        "`{}` already undoes `{}` and is {}: apply it, or cancel it before asking for another",
+                        open.title,
+                        original.title,
+                        open.state.as_str().replace('_', " ")
+                    ))
+                    .with_details(json!({"change_id": open.id})));
+                }
+                let mut undo = rollback::undo_of(&app, &original, &device_ids)?;
+                let planning = start_planning(&app, &mut undo)?;
+                db::save(&app, &mut undo)?;
+                original.undone_by = Some(undo.id.clone());
+                db::save(&app, &mut original)?;
+                let _ = planning.go.send(());
+                (original, undo, planning.job_id)
+            };
+            let names = db::device_names(&app, &undo);
+            let devices: Vec<Value> = undo
+                .targets
+                .iter()
+                .map(|target| {
+                    json!({
+                        "device_id": target.device_id,
+                        "before_version_id": original
+                            .targets
+                            .iter()
+                            .find(|kept| kept.device_id == target.device_id)
+                            .and_then(|kept| kept.result.as_ref())
+                            .and_then(|result| result.before_version_id),
+                    })
+                })
+                .collect();
+            app.audit(
+                "changes.create",
+                None,
+                format!(
+                    "Created change `{}` for {} device(s)",
+                    undo.title,
+                    undo.targets.len()
+                ),
+                json!({"change_id": undo.id, "origin": undo.origin, "ticket": undo.ticket, "undoes": original.id}),
             );
-            change.job_id = Some(job.id.clone());
-            db::save(&app, &mut change)?;
-            let _ = go.send(());
-            Ok(Started { job_id: job.id })
+            app.audit(
+                "changes.rollback",
+                None,
+                format!(
+                    "Asked to undo change `{}` on {}: created change `{}` to do it, from which nothing has been sent",
+                    original.title,
+                    undo.targets
+                        .iter()
+                        .map(|target| format!(
+                            "`{}`",
+                            names.get(&target.device_id).cloned().unwrap_or_default()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    undo.title
+                ),
+                json!({"change_id": original.id, "undo_id": undo.id, "devices": devices}),
+            );
+            Ok(serde_json::to_value(CreatedWithJob {
+                change: redact::change(&app, &undo),
+                job_id,
+            })?)
         },
     );
 
@@ -728,6 +884,7 @@ pub fn register(builder: &mut AppBuilder) {
             )));
         }
         let removed = db::delete(&app, &params.id)?;
+        rollback::forget(&app, &change);
         app.audit(
             "changes.delete",
             None,
@@ -737,16 +894,28 @@ pub fn register(builder: &mut AppBuilder) {
                 change.state.as_str().replace('_', " "),
                 change.targets.len()
             ),
+            // The record that the change existed and what it sent outlives
+            // the change, in a trail that is never edited: the lines are
+            // named there without the values in them.
             json!({
                 "change_id": change.id,
                 "state": change.state,
+                "undoes": change.undoes,
                 "commands": change
                     .targets
                     .iter()
-                    .map(|target| json!({
-                        "device_id": target.device_id,
-                        "commands": target.plan.as_ref().map(|plan| plan.commands.clone()).unwrap_or_default(),
-                    }))
+                    .map(|target| {
+                        let hide = redact::hider_for_target(&app, target);
+                        json!({
+                            "device_id": target.device_id,
+                            "plan_hash": target.plan.as_ref().map(|plan| plan.plan_hash.clone()),
+                            "commands": target
+                                .plan
+                                .as_ref()
+                                .map(|plan| hide.lines(&plan.commands))
+                                .unwrap_or_default(),
+                        })
+                    })
                     .collect::<Vec<_>>(),
             }),
         );
@@ -772,10 +941,19 @@ pub fn register(builder: &mut AppBuilder) {
                     ..CliOptions::default()
                 },
             )
-            .await?;
+            .await
+            // As in a planning job: a failed login can quote what the device
+            // printed last.
+            .map_err(|err| Hider::for_device(&app, &device.id).error(err))?;
             let planned = plan::plan_on(&app, &mut cli, &params.intent, &options).await;
             cli.close().await;
-            planned
+            Ok(redact::plan(
+                &app,
+                &device.id,
+                &device.name,
+                planned?,
+                params.redact.unwrap_or(true),
+            ))
         },
     );
 }
@@ -815,11 +993,15 @@ fn require_approved(change: &Change) -> AppResult<()> {
 /// was the difference between a documented safety control and a wish.
 ///
 /// Checked here because `start_apply` is the one place both the human and the
-/// assistant paths pass through. Deliberately **not** applied to a rollback:
-/// undoing a change makes a device safer, and a gate that can stop you
-/// putting a device back as you found it is worse than the risk it guards.
+/// assistant paths pass through. Deliberately **not** applied to an undo
+/// (`changes.rollback`): undoing a change makes a device safer, and a gate
+/// that can stop you putting a device back as you found it is worse than the
+/// risk it guards. An undo's lines are the engine's, worked out from the
+/// configuration stored before the change, and cannot be edited, so the
+/// exemption covers nothing else. The assistant is still held to the device
+/// type by `autonomy::decide`.
 fn require_verified_or_allowed(app: &App, change: &Change) -> AppResult<()> {
-    if Settings::read(app).allow_unverified_writes {
+    if change.undoes.is_some() || Settings::read(app).allow_unverified_writes {
         return Ok(());
     }
     for target in &change.targets {
@@ -874,11 +1056,22 @@ async fn start_apply(app: &App, mut change: Change, origin: &str) -> AppResult<S
     change.job_id = Some(job.id.clone());
     db::save(app, &mut change)?;
     let _ = go.send(());
+    // Who pressed start and who signed the plan are two facts: the assistant
+    // may start a change a person approved, when the policy allows it.
+    let approved_by = change
+        .approval
+        .as_ref()
+        .map(|approval| approval.by.clone())
+        .unwrap_or_default();
     app.audit(
         "changes.apply",
         None,
-        format!("Started applying change `{title}`"),
-        json!({"change_id": change.id, "job_id": job.id, "origin": origin}),
+        if origin == "assistant" {
+            format!("The assistant started applying change `{title}` (approved by {approved_by})")
+        } else {
+            format!("Started applying change `{title}` (approved by {approved_by})")
+        },
+        json!({"change_id": change.id, "job_id": job.id, "origin": origin, "approved_by": approved_by}),
     );
     Ok(Started { job_id: job.id })
 }

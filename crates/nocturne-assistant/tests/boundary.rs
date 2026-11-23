@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{FORBIDDEN, Harness, Options, Tripwire};
+use common::{Harness, Options, Tripwire, forbidden};
 use nocturne_ai::provider::scripted::Step;
 use nocturne_assistant::tools::{self, boundary};
 use serde_json::json;
@@ -48,7 +48,7 @@ fn the_reachable_set_is_exactly_the_allow_list() {
 
 #[test]
 fn no_forbidden_method_is_reachable() {
-    for method in FORBIDDEN {
+    for method in forbidden() {
         assert!(
             !boundary::is_allowed(method),
             "`{method}` must never be reachable from a tool"
@@ -56,7 +56,7 @@ fn no_forbidden_method_is_reachable() {
         assert!(
             !tools::reachable_methods()
                 .iter()
-                .any(|reachable| reachable.name() == *method),
+                .any(|reachable| reachable.name() == method),
             "a tool reaches `{method}`"
         );
     }
@@ -347,7 +347,8 @@ async fn every_never_reachable_method_stays_unreached_whatever_the_model_names()
 
     // As the name of a tool, and as the argument of every "call this method"
     // tool a model might hope exists.
-    for names in FORBIDDEN.chunks(20) {
+    let forbidden = forbidden();
+    for names in forbidden.chunks(20) {
         let calls = names
             .iter()
             .flat_map(|name| {
@@ -362,11 +363,11 @@ async fn every_never_reachable_method_stays_unreached_whatever_the_model_names()
             .collect();
         turn_of(&mut harness, calls).await;
     }
-    let named = FORBIDDEN.len() * 5;
+    let named = forbidden.len() * 5;
 
     // And where a tool takes a string: a device, an id, a kind, a filter.
     let mut through = 0;
-    for name in FORBIDDEN.iter().step_by(7) {
+    for name in forbidden.iter().step_by(7) {
         let calls = vec![
             ("get_device".to_string(), json!({"device": name})),
             ("list_alerts".to_string(), json!({"device": name})),
@@ -458,7 +459,7 @@ async fn every_never_reachable_method_stays_unreached_whatever_the_model_names()
     for entry in &audited {
         let source = entry["source"].as_str().unwrap_or_default();
         assert!(
-            !FORBIDDEN.contains(&source),
+            !forbidden.contains(&source),
             "`{source}` was done during the turn: {entry}"
         );
     }

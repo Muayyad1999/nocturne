@@ -298,7 +298,7 @@ test.describe('applying', () => {
     page,
     request,
   }) => {
-    test.setTimeout(240_000);
+    test.setTimeout(300_000);
     const console = watchConsole(page);
     const rpc = rpcFor(request, backend);
     const device = await startLab(rpc, 'Apply');
@@ -342,20 +342,61 @@ test.describe('applying', () => {
       .poll(() => configOf(rpc, 'Apply'), { timeout: 60_000 })
       .toContain('description uplink to core');
 
-    // Rolling back a change that succeeded, from the screen.
+    // Undoing a change that succeeded, from the screen. The way back is a
+    // change of its own, worked out from what the device holds now, and
+    // nothing is sent until a person approves and applies it.
     await page.getByRole('button', { name: 'Roll back…' }).click();
     const question = page.getByRole('dialog');
     await expect(question).toContainText(device);
-    await question.getByRole('button', { name: 'Roll back' }).click();
+    await expect(question).toContainText('nothing is sent until it is approved and applied');
+    await question.getByRole('button', { name: 'Plan the undo' }).click();
 
-    await expect(page.getByText('Rolled back', { exact: false }).first()).toBeVisible({
-      timeout: 120_000,
+    // It opens on its own page and says, in plain words, what it is.
+    await expect(
+      page.getByRole('heading', { level: 1, name: 'Undo: Describe the uplink' }),
+    ).toBeVisible({ timeout: 30_000 });
+    const undoes = page.getByTestId('undoes');
+    await expect(undoes).toContainText('This change undoes Describe the uplink');
+    await expect(undoes).toContainText('Nothing has been sent');
+    await expect(page.getByRole('button', { name: /Approve & apply to 1 device/ })).toBeVisible({
+      timeout: 60_000,
     });
-    // The record is written a moment before the session is closed, so poll
-    // the device itself rather than read it once.
+    await expect(undoes).toContainText('approve and apply it like any other change');
+
+    // Its lines are the way back (the port's description as it was before,
+    // or none), and the device has not been sent them.
+    const back = sent(page, device);
+    await expect(back.first()).toContainText('interface GigabitEthernet0/1');
+    await expect(back.filter({ hasText: 'description' })).toHaveCount(1);
+    await expect(cards(page).first().getByText('Predicted configuration')).toBeVisible();
+    expect(await configOf(rpc, 'Apply')).toContain('description uplink to core');
+
+    // Approved and applied like any change: backup, send, verify.
+    await page.getByRole('checkbox', { name: 'I have reviewed the plans' }).check();
+    await page.getByRole('button', { name: /Approve & apply to 1 device/ }).click();
+    await expect(page.getByTestId('undoes')).toContainText('Applied:', { timeout: 120_000 });
+    const undoCard = cards(page).first();
+    for (const step of ['Backup', 'Send', 'Verify']) {
+      await expect(undoCard.getByTestId('apply-step').filter({ hasText: step }).first()).toBeVisible();
+    }
     await expect
       .poll(() => configOf(rpc, 'Apply'), { timeout: 60_000 })
       .not.toContain('description uplink to core');
+    // An undo is not undone in turn: its page says how to have the change
+    // back, and offers no "Roll back…" of its own.
+    await expect(undoes).toContainText('plan it again');
+    await expect(page.getByRole('button', { name: 'Roll back…' })).toHaveCount(0);
+
+    // The change it undid now reads as rolled back, and names its undo.
+    await undoes.getByRole('link', { name: 'Describe the uplink' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Describe the uplink' })).toBeVisible();
+    await expect(page.getByText('Rolled back', { exact: true }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    const undoneBy = page.getByTestId('undone-by');
+    await expect(undoneBy).toContainText('Undone by Undo: Describe the uplink');
+    // Nothing is left to undo, so it is not offered again.
+    await expect(page.getByRole('button', { name: 'Roll back…' })).toHaveCount(0);
 
     expect(console.messages).toEqual([]);
   });

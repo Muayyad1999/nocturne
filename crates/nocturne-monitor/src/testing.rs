@@ -380,10 +380,12 @@ impl SnmpSession for FakeAgentSession {
             .collect())
     }
 
-    async fn table(&mut self, columns: &[Oid], _limit: usize) -> Result<Vec<TableRow>, String> {
+    async fn table(&mut self, columns: &[Oid], limit: usize) -> Result<Vec<TableRow>, String> {
         if let Some(error) = &self.fail {
             return Err(error.clone());
         }
+        // As a real walk: only rows with a cell in a column asked for, and no
+        // more of them than asked for.
         Ok(self
             .rows
             .iter()
@@ -396,6 +398,8 @@ impl SnmpSession for FakeAgentSession {
                     .cloned()
                     .collect(),
             })
+            .filter(|row| !row.values.is_empty())
+            .take(limit)
             .collect())
     }
 
@@ -440,7 +444,7 @@ impl SnmpSession for FakeSession {
         Ok(binds)
     }
 
-    async fn table(&mut self, columns: &[Oid], _limit: usize) -> Result<Vec<TableRow>, String> {
+    async fn table(&mut self, columns: &[Oid], limit: usize) -> Result<Vec<TableRow>, String> {
         let data = self.data();
         if !data.delay.is_zero() {
             tokio::time::sleep(data.delay).await;
@@ -448,7 +452,6 @@ impl SnmpSession for FakeSession {
         if let Some(error) = data.fail {
             return Err(error);
         }
-        // Columns the test put in `scalars` as a table: answered by index 1.
         let mut rows: Vec<TableRow> = Vec::new();
         for (position, interface) in data.interfaces.iter().enumerate() {
             let index = position as u32 + 1;
@@ -512,21 +515,29 @@ impl SnmpSession for FakeSession {
                 });
             }
         }
-        // A profile's health OIDs asked for as columns.
+        // Everything else the agent holds, under the columns asked for, the
+        // way an agent answers a walk: what follows a column in an OID is the
+        // row's index, one arc or several; the cells of one index are one
+        // row; rows come in index order, and no more of them than asked for.
+        let mut cells: std::collections::BTreeMap<Vec<u32>, Vec<(Oid, Value)>> =
+            std::collections::BTreeMap::new();
         for (text, value) in &data.scalars {
-            let column = oid(text);
-            if let Some(parent) = column
-                .parts()
-                .split_last()
-                .map(|(last, head)| (Oid::new(head.to_vec()), *last))
-                && columns.contains(&parent.0)
-            {
-                rows.push(TableRow {
-                    index: vec![parent.1],
-                    values: vec![(parent.0, value.clone())],
-                });
+            let instance = oid(text);
+            for column in columns {
+                if let Some(index) = instance.suffix(column).filter(|index| !index.is_empty()) {
+                    cells
+                        .entry(index.to_vec())
+                        .or_default()
+                        .push((column.clone(), value.clone()));
+                }
             }
         }
+        rows.extend(
+            cells
+                .into_iter()
+                .map(|(index, values)| TableRow { index, values }),
+        );
+        rows.truncate(limit);
         Ok(rows)
     }
 

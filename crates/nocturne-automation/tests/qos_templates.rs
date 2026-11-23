@@ -154,20 +154,20 @@ async fn every_qos_template_renders_with_its_defaults() {
         (
             "routeros_qos_queue_tree",
             vec![
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 action=mark-packet new-packet-mark=wan-best-effort passthrough=yes",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=46 action=mark-packet new-packet-mark=wan-voice passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=34 action=mark-packet new-packet-mark=wan-video passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=36 action=mark-packet new-packet-mark=wan-video passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=38 action=mark-packet new-packet-mark=wan-video passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=18 action=mark-packet new-packet-mark=wan-critical passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=20 action=mark-packet new-packet-mark=wan-critical passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=22 action=mark-packet new-packet-mark=wan-critical passthrough=no",
-                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=24 action=mark-packet new-packet-mark=wan-critical passthrough=no",
                 "/queue tree add name=wan parent=ether1 max-limit=20000k",
                 "/queue tree add name=wan-voice parent=wan packet-mark=wan-voice limit-at=2000k max-limit=20000k priority=1",
                 "/queue tree add name=wan-video parent=wan packet-mark=wan-video limit-at=4000k max-limit=20000k priority=3",
                 "/queue tree add name=wan-critical parent=wan packet-mark=wan-critical limit-at=5000k max-limit=20000k priority=5",
                 "/queue tree add name=wan-best-effort parent=wan packet-mark=wan-best-effort limit-at=9000k max-limit=20000k priority=8",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 action=mark-packet new-packet-mark=wan-best-effort passthrough=yes comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=46 action=mark-packet new-packet-mark=wan-voice passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=34 action=mark-packet new-packet-mark=wan-video passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=36 action=mark-packet new-packet-mark=wan-video passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=38 action=mark-packet new-packet-mark=wan-video passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=18 action=mark-packet new-packet-mark=wan-critical passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=20 action=mark-packet new-packet-mark=wan-critical passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=22 action=mark-packet new-packet-mark=wan-critical passthrough=no comment=wan-qos",
+                "/ip firewall mangle add chain=postrouting out-interface=ether1 dscp=24 action=mark-packet new-packet-mark=wan-critical passthrough=no comment=wan-qos",
             ],
         ),
     ];
@@ -439,15 +439,15 @@ async fn the_classes_of_a_queue_tree_are_guaranteed_the_whole_uplink_between_the
     assert_eq!(
         rendered,
         vec![
-            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 action=mark-packet new-packet-mark=up-best-effort passthrough=yes",
-            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 dscp=46 action=mark-packet new-packet-mark=up-voice passthrough=no",
-            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 dscp=34 action=mark-packet new-packet-mark=up-video passthrough=no",
-            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 dscp=24 action=mark-packet new-packet-mark=up-critical passthrough=no",
             "/queue tree add name=up parent=pppoe-out1 max-limit=7777k",
             "/queue tree add name=up-voice parent=up packet-mark=up-voice limit-at=933k max-limit=7777k priority=1",
             "/queue tree add name=up-video parent=up packet-mark=up-video limit-at=2566k max-limit=7777k priority=3",
             "/queue tree add name=up-critical parent=up packet-mark=up-critical limit-at=1633k max-limit=7777k priority=5",
             "/queue tree add name=up-best-effort parent=up packet-mark=up-best-effort limit-at=2645k max-limit=7777k priority=8",
+            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 action=mark-packet new-packet-mark=up-best-effort passthrough=yes comment=up-qos",
+            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 dscp=46 action=mark-packet new-packet-mark=up-voice passthrough=no comment=up-qos",
+            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 dscp=34 action=mark-packet new-packet-mark=up-video passthrough=no comment=up-qos",
+            "/ip firewall mangle add chain=postrouting out-interface=pppoe-out1 dscp=24 action=mark-packet new-packet-mark=up-critical passthrough=no comment=up-qos",
         ]
     );
 
@@ -1734,5 +1734,157 @@ async fn applying_a_qos_template_makes_one_change_and_sends_nothing() {
     assert!(
         lab.fake("SW1").seen().is_empty(),
         "nothing is sent to any device"
+    );
+}
+
+// ------------------------------------------- what a second run finds there
+
+#[tokio::test]
+async fn a_queue_tree_adds_its_named_queues_before_any_firewall_rule_and_labels_each_rule() {
+    // Queue names are unique on a router; mangle rules carry no name and are
+    // added again on every run. Queues first means that a second run is
+    // refused at its first line, before the firewall is touched, and the label
+    // is how the rules this template added can be found again.
+    let lab = lab(&["SW1"]).await;
+    for (vars, prefix) in [
+        (required_only("routeros_qos_queue_tree"), "wan"),
+        (
+            json!({"interface": "pppoe-out1", "rate_kbps": 7777, "name_prefix": "up"}),
+            "up",
+        ),
+    ] {
+        let rendered = lines(&lab, "routeros_qos_queue_tree", vars).await;
+        let first_rule = rendered
+            .iter()
+            .position(|line| line.starts_with("/ip firewall mangle add"))
+            .expect("mangle rules");
+        let last_queue = rendered
+            .iter()
+            .rposition(|line| line.starts_with("/queue tree add"))
+            .expect("queues");
+        assert!(last_queue < first_rule, "{rendered:#?}");
+        for rule in &rendered[first_rule..] {
+            assert!(rule.starts_with("/ip firewall mangle add"), "{rule}");
+            assert!(
+                rule.ends_with(&format!(" comment={prefix}-qos")),
+                "every rule says which template run it belongs to: {rule}"
+            );
+        }
+    }
+}
+
+// ------------------------------------------------- interface names in full
+
+#[tokio::test]
+async fn an_abbreviation_the_router_spells_out_is_refused_rather_than_sent_as_typed() {
+    // IOS takes any unambiguous start of an interface type and shows the full
+    // name afterwards. A spelling `ifname` does not expand would be rendered as
+    // typed, predicted as a section that never exists, and rolled back by
+    // resetting the real port.
+    let lab = lab(&["SW1"]).await;
+    let cases: [(&str, &str, Value); 7] = [
+        ("ios_qos_wan_edge", "interface", json!({})),
+        (
+            "ios_qos_shaped_uplink",
+            "interface",
+            json!({"rate_kbps": 50000}),
+        ),
+        ("ios_qos_access_port_dscp", "interface", json!({})),
+        ("ios_access_port", "interface", json!({"vlan": 10})),
+        ("ios_trunk_port", "interface", json!({"vlans": [30]})),
+        ("ios_disable_port", "interface", json!({})),
+        ("ios_ntp", "source", json!({"servers": ["192.0.2.1"]})),
+    ];
+    let mut wrong = Vec::new();
+    for (id, variable, base) in &cases {
+        for spelling in [
+            "TenGig1/1/1",
+            "Gigabit0/3",
+            "GigE0/3",
+            "Fast0/1",
+            "FastEth0/1",
+            "TwentyFiveGig1/0/1",
+        ] {
+            let mut vars = base.clone();
+            vars[*variable] = json!(spelling);
+            match turned_away(&lab, id, &vars).await {
+                Ok(said) if said.contains("full name") && said.contains(spelling) => {}
+                Ok(said) => wrong.push(format!("{id} {spelling}: {said}")),
+                Err(what) => wrong.push(what),
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+
+    // A type it knows is written the router's way, whatever its case.
+    for (given, wanted) in [
+        ("dialer1", "interface Dialer1"),
+        (
+            "TENGIGABITETHERNET1/1/1",
+            "interface TenGigabitEthernet1/1/1",
+        ),
+        ("virtual-template1", "interface Virtual-Template1"),
+    ] {
+        let rendered = lines(
+            &lab,
+            "ios_qos_shaped_uplink",
+            json!({"interface": given, "rate_kbps": 2000}),
+        )
+        .await;
+        assert_eq!(rendered[3], wanted, "{given}");
+    }
+}
+
+// ------------------------------------------------------ the subscriber queue
+
+#[tokio::test]
+async fn a_subscriber_queue_can_be_put_before_a_queue_that_would_take_its_traffic() {
+    // Simple queues are tried in order and a packet stops at the first that
+    // matches it: a /32 added after a /24 that covers it never sees a packet.
+    let lab = lab(&["SW1"]).await;
+    let queue = |extra: Value| {
+        let mut vars = required_only("routeros_qos_simple_queue");
+        vars.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        vars
+    };
+    assert_eq!(
+        lines(
+            &lab,
+            "routeros_qos_simple_queue",
+            queue(json!({"place_before": "subnet-88"}))
+        )
+        .await,
+        vec![
+            "/queue simple add name=sub-1042 target=192.168.88.251/32 max-limit=5000k/15000k place-before=subnet-88"
+        ]
+    );
+    for place_before in [
+        json!("subnet 88"),
+        json!("subnet-88;/system reboot"),
+        json!("[find]"),
+        json!("sub-1042"),
+        json!("x".repeat(65)),
+    ] {
+        let said = turned_away(
+            &lab,
+            "routeros_qos_simple_queue",
+            &queue(json!({"place_before": place_before})),
+        )
+        .await
+        .unwrap_or_else(|what| panic!("{what}"));
+        assert!(said.contains("Before the queue"), "{place_before}: {said}");
+    }
+
+    let template = lab
+        .app
+        .rpc("templates.get", json!({"id": "routeros_qos_simple_queue"}))
+        .await
+        .expect("templates.get");
+    let description = template["description"].as_str().expect("description");
+    assert!(
+        description.contains("strict order") && description.contains("place-before"),
+        "the description says why the order matters: {description}"
     );
 }

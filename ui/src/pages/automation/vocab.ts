@@ -17,7 +17,7 @@ import {
   PlugZap,
   type LucideIcon,
 } from 'lucide-react';
-import type { DeviceState, Run, RunKind, When } from '@/api/types/automation';
+import type { DeviceState, Run, RunKind, Schedule, When } from '@/api/types/automation';
 import type { StatusTone } from '@/design/tone';
 import { formatCount, formatDuration, plural } from '@/lib/format';
 import { given, orNone } from './given';
@@ -63,7 +63,7 @@ export const DEVICE_STATE: Record<DeviceState, StateWords> = {
     tone: 'idle',
     icon: CircleMinus,
     explain:
-      'Nocturne deliberately left these alone — another run held the device, or this run was stopped before their turn. Nothing was sent and nothing failed.',
+      'Nocturne has no answer from these to show, and each one says why: another run held the device, this run was stopped before its turn, or Nocturne was closed while the run was going and what the device did was not kept. None of them refused anything: nothing failed that Nocturne saw.',
   },
 };
 
@@ -151,6 +151,23 @@ export function describeRun(run: Run): Outcome {
     detail,
     tone: 'ok',
   };
+}
+
+/**
+ * A schedule's last run in a word. The backend writes a run down when it
+ * starts, before its outcome is known, so "running" is a word of its own: no
+ * outcome yet is not a failure. A run Nocturne did not live through is
+ * recorded as failed, with the reason, when it next starts.
+ */
+export function lastRunWords(
+  schedule: Pick<Schedule, 'last_run_at' | 'last_ok' | 'last_error'>,
+): Outcome | null {
+  if (!given(schedule.last_run_at)) return null;
+  if (schedule.last_ok === true) return { title: 'Ran', tone: 'ok' };
+  if (schedule.last_ok === false) {
+    return { title: 'Failed', tone: 'crit', detail: orNone(schedule.last_error) };
+  }
+  return { title: 'Running', tone: 'info', detail: 'Started, and has not finished yet' };
 }
 
 /** How long a run took, or how long it has been going. */

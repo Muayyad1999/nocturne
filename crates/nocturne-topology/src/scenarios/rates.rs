@@ -478,8 +478,134 @@ async fn a_monitor_that_fails_is_a_failure_and_not_an_empty_answer() {
     assert_eq!(refused.code, "unavailable");
 
     // The graph itself is still drawn: utilisation is a decoration on it.
+    // What is missing from it is said, not left to look unmeasured.
+    let two = device(&app, "SW2", "10.0.0.2", "access", "HQ");
+    cable(
+        &app,
+        (&one, "SW1"),
+        (&two, "SW2"),
+        "TenGigabitEthernet1/1/1",
+    );
     let graph = call(&app, "topology.get", Value::Null).await;
-    assert_eq!(graph["nodes"].as_array().expect("nodes").len(), 1);
+    assert_eq!(graph["nodes"].as_array().expect("nodes").len(), 2);
+    assert!(graph["links"][0].get("util_pct").is_none());
+    let warnings = warnings_of(&graph);
+    assert!(
+        warnings.iter().any(
+            |warning| warning.starts_with("link utilisation could not be read")
+                && warning.contains("the store is busy")
+        ),
+        "{warnings:?}"
+    );
+}
+
+fn warnings_of(answer: &Value) -> Vec<String> {
+    answer["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn open_alerts_that_cannot_be_read_are_said_to_be_missing_rather_than_drawn_as_none() {
+    let mut builder = builder();
+    builder.router.add(
+        "alerts.list",
+        |_: App, _: nocturne_app::NoParams| async move {
+            Err::<Value, AppError>(AppError::internal("an open alert could not be decoded"))
+        },
+    );
+    let app = builder.build();
+    let one = device(&app, "SW1", "10.0.0.1", "access", "HQ");
+    let two = device(&app, "SW2", "10.0.0.2", "access", "HQ");
+    cable(
+        &app,
+        (&one, "SW1"),
+        (&two, "SW2"),
+        "TenGigabitEthernet1/1/1",
+    );
+
+    let graph = call(&app, "topology.get", Value::Null).await;
+    for node in graph["nodes"].as_array().expect("nodes") {
+        assert!(node["alerts"].is_null(), "{node}");
+    }
+    let warnings = warnings_of(&graph);
+    println!("topology.get (alerts.list failing) → warnings: {warnings:?}");
+    assert!(
+        warnings.iter().any(
+            |warning| warning.starts_with("open alerts could not be read")
+                && warning.contains("an open alert could not be decoded")
+        ),
+        "{warnings:?}"
+    );
+
+    // The device page's table shows the same nodes, so it carries the same
+    // warning, although it names no device.
+    let neighbours = call(&app, "topology.neighbors", json!({"device_id": one})).await;
+    assert!(
+        warnings_of(&neighbours)
+            .iter()
+            .any(|warning| warning.starts_with("open alerts could not be read")),
+        "{neighbours}"
+    );
+}
+
+#[tokio::test]
+async fn a_links_utilisation_comes_with_the_time_monitoring_measured_it() {
+    let mut builder = builder();
+    let polled = with_monitor(&mut builder);
+    let app = builder.build();
+    let one = device(&app, "SW1", "10.0.0.1", "access", "HQ");
+    let two = device(&app, "SW2", "10.0.0.2", "access", "HQ");
+    cable(
+        &app,
+        (&one, "SW1"),
+        (&two, "SW2"),
+        "TenGigabitEthernet1/1/1",
+    );
+    let yesterday = now_ms() - 20 * 3_600_000;
+    let just_now = now_ms() - 60_000;
+    // The ends in the order the link lists them, which follows the devices'
+    // ids and so changes from one run to the next. The busier end is put on
+    // each in turn: a time taken from whichever end happened to come first,
+    // or last, is then wrong in one of the two.
+    let ends = link_ends(&app).await;
+    for busy in 0..ends.len() {
+        {
+            let mut rows = polled.lock().expect("the rows");
+            rows.clear();
+            for (index, end) in ends.iter().enumerate() {
+                let device_id = end["device_id"].as_str().expect("a device id");
+                let name = if device_id == one { "SW1" } else { "SW2" };
+                // The busier end stopped answering monitoring twenty hours
+                // ago, at its busiest; the other was polled a minute ago.
+                let (in_bps, at) = if index == busy {
+                    (9.5e9, yesterday)
+                } else {
+                    (1e9, just_now)
+                };
+                let mut row = polled_port(device_id, name, "TenGigabitEthernet1/1/1", in_bps, 1e9);
+                row["at"] = json!(at);
+                rows.push(row);
+            }
+        }
+
+        let graph = call(&app, "topology.get", Value::Null).await;
+        let link = &graph["links"][0];
+        println!("topology.get (busier end {busy}) → link: {link}");
+        assert_eq!(link["util_pct"], 95.0, "{link}");
+        assert_eq!(
+            link["util_at"], yesterday,
+            "the figure is the busier end's, and that is how old it is: {link}"
+        );
+        let neighbours = call(&app, "topology.neighbors", json!({"device_id": one})).await;
+        let row = &neighbours["rows"][0];
+        assert_eq!(row["util_pct"], 95.0, "{row}");
+        assert_eq!(row["util_at"], yesterday, "{row}");
+    }
 }
 
 #[tokio::test]

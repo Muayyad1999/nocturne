@@ -310,9 +310,16 @@ async fn get_device(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
 
 pub(super) fn unknown_device(reference: &str, err: AppError) -> AppError {
     if err.code == "not_found" {
-        AppError::not_found(format!(
-            "no device called `{reference}` — use list_devices to see what exists (names, addresses and ids all work)"
-        ))
+        // A whole sentence of its own: `AppError::not_found` would add
+        // "was not found" after it.
+        AppError::new(
+            "not_found",
+            format!(
+                "no device called `{}` — use list_devices to see what exists (names, addresses \
+                 and ids all work)",
+                shape::one_line(reference, 80)
+            ),
+        )
     } else {
         err
     }

@@ -13,7 +13,9 @@
 //!   never the device read that is already in flight;
 //! * redacts every string of the result — and of the error — before the
 //!   handler sees it, so no cap, no formatting mistake and no forgetful
-//!   handler can leak a secret;
+//!   handler can leak a secret; and first takes the numbers off every
+//!   placeholder a feature put there in a table of its own, so that none can
+//!   be restored to this chat's secret of the same number;
 //! * lets a method that writes a record through only after the person said
 //!   yes to this call's own question ([`ToolCtx::confirm`]), and a method of
 //!   the ISP ledger only while the `isp_access` setting is on.
@@ -28,6 +30,8 @@ mod net;
 mod ops;
 mod records;
 mod signals;
+mod snippets;
+mod traffic;
 mod watch;
 mod work;
 
@@ -213,6 +217,9 @@ pub fn all() -> &'static [Tool] {
         ops::GET_EVIDENCE,
         work::DISCOVERY_RESULTS,
         work::AUTOMATION_RUNS,
+        traffic::QOS_STATUS,
+        traffic::TOP_TALKERS,
+        snippets::LIST_SNIPPETS,
         records::START_DISCOVERY,
         records::ACKNOWLEDGE_ALERT,
         records::RESERVE_ADDRESS,
@@ -472,11 +479,13 @@ impl ToolCtx {
                 }
             }
         };
+        // Every feature that keeps text redacts it in a table of its own, and
+        // none holds this chat's: a placeholder in an answer is never one
+        // this chat may restore (see `redact::without_foreign_placeholders`).
         match outcome {
-            Ok(value) if boundary::already_redacted(method) => Ok(self
+            Ok(value) => Ok(self
                 .redactor
                 .scrub_json(&crate::redact::without_foreign_placeholders(&value))),
-            Ok(value) => Ok(self.redactor.scrub_json(&value)),
             // The ledger's own words about a failure are free text out of a
             // store of other people's details ("no invoice for <name>,
             // <phone>"), and nothing of the ledger reaches a model that is
@@ -484,10 +493,13 @@ impl ToolCtx {
             Err(err) if boundary::is_ledger(method) => Err(ledger_failure(err.code)),
             Err(err) => Err(AppError {
                 code: err.code,
-                message: self.redactor.scrub(&err.message),
-                details: err
-                    .details
-                    .map(|details| self.redactor.scrub_json(&details)),
+                message: self
+                    .redactor
+                    .scrub(&crate::redact::hide_foreign_placeholders(&err.message)),
+                details: err.details.map(|details| {
+                    self.redactor
+                        .scrub_json(&crate::redact::without_foreign_placeholders(&details))
+                }),
             }),
         }
     }
@@ -583,9 +595,10 @@ pub fn schema(properties: Value, required: &[&str]) -> Value {
     })
 }
 
-/// The `device` argument every device-facing tool takes.
-pub const DEVICE_ARG: &str =
-    "Device name, address or id, as `list_devices` returned it. A name is enough.";
+/// The `device` argument every device-facing tool takes. Kept short: it is in
+/// some thirty schemas, and the schemas are sent with every request, in the
+/// short form of the tool set as well as the long one.
+pub const DEVICE_ARG: &str = "A device's name, address or id.";
 
 /// A part of an answer that is missing because its feature is not in this
 /// build. "Unknown" and "none" are different answers, and the model has to
@@ -668,32 +681,69 @@ mod tests {
         }
     }
 
+    /// What the system prompt and `tools` take of a conversation, in the
+    /// agent's own estimate, in the long or the short form.
+    fn described(tools: &[&'static Tool], brief: bool) -> u64 {
+        let specs: Vec<nocturne_ai::ToolSpec> = tools.iter().map(|tool| tool.spec(brief)).collect();
+        nocturne_ai::agent::estimate_tokens(crate::prompt::SYSTEM, &[], &specs)
+    }
+
     #[test]
-    fn a_model_without_much_room_is_told_about_the_tools_in_fewer_words() {
+    fn every_window_is_offered_a_tool_set_it_has_room_for() {
+        use crate::settings::{SMALL_CONTEXT, small_context};
         let every: Vec<&'static Tool> = all().iter().collect();
-        // A local model whose window nobody configured is given 16,000
-        // tokens by the engine; a mid-sized one has twice that.
-        assert!(describe_briefly(&every, 16_000));
-        assert!(describe_briefly(&every, 32_000));
-        // The models the long descriptions were written for.
+        let core: Vec<&'static Tool> = every.iter().copied().filter(|tool| tool.core).collect();
+
+        // 16,000 tokens is what the engine gives a local model whose window
+        // nobody configured. That model, and any smaller one, is small: it
+        // is offered the core set, in the short form, and the core set
+        // leaves it most of its room for the conversation itself.
+        assert_eq!(SMALL_CONTEXT, 16_000);
+        assert!(small_context(16_000) && small_context(8_000));
+        assert!(!small_context(16_001) && !small_context(0));
+        let small = compaction_limit(16_000);
+        assert_eq!(small, 11_200);
+        let core_brief = described(&core, true);
+        assert!(
+            core_brief < small / 3,
+            "the core set takes {core_brief} of the {small} tokens a 16k model's conversation may \
+             reach; keep it under a third"
+        );
+
+        // Just above that line a model is offered every tool, in the short
+        // form, and still has room for a conversation: the short form takes
+        // under 90% of what the smallest such window may grow to. When this
+        // fails, a tool was added that does not fit: shorten the short
+        // descriptions and the schemas, or move the line — do not raise the
+        // share.
+        let every_brief = described(&every, true);
+        let smallest = compaction_limit(SMALL_CONTEXT + 1);
+        assert!(
+            every_brief < smallest * 9 / 10,
+            "every tool in the short form takes {every_brief} of the {smallest} tokens a window \
+             of {} tokens may reach",
+            SMALL_CONTEXT + 1
+        );
+        assert!(describe_briefly(&every, SMALL_CONTEXT + 1));
+        // The windows between the line and the long form: every tool, in the
+        // short form, with the full caps.
+        for window in [SMALL_CONTEXT + 1, 32_000, 41_000] {
+            assert!(!small_context(window), "{window}");
+            assert!(describe_briefly(&every, window), "{window}");
+            assert!(
+                every_brief < compaction_limit(window) * 9 / 10,
+                "{window}: {every_brief}"
+            );
+        }
+        // The long form is for a model with room for it: more than half of
+        // the conversation left after the tools have been described.
+        let long = described(&every, false);
+        assert!(long > compaction_limit(41_000) / 2, "{long}");
         assert!(!describe_briefly(&every, 128_000));
         assert!(!describe_briefly(&every, 200_000));
         assert!(!describe_briefly(&every, 1_000_000));
         // An unknown window is not a small one.
         assert!(!describe_briefly(&every, 0));
-
-        // And in the short form the whole tool set still leaves that local
-        // model room to hold a conversation. When this fails, a tool was
-        // added that does not fit: shorten the short descriptions, or give
-        // such a model fewer tools — do not raise the number.
-        let brief: Vec<nocturne_ai::ToolSpec> = every.iter().map(|tool| tool.spec(true)).collect();
-        let described = nocturne_ai::agent::estimate_tokens(crate::prompt::SYSTEM, &[], &brief);
-        let limit = compaction_limit(16_000);
-        assert_eq!(limit, 11_200);
-        assert!(
-            described < limit * 9 / 10,
-            "the tool set takes {described} of the {limit} tokens a 16k model's conversation may reach"
-        );
     }
 
     #[test]

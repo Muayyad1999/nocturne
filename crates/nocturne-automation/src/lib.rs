@@ -68,6 +68,9 @@ pub fn init(builder: &mut nocturne_app::AppBuilder) {
     triggers::register(builder);
     ansible::register(builder);
     builder.on_start(|app| {
+        // First: what the previous process left half-done is closed before
+        // anything new can start.
+        runner::close_interrupted(app);
         schedules::spawn(app);
         triggers::spawn(app);
     });

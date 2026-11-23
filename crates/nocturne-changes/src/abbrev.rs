@@ -30,32 +30,54 @@ pub enum Verdict {
     Unknown(String),
 }
 
+fn miscased(token: &str, lower: &str) -> Verdict {
+    Verdict::Refuse(format!(
+        "`{token}` must be written in lower case (`{lower}`): Nocturne sends configuration exactly as it is written here and compares it with what the device prints back"
+    ))
+}
+
 /// Examine the leading keywords of one configuration line.
 pub fn inspect(line: &str) -> Verdict {
     let line = line.trim();
     let mut skip_next = false;
+    // Keywords that may stand between a `NAMED` keyword and the name.
+    let mut qualifiers: &[&str] = &[];
     for raw in line.split_whitespace() {
+        let token = raw.trim_end_matches(',');
         if skip_next {
+            // `class-map match-any NAME`, `service-policy output NAME`: the
+            // name is the word after the qualifier, which is a keyword.
+            let lower = token.to_ascii_lowercase();
+            if qualifiers.contains(&lower.as_str()) {
+                if token != lower {
+                    return miscased(token, &lower);
+                }
+                qualifiers = &[];
+                continue;
+            }
             // The word after `username` (and friends) is a name somebody chose.
             skip_next = false;
+            qualifiers = &[];
             continue;
         }
-        let token = raw.trim_end_matches(',');
         if token.is_empty() {
             return Verdict::Full;
         }
         let lower = token.to_ascii_lowercase();
         if is_keyword(&lower) {
             if token != lower {
-                return Verdict::Refuse(format!(
-                    "`{token}` must be written in lower case (`{lower}`): Nocturne sends configuration exactly as it is written here and compares it with what the device prints back"
-                ));
+                return miscased(token, &lower);
             }
-            if FREE_TEXT.contains(&lower.as_str()) {
+            if FREE_TEXT.contains(&lower.as_str()) || VALUES.contains(&lower.as_str()) {
                 // The rest of the line is a value chosen by a human.
                 return Verdict::Full;
             }
             skip_next = NAMED.contains(&lower.as_str());
+            qualifiers = match lower.as_str() {
+                "class-map" => &["match-any", "match-all"],
+                "service-policy" => &["input", "output"],
+                _ => &[],
+            };
             continue;
         }
         if !token
@@ -92,19 +114,27 @@ fn is_keyword(lower: &str) -> bool {
     KEYWORDS.binary_search(&lower).is_ok()
 }
 
-/// Keywords after which the next word is a name, not a keyword.
+/// Keywords after which the next word is a name, not a keyword. A class or a
+/// policy is named by whoever wrote it, in any case: `class voice`,
+/// `service-policy input int` (after an optional qualifier, see `inspect`).
 const NAMED: &[&str] = &[
     "username",
     "vrf",
     "route-map",
+    "class",
     "class-map",
     "policy-map",
+    "service-policy",
     "prefix-list",
     "keychain",
     "tacacs-server",
     "radius-server",
     "track",
 ];
+
+/// Keywords after which the rest of the line is values: markings by number
+/// or name (`match dscp ef af41`, `set cos 5`), whatever words they are.
+const VALUES: &[&str] = &["dscp", "cos", "precedence"];
 
 /// Keywords after which the rest of the line is free text.
 const FREE_TEXT: &[&str] = &[
@@ -147,6 +177,7 @@ const KEYWORDS: &[&str] = &[
     "auto",
     "auto-cost",
     "aux",
+    "average",
     "backup",
     "bandwidth",
     "banner",
@@ -159,14 +190,18 @@ const KEYWORDS: &[&str] = &[
     "cdp",
     "channel-group",
     "channel-protocol",
+    "cir",
     "class",
+    "class-default",
     "class-map",
     "clock",
     "comment",
     "con",
+    "conform-action",
     "connected",
     "console",
     "contact",
+    "cos",
     "cost",
     "crypto",
     "dead-interval",
@@ -185,6 +220,8 @@ const KEYWORDS: &[&str] = &[
     "domain-lookup",
     "domain-name",
     "dot1q",
+    "drop",
+    "dscp",
     "duplex",
     "dynamic",
     "edge",
@@ -193,12 +230,14 @@ const KEYWORDS: &[&str] = &[
     "end",
     "eq",
     "errdisable",
+    "exceed-action",
     "except",
     "exec",
     "exec-timeout",
     "exit",
     "export",
     "extended",
+    "fair-queue",
     "filter",
     "first",
     "flowcontrol",
@@ -251,11 +290,14 @@ const KEYWORDS: &[&str] = &[
     "mac",
     "mac-address",
     "match",
+    "match-all",
+    "match-any",
     "max",
     "maximum",
     "maximum-paths",
     "md5",
     "member",
+    "mls",
     "mode",
     "monitor",
     "motd",
@@ -285,10 +327,12 @@ const KEYWORDS: &[&str] = &[
     "passive-interface",
     "password",
     "peer",
+    "percent",
     "permit",
     "pim",
     "poe",
     "point-to-point",
+    "police",
     "policy",
     "policy-map",
     "port",
@@ -298,10 +342,12 @@ const KEYWORDS: &[&str] = &[
     "power",
     "pppoe",
     "pre-shared-key",
+    "precedence",
     "preempt",
     "prefix-list",
     "primary",
     "priority",
+    "priority-queue",
     "private-vlan",
     "privilege",
     "protocol",
@@ -309,13 +355,17 @@ const KEYWORDS: &[&str] = &[
     "pvst",
     "qos",
     "queue",
+    "queue-limit",
     "radius",
+    "random-detect",
     "range",
     "rapid-pvst",
     "rate",
+    "rate-limit",
     "receive",
     "redistribute",
     "redundancy",
+    "remaining",
     "remark",
     "remote-as",
     "remove",
@@ -387,6 +437,7 @@ const KEYWORDS: &[&str] = &[
     "uplinkfast",
     "username",
     "version",
+    "violate-action",
     "vlan",
     "vlans",
     "voice",
@@ -473,6 +524,67 @@ mod tests {
         ));
         // A label in capitals is a value, not a keyword.
         assert_eq!(inspect("ip access-list extended WEB"), Verdict::Full);
+    }
+
+    #[test]
+    fn a_class_or_policy_name_is_a_name_in_any_case() {
+        // The word after `class-map` used to be skipped as the name, and for
+        // `class-map match-any NAME` that word is `match-any`: the name was
+        // then examined as a keyword — refused in capitals, unknown in lower
+        // case, and refused outright where it looked like an abbreviation.
+        for line in [
+            "class-map match-any voice",
+            "class-map match-all voice",
+            "class-map match-any VOICE",
+            "class-map voice",
+            "policy-map voice",
+            "class voice",
+            "class VOICE",
+            "class net",
+            "class class-default",
+            "service-policy output voice",
+            "service-policy input int",
+            "service-policy WAN-EDGE",
+            "no class-map match-any int",
+        ] {
+            assert_eq!(inspect(line), Verdict::Full, "{line}");
+        }
+        // The qualifier is a keyword like any other.
+        assert!(matches!(
+            inspect("class-map MATCH-ANY voice"),
+            Verdict::Refuse(message) if message.contains("lower case")
+        ));
+    }
+
+    #[test]
+    fn the_words_of_modular_qos_are_words_not_abbreviations_of_others() {
+        for line in [
+            "set cos 5",
+            "match cos 3 4",
+            "match dscp ef af41",
+            "match ip dscp cs5",
+            "set dscp ef",
+            "match precedence 5",
+            "priority percent 10",
+            "bandwidth remaining percent 30",
+            "shape average 50000000",
+            "police cir 8000 conform-action transmit exceed-action drop",
+            "conform-action transmit",
+            "exceed-action drop",
+            "violate-action drop",
+            "random-detect",
+            "fair-queue",
+            "queue-limit 64 packets",
+            "mls qos",
+            "mls qos trust dscp",
+            "priority-queue out",
+            "rate-limit output 8000 1500 2000 conform-action transmit exceed-action drop",
+        ] {
+            assert_eq!(inspect(line), Verdict::Full, "{line}");
+        }
+        // Cut short, they are still refused.
+        assert!(matches!(inspect("pol 8000"), Verdict::Refuse(_)));
+        assert!(matches!(inspect("shape av 8000"), Verdict::Refuse(_)));
     }
 
     #[test]

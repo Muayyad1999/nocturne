@@ -345,6 +345,20 @@ for (const theme of THEMES) {
     await expect(page.getByRole('searchbox', { name: 'Search checks' })).toBeVisible();
     await shoot(page, theme, 'checks');
 
+    // A threshold refused where it was typed: a fraction of a day, which the
+    // engine counts in whole days. Nothing is sent; Escape puts it back.
+    await page.getByRole('button', { name: 'Thresholds' }).click();
+    const days = page.getByRole('spinbutton', { name: 'Backup age' });
+    await days.fill('7.5');
+    await days.press('Tab');
+    await expect(days).toHaveAttribute('aria-invalid', 'true');
+    // The sentence under the field, not only the field: it is the point.
+    await page.getByText('Must be a whole number (0 or more), not 7.5.').scrollIntoViewIfNeeded();
+    await shoot(page, theme, 'threshold-refused');
+    await days.focus();
+    await page.keyboard.press('Escape');
+    await expect(days).toHaveValue('7');
+
     // The narrow end of the range, and the same screens with the dock open.
     await page.setViewportSize({ width: 1280, height: 720 });
     await openApp(page, '/insights', { backend, theme });

@@ -48,6 +48,7 @@ pub mod world;
 /// Register this feature's settings, state, RPC methods and background tasks.
 pub fn init(builder: &mut nocturne_app::AppBuilder) {
     nocturne_app::settings::declare(builder, settings::SECTION, &settings::Settings::default());
+    nocturne_app::settings::check_writes(builder, settings::SECTION, settings::check_write);
     // Without its table the feature cannot remember a finding from one scan to
     // the next: failing here means a broken database, not a condition to carry
     // on with.

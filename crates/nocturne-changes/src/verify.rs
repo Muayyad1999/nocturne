@@ -24,7 +24,8 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::compare;
-use crate::model::{Check, Plan, Verify};
+use crate::model::{Check, Intent, Plan, Verify};
+use crate::redact::Hider;
 
 /// What the device looked like before the change.
 #[derive(Clone, Debug, Default)]
@@ -97,23 +98,44 @@ fn shut_down_by(plan: &Plan, syntax: Syntax) -> BTreeSet<String> {
         .collect()
 }
 
+/// The configuration a device must equal after the change, when the change
+/// says so in as many words: an exact intended configuration (a restore, an
+/// undo). Anything else only says what to send.
+pub fn exact_configuration(intent: &Intent) -> Option<String> {
+    match intent {
+        Intent::Intended {
+            config,
+            exact: true,
+        } => Some(config.clone()),
+        _ => None,
+    }
+}
+
 /// Run every check the options ask for. `before` is the configuration the
 /// drift check confirmed the plan was computed against, `after` is the one
-/// the device shows now (both already fetched by the caller).
+/// the device shows now (both already fetched by the caller). `exact` is
+/// [`exact_configuration`] of the change's intent.
+///
+/// A check's detail is kept in the change, published and logged: every one
+/// of them leaves here through `hide`, whatever it quotes — configuration
+/// lines, a device's answer to a ping, the reason a read failed.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_checks(
     app: &App,
     cli: &mut Cli,
     plan: &Plan,
+    exact: Option<&str>,
     verify: &Verify,
     baseline: &Baseline,
     before: &str,
     after: &str,
     syntax: Syntax,
+    hide: &Hider,
 ) -> Vec<Check> {
     let mut checks = Vec::new();
 
     if verify.config {
-        checks.push(config_check(plan, before, after, syntax));
+        checks.push(config_check(plan, exact, before, after, syntax, hide));
     }
 
     let kinds = wanted_kinds(verify);
@@ -152,13 +174,44 @@ pub async fn run_checks(
     for address in &verify.pings {
         checks.push(ping_check(cli, address).await);
     }
-    checks
+    checks.into_iter().map(|check| hide.check(check)).collect()
 }
 
 /// The one check that makes a change honest: is the device what the plan said
 /// it would be?
-fn config_check(plan: &Plan, before: &str, after: &str, syntax: Syntax) -> Check {
+fn config_check(
+    plan: &Plan,
+    exact: Option<&str>,
+    before: &str,
+    after: &str,
+    syntax: Syntax,
+    hide: &Hider,
+) -> Check {
     if plan.predicted_sha256.is_empty() {
+        // On a grammar the engine cannot apply commands to (RouterOS, Junos
+        // `set`) nothing predicts what the lines do. A change that names the
+        // configuration the device must end up with is checked against that
+        // instead: an undo there used to be held to the configuration from
+        // before, and it still is.
+        if let Some(wanted) = exact {
+            let differences = compare::differences_of(wanted, after, syntax);
+            return if differences.is_empty() {
+                Check {
+                    name: "configuration".into(),
+                    ok: true,
+                    detail: "the running configuration is exactly the intended configuration (the result of the commands could not be predicted, so the device was compared with that)".into(),
+                }
+            } else {
+                Check {
+                    name: "configuration".into(),
+                    ok: false,
+                    detail: format!(
+                        "the running configuration is not the intended configuration — {}",
+                        differences.describe(6, hide)
+                    ),
+                }
+            };
+        }
         return Check {
             name: "configuration".into(),
             ok: false,
@@ -179,7 +232,7 @@ fn config_check(plan: &Plan, before: &str, after: &str, syntax: Syntax) -> Check
             ok: false,
             detail: format!(
                 "the running configuration is not what the plan predicted — {}",
-                differences.describe(6)
+                differences.describe(6, hide)
             ),
         }
     }
@@ -402,5 +455,83 @@ async fn ping_check(cli: &mut Cli, address: &str) -> Check {
                     .trim()
             ),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BEFORE: &str = "/interface bridge add name=bridge\n";
+
+    fn unpredicted() -> Plan {
+        Plan {
+            commands: vec!["/ip dns static add name=printer.lab address=10.0.0.40".into()],
+            predicted_sha256: String::new(),
+            ..Plan::default()
+        }
+    }
+
+    #[test]
+    fn what_nothing_predicts_is_checked_against_the_configuration_the_change_names() {
+        let hide = Hider::for_patterns(&[]);
+        let wanted = "/interface bridge add name=bridge\n/ip dns static add name=printer.lab address=10.0.0.40\n";
+        let plan = unpredicted();
+
+        // The order a device prints its lines in is not a difference.
+        let reached = "/ip dns static add name=printer.lab address=10.0.0.40\n/interface bridge add name=bridge\n";
+        let check = config_check(
+            &plan,
+            Some(wanted),
+            BEFORE,
+            reached,
+            Syntax::Routeros,
+            &hide,
+        );
+        assert!(check.ok, "{}", check.detail);
+
+        let missed = "/interface bridge add name=bridge\n/ip dns static add name=other.lab address=10.0.0.9\n";
+        let check = config_check(&plan, Some(wanted), BEFORE, missed, Syntax::Routeros, &hide);
+        assert!(!check.ok);
+        assert!(
+            check.detail.contains("printer.lab") && check.detail.contains("other.lab"),
+            "it names what differs: {}",
+            check.detail
+        );
+
+        // A change that only says what to send still cannot be checked.
+        let check = config_check(&plan, None, BEFORE, reached, Syntax::Routeros, &hide);
+        assert!(!check.ok);
+        assert!(
+            check.detail.contains("could not be predicted"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn only_an_exact_intended_configuration_names_what_the_device_must_be() {
+        let config = "hostname SW1\n".to_string();
+        assert_eq!(
+            exact_configuration(&Intent::Intended {
+                config: config.clone(),
+                exact: true
+            }),
+            Some(config.clone())
+        );
+        assert_eq!(
+            exact_configuration(&Intent::Intended {
+                config,
+                exact: false
+            }),
+            None,
+            "an additive configuration says what must be present, not all there is"
+        );
+        assert_eq!(
+            exact_configuration(&Intent::Lines {
+                lines: vec!["hostname SW1".into()]
+            }),
+            None
+        );
     }
 }

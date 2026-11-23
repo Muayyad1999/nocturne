@@ -13,6 +13,10 @@
  * 3. Nothing is applied from the browser. The page calls `changes.apply`;
  *    the engine decides. When the engine refuses, its own sentence is what
  *    is shown, because only the engine knows why.
+ *
+ * "Roll back…" sends nothing either: `changes.rollback` answers a new change
+ * that takes the devices back, worked out from what they hold now, and the
+ * page opens it — to be read, approved and applied like any other.
  */
 
 import {
@@ -26,10 +30,17 @@ import {
   Undo2,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { useRpc, useRpcMutation } from '@/api/hooks';
 import type { RpcError } from '@/api/errors';
-import type { Change, ChangeCancelled, ChangeDeleted, ChangeIdParams } from '@/api/types/changes';
+import type {
+  ChangeCancelled,
+  ChangeCreatedWithJob,
+  ChangeDeleted,
+  ChangeIdParams,
+  ChangeView,
+  ChangesRollbackParams,
+} from '@/api/types/changes';
 import type { AuditList, DeviceRow, Job } from '@/api/types/core';
 import { registerCommand } from '@/app/CommandPalette/commands';
 import { usePageHeader } from '@/app/Header';
@@ -61,6 +72,8 @@ import {
   canCancel,
   canPlan,
   isFinished,
+  linkedFrom,
+  openUndo,
   ORIGIN_LABEL,
   RISK_LABEL,
   riskTone,
@@ -68,6 +81,7 @@ import {
   STATE_LABEL,
   STATE_SENTENCE,
   stateTone,
+  undoNotices,
 } from './change';
 import { DeviceCard } from './DeviceCard';
 import { reportOutcome, useChangeJob } from './useChangeJob';
@@ -90,10 +104,24 @@ export default function ChangePage({ id }: ChangePageProps) {
   /** A refusal this page made itself, not one the engine sent. */
   const [refusal, setRefusal] = useState<string | null>(null);
 
-  const change = useRpc<Change>(
+  const change = useRpc<ChangeView>(
     'changes.get',
     { id },
     { invalidateOn: ['changes.changed', 'changes.progress'] },
+  );
+  // The other end of an undo link: the change this one undoes, and this
+  // one's latest undo. Read with the default view, like the change itself.
+  const undoesId = change.data?.undoes;
+  const undoneById = change.data?.undone_by;
+  const undoes = useRpc<ChangeView>(
+    'changes.get',
+    { id: undoesId },
+    { enabled: Boolean(undoesId), invalidateOn: ['changes.changed'] },
+  );
+  const undoneBy = useRpc<ChangeView>(
+    'changes.get',
+    { id: undoneById },
+    { enabled: Boolean(undoneById), invalidateOn: ['changes.changed'] },
   );
   const devices = useRpc<DeviceRow[]>('devices.list', undefined, {
     invalidateOn: ['devices.changed'],
@@ -157,13 +185,16 @@ export default function ChangePage({ id }: ChangePageProps) {
     },
   });
   const applying = useChangeJob('changes.apply', id, { onFinished: reportOutcome });
-  const undoing = useChangeJob('changes.rollback', id, { onFinished: reportOutcome });
+  const undo = useRpcMutation<ChangeCreatedWithJob, ChangesRollbackParams>('changes.rollback', {
+    invalidates: ['changes.'],
+    errorToast: 'The undo could not be worked out',
+  });
 
-  const approve = useRpcMutation<Change, Record<string, unknown>>('changes.approve', {
+  const approve = useRpcMutation<ChangeView, Record<string, unknown>>('changes.approve', {
     invalidates: ['changes.'],
     errorToast: false,
   });
-  const unapprove = useRpcMutation<Change, ChangeIdParams>('changes.unapprove', {
+  const unapprove = useRpcMutation<ChangeView, ChangeIdParams>('changes.unapprove', {
     invalidates: ['changes.'],
   });
   const cancel = useRpcMutation<ChangeCancelled, ChangeIdParams>('changes.cancel', {
@@ -222,7 +253,16 @@ export default function ChangePage({ id }: ChangePageProps) {
 
   const bound = binding(data, names);
   const approvedButStale = data.state === 'approved' && !bound.bound;
-  const undoable = rollbackCandidates(data);
+  const undoneByLinked = linkedFrom(undoneBy.data, undoneBy.error as RpcError | null);
+  const notices = undoNotices(
+    data,
+    linkedFrom(undoes.data, undoes.error as RpcError | null),
+    undoneByLinked,
+  );
+  // While an undo is waiting the engine refuses another, so it is not offered:
+  // the notice above points at the one there is.
+  const undoable =
+    data.undone_by && openUndo(undoneByLinked) ? [] : rollbackCandidates(data);
   const driftFailed = data.targets.some((target) =>
     target.result?.steps.some((step) => step.name === 'drift check' && !step.ok),
   );
@@ -284,16 +324,26 @@ export default function ChangePage({ id }: ChangePageProps) {
         {undoable.length > 0 && !running && (
           <Button
             icon={Undo2}
-            loading={undoing.running || undoing.starting}
+            loading={undo.isPending}
             onClick={async () => {
               const where = undoable.map((deviceId) => names.get(deviceId) ?? deviceId);
               const ok = await confirm({
-                title: `Roll back on ${plural(undoable.length, 'device')}?`,
-                description: `Nocturne will put ${where.join(', ')} back to the configuration each of them had before this change, and check that it got there.`,
-                confirmLabel: 'Roll back',
-                tone: 'danger',
+                title: `Plan the way back on ${plural(undoable.length, 'device')}?`,
+                description: `Nocturne reads ${where.join(', ')} and works out the commands that take each of them back to the configuration it had before this change. They become a new change, opened next: nothing is sent until it is approved and applied, like any other change.`,
+                confirmLabel: 'Plan the undo',
               });
-              if (ok) undoing.start();
+              if (!ok) return;
+              undo.mutate(
+                { id },
+                {
+                  onSuccess: (created) => {
+                    toast.success('The undo is being planned', {
+                      description: 'Nothing has been sent. Read its commands, then approve it.',
+                    });
+                    void navigate(`/changes/${created.change.id}`);
+                  },
+                },
+              );
             }}
           >
             Roll back…
@@ -374,6 +424,29 @@ export default function ChangePage({ id }: ChangePageProps) {
             )}
           </p>
         </header>
+
+        {notices.map((notice) => (
+          <section
+            key={notice.role}
+            className={styles.banner}
+            data-tone={notice.tone}
+            aria-label={notice.role === 'undo' ? 'What this change undoes' : 'The undo of this change'}
+            data-testid={notice.role === 'undo' ? 'undoes' : 'undone-by'}
+          >
+            <div className={styles.bannerText}>
+              <strong>
+                {notice.headline}
+                {notice.linkText !== undefined && (
+                  <>
+                    {' '}
+                    <Link to={`/changes/${notice.id}`}>{notice.linkText}</Link>
+                  </>
+                )}
+              </strong>
+              <span>{notice.sentence}</span>
+            </div>
+          </section>
+        ))}
 
         {(planning.running || planning.starting) && (
           <section className={styles.banner} data-tone="info" aria-label="Planning">

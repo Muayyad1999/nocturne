@@ -27,6 +27,10 @@ isp = ["nocturne-suite/isp"]
 
 [dependencies]
 nocturne-suite.workspace = true
+# `tray-icon` is the icon "Keep running in the tray" leaves (src/tray.rs). On
+# Linux it is drawn by libayatana-appindicator3, loaded when the icon is
+# made, and the packages depend on it: release.yml builds them against the
+# Ayatana library, which Debian 12 and 13 and Ubuntu ship.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
@@ -48,9 +52,19 @@ parking_lot.workspace = true
 dirs.workspace = true
 anyhow.workspace = true
 
+# `--help`, `--version` and a refused argument, said in a message box when a
+# Windows release build was started without anywhere to print them. The same
+# version and features `tauri-plugin-dialog` already builds, so nothing new
+# is compiled.
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.17", default-features = false }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# Only to start a job the way a feature does, so that quitting can be shown
+# to wait for it: the shell itself reaches the engine through the suite.
+nocturne-app.workspace = true
 
 [lints]
 workspace = true

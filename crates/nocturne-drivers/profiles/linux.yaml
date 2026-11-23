@@ -297,15 +297,37 @@ collect:
         temperature_c: (millidegrees | num) / 1000
       optional: true
 
+# SNMP health, for net-snmp's agent. Written from UCD-SNMP-MIB (revision
+# 2020-08-21), HOST-RESOURCES-MIB (RFC 2790), LM-SENSORS-MIB and the source
+# of net-snmp 5.9.4, read on 2026-11-23. CPU and memory are read from a real
+# net-snmp agent by crates/nocturne-monitor/src/tests/snmpd.rs wherever
+# net-snmp is installed, and compared with /proc. The temperature entry has
+# never been read from an agent that has a sensor: it rests on the MIB and on
+# the agent's source alone.
 snmp:
   cpu:
-    - 1.3.6.1.4.1.2021.11.11.0      # ssCpuIdle (UCD-SNMP), subtract from 100
-    - 1.3.6.1.2.1.25.3.3.1.2        # hrProcessorLoad, per core
-  memory_used:
-    - 1.3.6.1.4.1.2021.4.6.0        # memAvailReal
+    - 1.3.6.1.2.1.25.3.3.1.2                    # hrProcessorLoad: percent of the last minute each core was not idle, one row per core; their mean is the host's load
+    # Only for an agent without hrProcessorLoad: the idle percentage, turned round.
+    - oid: 1.3.6.1.4.1.2021.11.11.0             # ssCpuIdle.0: percent of the last minute spent idle
+      complement: 100
+  # Used = total minus available, the meaning of the command-line read above.
+  # memSysAvail exists from net-snmp 5.9.1 and is a 64-bit object, which
+  # SNMPv1 cannot carry: an older agent, or SNMPv1, gives no memory figure.
+  # Not memAvailReal (1.3.6.1.4.1.2021.4.6.0): on Linux that is MemFree, so it
+  # counts the page cache as used. Not memTotalFree (…4.11.0): free RAM plus
+  # free swap, against a RAM-only total. Do not list either after it.
   memory_free:
-    - 1.3.6.1.4.1.2021.4.11.0       # memTotalFree
+    - 1.3.6.1.4.1.2021.4.27.0                   # memSysAvail.0: MemAvailable, kB
   memory_total:
-    - 1.3.6.1.4.1.2021.4.5.0        # memTotalReal
+    - 1.3.6.1.4.1.2021.4.5.0                    # memTotalReal.0: MemTotal, kB
+  # net-snmp serves temperatures in LM-SENSORS-MIB, in thousandths of a
+  # degree. It does not implement ENTITY-SENSOR-MIB, and a Linux agent that
+  # does (through AgentX) puts every kind of sensor in that column. The
+  # column is a Gauge32 that net-snmp fills with the reading as a signed
+  # 32-bit integer (agent/mibgroup/ucd-snmp/lmsensorsMib.c of 5.9.4 and
+  # 5.9.5), so a sensor below zero arrives as its two's complement, which
+  # `signed` reads back.
   temperature:
-    - 1.3.6.1.2.1.99.1.1.1.4        # entPhySensorValue
+    - oid: 1.3.6.1.4.1.2021.13.16.2.1.3         # lmTempSensorsValue: "The temperature of this sensor in mC"
+      signed: true
+      scale: 0.001

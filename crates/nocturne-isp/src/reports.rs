@@ -19,6 +19,17 @@ use crate::money::{
     Conversion, ConversionInput, Converted, Currency, Money, Totals, convert_totals,
 };
 
+/// Where a window that was given no end stops: one millisecond past now.
+///
+/// Windows here are half open, `[since, until)`. Ending one at "now" leaves
+/// out whatever was written in the millisecond the question was asked in, so
+/// a report asked for straight after an invoice was issued did not count that
+/// invoice in "everything so far". That is how it was found: one test, on the
+/// fastest of three machines.
+pub fn open_end(until: Option<i64>, now: i64) -> i64 {
+    until.unwrap_or_else(|| now.saturating_add(1))
+}
+
 // ------------------------------------------------------------------ arrears
 
 /// One age band of what is owed, in one currency.
@@ -469,7 +480,7 @@ pub fn summary(app: &App, settings: &Settings) -> AppResult<Summary> {
     )
     .unwrap_or(u32::MAX);
     let mut received_30d = Totals::new();
-    for (code, minor) in db::received_between(store, now - 30 * DAY_MS, now)? {
+    for (code, minor) in db::received_between(store, now - 30 * DAY_MS, open_end(None, now))? {
         received_30d.add(Money::new(minor, Currency::of(&code)?))?;
     }
     let (with_both, with_device, without_device) = db::service_coverage(store)?;
@@ -510,4 +521,21 @@ pub fn summary(app: &App, settings: &Settings) -> AppResult<Summary> {
                front of a model"
             .to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_with_no_end_takes_in_the_instant_it_is_asked_at() {
+        let now = 1_700_000_000_000;
+        assert!(
+            (0..open_end(None, now)).contains(&now),
+            "what was written this millisecond is part of everything so far"
+        );
+        // An end somebody gave is theirs, also when it is in the past.
+        assert_eq!(open_end(Some(now - 5), now), now - 5);
+        assert_eq!(open_end(None, i64::MAX), i64::MAX);
+    }
 }

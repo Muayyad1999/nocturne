@@ -9,6 +9,13 @@ pub const SECTION: &str = "monitoring";
 pub const PING_COUNT: u32 = 3;
 /// How often a lab device's CLI is read, in seconds (they are cheap and local).
 pub const LAB_CLI_INTERVAL_S: u32 = 30;
+/// How often a lab device's QoS statistics are read, in seconds.
+pub const LAB_QOS_INTERVAL_S: u32 = 30;
+/// How long a command-line session that is only for QoS waits for another
+/// automated session on the device (a change, a backup) to finish, in
+/// seconds. The poll it sits in has usually read the device over SNMP
+/// already, and waits with it.
+pub const QOS_SESSION_WAIT_S: u64 = 5;
 /// Per-attempt SNMP timeout, in seconds.
 pub const SNMP_TIMEOUT_S: u64 = 2;
 /// Interface rows one SNMP poll will read.
@@ -40,6 +47,14 @@ pub struct MonitorSettings {
     /// default: a lab is where things are broken on purpose, and its alerts
     /// are recorded and shown without waking anybody.
     pub notify_for_lab: bool,
+    /// How often a device's per-class QoS statistics are read over its
+    /// command line. Its own cadence, because the read is a CLI session
+    /// also on a device whose interfaces are polled over SNMP.
+    pub qos_interval_s: u32,
+    /// The most classes of one device that get time series. A router with a
+    /// queue per subscriber has thousands; the current table holds them all
+    /// and `monitor.qos` says when the series were cut here.
+    pub qos_max_series: u32,
 }
 
 impl Default for MonitorSettings {
@@ -56,6 +71,8 @@ impl Default for MonitorSettings {
             check_history_days: 90,
             cert_warn_days: 14,
             notify_for_lab: false,
+            qos_interval_s: 300,
+            qos_max_series: 256,
         }
     }
 }
@@ -77,6 +94,10 @@ impl MonitorSettings {
             // Zero would mean "warn about every certificate", which is not a
             // warning; a check that wants no warning says so itself.
             cert_warn_days: stored.cert_warn_days.clamp(1, 365),
+            qos_interval_s: stored.qos_interval_s.clamp(30, 86_400),
+            // Zero is allowed and means what it says: a table, no series.
+            // The ceiling is five series a class, per device, every read.
+            qos_max_series: stored.qos_max_series.min(10_000),
             ..stored
         }
     }
@@ -102,13 +123,14 @@ mod tests {
             json!({"enabled": true, "concurrency": 32, "down_after": 2, "cli_interval_s": 300,
                    "retention_days_raw": 7, "retention_days_rollup": 365, "ping_timeout_ms": 1000,
                    "checks_enabled": true, "check_history_days": 90, "cert_warn_days": 14,
-                   "notify_for_lab": false})
+                   "notify_for_lab": false, "qos_interval_s": 300, "qos_max_series": 256})
         );
 
         app.rpc(
             "settings.set",
             json!({"section": SECTION, "value": {"concurrency": 0, "down_after": 0, "cli_interval_s": 1,
-                                                 "cert_warn_days": 0, "check_history_days": 0}}),
+                                                 "cert_warn_days": 0, "check_history_days": 0,
+                                                 "qos_interval_s": 1, "qos_max_series": 2_000_000}}),
         )
         .await
         .unwrap();
@@ -125,6 +147,11 @@ mod tests {
             (settings.cert_warn_days, settings.check_history_days),
             (1, 1),
             "a warning of zero days is not a warning"
+        );
+        assert_eq!(
+            (settings.qos_interval_s, settings.qos_max_series),
+            (30, 10_000),
+            "a CLI session a second and a million series a device are both typos"
         );
     }
 }

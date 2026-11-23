@@ -371,6 +371,7 @@ fn forget_devices(app: &App, payload: &Value) {
         let Some(id) = id.as_str() else { continue };
         state.forget(id);
         let _ = interfaces::forget(app, id);
+        let _ = crate::qos::forget(app, id);
         let _ = alerts::forget_device(app, id);
         // A check belongs to its device: when the device goes, so do its
         // checks and everything they found.

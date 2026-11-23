@@ -30,6 +30,7 @@ struct Link { id, a: End, b: End,
     confidence: confirmed|one_sided|inferred,        // both ends report it | only one end | derived
     status: up|down|unknown, speed_bps?, util_pct?,  // from collected interfaces / monitor metrics when present
                                                      // speed: the slower end; a folded port-channel: its members added up
+    util_at?,                                        // when monitoring measured util_pct (the busier end's poll)
     vlans?: String, aggregate?: String,              // trunk allowed list, port-channel name
     label? }
 struct End { node, interface? /* canonical name */, ip? }
@@ -73,6 +74,19 @@ Building rules:
   row an offset cursor returns twice because the list moved between pages is
   taken once (an alert by `id`, a port by name). A build without the feature
   (`unknown_method`) is carried on without.
+* A feature that is there and **refuses** is said to have, in `warnings`,
+  because what it would have added looks like nothing when it is missing:
+  `open alerts could not be read (…)` (no node then has `alerts`, and a node
+  without them may still have alerts open), `link utilisation could not be
+  read from monitoring (…)` (no link has `util_pct`), and `the lab feature's
+  wiring could not be read (…)` (links between lab devices are drawn from
+  what they report). These name no device, and `topology.neighbors` passes
+  them on with the warnings that name its device.
+* `util_pct` is monitoring's last reading of the busier end, whatever its
+  age — monitoring keeps a silent device's last row — so it comes with
+  `util_at`, the time of that poll; age it against `generated_at`, as
+  `topology.rates` readings are aged against its `at`. A reading monitoring
+  gave no time has no `util_at`.
 
 ## Layout
 
@@ -92,7 +106,7 @@ neighbours without moving pinned ones.
 | Method | Params → Result |
 |---|---|
 | `topology.views` / `.view_save` / `.view_delete` | named views `{id, name, layer, filter, include_endpoints}` |
-| `topology.neighbors` | `{device_id}` → the device's links with both ends resolved (the device page's "connected to" table) |
+| `topology.neighbors` | `{device_id}` → `{device_id, device, rows: [{link_id, local_interface?, local_ip?, peer: Node, peer_interface?, peer_ip?, kind, confidence, status, speed_bps?, util_pct?, util_at?, vlans?, aggregate?, label?, protocols, members}], warnings}` — the device's links with both ends resolved (the device page's "connected to" table); `warnings` are the graph's that name the device, and those about every device (a feature that could not answer) |
 | `topology.rates` | `{ports: [{device_id, interface}]}` → `{at, monitoring: bool, ports: [{device_id, interface, name, in_bps?, out_bps?, speed_bps?, at?}]}` — what monitoring last measured on the ports asked about (the map asks about the ports its links end on, and draws the link load from the answer). One entry per port monitoring has a row for, under the `interface` spelling it was **asked with**; `name` is monitoring's own. The join is made here, with `ifname` on both names: a link end is always canonical (`TenGigabitEthernet0/0/0/1`) while monitoring keeps the device's spelling for profiles with `interface_names: verbatim` (`TenGigE0/0/0/1`), so a caller comparing the two as text loses the port. The canonical form finds a port spelled differently; it does not merge two: a port is looked up by the name monitoring keeps first, and by canonical form only when exactly one of the device's ports has it, so `Ethernet0` on a device that also has `eth0` is answered with its own row, and a spelling that could mean either is not answered. A rate that could not be measured is absent, never `0`. Top-level `at` is the server's clock when it answered: a reading's age is its own `at` taken from that, never from the caller's clock. `monitoring: false` means the monitor feature is not in the build (no rates to be had), which is not the same as nothing having been measured (`monitoring: true`, `ports: []`); any other refusal by the monitor is this method's error |
 | `topology.path` | `{from, to}` (device ids, names or IP addresses) → `{hops: [{node, device_id?, in_interface?, out_interface?, via: route|arp|mac|connected, detail}], complete: bool, stopped_because?}` — walks collected routing tables (longest prefix match), then ARP and MAC tables for the last hop; stops honestly ("no route data collected for R3") instead of guessing |
 | `locate.host` | `{query}` (IP, MAC, or hostname) → `{mac?, ip?, vendor?, locations: [{device_id, device, interface, vlan?, kind: access|trunk|uplink, seen_at}], best?: index, how: [..]}` — "which switch port is this plugged into": resolve IP→MAC through collected ARP tables, find the MAC in MAC tables, prefer the port with no network neighbour (the edge), report the trunk sightings as the path |
@@ -115,7 +129,9 @@ bundle, one member, or nothing, and whose two ends disagree. `topology.rates` ag
 device sorts past the first five thousand rows, a device with more rows than
 a page, the IOS XR and other spellings `ifname` rewrites, two ports of one
 device with one canonical form, a build without monitoring, a monitor that
-fails, a table that never ends. Layout:
+fails (and the drawing's warning), a table that never ends, a reading twenty
+hours old (`util_at`). `alerts.list` and `labs.links` that refuse: a warning,
+never a clean card. Layout:
 determinism, no overlapping nodes, pinned nodes do not move, a 500-node graph
 lays out in under a second. Path: connected, static, default route, ECMP
 (report the first with a note), missing data stops. `locate.host` across a

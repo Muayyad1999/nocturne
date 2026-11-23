@@ -15,6 +15,10 @@ pub const RUNS: &str = "automation.runs";
 /// One document per run: every device's result. Runs are capped, so this
 /// collection has at most `keep_runs` documents in it.
 pub const RESULTS: &str = "automation.run_results";
+/// A trigger's open debounce window, by trigger id: what it has collected and
+/// when it fires. Kept on disk so that a restart inside the window does not
+/// throw the burst away; removed the moment the trigger fires.
+pub const TRIGGER_PENDING: &str = "automation.trigger_pending";
 
 pub fn save_run(app: &App, run: &Run) -> AppResult<()> {
     app.store().put(RUNS, &run.id, run)

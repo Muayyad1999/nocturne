@@ -345,6 +345,12 @@ export interface Variable {
   /** Required when `kind` is `choice`. */
   choices: string[];
   help: string;
+  /**
+   * A `string` that may span lines (a banner). Every other value is one line:
+   * the backend refuses a line break in it. Always in an answer; may be left
+   * out of `templates.save`, where it means `false`.
+   */
+  multiline?: boolean;
 }
 
 /**

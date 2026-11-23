@@ -539,13 +539,38 @@ collect:
         offered_rate_bps: OFFERED_RATE
         drop_rate_bps: DROP_RATE
 
+# SNMP health. `maturity: verified` above speaks for the command-line reads:
+# no SNMP walk recorded from an IOS or IOS-XE device is in this repository.
+# Written from Cisco's MIB files (CISCO-PROCESS-MIB revision 2020-04-21,
+# OLD-CISCO-CPU-MIB, CISCO-MEMORY-POOL-MIB revision 2013-09-18 and
+# CISCO-ENVMON-MIB revision 2018-03-21, read on 2026-11-23 from
+# github.com/cisco/cisco-mibs). The monitor's tests read it against rows
+# written by hand in the layout published recordings of real devices show.
+# Nobody has pointed it at a device.
 snmp:
   cpu:
-    - 1.3.6.1.4.1.9.9.109.1.1.1.1.7   # cpmCPUTotal1minRev
-    - 1.3.6.1.4.1.9.2.1.57            # avgBusy1, releases before 12.2
+    # One row per processor the agent reports (a stack member, a route
+    # processor, a line card), not per core: the busiest is the figure.
+    - oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.7        # cpmCPUTotal1minRev: "overall CPU busy percentage in the last 1 minute period"
+      combine: max
+    # Only where that table does not answer (releases before 12.2(3.5)).
+    - 1.3.6.1.4.1.9.2.1.57.0                    # avgBusy1.0: one-minute moving average of the CPU busy percentage
+  # Row 1 of ciscoMemoryPoolTable. The table is indexed by pool type, and
+  # type 1 is the Processor pool: the one pool every device must have, and
+  # the pool the command-line read takes from `show processes memory sorted`. On
+  # IOS-XE that is the IOS daemon's heap, not the machine's memory. Gauge32
+  # bytes: a pool of 4 GiB or more cannot be read from this MIB, and what an
+  # agent answers then is not established.
   memory_used:
-    - 1.3.6.1.4.1.9.9.48.1.1.1.5      # ciscoMemoryPoolUsed
+    - instance: 1.3.6.1.4.1.9.9.48.1.1.1.5.1    # ciscoMemoryPoolUsed.1: bytes in use in the Processor pool
   memory_free:
-    - 1.3.6.1.4.1.9.9.48.1.1.1.6      # ciscoMemoryPoolFree
+    - instance: 1.3.6.1.4.1.9.9.48.1.1.1.6.1    # ciscoMemoryPoolFree.1: bytes unused in the same pool
+  # Test points that are notPresent(5) or notFunctioning(6) read 0, and are
+  # left out. ciscoEnvMonTemperatureStatusValueRev1 (…13.1.3.1.7), the signed
+  # column the MIB now prefers, is not used, not even ahead of this one: a
+  # published recording of an IR809 has it at 0 beside 43 here for a test
+  # point in state normal, and every recording that has it has this column.
   temperature:
-    - 1.3.6.1.4.1.9.9.13.1.3.1.3      # ciscoEnvMonTemperatureStatusValue
+    - oid: 1.3.6.1.4.1.9.9.13.1.3.1.3           # ciscoEnvMonTemperatureStatusValue: degrees Celsius, one row per test point
+      where:
+        - {oid: 1.3.6.1.4.1.9.9.13.1.3.1.6, in: [1, 2, 3, 4]}   # ciscoEnvMonTemperatureState: normal, warning, critical or shutdown

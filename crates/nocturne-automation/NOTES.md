@@ -4,7 +4,7 @@ Spec: `docs/dev/features/automation.md`. Conventions: `docs/dev/features/README.
 
 ## State: complete
 
-119 tests (19 unit + 100 through `App::rpc`), `cargo clippy -p nocturne-automation
+145 tests (20 unit + 125 integration, all but one through `App::rpc`), `cargo clippy -p nocturne-automation
 --all-targets -- -D warnings` clean, `cargo fmt -p nocturne-automation --check`
 clean, no `unsafe`. A real `ansible-playbook` was run during development (see
 "Ansible" below).
@@ -24,7 +24,7 @@ src/
                 gate, run_commands, runner.* RPC
   compare.rs    grouping with volatile-line trimming, an LCS line diff, search, export
   render.rs     strict MiniJinja + the networking filters + `fail(…)`; the
-                render context
+                render context; the bounds on one rendering and one call
   templates.rs  variable kinds, CRUD, validate, render, apply
   builtins.rs   16 built-in templates, plus
   builtins/qos.rs  the 5 QoS ones (tag `qos`)
@@ -41,10 +41,58 @@ tests/
   runner.rs templates.rs playbooks.rs schedules.rs triggers.rs tasks.rs ansible.rs
   qos_templates.rs   the QoS built-ins: defaults, refusals, hostile values,
                      the simulator against the planner's prediction
+  render_bounds.rs   what the built-ins take on a 48-port switch, against the bounds
 ```
 
 ## Decisions worth remembering
 
+* **A rendering is bounded** (`render.rs`): 1 MiB written and 500 000 steps of
+  MiniJinja fuel per device, 16 MiB for one call (`Budget`, shared by a
+  playbook run's devices, which render at the same time: a share is taken
+  before and the unused part given back). Before, a 1 MiB variable over ten
+  thousand interfaces was ten gigabytes in one `String`, then copied, on a
+  runtime worker. The output goes through a writer that refuses the write
+  past its share, so the text is never built whole; fuel also charges for the
+  data a template makes on the way (one step per 64 bytes), which bounds what a
+  `{% set %}` or a macro can hold. The workspace's `minijinja` does not enable
+  `fuel`; this crate adds the feature on its own dependency line (features
+  are additive, `Cargo.lock` does not record them). A failed rendering keeps
+  no state to read its fuel from, which is why there is no per-call fuel
+  budget: the time a call takes is bounded per device instead. Every render
+  runs on the blocking pool. Measured on a 48-port switch: 3 935 steps and
+  3 447 bytes at most among the built-ins (`tests/render_bounds.rs`).
+* **A run never writes back the copy it started with.** Schedules, triggers
+  and tasks record a run when it starts and again when it ends, each time by
+  reading the stored record under `AutomationState::records` and changing
+  only the run's own fields; save and delete take the same lock. Before, a
+  schedule deleted or switched off during a 20-minute backup was put back,
+  enabled, when the backup ended.
+* **The slot is spent before the action is called** (schedules; for triggers
+  the burst and the count). A process killed by its own action (out of
+  memory) used to come back to a schedule that was still due, fire it within
+  the first tick and die again, every start for the catch-up week.
+* **What the last process left half-done is closed at start**, before the
+  scheduler and the triggers: a run with no `finished_at` (the core has
+  already failed its job) gets every device `skipped` with
+  `runner::CUT_SHORT`, and `cancelled`; a schedule recorded as started with
+  no outcome gets `last_ok: false` and `schedules::INTERRUPTED`; a task whose
+  last run that was gets `last_ok: false`. A trigger's open debounce window
+  is on disk (`automation.trigger_pending`) and comes back.
+* **A copy of a live data directory is a crash.** The restart tests hold an
+  action open, copy the data directory (the SQLite WAL with it, not the lock
+  file) and open a second app on the copy: exactly what a process that dies
+  at that moment leaves, without killing anything.
+* **Job events are automation's own.** Every allowed action starts a job and
+  the core publishes `jobs.changed` for it; a trigger on `jobs.changed` with
+  no filter or `{state: succeeded}` fired four times a second. `jobs.` is in
+  `OWN_TOPICS`, a pattern that covers any own prefix (`*`, `t*`) is refused,
+  and the listener ignores own topics whatever a stored trigger says. Not
+  caught: a trigger whose action publishes what it watches by another route
+  (`devices.state` → `collect.run`, which updates the device's state). The
+  bus carries no cause, and a burst that arrives during a run is held for
+  after it (below), so such a trigger runs back to back until it is switched
+  off. Telling those events apart needs a cause on the event, which is the
+  core's to add.
 * **One device belongs to one run at a time** (`state.rs`). `fan_out` claims a
   lease per device before the work and drops it after; a device that is taken
   becomes a `skipped` result naming the run that holds it, and no second
@@ -99,7 +147,20 @@ tests/
   run is still going when its debounce window closes, the pending burst is
   re-armed instead of dropped. A trigger may not watch the topics this crate
   publishes (`automation.`, `schedules.`, `triggers.`, `tasks.`, `templates.`,
-  `playbooks.`): that is a loop, and it is refused at save time.
+  `playbooks.`) or job events (`jobs.`): that is a loop, and it is refused at
+  save time. `pass_device` reads an event's `/id` only on `devices.*` topics.
+* **A value is one line.** A `string` (unless `multiline`, which only the
+  banner is), a `choice`, an `interface` and every `list` item refuse control
+  characters in `coerce`: a line break in a value was a second configuration
+  line (`vlan_name: "USERS\ninterface …\n shutdown"` rendered three). One
+  line can still be two words, so the older built-ins check the shape of what
+  they put into a command (`builtins::WORDS`), as the QoS ones always did.
+* **The device type a template checks is the one it renders with**: the
+  device's own profile, else the detected one (`render::profile_of`); a device
+  with neither is refused by a template that names profiles. `templates.apply`,
+  a playbook's `template` step and `ansible.export_playbook` share
+  `templates::written_for`. Before, a device left to detection took the IOS and
+  the RouterOS QoS templates alike, and a playbook step checked nothing.
 * **A playbook's `template` steps accumulate per device and become one change
   at the end of the run**, with a target only for the devices that finished —
   a device that failed half way does not get its half-rendered lines into a
@@ -187,12 +248,19 @@ Contract: `docs/dev/spec-qos.md` ("Changing QoS") and the table in
 * **The code point, not the spelling, is what is listed twice.** `46` in one
   class and `ef` in another are one marking; comparing texts let that
   through. `code_of` gives the number for both.
-* **An IOS interface is one name.** The `interface` kind only refuses a
-  second line; `GigabitEthernet0/1 shutdown` and `range Gi0/1 - 24` are one
-  line. The QoS bodies check the name after `ifname`: one word, a letter
-  first, its number last. The kind itself was left alone: other templates
-  may be given `range …` on purpose (the planner refuses it later, with its
-  own reason).
+* **An IOS interface is its full name** (`builtins::IOS_INTERFACE`, shared by
+  every IOS built-in that takes one). The `interface` kind only refuses a
+  second line, and `ifname` expands only its table: `Gigabit0/2`,
+  `TenGig1/1/1` and `Fast0/1` came out as typed, IOS took them and showed the
+  full name, the planner predicted a section that never exists, verify failed
+  and the rollback sent `default interface Gigabit0/2` — which reset the real
+  uplink. The macro accepts a type written out in full (any case; it is
+  written the router's way) and its number, and refuses the rest, naming
+  the value. A type missing from its list is refused, not guessed: a copy can
+  add it. The kind itself was left alone: a user template may be given
+  `range …` on purpose (the planner refuses it later, with its own reason).
+  Expanding prefixes in `ifname` itself, and the predictor finding the
+  section an abbreviation names, are the drivers crate's to do.
 * **One ceiling for every rate, 128 Gbit/s** (`MOST_KBPS`). Without it
   `rate_kbps: 9223372036854775807` rendered `max-limit=9223372036854775807k`
   and guarantees computed in 128-bit arithmetic. It is a sanity bound, not
@@ -243,7 +311,16 @@ Contract: `docs/dev/spec-qos.md` ("Changing QoS") and the table in
   rounded share, so the guarantees add up to exactly the parent's rate.
 * **No `comment=` on the queues**: it is not on the pages read for
   `/queue simple` and `/queue tree`, and free text needs quoting rules that
-  are not there either.
+  are not there either. **The mangle rules do carry one**, `<prefix>-qos`
+  (one word, so no quoting): "Common Firewall Matchers and Actions" lists
+  `comment` for a rule. A rule has no name and is added again on every run;
+  the queues, whose names are unique, now come first, so a second run is
+  refused at its first line before a rule is duplicated, and the comment is
+  how the rules of a run that stayed can be found.
+* **`place_before` on the subscriber queue.** Simple queues are tried in order
+  and a new one goes last, so a subnet or catch-all queue above it takes the
+  subscriber's traffic. The variable takes a queue's name, because a number
+  exists only after a `print` in the same session ("Command Line Interface").
 * **The simulator covers the IOS templates except `mls qos …`** (it has no
   Catalyst commands and answers them with `% Invalid input detected`). The
   RouterOS templates have nothing to be typed into: there is no RouterOS

@@ -221,9 +221,19 @@ pub fn busiest_hour(
 /// Every `(device, metric)` monitoring records, in one query. A scan asks
 /// "is this measured here" once per device and metric, which is thousands of
 /// round trips on a campus for a question one `DISTINCT` answers.
+///
+/// Recorded means a series that holds a sample. A series row alone is not
+/// one: the core makes the row the first time anybody names the series, and
+/// a read through `metrics.query` names it — so asking once for a series
+/// nobody records leaves a row behind for as long as the device exists. Taken
+/// as a measurement, one such row of `qos.queue_drop_ps` made a device whose
+/// classes were dropping into one that counts congestion apart and had none.
 pub fn present(store: &Store) -> AppResult<std::collections::HashSet<(String, String)>> {
     store.with(|conn| {
-        let mut statement = conn.prepare_cached("SELECT DISTINCT device_id, metric FROM series")?;
+        let mut statement = conn.prepare_cached(
+            "SELECT DISTINCT s.device_id, s.metric FROM series s
+             WHERE EXISTS (SELECT 1 FROM samples m WHERE m.series_id = s.id)",
+        )?;
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect()
     })
@@ -340,6 +350,23 @@ mod tests {
                 "{instance}: nothing measured is not a measurement of nothing"
             );
         }
+    }
+
+    #[test]
+    fn a_series_that_holds_no_sample_is_not_a_metric_that_is_recorded() {
+        // `Store::series_id` makes the row on first use, and the monitor's
+        // `metrics.query` uses it to read: asking for a series nobody records
+        // leaves its row behind with nothing in it.
+        let store = store_with(&[("qos.drop_ps", "ether1|out|subscribers/alice", 1_000, 25.0)]);
+        store
+            .series_id("dev1", "qos.queue_drop_ps", "ether1|out|subscribers/alice")
+            .expect("an empty series");
+        let present = present(&store).unwrap();
+        assert!(present.contains(&("dev1".to_string(), "qos.drop_ps".to_string())));
+        assert!(
+            !present.contains(&("dev1".to_string(), "qos.queue_drop_ps".to_string())),
+            "a row with no sample in it was read, not recorded"
+        );
     }
 
     #[test]

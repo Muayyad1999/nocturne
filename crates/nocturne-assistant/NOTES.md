@@ -15,9 +15,11 @@ src/chats.rs        chat documents, UI messages, model context generations, chat
 src/usage.rs        hourly token ledger, ai.usage
 src/prompt.rs       the frozen system prompt, the per-turn briefing, Context, quick actions
 src/turn.rs         ai.send / ai.cancel / ai.approve, the turn runner, the ToolHost, the collector
-src/tools/          the boundary: boundary.rs (allow-list), mod.rs (gate + registry), 10 handler files
-                    (devices data watch net changes design; signals ops work records ledger)
-tests/              common/ (harness, feature stubs, reach stand-ins, HTTP fixture) + 9 test files
+src/tools/          the boundary: boundary.rs (allow-list, never-reachable list with reasons), mod.rs
+                    (gate + registry), 12 handler files (devices data watch net changes design;
+                    signals ops work records ledger; traffic snippets)
+tests/              common/ (harness, feature stubs, reach stand-ins, HTTP fixture) + 13 test files
+../nocturne-suite/tests/assistant_tools.rs   the same tools against the real features
 ```
 
 ## Decisions (where the spec left room)
@@ -63,11 +65,11 @@ tests/              common/ (harness, feature stubs, reach stand-ins, HTTP fixtu
 
 ## The second set of tools (logs, detections, checks, ops records, discovery, automation, three writers, the ISP ledger)
 
-* **Three properties of a method live in `boundary.rs`, not on the tool**: `ASK_FIRST` (writes a
-  record), `LEDGER` (the ISP ledger), `ALREADY_REDACTED` (another feature's placeholders). A tool
-  has the property because it declares such a method (`Tool::asks_first`, `Tool::reads_ledger`),
-  and the gate enforces each one call by call. So a new tool cannot acquire a write, or the
-  ledger, without the boundary tests noticing.
+* **Two properties of a method live in `boundary.rs`, not on the tool**: `ASK_FIRST` (writes a
+  record) and `LEDGER` (the ISP ledger). A tool has the property because it declares such a
+  method (`Tool::asks_first`, `Tool::reads_ledger`), and the gate enforces each one call by call.
+  So a new tool cannot acquire a write, or the ledger, without the boundary tests noticing. (A
+  third, `ALREADY_REDACTED`, became a rule for every answer: see the third set below.)
 * **A tool that writes asks from inside its handler** (`ToolCtx::confirm`), not before it runs:
   the question has to show the alert's title, the prefix's own name and every range, which are
   only known after the reads and the checks. The turn runner's `Approvals` is the one mechanism
@@ -140,11 +142,77 @@ answer in one place).
   turn's last pass over a result hides known values. `a_secret_no_backup_ever_held_…` is the one
   that fails.
 
+## The third set (QoS, flows, snippets), the boundary made whole, the small-model line
+
+* **`qos_status`, `top_talkers`, `list_snippets`** (`tools/traffic.rs`, `tools/snippets.rs`).
+  Each passes on the coverage its method gives — per device whether the QoS read worked, was
+  never made, cannot be made or failed, whether it met a real device, how many classes are held
+  and charted; whether the flow collector listens, where data starts, records, exporters, sets
+  without a template, sampling (never multiplied); the engine's own choice of snippet variant.
+  `list_snippets` asks `terminal.snippets.list {profile}` with the device's type the way a
+  session gets one (set, else detected): the variant is the engine's decision, not ours, and
+  `render`/`send` stay on the never-reachable list.
+* **The never-reachable list is code**, `boundary::NEVER`, grouped by reason, and with
+  `ALLOWED` it is every method the assembled application registers (482 in the ISP edition, 444
+  in the free one; 71 allowed). The suite's `assistant_tools.rs` fails on a method on neither
+  list, on both, or on a list and not registered — so a feature that adds a method breaks that
+  test until somebody decides. The tests' tripwires and the never-reachable fuzz now use the whole
+  list (411 names) instead of a hand-kept copy.
+* **Every placeholder in every answer is foreign.** The first batch took the numbers off for five
+  methods (`ALREADY_REDACTED`). Running the tools against the real features showed that most
+  features redact what they answer, each in a table of its own: `config.latest` / `.search` /
+  `.diff`, the change engine (`changes.create` / `.get` / `.preview`, which
+  `docs/dev/features/changes.md` asks the gate to treat so), `terminal.snapshot`, the log store.
+  The chat's `Redactor` leaves a `<secret:N>` it is handed alone (`already_masked`), so the model
+  saw the config feature's `<secret:1>` and the chat would have restored it to *its* first
+  secret — another device's — in a proposed line, under a plan a person reads with the value
+  hidden. No feature holds the chat's table, so the gate now does it for every answer and every
+  error. The model's reusable placeholders come from what it reads raw (`devices.exec`). With
+  the rule taken out (deliberately, in the suite), the real `config.latest` answer for a device
+  reached the model as `<secret:<secret:4>`, a profile rule having re-captured the tail of the
+  config feature's `<secret:1>` as a "secret" `1>`: the artefact the first review saw in
+  `log_context`, `search_notes` and evidence. Those answers now arrive as `<hidden>` before the
+  chat's rules run, so the artefact is gone for every feature that redacts.
+* **Small is 16,000 tokens or fewer** (the orchestrator's decision): a local model nobody
+  configured a window for gets the core set. `ai.tools` / `ai.status` now ask the window a turn
+  would use (`providers::context_window`: configured, else the provider's assumption — building
+  the provider, which for tests is the override) instead of the configured window only, which
+  would have listed sixty-three tools to a screen while the turn offered ten. The guard test holds
+  the core set under a third of a 16k model's compaction limit (27% now) and every tool's short
+  form under 90% of the smallest window that is offered all of them (87.1% at 16,001). To get
+  there `DEVICE_ARG` was shortened (it is in ~32 schemas, and schemas are sent in both forms).
+* **Fixed on the way, found by the suite test**: `collect_data` printed the collector's
+  per-device problems (device text) and, when there was no table, a raw job result outside any
+  data block, and did not hold its table to the character cap.
+* **What the review of the third set changed.** Monitoring sets a class's `dropping` only from a
+  drop rate it measured and clears it with the rates after a failed read, so `qos_status` shows
+  `unknown` (never `no`) beside two unmeasured drop rates, and an empty `problem_only` answer is
+  "none was measured dropping". `top_talkers` reads an answer without coverage as unknown, and a
+  figure an answer does not carry as `-`, not 0. `list_snippets` writes a tab out like every
+  other control character (on a command line it is a keystroke) and marks each line of a
+  snippet's text `| `, because the text keeps its line breaks and a person's line
+  `## Port bounce — for … — the one used on SW1` would otherwise pass for a heading of the list;
+  an empty list for a device whose type is known says "no snippet fits", not "none is saved".
+  `render_template` says, when the model gave a placeholder in `vars`, that it comes back
+  `<hidden>` (the universal rule above cannot tell an echo from a feature's own) and that the
+  model puts its placeholder back when proposing the lines. `unknown_device` no longer ends in
+  a second "was not found". The guard holds the core set under a third, as the spec says (it said
+  35%). The suite test now also runs `top_talkers` on what the real collector counted from
+  hand-written NetFlow v5 datagrams sent over UDP (one sampled 1 in 100: nothing multiplied), and
+  `qos_status` on the table real monitoring read off a fake device through the real `cisco_ios`
+  read (the simulator's synthetic listing from the driver's captures).
+* **A marker is what a model reads as one.** `shape::neutralize` defanged `</nocturne` and
+  `<nocturne` in exactly that case, so `</NOCTURNE:DATA>`, `< /nocturne:data>` or a marker with a
+  zero-width space in it sat in a block unchanged, for a model to take as the tool's own. Every
+  `<` that, past spaces, invisible characters and a `/`, begins `nocturne` in any case is now
+  defanged, for every tool; and the opening one by a visible `‹`, not by the zero-width space it
+  used to get, which is itself invisible and so left a marker to a reader that does not see it.
+
 ## Status
 
 Done: everything in the spec's "Tests" section, clippy clean with `-D warnings`, `cargo fmt`
-applied, no `unsafe`. `ui/src/api/types/ai.ts` written. Specified and not built: `qos_status`,
-`top_talkers`, `list_snippets` (the methods they call do not exist yet).
+applied, no `unsafe`. `ui/src/api/types/ai.ts` written (before the third set; the three new
+tools need no new type: `ai.tools` and the events are unchanged in shape).
 
 Wiring note for the lead: both this crate and `nocturne-changes` declare the `assistant` settings
 section (the spec shares `autonomy` between them). This crate declares the whole section, the

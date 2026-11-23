@@ -94,6 +94,37 @@ fn every_profile_in_the_guide_loads() {
     println!("{} profile examples in docs/profiles.md load", blocks.len());
 }
 
+/// The guide once taught `ssCpuIdle` as a CPU load: the percentage of the
+/// last minute spent *idle*, read as busy. Under `cpu` it must say that it
+/// is turned round.
+#[test]
+fn no_example_in_the_guide_reads_an_idle_percentage_as_a_load() {
+    const SS_CPU_IDLE: &str = "1.3.6.1.4.1.2021.11.11";
+    let markdown = std::fs::read_to_string(guide()).expect("docs/profiles.md is there");
+    let mut looked_at = 0;
+    for (line, yaml) in profile_blocks(&markdown) {
+        let (mut registry, _) = Registry::builtin();
+        let Ok(platform) = registry.add(&yaml, Origin::User) else {
+            continue;
+        };
+        for entry in &platform.profile.snmp.cpu {
+            let Some(oid) = entry.target() else { continue };
+            if oid.trim().trim_start_matches('.').starts_with(SS_CPU_IDLE) {
+                looked_at += 1;
+                assert_eq!(
+                    entry.complement,
+                    Some(100.0),
+                    "docs/profiles.md:{line}: ssCpuIdle under `cpu` without `complement: 100`"
+                );
+            }
+        }
+    }
+    assert!(
+        looked_at > 0,
+        "the guide shows how an idle figure is turned round"
+    );
+}
+
 /// The worked example is built up step by step: every step must be a profile
 /// in its own right, and the steps must build on one another rather than
 /// restate the whole file each time.

@@ -25,6 +25,7 @@ use crate::abbrev::{self, Verdict};
 use crate::compare;
 use crate::model::{GuardPlan, Intent, Options, Plan};
 use crate::protect;
+use crate::redact::{self, Hider};
 use crate::risk;
 use crate::settings::Settings;
 
@@ -73,34 +74,58 @@ pub fn predict(running: &str, commands: &[String], syntax: Syntax) -> (ConfigTre
 ///
 /// Returns the lines as they will be sent, plus the words in them Nocturne
 /// does not recognise (which stop the change from being called low risk).
-fn validate_lines(lines: &[String], syntax: Syntax) -> AppResult<(Vec<String>, Vec<String>)> {
+///
+/// A refusal names the line it is about, and a refusal is an error message:
+/// it goes to the caller, into a job's record and its log. So the line is
+/// named with its secret value hidden (`hide`), like everything else that is
+/// said about a change.
+fn validate_lines(
+    lines: &[String],
+    syntax: Syntax,
+    hide: &Hider,
+) -> AppResult<(Vec<String>, Vec<String>)> {
     let mut commands: Vec<String> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     let mut section: Option<String> = None;
-    for raw in lines {
+    for (index, raw) in lines.iter().enumerate() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('!') || line.starts_with('#') {
             continue;
         }
+        // The line as it may be quoted.
+        let shown = hide.text(line);
+        let shown = shown.as_str();
         let refuse = |message: String| {
-            Err(AppError::invalid(message)
-                .with_details(json!({"line": line, "section": section.clone()})))
+            Err(AppError::invalid(message).with_details(json!({
+                "index": index,
+                "line": shown,
+                "section": section.as_deref().map(|open| hide.line(open)),
+            })))
         };
         if line.contains(['\n', '\r']) {
             return refuse(format!(
-                "`{line}` contains a line break; give one command per line"
+                "`{shown}` contains a line break; give one command per line"
             ));
         }
         let lower = line.to_ascii_lowercase();
         if lower.starts_with("interface range ") {
             return refuse(format!(
-                "`{line}` configures several ports at once, and Nocturne cannot predict (or verify, or roll back) what it does to each of them. Write one `interface …` section per port."
+                "`{shown}` configures several ports at once, and Nocturne cannot predict (or verify, or roll back) what it does to each of them. Write one `interface …` section per port."
             ));
         }
         if syntax == Syntax::Ios {
-            match abbrev::inspect(line) {
+            // Examined with its value hidden: a community or a password made
+            // of lower-case letters is a value, not a keyword somebody
+            // abbreviated or one Nocturne does not know — and the word that
+            // is reported ends up in an error or in the reasons for the risk.
+            match abbrev::inspect(shown) {
                 Verdict::Full => {}
-                Verdict::Refuse(message) => return refuse(message),
+                Verdict::Refuse(message) => {
+                    // The rules know a secret by the keywords in front of it,
+                    // and these are the keywords that were not understood:
+                    // the line is pointed at, not quoted.
+                    return Err(AppError::invalid(message).with_details(json!({"index": index})));
+                }
                 Verdict::Unknown(word) => {
                     if !unknown.contains(&word) {
                         unknown.push(word);
@@ -128,15 +153,16 @@ fn validate_lines(lines: &[String], syntax: Syntax) -> AppResult<(Vec<String>, V
                             .is_some_and(|rest| rest.starts_with(**sub))
                 }) {
                     return refuse(format!(
-                        "`{line}` is a sub-command (`{}` belongs inside a section): put the `interface …`, `line …`, `router …` or `vlan …` line it belongs to in front of it.",
+                        "`{shown}` is a sub-command (`{}` belongs inside a section): put the `interface …`, `line …`, `router …` or `vlan …` line it belongs to in front of it.",
                         sub.trim()
                     ));
                 }
             }
             Some(open) => {
                 if hier::is_global(line, syntax) {
+                    let open = hide.line(open);
                     return refuse(format!(
-                        "`{line}` is a top-level command but `{open}` is still open. Put an `exit` in front of it: Nocturne will not guess whether you meant it to apply to `{open}`."
+                        "`{shown}` is a top-level command but `{open}` is still open. Put an `exit` in front of it: Nocturne will not guess whether you meant it to apply to `{open}`."
                     ));
                 }
             }
@@ -216,7 +242,19 @@ pub async fn plan_on(
     let syntax = platform.profile.config.syntax;
     let settings = Settings::read(app);
 
-    let running = cli.session().fetch_config(false).await?;
+    // Everything this plan says about its lines — a refusal, a warning, a
+    // reason — goes through this, taught the configuration it is about.
+    let hide = Hider::for_platform(&platform);
+    let running = cli
+        .session()
+        .fetch_config(false)
+        .await
+        .map_err(|err| hide.error(err))?;
+    hide.learn(&running);
+    match intent {
+        Intent::Lines { lines } => hide.learn_lines(lines),
+        Intent::Intended { config, .. } => hide.learn(config),
+    }
     let (version, _) = app.store().config_insert(
         &device.id,
         "running",
@@ -227,16 +265,16 @@ pub async fn plan_on(
 
     let mut warnings: Vec<String> = Vec::new();
     let (commands, unknown) = match intent {
-        Intent::Lines { lines } => validate_lines(lines, syntax)?,
+        Intent::Lines { lines } => validate_lines(lines, syntax, &hide)?,
         Intent::Intended { config, exact } => {
             let remediation = hier::remediate(&running, config, syntax);
             if !remediation.supported {
-                return Err(AppError::invalid(format!(
+                return Err(AppError::invalid(hide.text(&format!(
                     "Nocturne cannot work out the difference between two configurations on `{}` ({}). {} Give the exact commands to send instead.",
                     platform.profile.name,
                     platform.id(),
                     remediation.warnings.join(" ")
-                )));
+                ))));
             }
             warnings.extend(remediation.warnings);
             let commands = if *exact {
@@ -254,11 +292,27 @@ pub async fn plan_on(
         .map(|command| (command, platform.policy().classify(command)))
         .find(|(_, verdict)| verdict.class == CommandClass::Dangerous)
     {
+        let command = hide.line(command);
         return Err(AppError::forbidden(format!(
             "`{command}` is refused: {}. The change pipeline configures devices, it does not operate them — use the terminal, deliberately, for that.",
             verdict.reason
         ))
         .with_details(json!({"command": command, "reason": verdict.reason})));
+    }
+
+    // A placeholder is never sent. A hand-written line that carries one is
+    // refused before it gets here; this is for the lines computed from an
+    // intended configuration that was copied out of a view which hides
+    // values (or out of a device that masks its own): sending the line would
+    // configure the placeholder as the key.
+    if let Some(command) = commands
+        .iter()
+        .find(|command| redact::has_placeholder(command))
+    {
+        return Err(AppError::invalid(format!(
+            "`{}` holds a redaction placeholder where a value should be, and sending it would configure the placeholder itself. The configuration it comes from was copied from a view that hides secret values: give the real value (read the change or the configuration with `redact: false`).",
+            hide.line(command)
+        )));
     }
 
     // What the device will look like afterwards.
@@ -306,7 +360,7 @@ pub async fn plan_on(
             } else {
                 warnings.push(format!(
                     "The computed rollback does not put the configuration back exactly ({}); after a failure the device may need attention by hand.",
-                    differences.describe(4)
+                    differences.describe(4, &hide)
                 ));
             }
         }
@@ -357,7 +411,9 @@ pub async fn plan_on(
         });
     }
 
-    let plan = Plan {
+    hide.learn_lines(&commands);
+    hide.learn_lines(&rollback);
+    let mut plan = Plan {
         plan_hash: plan_hash(&device, &commands, &rollback, &version.sha256, options),
         commands,
         rollback,
@@ -377,6 +433,10 @@ pub async fn plan_on(
         profile: platform.profile.id.clone(),
         maturity: platform.profile.maturity.as_str().to_string(),
     };
+    // The lines are kept exactly as they will be sent; what is said about
+    // them (warnings, reasons, why a resource is protected) quotes them, and
+    // is kept with the values hidden.
+    hide.said_about(&mut plan);
     Ok(plan)
 }
 
@@ -413,7 +473,7 @@ fn guard_plan(
 /// A plan is approved by its hash: anything that changes what would be sent,
 /// what would undo it, which device it is for, what it was computed against
 /// or how it would be applied makes the approval invalid.
-fn plan_hash(
+pub(crate) fn plan_hash(
     device: &Device,
     commands: &[String],
     rollback: &[String],
@@ -451,6 +511,12 @@ mod tests {
 
     fn lines(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    /// The checks of a hand-written list, with the engine's own rules for
+    /// what is a secret.
+    fn validate_lines(lines: &[String], syntax: Syntax) -> AppResult<(Vec<String>, Vec<String>)> {
+        super::validate_lines(lines, syntax, &Hider::for_patterns(&[]))
     }
 
     #[test]
@@ -518,6 +584,120 @@ mod tests {
             validate_lines(&lines(&["frobnicate the-widget"]), Syntax::Ios).unwrap();
         assert_eq!(commands, vec!["frobnicate the-widget"]);
         assert_eq!(unknown, vec!["frobnicate"]);
+    }
+
+    #[test]
+    fn a_plan_is_hashed_as_it_was_before_its_values_were_hidden() {
+        // Approvals already given name hashes made this way, and the stored
+        // lines they were made over are the ones sent. What a view shows is
+        // not part of it: the same lines with their values hidden hash to
+        // something else, which no approval names.
+        let device = Device {
+            id: "d1".into(),
+            name: "SW1".into(),
+            ..Device::default()
+        };
+        let options = Options::default();
+        let hash = |commands: &[&str], rollback: &[&str]| {
+            plan_hash(
+                &device,
+                &lines(commands),
+                &lines(rollback),
+                "the-base",
+                &options,
+            )
+        };
+        assert_eq!(
+            hash(
+                &["snmp-server community N0ctComm-R0 RO"],
+                &["no snmp-server community N0ctComm-R0 RO"]
+            ),
+            // sha256 over the device's id and name, each line, the rollback,
+            // the base and the options, each followed by a NUL: worked out
+            // again outside Rust, not copied from a run of this function.
+            "5be058fe90afe9918b6691bac301cc64882397f70d04187a9ff41be45cadffb3"
+        );
+        assert_ne!(
+            hash(
+                &["snmp-server community <secret:1> RO"],
+                &["no snmp-server community <secret:1> RO"]
+            ),
+            hash(
+                &["snmp-server community N0ctComm-R0 RO"],
+                &["no snmp-server community N0ctComm-R0 RO"]
+            )
+        );
+    }
+
+    #[test]
+    fn a_secret_is_a_value_not_a_keyword_and_a_refusal_does_not_quote_it() {
+        // A secret made of lower-case letters used to be taken for a keyword
+        // Nocturne does not know (and named in the reasons for the risk), or
+        // for an abbreviation of one it does (and the line refused).
+        let (commands, unknown) = validate_lines(
+            &lines(&[
+                "enable secret lowercaseenablepw",
+                "line vty 0 4",
+                "password pass",
+                "exit",
+            ]),
+            Syntax::Ios,
+        )
+        .unwrap();
+        assert_eq!(
+            commands,
+            vec![
+                "enable secret lowercaseenablepw",
+                "line vty 0 4",
+                "password pass",
+                "exit"
+            ],
+            "what will be sent is what was written"
+        );
+        assert!(unknown.is_empty(), "{unknown:?}");
+
+        // A refusal quotes the line with the value hidden…
+        let err = validate_lines(
+            &lines(&["neighbor 192.0.2.1 password lowercasebgppw"]),
+            Syntax::Ios,
+        )
+        .unwrap_err();
+        assert!(
+            err.message
+                .contains("`neighbor 192.0.2.1 password <hidden>` is a sub-command"),
+            "{}",
+            err.message
+        );
+        let details = err.details.clone().unwrap();
+        assert_eq!(details["index"], 0);
+        assert_eq!(details["line"], "neighbor 192.0.2.1 password <hidden>");
+        assert!(
+            !serde_json::to_string(&err)
+                .unwrap()
+                .contains("lowercasebgppw")
+        );
+
+        // …and where the keywords themselves were not understood, which is
+        // what a secret is known by, it points at the line and quotes nothing.
+        let err = validate_lines(
+            &lines(&["hostname SW1", "en sec lowercaseenablepw"]),
+            Syntax::Ios,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("`en` is an abbreviation"),
+            "{}",
+            err.message
+        );
+        assert_eq!(
+            err.details.clone().unwrap(),
+            serde_json::json!({"index": 1})
+        );
+        assert!(
+            !serde_json::to_string(&err)
+                .unwrap()
+                .contains("lowercaseenablepw")
+        );
     }
 
     #[test]

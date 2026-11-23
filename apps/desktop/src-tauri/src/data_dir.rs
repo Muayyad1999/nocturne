@@ -29,8 +29,10 @@ pub fn resolve(argument: Option<&str>, from_env: Option<String>) -> anyhow::Resu
     })
 }
 
-/// The arguments the shell understands. Everything else is reported rather
-/// than ignored, so a typo does not silently start with the wrong settings.
+/// The arguments the shell understands. Anything else is refused rather than
+/// ignored: `--data_dir /srv/lab` used to start on the default folder — the
+/// real inventory, not the lab — and `--data-dir --log-level debug` on a
+/// folder called `--log-level`, both without a word.
 #[derive(Debug, Default, PartialEq)]
 pub struct Arguments {
     pub data_dir: Option<String>,
@@ -38,8 +40,13 @@ pub struct Arguments {
     /// `--version` / `-V`: print the version and exit.
     pub version: bool,
     pub help: bool,
-    pub unknown: Vec<String>,
+    /// What could not be understood, a sentence each. Nothing starts while
+    /// there is any.
+    pub problems: Vec<String>,
 }
+
+/// What `--log-level` takes; a full filter goes in `NOCTURNE_LOG`.
+const LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
 
 pub fn parse_arguments(args: impl IntoIterator<Item = String>) -> Arguments {
     let mut parsed = Arguments::default();
@@ -49,18 +56,73 @@ pub fn parse_arguments(args: impl IntoIterator<Item = String>) -> Arguments {
             Some((name, value)) => (name.to_string(), Some(value.to_string())),
             None => (arg.clone(), None),
         };
-        let mut value = || inline.clone().or_else(|| args.next());
         match name.as_str() {
-            "--data-dir" => parsed.data_dir = value(),
-            "--log-level" => parsed.log_level = value(),
-            "--version" | "-V" => parsed.version = true,
-            "--help" | "-h" => parsed.help = true,
-            // WebView and single-instance machinery pass arguments of their own.
-            _ if name.starts_with('-') => parsed.unknown.push(arg),
-            _ => parsed.unknown.push(arg),
+            "--data-dir" | "--log-level" => {
+                // Joined on with `=`, a value is taken as written. Apart, one
+                // that looks like an option is the next option, and the
+                // value was forgotten.
+                let value = match inline {
+                    Some(value) => Some(value),
+                    None => args.next_if(|next| !next.starts_with('-')),
+                }
+                .filter(|value| !value.trim().is_empty());
+                let level = value.as_deref().map(str::to_ascii_lowercase);
+                match (name.as_str(), value) {
+                    ("--data-dir", Some(folder)) => parsed.data_dir = Some(folder),
+                    ("--data-dir", None) => parsed
+                        .problems
+                        .push("`--data-dir` needs a folder after it".into()),
+                    (_, Some(_)) if LEVELS.contains(&level.as_deref().unwrap_or_default()) => {
+                        parsed.log_level = level
+                    }
+                    (_, Some(other)) => parsed.problems.push(format!(
+                        "`--log-level` takes error, warn, info, debug or trace, not `{other}` \
+                         (a full filter goes in NOCTURNE_LOG)"
+                    )),
+                    (_, None) => parsed.problems.push(
+                        "`--log-level` needs a level after it: error, warn, info, debug or trace"
+                            .into(),
+                    ),
+                }
+            }
+            "--version" | "-V" if inline.is_none() => parsed.version = true,
+            "--help" | "-h" if inline.is_none() => parsed.help = true,
+            // What older versions of macOS add to a program started from the
+            // Finder: the process serial number, not the person's typing.
+            _ if arg.starts_with("-psn_") => {}
+            _ => parsed.problems.push(match near_miss(&name) {
+                Some(meant) => format!("`{arg}` is not an option; did you mean `{meant}`?"),
+                None if arg.starts_with('-') => format!("`{arg}` is not an option"),
+                None => {
+                    format!("`{arg}` is not an option; a folder is given as `--data-dir {arg}`")
+                }
+            }),
         }
     }
     parsed
+}
+
+/// The option a mistyped one was most likely meant to be: `--data_dir`,
+/// `--datadir` and `--Data-Dir` are all `--data-dir`.
+fn near_miss(name: &str) -> Option<&'static str> {
+    let squashed = |text: &str| -> String {
+        text.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let typed = squashed(name);
+    ["--data-dir", "--log-level", "--version", "--help"]
+        .into_iter()
+        .find(|option| squashed(option) == typed)
+}
+
+/// What is said when the arguments are refused.
+pub fn refusal(program: &str, problems: &[String]) -> String {
+    format!(
+        "{}\n\nNothing was started. `{program} --help` lists what it takes.",
+        problems.join("\n")
+    )
 }
 
 /// The folder a second launch named with `--data-dir`, when it is not the
@@ -111,6 +173,40 @@ pub fn program_name() -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("nocturne")
         .to_string()
+}
+
+/// What `--version` prints: the name the program was started under, its
+/// version, and — for the ISP edition — that it is one.
+///
+/// The edition is the engine's own answer: whether the assembled engine
+/// registers the subscriber ledger's methods, not a feature flag of this
+/// crate. The ledger switched on for the suite from anywhere else in a build
+/// shows here all the same, and the release reads this line out of every
+/// installer it uploads to tell a misbuilt one from the edition it is named
+/// for.
+pub fn version(program: &str) -> String {
+    format!(
+        "{program} {}{}",
+        env!("CARGO_PKG_VERSION"),
+        match subscriber_ledger_built_in() {
+            Ok(true) => " (ISP edition)".to_string(),
+            Ok(false) => String::new(),
+            Err(reason) => format!(" (edition unknown: {reason})"),
+        }
+    )
+}
+
+fn subscriber_ledger_built_in() -> Result<bool, String> {
+    // Assembled and never built: no task is started and nothing is opened
+    // on disk. Registering is all `init` does until `build`.
+    let mut engine = nocturne_suite::AppBuilder::new(nocturne_suite::AppConfig::in_memory())
+        .map_err(|err| err.message)?;
+    nocturne_suite::init(&mut engine);
+    Ok(engine
+        .router
+        .methods()
+        .iter()
+        .any(|method| method.starts_with("isp.")))
 }
 
 pub fn usage(program: &str) -> String {
@@ -175,8 +271,11 @@ mod tests {
         assert!(parse("--version").version && parse("-V").version);
         assert!(parse("--help").help);
         assert_eq!(
-            parse("--nonsense x").unknown,
-            vec!["--nonsense".to_string(), "x".to_string()]
+            parse("--nonsense x").problems,
+            [
+                "`--nonsense` is not an option",
+                "`x` is not an option; a folder is given as `--data-dir x`"
+            ]
         );
         assert_eq!(parse("").data_dir, None);
     }
@@ -256,6 +355,71 @@ mod tests {
         std::os::unix::fs::symlink(&open, &link).unwrap();
         let line = handed_over(&format!("nocturne --data-dir {}", link.display()));
         assert_eq!(asked_for_another(&line, "/", &open), None);
+    }
+
+    #[test]
+    fn a_mistyped_or_valueless_option_is_refused_rather_than_started_without() {
+        let parse = |line: &str| parse_arguments(line.split_whitespace().map(str::to_string));
+
+        // Each of these used to start on the default folder, or on a folder
+        // named after the next option, without a word.
+        for line in [
+            "--data_dir /srv/lab",
+            "--datadir /srv/lab",
+            "--data-dir",
+            "--data-dir=",
+            "--data-dir --log-level debug",
+            "--log-level",
+            "--log-level verbose",
+            "/srv/lab",
+        ] {
+            let parsed = parse(line);
+            assert!(
+                !parsed.problems.is_empty(),
+                "`{line}` was accepted: {parsed:?}"
+            );
+            assert_eq!(parsed.data_dir, None, "`{line}` chose a folder: {parsed:?}");
+        }
+        assert!(
+            parse("--data_dir /srv/lab").problems[0].contains("--data-dir"),
+            "the near miss is named: {:?}",
+            parse("--data_dir /srv/lab").problems
+        );
+
+        // What is right stays right, and a folder may begin with a dash when
+        // it is joined on.
+        for line in [
+            "--data-dir /srv/lab --log-level debug",
+            "--data-dir=/srv/lab",
+            "--log-level=TRACE",
+            "--version",
+            "-h",
+            "",
+        ] {
+            assert_eq!(parse(line).problems, Vec::<String>::new(), "`{line}`");
+        }
+        assert_eq!(parse("--data-dir=-lab").data_dir.as_deref(), Some("-lab"));
+        // What macOS adds to a program started from the Finder on older
+        // versions is not the person's typing.
+        assert_eq!(parse("-psn_0_1234567").problems, Vec::<String>::new());
+    }
+
+    /// Both editions can be installed side by side, and a report that says
+    /// "0.1.0" does not say which one it came from. The release also reads
+    /// this line out of every installer it uploads, so it has to be the
+    /// engine's own answer rather than the name the build was given.
+    #[test]
+    fn the_version_says_whether_the_subscriber_ledger_is_built_in() {
+        let line = version("nocturne-isp");
+        assert!(
+            line.starts_with(&format!("nocturne-isp {}", env!("CARGO_PKG_VERSION"))),
+            "{line}"
+        );
+        assert_eq!(
+            line.contains("(ISP edition)"),
+            cfg!(feature = "isp"),
+            "{line}"
+        );
     }
 
     #[test]

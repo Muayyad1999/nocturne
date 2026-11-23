@@ -17,6 +17,27 @@ use crate::error::{AppError, AppResult};
 #[derive(Default)]
 pub struct SettingsState {
     defaults: RwLock<BTreeMap<String, Value>>,
+    checks: RwLock<BTreeMap<String, Vec<WriteCheck>>>,
+}
+
+/// What a section's owner says about a write before anything of it is
+/// stored. It is handed the patch exactly as it was sent — the keys being
+/// changed, not the section — so that a value stored wrong before the check
+/// existed never blocks a write that puts something else right. `Err`
+/// refuses the whole write, and is what the caller is answered with.
+pub type WriteCheck = fn(&Value) -> AppResult<()>;
+
+/// Have every write to `section` checked before it is stored. Without one,
+/// `set_value` stores any JSON object, and a value of the wrong kind is only
+/// found when the section is next read as its type.
+pub fn check_writes(builder: &mut AppBuilder, section: &str, check: WriteCheck) {
+    builder
+        .get::<SettingsState>()
+        .checks
+        .write()
+        .entry(section.to_string())
+        .or_default()
+        .push(check);
 }
 
 /// Register a section and its default values (a JSON object).
@@ -76,6 +97,15 @@ pub fn set_value(app: &App, section: &str, patch: Value) -> AppResult<Value> {
     let state = app.state::<SettingsState>();
     if !state.defaults.read().contains_key(section) {
         return Err(AppError::not_found(format!("settings section `{section}`")));
+    }
+    let checks = state
+        .checks
+        .read()
+        .get(section)
+        .cloned()
+        .unwrap_or_default();
+    for check in checks {
+        check(&patch)?;
     }
     let stored: Value = app
         .store()
@@ -193,6 +223,55 @@ mod tests {
             value["autonomy"], "draft",
             "a key already declared is not overwritten"
         );
+    }
+
+    #[tokio::test]
+    async fn a_section_can_refuse_a_write_and_then_nothing_of_it_is_stored() {
+        let mut builder = AppBuilder::new(AppConfig::in_memory()).unwrap();
+        init(&mut builder);
+        declare(
+            &mut builder,
+            "general",
+            &json!({"theme": "night", "retries": 3}),
+        );
+        check_writes(&mut builder, "general", |patch| {
+            match patch.get("retries") {
+                Some(retries) if !retries.is_u64() => {
+                    Err(AppError::invalid("`retries` must be a whole number")
+                        .with_details(json!({"key": "retries"})))
+                }
+                _ => Ok(()),
+            }
+        });
+        let app = builder.build();
+        let mut events = app.subscribe();
+
+        let refused = app
+            .rpc(
+                "settings.set",
+                json!({"section": "general", "value": {"theme": "day", "retries": 2.5}}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "invalid");
+        assert_eq!(refused.details, Some(json!({"key": "retries"})));
+        assert_eq!(
+            get_value(&app, "general").unwrap(),
+            json!({"theme": "night", "retries": 3}),
+            "neither key of the refused write"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "nothing changed, so nothing is announced"
+        );
+
+        app.rpc(
+            "settings.set",
+            json!({"section": "general", "value": {"retries": 5}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(get_value(&app, "general").unwrap()["retries"], 5);
     }
 
     #[tokio::test]

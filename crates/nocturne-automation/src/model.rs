@@ -321,6 +321,10 @@ pub struct Variable {
     pub default: Option<Value>,
     pub choices: Vec<String>,
     pub help: String,
+    /// A `string` that is text over several lines, such as a banner. Every
+    /// other value is one line: a line break in it would be a second line of
+    /// configuration.
+    pub multiline: bool,
 }
 
 impl Variable {

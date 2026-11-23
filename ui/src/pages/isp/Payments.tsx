@@ -19,6 +19,12 @@
  * The list mixes currencies, so "Received" sorts within a currency and never
  * across them, and the day a payment is listed under is a day of the
  * business's calendar.
+ *
+ * The list is newest first, and Next continues after the last payment on
+ * screen: payments recorded while somebody reads it sort in front, and a page
+ * asked for by a count of rows would show some of this one again
+ * (`paging.ts`). Its columns fit the smallest window the application
+ * supports, State included.
  */
 
 import { HandCoins } from 'lucide-react';
@@ -41,6 +47,7 @@ import { dayText } from './calendar';
 import { useCalendar, useCurrencies, useCustomers, usePayments, useVoidPayment } from './data';
 import { Amount, Words } from './Figures';
 import { moneySortKey, rateText } from './money';
+import { cursorAfter, cursorParam, usePages } from './paging';
 import { PaymentDialog } from './PaymentDialog';
 import styles from './isp.module.css';
 
@@ -50,7 +57,7 @@ const NAMES = 2_000;
 
 export function Payments() {
   const [state, setState] = useState('');
-  const [offset, setOffset] = useState(0);
+  const pages = usePages(PAGE);
   const [recording, setRecording] = useState(false);
   const [voiding, setVoiding] = useState<Payment | null>(null);
 
@@ -58,9 +65,9 @@ export function Payments() {
     () => ({
       ...(state === '' ? {} : { state: state as PaymentState }),
       limit: PAGE,
-      ...(offset === 0 ? {} : { cursor: String(offset) }),
+      ...cursorParam(pages.walked),
     }),
-    [state, offset],
+    [state, pages.walked],
   );
 
   const payments = usePayments(params);
@@ -68,6 +75,7 @@ export function Payments() {
   const currencies = useCurrencies();
   const calendar = useCalendar();
   const rows = payments.data ?? [];
+  const after = cursorAfter(rows, PAGE);
 
   const names = useMemo(() => {
     const index = new Map<string, string>();
@@ -80,14 +88,14 @@ export function Payments() {
       id: 'at',
       header: 'When',
       required: true,
-      width: 120,
+      width: 110,
       sortValue: (row) => row.at,
       cell: (row) => <span className={styles.amount}>{dayText(row.at, calendar)}</span>,
     },
     {
       id: 'customer',
       header: 'Customer',
-      width: 190,
+      width: 160,
       sortValue: (row) => names.get(row.customer_id) ?? row.customer_id,
       cell: (row) => (
         <Link to={`/isp/customer/${row.customer_id}`}>
@@ -98,7 +106,7 @@ export function Payments() {
     {
       id: 'amount',
       header: 'Received',
-      width: 140,
+      width: 125,
       align: 'right',
       sortValue: (row) => moneySortKey(row.amount),
       cell: (row) => <Amount money={row.amount} muted={row.state === 'void'} />,
@@ -106,7 +114,7 @@ export function Payments() {
     {
       id: 'settled',
       header: 'Settled',
-      width: 160,
+      width: 135,
       align: 'right',
       cell: (row) =>
         row.settled ? (
@@ -123,7 +131,7 @@ export function Payments() {
     {
       id: 'rate',
       header: 'Rate',
-      width: 190,
+      width: 160,
       cell: (row) =>
         row.conversion ? (
           <span className={styles.rowSub}>
@@ -136,7 +144,7 @@ export function Payments() {
     {
       id: 'method',
       header: 'How',
-      width: 150,
+      width: 130,
       sortValue: (row) => row.method,
       cell: (row) => (
         <span>
@@ -148,7 +156,7 @@ export function Payments() {
     {
       id: 'state',
       header: 'State',
-      width: 150,
+      width: 140,
       cell: (row) =>
         row.state === 'void' ? (
           <Badge tone="maint" variant="outline">
@@ -183,7 +191,7 @@ export function Payments() {
           value={state}
           onChange={(event) => {
             setState(event.target.value);
-            setOffset(0);
+            pages.reset();
           }}
           options={[
             { value: '', label: 'Recorded and void' },
@@ -230,20 +238,22 @@ export function Payments() {
           <span className={styles.count}>
             {rows.length === 0
               ? 'nothing on this page'
-              : `${formatCount(offset + 1)}–${formatCount(offset + rows.length)}`}
+              : `${formatCount(pages.first)}–${formatCount(pages.first - 1 + rows.length)}`}
           </span>
           <ToolbarSpacer />
           <Button
             size="sm"
-            disabled={offset === 0 || payments.isFetching}
-            onClick={() => setOffset(Math.max(0, offset - PAGE))}
+            disabled={!pages.hasPrevious || payments.isFetching}
+            onClick={pages.previous}
           >
             Previous
           </Button>
           <Button
             size="sm"
-            disabled={rows.length < PAGE || payments.isFetching}
-            onClick={() => setOffset(offset + PAGE)}
+            disabled={after === null || payments.isFetching}
+            onClick={() => {
+              if (after !== null) pages.next(after);
+            }}
           >
             Next
           </Button>

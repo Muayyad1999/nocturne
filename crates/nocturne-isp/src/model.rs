@@ -37,7 +37,11 @@ pub struct Settings {
     /// on which side of the link the interface is — so it is a setting and
     /// every usage figure says which it used.
     pub usage_basis: String,
-    /// How far back a usage figure looks when the caller gives no window.
+    /// How far back a usage figure looks when the caller gives no window:
+    /// an interface's latest reading is what a customer is using only if it
+    /// is at most this many hours old (one at the least). An older one is
+    /// what the monitor last saw of a device it can no longer reach, and is
+    /// reported as `no_recent_reading` rather than as a figure.
     pub usage_window_hours: u32,
     /// Put in front of an invoice number: `ACME-2026-0001`.
     pub invoice_number_prefix: String,

@@ -293,12 +293,29 @@ collect:
         capabilities: CAPABILITIES
         protocol: "'lldp'"
 
+# SNMP health. Written from HP's STATISTICS-MIB and NETSWITCH-MIB (as
+# another project carries them, not downloaded from HPE) and from RFC 3433,
+# read on 2026-11-23. The monitor's tests read it against rows written by
+# hand in the layout published recordings of real switches show. Nobody has
+# pointed it at a switch.
 snmp:
   cpu:
-    - 1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0   # hpSwitchCpuStat, a percentage
+    - 1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0        # hpSwitchCpuStat.0: "The CPU utilization in percent(%)"
+  # Slot 1 of hpLocalMemTable, which is indexed by slot. A switch with more
+  # than one slot has not been looked at.
   memory_total:
-    - 1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5  # hpLocalMemTotalBytes
+    - instance: 1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5.1   # hpLocalMemTotalBytes.1: "currently installed bytes"
   memory_free:
-    - 1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6  # hpLocalMemFreeBytes
+    - instance: 1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6.1   # hpLocalMemFreeBytes.1: "available (unallocated) bytes"
+  # The entity sensor table holds fans and power supplies beside the
+  # thermometers, as fixed-point numbers: only the rows typed celsius count,
+  # with the row's own scale and precision applied. entPhySensorOperStatus is
+  # not tested: published recordings of ProCurve agents leave it out for some
+  # thermometers, or for every row.
   temperature:
-    - 1.3.6.1.2.1.99.1.1.1.4                # entPhySensorValue
+    - oid: 1.3.6.1.2.1.99.1.1.1.4               # entPhySensorValue
+      where:
+        - {oid: 1.3.6.1.2.1.99.1.1.1.1, is: 8}  # entPhySensorType = celsius(8)
+      si_scale: 1.3.6.1.2.1.99.1.1.1.2          # entPhySensorScale
+      precision: 1.3.6.1.2.1.99.1.1.1.3         # entPhySensorPrecision
+      absent: [-1000000000, 1000000000]         # RFC 3433: underflow and overflow markers

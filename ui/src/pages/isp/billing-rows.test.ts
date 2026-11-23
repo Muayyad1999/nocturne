@@ -114,6 +114,7 @@ function run(over: Partial<RunResult> = {}): RunResult {
     utc_offset_minutes: 0,
     dry_run: true,
     considered: 3,
+    not_reached: 0,
     drafted: 2,
     issued: 0,
     invoices: [

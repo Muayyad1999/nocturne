@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'vitest';
 import type { Run } from '@/api/types/automation';
-import { DEVICE_STATE, describeRun, debounceText, listWords, runElapsed, whenText } from './vocab';
+import {
+  DEVICE_STATE,
+  describeRun,
+  debounceText,
+  lastRunWords,
+  listWords,
+  runElapsed,
+  whenText,
+} from './vocab';
 
 const run = (over: Partial<Run> = {}): Run => ({
   id: 'r1',
@@ -42,6 +50,11 @@ describe('the four outcomes are four different things', () => {
   test('a skipped device says nothing failed', () => {
     expect(DEVICE_STATE.skipped.explain).toContain('nothing failed');
     expect(DEVICE_STATE.skipped.tone).toBe('idle');
+  });
+
+  test('a skipped device does not claim nothing was sent: a run cut short cannot know', () => {
+    expect(DEVICE_STATE.skipped.explain).not.toContain('Nothing was sent');
+    expect(DEVICE_STATE.skipped.explain).toContain('Nocturne was closed while the run was going');
   });
 });
 
@@ -120,5 +133,33 @@ describe('a trigger debounce', () => {
   test('zero is the next sweep, not "immediately"', () => {
     expect(debounceText(0)).toBe('Fires at the next sweep');
     expect(debounceText(30)).toBe('Collects events for 30s, then fires once');
+  });
+});
+
+describe("a schedule's last run", () => {
+  test('never run is not a run', () => {
+    expect(lastRunWords({})).toBeNull();
+    // The backend sends an explicit null for "never".
+    expect(lastRunWords({ last_run_at: null as unknown as undefined })).toBeNull();
+  });
+
+  test('a run that has started and not finished is running, not failed', () => {
+    const words = lastRunWords({ last_run_at: 1_000 });
+    expect(words?.title).toBe('Running');
+    expect(words?.tone).toBe('info');
+    expect(lastRunWords({ last_run_at: 1_000, last_ok: null as unknown as undefined })?.title).toBe('Running');
+  });
+
+  test('an outcome says what it was, and a failure says why', () => {
+    expect(lastRunWords({ last_run_at: 1_000, last_ok: true })).toEqual({ title: 'Ran', tone: 'ok' });
+    const failed = lastRunWords({
+      last_run_at: 1_000,
+      last_ok: false,
+      last_error: 'Nocturne was closed while this was running',
+    });
+    expect(failed?.title).toBe('Failed');
+    expect(failed?.tone).toBe('crit');
+    expect(failed?.detail).toBe('Nocturne was closed while this was running');
+    expect(lastRunWords({ last_run_at: 1_000, last_ok: false })?.detail).toBeUndefined();
   });
 });

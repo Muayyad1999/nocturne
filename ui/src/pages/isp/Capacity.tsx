@@ -36,8 +36,9 @@ import {
   loadText,
   rateText,
   ratioTone,
+  readingTime,
 } from './coverage';
-import { useCapacity } from './data';
+import { useCalendar, useCapacity } from './data';
 import { Words } from './Figures';
 import styles from './isp.module.css';
 
@@ -52,13 +53,14 @@ export function Capacity() {
   }, [window]);
 
   const report = useCapacity(span);
+  const calendar = useCalendar();
 
   const columns: readonly TableColumn<LinkCapacity>[] = [
     {
       id: 'link',
       header: 'Link',
       required: true,
-      width: 190,
+      width: 170,
       sortValue: (row) => row.link_name.toLowerCase(),
       cell: (row) => (
         <span>
@@ -72,7 +74,7 @@ export function Capacity() {
     {
       id: 'sold',
       header: 'Sold',
-      width: 150,
+      width: 135,
       align: 'right',
       sortValue: (row) => row.sold_mbit,
       cell: (row) => (
@@ -85,7 +87,7 @@ export function Capacity() {
     {
       id: 'capacity',
       header: 'Carries',
-      width: 130,
+      width: 115,
       align: 'right',
       sortValue: (row) => row.capacity_mbit,
       cell: (row) =>
@@ -98,7 +100,7 @@ export function Capacity() {
     {
       id: 'ratio',
       header: 'Oversubscription',
-      width: 190,
+      width: 170,
       sortValue: (row) => row.ratio,
       cell: (row) =>
         row.ratio === null ? (
@@ -124,7 +126,7 @@ export function Capacity() {
     {
       id: 'suspended',
       header: 'Sold to suspended',
-      width: 150,
+      width: 135,
       align: 'right',
       cell: (row) =>
         row.suspended_customers === 0 ? (
@@ -141,7 +143,7 @@ export function Capacity() {
     {
       id: 'measured',
       header: 'Carrying',
-      width: 200,
+      width: 190,
       align: 'right',
       sortValue: (row) => row.measured?.used_mbit ?? null,
       cell: (row) =>
@@ -150,6 +152,9 @@ export function Capacity() {
             {loadText(row)}
             {row.measured.peak_mbit !== null && (
               <span className={styles.rowSub}>peak {rateText(row.measured.peak_mbit)}</span>
+            )}
+            {readingTime(row.measured, calendar) !== null && (
+              <span className={styles.rowSub}>{readingTime(row.measured, calendar)}</span>
             )}
           </span>
         ) : (

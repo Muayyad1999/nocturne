@@ -19,6 +19,10 @@
  * 4. `changes.apply` — connect, drift check, snapshot, backup, arm the
  *    dead-man switch, send, settle, verify, roll back on any failure, disarm,
  *    save, final backup.
+ *
+ * Undoing an applied change later (`changes.rollback`) is the same flow: it
+ * sends nothing, and answers a new change that takes the devices back, which
+ * is planned, approved and applied like any other.
  */
 
 // ------------------------------------------------------------------- model
@@ -278,8 +282,31 @@ export interface Change {
   created_by: string;
   /** Free-text reference (a change-request number). */
   ticket?: string;
-  /** The job applying (or last applying) this change. */
+  /** The job planning or applying this change, or the last one that did. */
   job_id?: string;
+  /**
+   * Set on a change that `changes.rollback` created: the id of the change it
+   * undoes. Its devices go back to the configuration they had before that
+   * change, by commands worked out from what they hold now. Its targets
+   * cannot be replaced.
+   */
+  undoes?: string;
+  /** The latest change `changes.rollback` created to undo this one. */
+  undone_by?: string;
+}
+
+/**
+ * A change as the methods answer it (`changes.get`, `changes.create`,
+ * `changes.update`, `changes.approve`, `changes.unapprove`,
+ * `changes.rollback`): the record, with a placeholder (`<secret:N>`) where
+ * each secret value of its lines stands unless `changes.get` was asked for
+ * them whole.
+ */
+export interface ChangeView extends Change {
+  /** Placeholders stand where the secret values of the intents and plans are. */
+  redacted: boolean;
+  /** How many different values are hidden; 0 means the lines shown are the lines that will be sent. */
+  hidden: number;
 }
 
 /** One device inside a {@link ChangeSummary}. */
@@ -332,7 +359,7 @@ export interface ChangeIdParams {
   id: string;
 }
 
-/** `changes.get` {@link ChangeIdParams} → {@link Change} */
+/** `changes.get` {@link ChangeIdParams} → {@link ChangeView} */
 
 /** One device of a new change. */
 export interface TargetInput {
@@ -354,9 +381,12 @@ export interface ChangesCreateParams {
   created_by?: string;
 }
 
-/** The result of `changes.create` when `plan: true` was asked for. */
+/**
+ * The result of `changes.create` when `plan: true` was asked for, and of
+ * `changes.rollback`: the new change, and the job that is planning it.
+ */
 export interface ChangeCreatedWithJob {
-  change: Change;
+  change: ChangeView;
   job_id: string;
 }
 
@@ -399,15 +429,28 @@ export interface ChangesApproveParams {
 
 /** `changes.apply` {@link ChangeIdParams} → {@link JobStarted}; needs `approved` with the hashes still matching */
 
-/** `changes.assistant_apply` {@link ChangeIdParams} → {@link JobStarted}, or `forbidden` with the reason a human is needed */
+/**
+ * `changes.assistant_apply` {@link ChangeIdParams} → {@link JobStarted}, or
+ * `forbidden` (`details.needs: "human_approval"`) with the reason a person is
+ * needed — for an approved change as much as for a planned one.
+ */
 
 export interface ChangesRollbackParams {
   id: string;
-  /** Devices to undo; empty = every device that was applied. */
+  /**
+   * Devices to undo, by id, name or address; empty = every device the change
+   * left changed and backed up before. A device named that cannot be undone
+   * is refused with the reason.
+   */
   device_ids?: string[];
 }
 
-/** `changes.rollback` {@link ChangesRollbackParams} → {@link JobStarted} */
+/**
+ * `changes.rollback` {@link ChangesRollbackParams} → {@link ChangeCreatedWithJob}.
+ * Sends nothing: `change` is the undo (state `draft`, `undoes` set), `job_id`
+ * the job planning it. `conflict` (with `details.change_id`) while another
+ * undo of the same change is not finished.
+ */
 
 /** What `changes.cancel` answers. */
 export interface ChangeCancelled {

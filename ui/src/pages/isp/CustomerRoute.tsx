@@ -500,7 +500,7 @@ function Customer({ id }: { id: string }) {
                 {isMeasured(usage.coverage) && usage.used ? (
                   <>
                     <span className={styles.statValue}>{usageText(usage)}</span>
-                    <span className={styles.quiet}>{basisText(usage.used)}</span>
+                    <span className={styles.quiet}>{basisText(usage.used, calendar)}</span>
                   </>
                 ) : (
                   <>

@@ -11,7 +11,7 @@
  */
 
 import { ListChecks, ScanSearch, SlidersHorizontal } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { CheckCoverage, CheckInfo, InsightsThresholds } from '@/api/types/insights';
 import { Badge } from '@/design/Badge';
 import { Button } from '@/design/Button';
@@ -34,29 +34,42 @@ import {
   useCoverage,
   useInsightsSettings,
   useSaveSettings,
+  useSaveThreshold,
 } from './data';
 import {
   CATEGORIES,
   categoryLabel,
+  readThreshold,
+  refusalOf,
   severityLabel,
   severityTone,
   SEVERITIES,
+  storedThresholdProblem,
   verdict,
+  WHOLE_U32,
+  WHOLE_U64,
 } from './insight';
 import type { Scan } from './useScan';
 
-/** What each threshold means and how it reads. The text is the backend's own. */
+/**
+ * What each threshold means and how it reads. The text is the backend's own.
+ * `whole` marks one the engine counts in whole units (`u32`, `u64` in
+ * `nocturne-insights/src/settings.rs`) and is the most it can hold; the rest
+ * are fractions (`f64`).
+ */
 const THRESHOLDS: {
   key: keyof InsightsThresholds;
   label: string;
   unit: string;
   hint: string;
+  whole?: number;
 }[] = [
   {
     key: 'flap_transitions_per_hour',
     label: 'Flapping',
     unit: 'transitions an hour',
     hint: 'Up/down transitions within an hour that count as flapping.',
+    whole: WHOLE_U32,
   },
   {
     key: 'interface_error_ppm',
@@ -69,6 +82,7 @@ const THRESHOLDS: {
     label: '…and at least',
     unit: 'new errors',
     hint: 'A rate over a handful of packets is noise, so a minimum number of new errors is needed too.',
+    whole: WHOLE_U64,
   },
   {
     key: 'utilisation_pct',
@@ -89,24 +103,28 @@ const THRESHOLDS: {
     label: 'Sustained for',
     unit: 'minutes',
     hint: 'How long a metric must stay over its threshold to count as sustained. One reading is never sustained.',
+    whole: WHOLE_U32,
   },
   {
     key: 'history_hours',
     label: 'History read',
     unit: 'hours',
     hint: 'How far back metric and log history is read.',
+    whole: WHOLE_U32,
   },
   {
     key: 'backup_age_days',
     label: 'Backup age',
     unit: 'days',
     hint: 'A backup older than this is "no recent backup".',
+    whole: WHOLE_U32,
   },
   {
     key: 'stale_data_hours',
     label: 'Data goes stale after',
     unit: 'hours',
     hint: 'Collected data older than this is not used for cross-device checks: comparing two ends of a link means comparing them as they were at about the same time.',
+    whole: WHOLE_U32,
   },
   {
     key: 'qos_drop_ps',
@@ -119,30 +137,35 @@ const THRESHOLDS: {
     label: 'MAC flapping',
     unit: 'addresses',
     hint: 'Addresses that must move between the same two ports before it counts as a flap rather than somebody moving a laptop.',
+    whole: WHOLE_U32,
   },
   {
     key: 'software_min_group',
     label: 'Version majority',
     unit: 'devices of a model',
     hint: 'Devices of one model needed before a majority version means anything.',
+    whole: WHOLE_U32,
   },
   {
     key: 'saved_pair_window_minutes',
     label: 'Running/startup pair',
     unit: 'minutes apart',
     hint: 'How close together the running and startup configurations must have been captured to be compared.',
+    whole: WHOLE_U32,
   },
   {
     key: 'arp_window_minutes',
     label: 'ARP tables',
     unit: 'minutes apart',
     hint: 'How close together two ARP tables must have been read to be compared.',
+    whole: WHOLE_U32,
   },
   {
     key: 'change_window_minutes',
     label: 'Change window',
     unit: 'minutes',
     hint: 'How far from a configuration change an applied change may be and still account for it.',
+    whole: WHOLE_U32,
   },
 ];
 
@@ -202,20 +225,20 @@ export function ChecksTab({ scan }: ChecksTabProps) {
     });
   }, [checks.data, query, category]);
 
-  if (checks.isPending) return <Skeleton shape="block" height={320} />;
-  if (checks.error) {
-    return (
-      <ErrorState
-        title="The catalogue could not be read"
-        error={checks.error}
-        onRetry={() => void checks.refetch()}
-      />
-    );
-  }
-
   const all = checks.data ?? [];
   const on = all.filter((check) => check.enabled).length;
   const thresholds = settings.data?.thresholds;
+  // A value the engine cannot read as its threshold (stored before writes
+  // were checked, or by hand) can stop the catalogue answering at all. The
+  // settings are read on their own, so both panels stay, and the thresholds
+  // open, to be where it is put right: nowhere else edits this section.
+  const unreadable = THRESHOLDS.some(
+    (threshold) => thresholds !== undefined && storedThresholdProblem(thresholds[threshold.key], threshold.whole) !== null,
+  );
+  // Open for the rest of the visit once it has been: it must not fold away
+  // under the field the moment the value in it has been put right.
+  const [keptOpen, setKeptOpen] = useState(false);
+  if (unreadable && !keptOpen) setKeptOpen(true);
 
   const setEnabled = (check: CheckInfo, enabled: boolean) => {
     save.mutate({ section: 'insights', value: { enabled_checks: { [check.id]: enabled } } });
@@ -227,9 +250,11 @@ export function ChecksTab({ scan }: ChecksTabProps) {
         title="How insights run"
         padding="md"
         actions={
-          <span className={styles.count}>
-            {formatCount(on)} of {formatCount(all.length)} checks on
-          </span>
+          checks.data && (
+            <span className={styles.count}>
+              {formatCount(on)} of {formatCount(all.length)} checks on
+            </span>
+          )
         }
       >
         {settings.error ? (
@@ -282,41 +307,104 @@ export function ChecksTab({ scan }: ChecksTabProps) {
       </Panel>
 
       <Panel
+        // Remounted open, past what was remembered, once a stored value has
+        // been found wrong: a folded panel would hide the one thing to put right.
+        key={keptOpen ? 'open' : 'remembered'}
         title="Thresholds"
         padding="md"
         collapsible
-        defaultCollapsed
-        storageId="insights.thresholds"
+        defaultCollapsed={!keptOpen}
+        storageId={keptOpen ? undefined : 'insights.thresholds'}
         actions={<Badge tone="neutral" variant="outline">{`settings → insights`}</Badge>}
       >
         <p className={styles.lead}>
           <Icon icon={SlidersHorizontal} size={13} /> Every number a check compares against.
           A change takes effect on the next scan.
         </p>
-        <div className={styles.thresholds}>
-          {THRESHOLDS.map((threshold) => (
-            <ThresholdInput
-              key={threshold.key}
-              label={threshold.label}
-              unit={threshold.unit}
-              hint={threshold.hint}
-              value={thresholds?.[threshold.key]}
-              disabled={thresholds === undefined}
-              onSave={(value) =>
-                save.mutate({
-                  section: 'insights',
-                  value: { thresholds: { [threshold.key]: value } },
-                })
-              }
-            />
-          ))}
-        </div>
+        {settings.error ? (
+          // Not sixteen empty fields: a number that could not be read is not a blank one.
+          <ErrorState
+            size="compact"
+            title="The thresholds could not be read"
+            error={settings.error}
+            onRetry={() => void settings.refetch()}
+          />
+        ) : settings.isPending ? (
+          <Skeleton shape="block" height={160} />
+        ) : (
+          <div className={styles.thresholds}>
+            {THRESHOLDS.map((threshold) => (
+              <ThresholdInput
+                key={threshold.key}
+                setting={threshold.key}
+                label={threshold.label}
+                unit={threshold.unit}
+                hint={threshold.hint}
+                whole={threshold.whole}
+                value={thresholds?.[threshold.key]}
+                disabled={thresholds === undefined}
+              />
+            ))}
+          </div>
+        )}
       </Panel>
 
+      {checks.isPending ? (
+        <Skeleton shape="block" height={320} />
+      ) : checks.error ? (
+        <ErrorState
+          size="compact"
+          title="The catalogue could not be read"
+          error={checks.error}
+          onRetry={() => void checks.refetch()}
+        />
+      ) : (
+        <Catalogue
+          rows={rows}
+          thresholds={thresholds}
+          lastScan={lastScan}
+          scan={scan}
+          query={query}
+          category={category}
+          onQuery={setQuery}
+          onCategory={setCategory}
+          onEnabled={setEnabled}
+        />
+      )}
+    </div>
+  );
+}
+
+interface CatalogueProps {
+  rows: readonly CheckInfo[];
+  thresholds: InsightsThresholds | undefined;
+  lastScan: ReadonlyMap<string, CheckCoverage>;
+  scan: Scan;
+  query: string;
+  category: string;
+  onQuery: (query: string) => void;
+  onCategory: (category: string) => void;
+  onEnabled: (check: CheckInfo, enabled: boolean) => void;
+}
+
+/** The checks themselves, searchable: below the settings, which never depend on it. */
+function Catalogue({
+  rows,
+  thresholds,
+  lastScan,
+  scan,
+  query,
+  category,
+  onQuery,
+  onCategory,
+  onEnabled,
+}: CatalogueProps) {
+  return (
+    <>
       <div className={styles.catalogueHead}>
         <SearchInput
           value={query}
-          onChange={setQuery}
+          onChange={onQuery}
           aria-label="Search checks"
           placeholder="Search what a check looks for…"
           className={styles.search}
@@ -326,7 +414,7 @@ export function ChecksTab({ scan }: ChecksTabProps) {
           className={styles.category}
           aria-label="Category"
           value={category}
-          onChange={(event) => setCategory(event.target.value)}
+          onChange={(event) => onCategory(event.target.value)}
           options={[
             { value: '', label: 'Every category' },
             ...CATEGORIES.map((entry) => ({ value: entry, label: categoryLabel(entry) })),
@@ -346,8 +434,8 @@ export function ChecksTab({ scan }: ChecksTabProps) {
             <Button
               variant="secondary"
               onClick={() => {
-                setQuery('');
-                setCategory('');
+                onQuery('');
+                onCategory('');
               }}
             >
               Clear the search
@@ -386,7 +474,7 @@ export function ChecksTab({ scan }: ChecksTabProps) {
                     <Switch
                       checked={check.enabled}
                       aria-label={`Run the ${check.title} check`}
-                      onChange={(event) => setEnabled(check, event.target.checked)}
+                      onChange={(event) => onEnabled(check, event.target.checked)}
                     >
                       {check.enabled ? 'On' : 'Off'}
                     </Switch>
@@ -432,48 +520,105 @@ export function ChecksTab({ scan }: ChecksTabProps) {
           })}
         </ul>
       )}
-    </div>
+    </>
   );
 }
 
 interface ThresholdInputProps {
+  setting: keyof InsightsThresholds;
   label: string;
   unit: string;
   hint: string;
+  /** For a threshold counted in whole units: the most it can hold. */
+  whole?: number;
+  /** As stored: `settings.get` hands back what is there, right or not. */
   value: number | undefined;
   disabled: boolean;
-  onSave: (value: number) => void;
 }
 
 /**
  * One threshold. It is saved when the field is left or Enter is pressed, not
- * on every keystroke: a half-typed number is not a setting.
+ * on every keystroke: a half-typed number is not a setting. What is wrong
+ * with it — as typed, as the engine answered, or as it is stored — is said
+ * beside it, and what was typed stays to be corrected; Escape puts the
+ * stored value back.
  */
-function ThresholdInput({ label, unit, hint, value, disabled, onSave }: ThresholdInputProps) {
+function ThresholdInput({ setting, label, unit, hint, whole, value, disabled }: ThresholdInputProps) {
+  const save = useSaveThreshold();
   const [text, setText] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  /** The text last sent, so leaving the field again does not send it twice. */
+  const sent = useRef<string | null>(null);
   const shown = text ?? (value === undefined ? '' : String(value));
+  const stored = text === null && value !== undefined ? storedThresholdProblem(value, whole) : null;
 
-  const commit = () => {
-    if (text === null) return;
-    const next = Number(text);
+  const revert = () => {
     setText(null);
-    if (Number.isFinite(next) && next >= 0 && next !== value) onSave(next);
+    setRefusal(null);
+    sent.current = null;
+  };
+
+  const commit = (input: HTMLInputElement) => {
+    if (text === null || text === sent.current) return;
+    const entry = readThreshold(text, whole, input.validity.badInput);
+    if (entry.kind === 'unchanged' || (entry.kind === 'value' && entry.value === value)) {
+      revert();
+      return;
+    }
+    if (entry.kind === 'refused') {
+      setRefusal(entry.reason);
+      return;
+    }
+    const sending = text;
+    sent.current = sending;
+    save.mutate(
+      { section: 'insights', value: { thresholds: { [setting]: entry.value } } },
+      {
+        // Only what was sent is settled by its answer: anything typed while
+        // it was on its way stays in the field.
+        onSuccess: () => {
+          setText((current) => (current === sending ? null : current));
+          if (sent.current === sending) {
+            sent.current = null;
+            setRefusal(null);
+          }
+        },
+        onError: (error) => {
+          if (sent.current === sending) setRefusal(refusalOf(error, setting));
+        },
+      },
+    );
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') commit(event.currentTarget);
+    else if (event.key === 'Escape' && text !== null) {
+      // This Escape is the field's: nothing around it should act on it too.
+      event.preventDefault();
+      revert();
+    }
   };
 
   return (
-    <Field label={label} hint={hint} className={styles.threshold}>
+    <Field label={label} hint={hint} error={refusal ?? stored ?? undefined} className={styles.threshold}>
       <span className={styles.thresholdControl}>
         <Input
           type="number"
           min={0}
+          max={whole}
+          step={whole === undefined ? 'any' : 1}
+          inputMode={whole === undefined ? 'decimal' : 'numeric'}
           size="sm"
           value={shown}
           disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') commit();
+          aria-busy={save.isPending || undefined}
+          onChange={(event) => {
+            setText(event.target.value);
+            setRefusal(null);
+            sent.current = null;
           }}
+          onBlur={(event) => commit(event.currentTarget)}
+          onKeyDown={onKeyDown}
         />
         <span className={styles.unit}>{unit}</span>
       </span>

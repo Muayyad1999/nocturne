@@ -366,6 +366,175 @@ async fn a_qos_finding_offers_no_configuration_fix_so_nothing_reaches_the_change
     assert!(app.state::<common::Recorder>().alerts.lock().is_empty());
 }
 
+/// Samples of one series at the given minutes ago.
+fn sampled_at(
+    app: &App,
+    device_id: &str,
+    metric: &str,
+    instance: &str,
+    minutes_ago: impl IntoIterator<Item = i64>,
+    value: f64,
+) {
+    let series = app
+        .store()
+        .series_id(device_id, metric, instance)
+        .expect("series");
+    let now = now_ms();
+    let samples: Vec<(i64, i64, f64)> = minutes_ago
+        .into_iter()
+        .map(|ago| (series, now - ago * 60_000, value))
+        .collect();
+    app.store().samples_insert(&samples).expect("samples");
+}
+
+/// What monitoring had stored for one series is gone, as if it had never
+/// been read: the series row stays, as it does in the core.
+fn forget_samples(app: &App, device_id: &str, metric: &str, instance: &str) {
+    let series = app
+        .store()
+        .series_id(device_id, metric, instance)
+        .expect("series");
+    app.store()
+        .with(|conn| conn.execute("DELETE FROM samples WHERE series_id = ?1", [series]))
+        .expect("samples removed");
+}
+
+async fn insight_state(app: &App, id: &Value) -> (String, u64) {
+    let insight = app
+        .rpc("insights.get", json!({"id": id}))
+        .await
+        .expect("the insight is there");
+    (
+        insight["state"].as_str().unwrap_or_default().to_string(),
+        insight["occurrences"].as_u64().unwrap_or_default(),
+    )
+}
+
+#[tokio::test]
+async fn reading_a_congestion_series_nobody_records_does_not_clear_a_class_that_is_dropping() {
+    // RB1 keeps one drop counter per queue, and alice's queue is dropping
+    // 25 packets a second.
+    let lab = lab(&["RB1"], With::default()).await;
+    let (app, rb) = (&lab.app, lab.id("RB1"));
+    let alice = "ether1|out|subscribers/alice";
+    sampled(app, &rb, "qos.drop_ps", alice, 25.0);
+    scan(app, json!({})).await;
+    let found = listed(app, "qos_class_dropping").await;
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["severity"], "low");
+
+    // Somebody asks `metrics.query` for alice's congestion series, which
+    // nobody records. The core creates the series row to answer, and puts
+    // nothing in it.
+    app.store()
+        .series_id(&rb, "qos.queue_drop_ps", alice)
+        .expect("the read's series row");
+
+    for _ in 0..3 {
+        scan(app, json!({})).await;
+    }
+    assert_eq!(
+        insight_state(app, &found[0]["id"]).await,
+        ("open".to_string(), 1),
+        "still dropping, still reported"
+    );
+    let coverage = app.rpc("insights.coverage", json!({})).await.unwrap();
+    let entry = coverage_of(&coverage, "qos_class_dropping");
+    assert_eq!(entry["evaluated"], 1, "{entry}");
+    assert_eq!(entry["findings"], 1, "{entry}");
+}
+
+#[tokio::test]
+async fn a_class_that_could_not_be_judged_keeps_its_finding_rather_than_resolving_it() {
+    let lab = lab(&["WAN1", "WAN2"], With::default()).await;
+    let (app, wan1, wan2) = (&lab.app, lab.id("WAN1"), lab.id("WAN2"));
+    let bulk = "GigabitEthernet0/0|out|WAN/BULK";
+    let default = "GigabitEthernet0/0|out|WAN/class-default";
+    // WAN1's bulk class and WAN2's voice class are congested.
+    sampled_at(
+        app,
+        &wan1,
+        "qos.queue_drop_ps",
+        bulk,
+        (0..=12).map(|step| 48 - step * 4),
+        90.0,
+    );
+    sampled(app, &wan2, "qos.queue_drop_ps", VOICE, 90.0);
+    sampled(app, &wan2, "qos.queue_drop_ps", default, 0.0);
+    scan(app, json!({})).await;
+    let found = listed(app, "qos_class_dropping").await;
+    assert_eq!(found.len(), 2, "{found:?}");
+    let id_of = |device: &str| {
+        found
+            .iter()
+            .find(|insight| insight["device"] == device)
+            .expect("a finding")["id"]
+            .clone()
+    };
+    let (bulk_id, voice_id) = (id_of("WAN1"), id_of("WAN2"));
+
+    // WAN1's QoS read failed for forty-two minutes and has just come back:
+    // three samples before the gap, three after, every one of them 90/s.
+    // Too few since the gap to call sustained — and too many over the
+    // threshold to call it over.
+    forget_samples(app, &wan1, "qos.queue_drop_ps", bulk);
+    sampled_at(
+        app,
+        &wan1,
+        "qos.queue_drop_ps",
+        bulk,
+        [58, 54, 50, 8, 4, 0],
+        90.0,
+    );
+    // WAN2's voice class stopped being read twenty minutes ago while its
+    // default class goes on being read: gone, or its counters could not be
+    // compared. Not known to be dropping now, and not known to have stopped.
+    forget_samples(app, &wan2, "qos.queue_drop_ps", VOICE);
+    sampled_at(
+        app,
+        &wan2,
+        "qos.queue_drop_ps",
+        VOICE,
+        (0..10).map(|step| 58 - step * 4),
+        90.0,
+    );
+
+    for _ in 0..3 {
+        scan(app, json!({})).await;
+    }
+    for (what, id) in [
+        ("the class back from a gap", &bulk_id),
+        ("the class that stopped", &voice_id),
+    ] {
+        assert_eq!(
+            insight_state(app, id).await,
+            ("open".to_string(), 1),
+            "{what}: held, neither resolved nor opened again"
+        );
+    }
+    let coverage = app.rpc("insights.coverage", json!({})).await.unwrap();
+    let entry = coverage_of(&coverage, "qos_class_dropping");
+    println!("insights.coverage → checks[qos_class_dropping]: {entry}");
+    assert_eq!(
+        entry["evaluated"], 1,
+        "WAN2's default class was judged: {entry}"
+    );
+    assert_eq!(entry["skipped"], 1, "WAN1 could not be: {entry}");
+    assert!(
+        entry["reasons"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("no class could be judged yet"),
+        "{entry}"
+    );
+
+    // Measured long enough again, WAN1's class is judged once more — and it
+    // is the same finding, not a second occurrence.
+    sampled_at(app, &wan1, "qos.queue_drop_ps", bulk, [20, 16, 12], 90.0);
+    scan(app, json!({})).await;
+    assert_eq!(insight_state(app, &bulk_id).await, ("open".to_string(), 1));
+}
+
 #[tokio::test]
 async fn the_drop_threshold_is_a_setting_and_moving_it_resolves_the_finding() {
     let lab = estate(With::default()).await;

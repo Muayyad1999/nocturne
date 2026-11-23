@@ -58,6 +58,40 @@ export function byCurrency(arrears: Arrears): AgedReport[] {
   }));
 }
 
+/** What each customer owes, per currency: a customer may owe in two. */
+export function owedById(arrears: Pick<Arrears, 'customers'> | undefined): Map<string, Money[]> {
+  const index = new Map<string, Money[]>();
+  for (const row of arrears?.customers ?? []) {
+    const found = index.get(row.customer_id);
+    if (found) found.push(row.outstanding);
+    else index.set(row.customer_id, [row.outstanding]);
+  }
+  return index;
+}
+
+/** What a list's Owed column says about one customer. */
+export type OwedCell =
+  | { kind: 'pending' }
+  | { kind: 'not_read' }
+  | { kind: 'nothing' }
+  | { kind: 'owes'; amounts: Money[] };
+
+/**
+ * A customer the arrears do not list owes nothing — but only when the arrears
+ * were read. A read that failed has not established that anybody owes
+ * nothing, so it is "not read", and never a zero balance on every row.
+ */
+export function owedCell(
+  read: { isPending: boolean; isError: boolean },
+  owed: ReadonlyMap<string, Money[]>,
+  customerId: string,
+): OwedCell {
+  if (read.isPending) return { kind: 'pending' };
+  if (read.isError) return { kind: 'not_read' };
+  const amounts = owed.get(customerId);
+  return amounts ? { kind: 'owes', amounts } : { kind: 'nothing' };
+}
+
 export interface FavourReport {
   currency: string;
   /** What stands in customers' favour in this currency. Not taken off any debt. */

@@ -412,17 +412,563 @@ impl<'de> Deserialize<'de> for Parser {
     }
 }
 
-/// Where to find health data over SNMP. Each entry is tried in order.
+/// Where to find health data over SNMP.
+///
+/// Nothing is scaled, turned round or filtered unless the entry says so: an
+/// object that is idle rather than busy, free rather than used, in tenths, or
+/// one kind of row among several must say so or be left out.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SnmpSpec {
-    /// OIDs (scalars or columns) holding a CPU percentage.
-    pub cpu: Vec<String>,
-    pub memory_used: Vec<String>,
-    pub memory_free: Vec<String>,
-    pub memory_total: Vec<String>,
-    /// OIDs holding a temperature in °C.
-    pub temperature: Vec<String>,
+    /// A CPU percentage, busy. The first entry that gives a number is the
+    /// reading, its rows combined by its `combine`; the entries after it are
+    /// not read.
+    pub cpu: Vec<SnmpEntry>,
+    /// Memory quantities, in any unit as long as the three agree. Per list,
+    /// the first number of the first entry that gives one. The figure is
+    /// used ÷ total, else used ÷ (used + free), else (total − free) ÷ total.
+    pub memory_used: Vec<SnmpEntry>,
+    pub memory_free: Vec<SnmpEntry>,
+    pub memory_total: Vec<SnmpEntry>,
+    /// An object that is already "percent of memory in use", for when the
+    /// three lists above give no figure.
+    pub memory_percent: Vec<SnmpEntry>,
+    /// Temperatures in °C. Every entry is read and every row it gives is a
+    /// sensor, so two entries are two sensors; an entry marked `fallback` is
+    /// read only where the entries above it gave none.
+    pub temperature: Vec<SnmpEntry>,
+}
+
+impl SnmpSpec {
+    /// The lists by name, in the order a profile writes them.
+    pub fn lists(&self) -> [(&'static str, &[SnmpEntry]); 6] {
+        [
+            ("cpu", &self.cpu),
+            ("memory_used", &self.memory_used),
+            ("memory_free", &self.memory_free),
+            ("memory_total", &self.memory_total),
+            ("memory_percent", &self.memory_percent),
+            ("temperature", &self.temperature),
+        ]
+    }
+}
+
+/// One place a health reading is taken from.
+///
+/// Written as a bare OID (`1.3.6.1.2.1.25.3.3.1.2`), meaning what a bare OID
+/// has always meant, or as a mapping that says which instance, which rows and
+/// what arithmetic. See `docs/profiles.md`, section `snmp`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SnmpEntry {
+    /// Text ending in `.0` is one object, fetched with GET; anything else is
+    /// a column, walked, and every row counts.
+    pub oid: Option<String>,
+    /// Exactly this OID, fetched with GET whatever it ends in. An agent that
+    /// does not have it gives no reading, which is not an error.
+    pub instance: Option<String>,
+    /// The agent sends a signed 32-bit object in an unsigned type: a
+    /// Counter32, Gauge32 or TimeTicks value of 2^31 or more is the negative
+    /// number value − 2^32. Applied to the raw value, before `absent`.
+    pub signed: bool,
+    /// `where`: tests on sibling columns of `oid`, matched by row index. A
+    /// row counts only if every test holds; a row with a test cell missing
+    /// does not count.
+    pub tests: Vec<SnmpTest>,
+    /// Raw values the MIB defines as "no reading"; such a row is dropped
+    /// before any arithmetic.
+    pub absent: Vec<f64>,
+    /// A sibling column holding an RFC 3433 `EntitySensorDataScale`.
+    pub si_scale: Option<String>,
+    /// A sibling column holding an RFC 3433 `EntitySensorPrecision`.
+    pub precision: Option<String>,
+    /// Multiply by this: `0.1` for tenths.
+    pub scale: Option<f64>,
+    /// The reading is this number minus the value: `100` for a percentage
+    /// that is idle or free.
+    pub complement: Option<f64>,
+    /// `cpu` only: how the rows of one entry make one figure.
+    pub combine: Option<Combine>,
+    /// `temperature` only: the sensor's name in the series.
+    pub label: Option<String>,
+    /// `temperature` only: read this entry only when none of the entries
+    /// above it that are not fallbacks gave a sensor. For an older object
+    /// that reports the same sensors as a newer one: listed plainly beside
+    /// it, every sensor would be counted twice.
+    pub fallback: bool,
+    /// Written as a bare string. A bare string is checked no further than it
+    /// always was (one that does not parse is skipped at poll time), so a
+    /// stored profile that loaded before still loads.
+    bare: bool,
+}
+
+impl SnmpEntry {
+    /// An entry written as a bare OID string.
+    pub fn bare(oid: &str) -> SnmpEntry {
+        SnmpEntry {
+            oid: Some(oid.to_string()),
+            bare: true,
+            ..SnmpEntry::default()
+        }
+    }
+
+    /// The OID as written: the instance, or the object or column.
+    pub fn target(&self) -> Option<&str> {
+        self.instance.as_deref().or(self.oid.as_deref())
+    }
+
+    /// Whether the entry is a column, walked row by row. An `oid` that ends
+    /// in `.0` is a scalar; an `instance` is one object whatever it ends in.
+    pub fn is_column(&self) -> bool {
+        self.instance.is_none()
+            && self
+                .oid
+                .as_deref()
+                .is_some_and(|oid| !oid.trim().ends_with(".0"))
+    }
+
+    /// Whether it says nothing a bare string could not.
+    fn is_plain(&self) -> bool {
+        self.instance.is_none()
+            && !self.signed
+            && self.tests.is_empty()
+            && self.absent.is_empty()
+            && self.si_scale.is_none()
+            && self.precision.is_none()
+            && self.scale.is_none()
+            && self.complement.is_none()
+            && self.combine.is_none()
+            && self.label.is_none()
+            && !self.fallback
+    }
+}
+
+/// How the rows of one `cpu` entry make one figure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Combine {
+    /// The rows are cores of one machine.
+    #[default]
+    Mean,
+    /// The rows are separate processors (stack members, route processors,
+    /// line cards): the busiest is the figure.
+    Max,
+}
+
+/// A test on a sibling column, for one row: exactly one of `is`, `in` and
+/// `matches`. Values are compared as text with the cell's plain rendering:
+/// integers in decimal, object identifiers dotted with no leading dot,
+/// strings trimmed.
+#[derive(Clone, Debug, Default)]
+pub struct SnmpTest {
+    pub oid: String,
+    pub is: Option<String>,
+    pub any_of: Option<Vec<String>>,
+    pub matches: Option<String>,
+    /// `matches`, compiled once when the profile is loaded rather than once
+    /// per row of every poll.
+    pattern: Option<Regex>,
+}
+
+impl PartialEq for SnmpTest {
+    fn eq(&self, other: &SnmpTest) -> bool {
+        (&self.oid, &self.is, &self.any_of, &self.matches)
+            == (&other.oid, &other.is, &other.any_of, &other.matches)
+    }
+}
+
+impl SnmpTest {
+    /// Whether a cell, in its plain rendering, passes the test.
+    pub fn holds(&self, text: &str) -> bool {
+        if let Some(expected) = &self.is {
+            return text == expected;
+        }
+        if let Some(expected) = &self.any_of {
+            return expected.iter().any(|value| value == text);
+        }
+        match (&self.pattern, &self.matches) {
+            (Some(pattern), _) => pattern.is_match(text),
+            // Not loaded through a profile, so not compiled yet.
+            (None, Some(pattern)) => Regex::new(pattern).is_ok_and(|regex| regex.is_match(text)),
+            (None, None) => false,
+        }
+    }
+}
+
+const ENTRY_KEYS: &str = "`oid`, `instance`, `signed`, `where`, `absent`, `si_scale`, `precision`, `scale`, `complement`, `combine`, `label`, `fallback`";
+const TEST_KEYS: &str = "`oid` and one of `is`, `in`, `matches`";
+
+impl<'de> Deserialize<'de> for SnmpEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SnmpEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an OID, or a mapping with `oid` or `instance`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<SnmpEntry, E> {
+                Ok(SnmpEntry::bare(text))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SnmpEntry, A::Error> {
+                use serde::de::Error;
+                let mut entry = SnmpEntry::default();
+                // By hand rather than derived, so that a mistyped key is
+                // named instead of an untagged enum's "did not match any
+                // variant".
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "oid" => entry.oid = Some(map.next_value()?),
+                        "instance" => entry.instance = Some(map.next_value()?),
+                        "signed" => entry.signed = map.next_value()?,
+                        "where" => entry.tests = map.next_value()?,
+                        "absent" => entry.absent = map.next_value()?,
+                        "si_scale" => entry.si_scale = Some(map.next_value()?),
+                        "precision" => entry.precision = Some(map.next_value()?),
+                        "scale" => entry.scale = Some(map.next_value()?),
+                        "complement" => entry.complement = Some(map.next_value()?),
+                        "combine" => entry.combine = Some(map.next_value()?),
+                        "label" => entry.label = Some(map.next_value()?),
+                        "fallback" => entry.fallback = map.next_value()?,
+                        other => {
+                            return Err(A::Error::custom(format!(
+                                "an SNMP entry has no key `{other}`; it takes {ENTRY_KEYS}"
+                            )));
+                        }
+                    }
+                }
+                Ok(entry)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl Serialize for SnmpEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        // What was a bare string goes back as one, so a profile written
+        // before entries could be mappings reads back exactly as it was.
+        // Decided by what the entry says, not by how it was written: a key
+        // set on an entry made with `bare` is not dropped on the way out.
+        if let (Some(oid), true) = (&self.oid, self.is_plain()) {
+            return serializer.serialize_str(oid);
+        }
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(oid) = &self.oid {
+            map.serialize_entry("oid", oid)?;
+        }
+        if let Some(instance) = &self.instance {
+            map.serialize_entry("instance", instance)?;
+        }
+        if self.signed {
+            map.serialize_entry("signed", &true)?;
+        }
+        if !self.tests.is_empty() {
+            map.serialize_entry("where", &self.tests)?;
+        }
+        if !self.absent.is_empty() {
+            map.serialize_entry("absent", &self.absent)?;
+        }
+        if let Some(column) = &self.si_scale {
+            map.serialize_entry("si_scale", column)?;
+        }
+        if let Some(column) = &self.precision {
+            map.serialize_entry("precision", column)?;
+        }
+        if let Some(scale) = &self.scale {
+            map.serialize_entry("scale", scale)?;
+        }
+        if let Some(complement) = &self.complement {
+            map.serialize_entry("complement", complement)?;
+        }
+        if let Some(combine) = &self.combine {
+            map.serialize_entry("combine", combine)?;
+        }
+        if let Some(label) = &self.label {
+            map.serialize_entry("label", label)?;
+        }
+        if self.fallback {
+            map.serialize_entry("fallback", &true)?;
+        }
+        map.end()
+    }
+}
+
+/// A value a test compares with: a YAML string or number, as text.
+struct TestValue(String);
+
+impl<'de> Deserialize<'de> for TestValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = TestValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a number, an OID or a string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<TestValue, E> {
+                let text = text.trim();
+                // An OID cell renders without a leading dot, so one written
+                // with it would otherwise never match.
+                let dotted = text
+                    .strip_prefix('.')
+                    .filter(|rest| oid_problem(rest).is_none());
+                Ok(TestValue(dotted.unwrap_or(text).to_string()))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, number: i64) -> Result<TestValue, E> {
+                Ok(TestValue(number.to_string()))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, number: u64) -> Result<TestValue, E> {
+                Ok(TestValue(number.to_string()))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, number: f64) -> Result<TestValue, E> {
+                Ok(TestValue(number.to_string()))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for SnmpTest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SnmpTest;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a mapping with {TEST_KEYS}")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SnmpTest, A::Error> {
+                use serde::de::Error;
+                let mut test = SnmpTest::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "oid" => test.oid = map.next_value()?,
+                        "is" => test.is = Some(map.next_value::<TestValue>()?.0),
+                        "in" => {
+                            let values: Vec<TestValue> = map.next_value()?;
+                            test.any_of = Some(values.into_iter().map(|value| value.0).collect());
+                        }
+                        "matches" => test.matches = Some(map.next_value()?),
+                        other => {
+                            return Err(A::Error::custom(format!(
+                                "a `where` test has no key `{other}`; it takes {TEST_KEYS}"
+                            )));
+                        }
+                    }
+                }
+                Ok(test)
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+impl Serialize for SnmpTest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("oid", &self.oid)?;
+        if let Some(value) = &self.is {
+            map.serialize_entry("is", value)?;
+        }
+        if let Some(values) = &self.any_of {
+            map.serialize_entry("in", values)?;
+        }
+        if let Some(pattern) = &self.matches {
+            map.serialize_entry("matches", pattern)?;
+        }
+        map.end()
+    }
+}
+
+/// Why `text` cannot be sent as an OID, if it cannot: dotted decimal, at
+/// least two arcs, and the first two arcs within what BER can encode.
+fn oid_problem(text: &str) -> Option<String> {
+    let dotted = text.trim();
+    let dotted = dotted.strip_prefix('.').unwrap_or(dotted);
+    let arcs: Option<Vec<u32>> = dotted
+        .split('.')
+        .map(|arc| {
+            arc.bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| arc.parse().ok())
+                .flatten()
+        })
+        .collect();
+    let reason = match arcs.as_deref() {
+        None => "write it as dotted decimal numbers, such as 1.3.6.1.2.1.25.3.3.1.2",
+        Some([] | [_]) => "an OID has at least two arcs",
+        Some([first, ..]) if *first > 2 => "the first arc must be 0, 1 or 2",
+        Some([first, second, ..]) if *first < 2 && *second > 39 => {
+            "the second arc must be below 40"
+        }
+        Some(_) => return None,
+    };
+    Some(format!("`{text}` is not an OID: {reason}"))
+}
+
+/// Compile the `matches` of every `where` test (each was checked by
+/// [`check_snmp`] already).
+fn compile_snmp_patterns(snmp: &mut SnmpSpec) {
+    for list in [
+        &mut snmp.cpu,
+        &mut snmp.memory_used,
+        &mut snmp.memory_free,
+        &mut snmp.memory_total,
+        &mut snmp.memory_percent,
+        &mut snmp.temperature,
+    ] {
+        for test in list.iter_mut().flat_map(|entry| entry.tests.iter_mut()) {
+            test.pattern = test
+                .matches
+                .as_deref()
+                .and_then(|pattern| Regex::new(pattern).ok());
+        }
+    }
+}
+
+/// Everything about the `snmp` lists that can be wrong without an agent to
+/// ask, each named `snmp.<list>[<n>]`. Bare strings are left alone.
+fn check_snmp(problems: &mut Vec<String>, snmp: &SnmpSpec) {
+    for (list, entries) in snmp.lists() {
+        let mut labels: Vec<(&str, usize)> = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if entry.bare {
+                continue;
+            }
+            let at = format!("snmp.{list}[{index}]");
+            let mut problem = |text: String| problems.push(format!("{at}: {text}"));
+            match (&entry.oid, &entry.instance) {
+                (Some(_), Some(_)) => problem(
+                    "give `oid` or `instance`, not both: `instance` is one object fetched as it is written, `oid` an object or a column".into(),
+                ),
+                (None, None) => problem("needs an `oid` or an `instance`".into()),
+                _ => {}
+            }
+            for (key, text) in [("oid", &entry.oid), ("instance", &entry.instance)] {
+                if let Some(reason) = text.as_deref().and_then(oid_problem) {
+                    problem(format!("{key}: {reason}"));
+                }
+            }
+            if !entry.is_column() {
+                let given: Vec<&str> = [
+                    ("where", !entry.tests.is_empty()),
+                    ("si_scale", entry.si_scale.is_some()),
+                    ("precision", entry.precision.is_some()),
+                    ("combine", entry.combine.is_some()),
+                ]
+                .into_iter()
+                .filter_map(|(key, set)| set.then_some(key))
+                .collect();
+                if !given.is_empty() && (entry.oid.is_some() || entry.instance.is_some()) {
+                    problem(format!(
+                        "{} works on the rows of a column, and this entry is one object; give a column `oid` (one that does not end in `.0`)",
+                        given
+                            .iter()
+                            .map(|key| format!("`{key}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+            for (key, column) in [
+                ("si_scale", &entry.si_scale),
+                ("precision", &entry.precision),
+            ] {
+                if let Some(reason) = column.as_deref().and_then(oid_problem) {
+                    problem(format!("{key}: {reason}"));
+                }
+            }
+            if entry.fallback {
+                if list != "temperature" {
+                    problem(
+                        "`fallback` is for `temperature` only: the other lists take the first entry that answers already".into(),
+                    );
+                } else if entries[..index].iter().all(|above| above.fallback) {
+                    problem(
+                        "`fallback` needs an entry above it that is not one, to fall back from"
+                            .into(),
+                    );
+                }
+            }
+            if entry.combine.is_some() && list != "cpu" {
+                problem("`combine` is for `cpu` only".into());
+            }
+            if let Some(label) = &entry.label {
+                if list != "temperature" {
+                    problem("`label` is for `temperature` only".into());
+                } else if label.trim().is_empty() || label.trim() != label {
+                    problem("`label` must be a name with no space at either end".into());
+                } else if let Some((_, first)) =
+                    labels.iter().find(|(seen, _)| *seen == label.as_str())
+                {
+                    problem(format!(
+                        "the label `{label}` is already the label of snmp.{list}[{first}]; two sensors cannot share a name"
+                    ));
+                } else {
+                    labels.push((label.as_str(), index));
+                }
+            }
+            if let Some(scale) = entry.scale
+                && (!scale.is_finite() || scale == 0.0)
+            {
+                problem("`scale` must be a number other than zero".into());
+            }
+            if entry
+                .complement
+                .is_some_and(|complement| !complement.is_finite())
+            {
+                problem("`complement` must be a number".into());
+            }
+            if entry.absent.iter().any(|value| !value.is_finite()) {
+                problem("`absent` must list numbers".into());
+            }
+            for (number, test) in entry.tests.iter().enumerate() {
+                let at = format!("where[{number}]");
+                if let Some(reason) = oid_problem(&test.oid) {
+                    problem(format!("{at}.oid: {reason}"));
+                }
+                let given = [
+                    test.is.is_some(),
+                    test.any_of.is_some(),
+                    test.matches.is_some(),
+                ]
+                .into_iter()
+                .filter(|set| *set)
+                .count();
+                if given != 1 {
+                    problem(format!(
+                        "{at}: give exactly one of `is`, `in` and `matches`"
+                    ));
+                }
+                if test.any_of.as_ref().is_some_and(Vec::is_empty) {
+                    problem(format!("{at}.in: an empty list matches no row"));
+                }
+                if let Some(pattern) = &test.matches
+                    && let Err(err) = Regex::new(pattern)
+                {
+                    problem(format!(
+                        "{at}.matches: invalid regular expression `{pattern}` ({})",
+                        first_line(&err.to_string())
+                    ));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -710,6 +1256,7 @@ impl Platform {
                 );
             }
         }
+        check_snmp(&mut problems, &profile.snmp);
 
         if !problems.is_empty() {
             return Err(ProfileError {
@@ -717,6 +1264,8 @@ impl Platform {
                 problems,
             });
         }
+        let mut profile = profile;
+        compile_snmp_patterns(&mut profile.snmp);
         Ok(Platform {
             policy,
             prompt: prompt.unwrap_or_else(fallback),
@@ -1674,5 +2223,317 @@ collect:
         for platform in registry.platforms.values() {
             assert_eq!(platform.origin, Origin::Builtin);
         }
+    }
+
+    /// The block every profile had before an entry could be a mapping:
+    /// lists of OID strings, one of them not an OID at all.
+    const OLD_SNMP: &str = r#"
+id: old_snmp
+name: Old SNMP block
+snmp:
+  cpu: ['1.3.6.1.4.1.9.9.109.1.1.1.1.7', '1.3.6.1.4.1.9.2.1.57']
+  memory_used: ['1.3.6.1.4.1.9.9.48.1.1.1.5']
+  memory_free: ['1.3.6.1.4.1.9.9.48.1.1.1.6']
+  temperature: ['1.3.6.1.4.1.9.9.13.1.3.1.3', 'not an oid']
+"#;
+
+    #[test]
+    fn a_block_of_plain_oid_lists_loads_and_reads_back_exactly_as_written() {
+        let mut registry = Registry::empty();
+        let platform = registry
+            .add(OLD_SNMP, Origin::User)
+            .expect("a stored profile of plain lists still loads, even with a bad OID in it");
+        let snmp = &platform.profile.snmp;
+        assert_eq!(
+            snmp.cpu,
+            vec![
+                SnmpEntry::bare("1.3.6.1.4.1.9.9.109.1.1.1.1.7"),
+                SnmpEntry::bare("1.3.6.1.4.1.9.2.1.57"),
+            ]
+        );
+        assert!(snmp.cpu[0].is_column() && snmp.cpu[1].is_column());
+        assert_eq!(snmp.temperature[1].target(), Some("not an oid"));
+        assert!(snmp.memory_total.is_empty() && snmp.memory_percent.is_empty());
+
+        // What `profiles.get` hands out: the lists as the strings they were.
+        let resolved = serde_json::to_value(&platform.profile.snmp).unwrap();
+        assert_eq!(
+            resolved,
+            serde_json::json!({
+                "cpu": ["1.3.6.1.4.1.9.9.109.1.1.1.1.7", "1.3.6.1.4.1.9.2.1.57"],
+                "memory_used": ["1.3.6.1.4.1.9.9.48.1.1.1.5"],
+                "memory_free": ["1.3.6.1.4.1.9.9.48.1.1.1.6"],
+                "memory_total": [],
+                "memory_percent": [],
+                "temperature": ["1.3.6.1.4.1.9.9.13.1.3.1.3", "not an oid"],
+            })
+        );
+    }
+
+    #[test]
+    fn an_entry_may_say_which_instance_which_rows_and_what_arithmetic() {
+        let yaml = r#"
+id: mapped_snmp
+name: Mapped SNMP entries
+snmp:
+  cpu:
+    - {oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.7, combine: max}
+    - {oid: 1.3.6.1.4.1.2021.11.11.0, complement: 100}
+  memory_used:
+    - instance: 1.3.6.1.2.1.25.2.3.1.6.65536
+  memory_total:
+    - oid: 1.3.6.1.2.1.25.2.3.1.5
+      where:
+        - {oid: 1.3.6.1.2.1.25.2.3.1.2, is: 1.3.6.1.2.1.25.2.1.2}
+  memory_percent: [1.3.6.1.4.1.9.9.305.1.1.2.0]
+  temperature:
+    - oid: 1.3.6.1.2.1.99.1.1.1.4
+      where:
+        - {oid: 1.3.6.1.2.1.99.1.1.1.1, is: 8}
+        - {oid: 1.3.6.1.2.1.99.1.1.1.5, in: [1, 2]}
+        - {oid: 1.3.6.1.2.1.47.1.1.1.1.7, matches: '^CPU'}
+      si_scale: 1.3.6.1.2.1.99.1.1.1.2
+      precision: 1.3.6.1.2.1.99.1.1.1.3
+      absent: [-1000000000, 1000000000]
+      label: board
+    - {oid: 1.3.6.1.4.1.14988.1.1.3.10.0, scale: 0.1, label: cpu}
+    - {oid: 1.3.6.1.4.1.14988.1.1.3.11.0, scale: 0.1, label: processor, fallback: true}
+"#;
+        let mut registry = Registry::empty();
+        let platform = registry.add(yaml, Origin::User).unwrap();
+        let snmp = &platform.profile.snmp;
+        assert_eq!(snmp.cpu[0].combine, Some(Combine::Max));
+        assert!(snmp.cpu[0].is_column());
+        assert_eq!(snmp.cpu[1].complement, Some(100.0));
+        assert!(!snmp.cpu[1].is_column(), "a `.0` OID is one object");
+        assert_eq!(
+            snmp.memory_used[0].instance.as_deref(),
+            Some("1.3.6.1.2.1.25.2.3.1.6.65536")
+        );
+        assert!(
+            !snmp.memory_used[0].is_column(),
+            "an instance is one object whatever it ends in"
+        );
+        assert_eq!(
+            snmp.memory_total[0].tests[0].is.as_deref(),
+            Some("1.3.6.1.2.1.25.2.1.2")
+        );
+        let sensor = &snmp.temperature[0];
+        assert_eq!(
+            sensor.tests[0].is.as_deref(),
+            Some("8"),
+            "a number, as text"
+        );
+        assert_eq!(
+            sensor.tests[1].any_of,
+            Some(vec!["1".to_string(), "2".to_string()])
+        );
+        assert_eq!(sensor.tests[2].matches.as_deref(), Some("^CPU"));
+        assert_eq!(sensor.absent, vec![-1e9, 1e9]);
+        assert_eq!(sensor.label.as_deref(), Some("board"));
+        assert_eq!(snmp.temperature[1].scale, Some(0.1));
+        assert!(!snmp.temperature[1].fallback && snmp.temperature[2].fallback);
+
+        // A mapping goes back out as a mapping, and what was a bare string
+        // as a bare string.
+        let resolved = serde_json::to_value(snmp).unwrap();
+        assert_eq!(
+            resolved["memory_percent"],
+            serde_json::json!(["1.3.6.1.4.1.9.9.305.1.1.2.0"])
+        );
+        assert_eq!(
+            resolved["cpu"][0],
+            serde_json::json!({"oid": "1.3.6.1.4.1.9.9.109.1.1.1.1.7", "combine": "max"})
+        );
+        assert_eq!(
+            resolved["temperature"][0]["where"][1],
+            serde_json::json!({"oid": "1.3.6.1.2.1.99.1.1.1.5", "in": ["1", "2"]})
+        );
+        assert_eq!(resolved["temperature"][2]["fallback"], true);
+        assert_eq!(resolved["temperature"][1].get("fallback"), None);
+        let again: SnmpSpec = serde_json::from_value(resolved).unwrap();
+        assert_eq!(again.temperature, snmp.temperature);
+    }
+
+    #[test]
+    fn a_row_test_compares_the_cell_as_text_and_its_pattern_is_compiled_at_load() {
+        let yaml = r#"
+id: tests_snmp
+name: Row tests
+snmp:
+  temperature:
+    - oid: 1.3.6.1.2.1.99.1.1.1.4
+      where:
+        - {oid: 1.3.6.1.2.1.25.2.3.1.2, is: .1.3.6.1.2.1.25.2.1.2}
+        - {oid: 1.3.6.1.4.1.9.9.13.1.3.1.6, in: [1, 2, 3, 4]}
+        - {oid: 1.3.6.1.4.1.2636.3.1.13.1.5, matches: '^(Routing Engine|Host)( \d+)?$'}
+"#;
+        let mut registry = Registry::empty();
+        let platform = registry.add(yaml, Origin::User).unwrap();
+        let tests = &platform.profile.snmp.temperature[0].tests;
+        assert!(
+            tests[0].holds("1.3.6.1.2.1.25.2.1.2"),
+            "an OID written with a leading dot matches the cell, which has none"
+        );
+        assert!(!tests[0].holds("1.3.6.1.2.1.25.2.1.3"));
+        assert!(tests[1].holds("4") && !tests[1].holds("5") && !tests[1].holds("40"));
+        assert!(
+            tests[2].pattern.is_some(),
+            "compiled when the profile loaded"
+        );
+        assert!(tests[2].holds("Routing Engine 0") && tests[2].holds("Routing Engine"));
+        assert!(!tests[2].holds("FPC: QFX5100-48S-6Q @ 0/*/*"));
+        assert!(!tests[2].holds("Routing Engine 0 (backup)"));
+    }
+
+    #[test]
+    fn a_mistyped_key_in_an_snmp_entry_is_named() {
+        let mut registry = Registry::empty();
+        for (yaml, expected) in [
+            (
+                "id: t\nsnmp:\n  cpu:\n    - {oid: 1.3.6.1.2.1.25.3.3.1.2, compliment: 100}\n",
+                "an SNMP entry has no key `compliment`",
+            ),
+            (
+                "id: t\nsnmp:\n  temperature:\n    - oid: 1.3.6.1.2.1.99.1.1.1.4\n      where: [{oid: 1.3.6.1.2.1.99.1.1.1.1, equals: 8}]\n",
+                "a `where` test has no key `equals`",
+            ),
+            (
+                "id: t\nsnmp:\n  cpu:\n    - {oid: 1.3.6.1.2.1.25.3.3.1.2, combine: average}\n",
+                "unknown variant `average`",
+            ),
+            (
+                "id: t\nsnmp:\n  cpu_load: ['1.3.6.1.2.1.25.3.3.1.2']\n",
+                "unknown field `cpu_load`",
+            ),
+        ] {
+            let err = registry.add(yaml, Origin::User).unwrap_err().to_string();
+            assert!(err.contains(expected), "missing `{expected}` in: {err}");
+        }
+    }
+
+    #[test]
+    fn an_entry_that_cannot_be_read_as_written_is_refused_where_it_stands() {
+        let bad = r#"
+id: bad_snmp
+name: Bad SNMP entries
+snmp:
+  cpu:
+    - {oid: 1.3.6.1.2.1.25.3.3.1.2, instance: 1.3.6.1.2.1.25.3.3.1.2.196608}
+    - {complement: 100}
+    - {oid: 1.3.6.1.4.1.2021.11.11.0, combine: max}
+  memory_used:
+    - instance: 1.3.6.1.2.1.25.2.3.1.6.65536
+      where: [{oid: 1.3.6.1.2.1.25.2.3.1.2, is: 1.3.6.1.2.1.25.2.1.2}]
+    - {oid: 1.3.6.1.2.1.25.2.3.1.6, combine: max}
+    - {oid: hrStorageUsed}
+    - {oid: 1.3.6.1.2.1.25.2.3.1.6, scale: 0}
+  temperature:
+    - oid: 1.3.6.1.2.1.99.1.1.1.4
+      where:
+        - {oid: 1.3.6.1.2.1.99.1.1.1.1, is: 8, in: [8, 9]}
+        - {oid: 1.3.6.1.2.1.99.1.1.1.5}
+        - {oid: 1.3.6.1.2.1.47.1.1.1.1.7, matches: '(unclosed'}
+        - {oid: 1.3.6.1.2.1.99.1.1.1.2, in: []}
+      label: board
+    - {oid: 1.3.6.1.4.1.14988.1.1.3.10.0, label: board}
+    - {instance: 1.3.6.1.4.1.14988.1.1.3.11.0, si_scale: 1.3.6.1.2.1.99.1.1.1.2}
+    - {oid: 1.3.6.1.4.1.14988.1.1.3.12.0, label: power, fallback: true}
+  memory_percent:
+    - {oid: 1.3.6.1.4.1.9.9.305.1.1.2.0, label: memory}
+    - {oid: 1.3.6.1.4.1.9.9.305.1.1.2.0, fallback: true}
+"#;
+        let mut registry = Registry::empty();
+        let err = registry.add(bad, Origin::User).unwrap_err();
+        let text = err.to_string();
+        for expected in [
+            "snmp.cpu[0]: give `oid` or `instance`, not both",
+            "snmp.cpu[1]: needs an `oid` or an `instance`",
+            "snmp.cpu[2]: `combine` works on the rows of a column",
+            "snmp.memory_used[0]: `where` works on the rows of a column",
+            "snmp.memory_used[1]: `combine` is for `cpu` only",
+            "snmp.memory_used[2]: oid: `hrStorageUsed` is not an OID",
+            "snmp.memory_used[3]: `scale` must be a number other than zero",
+            "snmp.temperature[0]: where[0]: give exactly one of `is`, `in` and `matches`",
+            "snmp.temperature[0]: where[1]: give exactly one of",
+            "snmp.temperature[0]: where[2].matches: invalid regular expression `(unclosed`",
+            "snmp.temperature[0]: where[3].in: an empty list matches no row",
+            "snmp.temperature[1]: the label `board` is already the label of snmp.temperature[0]",
+            "snmp.temperature[2]: `si_scale` works on the rows of a column",
+            "snmp.memory_percent[0]: `label` is for `temperature` only",
+            "snmp.memory_percent[1]: `fallback` is for `temperature` only",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing `{expected}` in:\n{}",
+                err.problems.join("\n")
+            );
+        }
+        assert!(
+            !text.contains("snmp.temperature[3]"),
+            "a fallback below an entry is fine: {text}"
+        );
+        assert!(registry.get("bad_snmp").is_none());
+
+        let alone = registry
+            .add(
+                "id: alone\nsnmp:\n  temperature:\n    - {oid: 1.3.6.1.4.1.14988.1.1.3.10.0, fallback: true}\n",
+                Origin::User,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            alone.contains("snmp.temperature[0]: `fallback` needs an entry above it"),
+            "{alone}"
+        );
+    }
+
+    #[test]
+    fn an_entry_whose_agent_sends_signed_values_unsigned_says_so_and_reads_back_with_it() {
+        let yaml = r#"
+id: signed_snmp
+name: Signed entries
+snmp:
+  temperature:
+    - oid: 1.3.6.1.4.1.14988.1.1.3.100.1.3
+      signed: true
+      where: [{oid: 1.3.6.1.4.1.14988.1.1.3.100.1.4, is: 1}]
+    - 1.3.6.1.4.1.9.9.13.1.3.1.3
+"#;
+        let mut registry = Registry::empty();
+        let platform = registry.add(yaml, Origin::User).unwrap();
+        let snmp = &platform.profile.snmp;
+        assert!(snmp.temperature[0].signed && !snmp.temperature[1].signed);
+        let resolved = serde_json::to_value(snmp).unwrap();
+        assert_eq!(resolved["temperature"][0]["signed"], true);
+        assert_eq!(
+            resolved["temperature"][1],
+            serde_json::json!("1.3.6.1.4.1.9.9.13.1.3.1.3")
+        );
+        let again: SnmpSpec = serde_json::from_value(resolved).unwrap();
+        assert_eq!(again.temperature, snmp.temperature);
+        let err = registry
+            .add(
+                "id: t\nsnmp:\n  temperature:\n    - {oid: 1.3.6.1.4.1.9.9.13.1.3.1.3, signed: yes please}\n",
+                Origin::User,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid type"), "{err}");
+    }
+
+    #[test]
+    fn what_an_entry_says_goes_out_with_it_however_it_was_made() {
+        let mut tenths = SnmpEntry::bare("1.3.6.1.4.1.14988.1.1.3.10.0");
+        assert_eq!(
+            serde_json::to_value(&tenths).unwrap(),
+            serde_json::json!("1.3.6.1.4.1.14988.1.1.3.10.0")
+        );
+        tenths.scale = Some(0.1);
+        assert_eq!(
+            serde_json::to_value(&tenths).unwrap(),
+            serde_json::json!({"oid": "1.3.6.1.4.1.14988.1.1.3.10.0", "scale": 0.1}),
+            "a scale set on an entry made from a bare OID is not dropped"
+        );
     }
 }

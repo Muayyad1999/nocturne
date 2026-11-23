@@ -12,7 +12,9 @@ import {
   ofPlanText,
   ofPlanTone,
   ratioTone,
+  readingTime,
   soldText,
+  usageScopeText,
   usageText,
 } from './coverage';
 
@@ -24,6 +26,7 @@ const ALL: Coverage[] = [
   'monitor_unavailable',
   'interface_never_collected',
   'no_rate_yet',
+  'no_recent_reading',
   'no_samples_in_window',
   'monitor_failed',
 ];
@@ -93,13 +96,17 @@ describe('a customer with no usage figure', () => {
     }
   });
 
-  it('keeps the nine reasons apart instead of calling them all unknown', () => {
+  it('keeps the ten reasons apart instead of calling them all unknown', () => {
     const labels = new Set(ALL.map((coverage) => coverageWords(coverage).label));
     expect(labels.size).toBe(ALL.length);
     // The label fits a column; the sentence beside it says what it means, and
     // the two that are most often confused say so in words.
     expect(coverageWords('interface_never_collected').meaning).toContain('nobody has looked');
     expect(coverageWords('no_rate_yet').meaning).toContain('a gap, not a zero');
+    // A reading from before the usage window is what monitoring last saw,
+    // which is neither a figure nor a zero.
+    expect(coverageWords('no_recent_reading').meaning).toContain('not what is passing now');
+    expect(coverageWords('no_recent_reading').meaning).toContain('not a usage of zero');
     for (const coverage of ALL) {
       expect(coverageWords(coverage).meaning.length, coverage).toBeGreaterThan(20);
     }
@@ -151,6 +158,38 @@ describe('what was sold, and the share of it', () => {
     expect(
       basisText(figure({ window: { since: 1, until: 2, rollup: '5m' } })),
     ).toContain('averaged over the window (5m)');
+  });
+
+  it('says when a latest reading was taken, on the business’s calendar', () => {
+    const at = Date.UTC(2026, 10, 22, 21, 5, 9);
+    const reading = figure({ at });
+    // Ten in the evening on the 22nd in UTC is one in the morning of the
+    // 23rd in Baghdad, which is the day the business is having.
+    const sameDay = Date.UTC(2026, 10, 23, 8, 0, 0);
+    expect(readingTime(reading, 180, sameDay)).toBe('at 00:05:09');
+    expect(readingTime(reading, 0, sameDay)).toBe('at 2026-11-22 21:05:09');
+    // Another day's reading carries its date, whatever day the test runs on.
+    expect(basisText(figure({ at: Date.UTC(2020, 0, 2, 3, 4, 5) }), 0)).toContain(
+      'latest reading at 2020-01-02 03:04:05',
+    );
+    // An average says its window instead, and an unknown calendar gives no
+    // moment rather than the browser's.
+    expect(readingTime(figure({ at, window: { since: 1, until: 2, rollup: '5m' } }), 0)).toBeNull();
+    expect(readingTime(reading, null)).toBeNull();
+    expect(basisText(reading, null)).toBe(`${reading.basis}, latest reading`);
+  });
+});
+
+describe('a usage report of one page of the customers', () => {
+  it('says which of them it is, and that every count is of those', () => {
+    const text = usageScopeText({ customers: 200, matching: 900 }, 201);
+    expect(text).toContain('customers 201–400 of 900');
+    expect(text).toContain('every count here is of these 200');
+  });
+
+  it('says nothing more when it is all of the customers the filters match', () => {
+    expect(usageScopeText({ customers: 63, matching: 63 }, 1)).toBeNull();
+    expect(usageScopeText({ customers: 0, matching: 0 }, 1)).toBeNull();
   });
 });
 

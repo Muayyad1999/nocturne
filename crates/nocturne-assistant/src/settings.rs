@@ -137,12 +137,16 @@ impl Settings {
     }
 }
 
-/// Below this many tokens of context a model gets the core tool set and
-/// tighter result caps.
+/// A model with this many tokens of context or fewer gets the core tool set
+/// and tighter result caps. It is the window the engine assumes for a model
+/// on the local network whose window nobody configured, and that is the
+/// model the line is drawn for: every tool, even in the short form, would
+/// take nearly all of what its conversation may grow to before the agent
+/// compacts it.
 pub const SMALL_CONTEXT: u32 = 16_000;
 
 pub fn small_context(context_window: u32) -> bool {
-    context_window > 0 && context_window < SMALL_CONTEXT
+    context_window > 0 && context_window <= SMALL_CONTEXT
 }
 
 /// How much of a result is kept for the model.
@@ -188,6 +192,10 @@ mod tests {
                 chars: 2_500
             }
         );
+        // The window a local model gets when nobody configured one is small,
+        // and one token more is not.
+        assert_eq!(settings.caps_for(16_000), settings.caps_for(8_192));
+        assert_eq!(settings.caps_for(16_001), settings.caps_for(200_000));
         // An unknown window is not treated as a small one.
         assert!(!small_context(0));
     }

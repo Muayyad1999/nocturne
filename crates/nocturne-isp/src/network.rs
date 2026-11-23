@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use nocturne_app::{App, AppError, AppResult};
+use nocturne_app::{App, AppError, AppResult, util};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -28,6 +28,8 @@ use crate::{billing, records};
 
 /// Bits per second in a megabit per second.
 const MBIT: f64 = 1_000_000.0;
+
+const HOUR_MS: i64 = 3_600_000;
 
 /// Why there is, or is not, a figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -46,8 +48,14 @@ pub enum Coverage {
     /// The monitor is there but has never recorded that interface.
     InterfaceNeverCollected,
     /// The interface is known and the rate is not: the first poll after a
-    /// start or a reboot, or a poll that failed. A gap, not a zero.
+    /// start or a reboot, or a poll that failed — or only one direction was
+    /// measured where the usage basis needs the other, or both. A gap, not a
+    /// zero.
     NoRateYet,
+    /// The interface's latest reading is older than the usage window: the
+    /// monitor keeps a device's last rows for as long as the device stays
+    /// unreachable, so this is what it last saw, not what is passing now.
+    NoRecentReading,
     /// A window was asked for and no samples fall inside it.
     NoSamplesInWindow,
     /// The monitor was asked and refused.
@@ -80,6 +88,10 @@ impl Coverage {
             Coverage::NoRateYet => {
                 "the interface is known but its rate could not be measured (a first poll, a \
                  reboot or a failed poll): a gap, not a zero"
+            }
+            Coverage::NoRecentReading => {
+                "monitoring has not measured that interface within the usage window: its latest \
+                 reading is what it last saw, not what is passing now — and not a usage of zero"
             }
             Coverage::NoSamplesInWindow => {
                 "nothing was recorded for that interface inside the window asked for"
@@ -133,7 +145,9 @@ struct InterfaceRow {
     /// `null` when the interval could not be measured — a gap, never a zero.
     in_bps: Option<f64>,
     out_bps: Option<f64>,
-    at: i64,
+    /// When the poll that produced the row ran. A row without one cannot be
+    /// taken for what is passing now.
+    at: Option<i64>,
 }
 
 /// What asking the monitor about a device produced.
@@ -174,55 +188,172 @@ fn find_interface<'rows>(
         .find(|row| row.name.trim().eq_ignore_ascii_case(wanted))
 }
 
+/// A figure, or which of the nothings it is.
+struct Reading {
+    used: Option<UsageFigure>,
+    coverage: Coverage,
+    /// Said about this reading in particular, where the general sentence for
+    /// its coverage would leave out what matters: which direction is
+    /// missing, how old the reading is.
+    note: Option<String>,
+}
+
+impl Reading {
+    fn none(coverage: Coverage) -> Reading {
+        Reading {
+            used: None,
+            coverage,
+            note: None,
+        }
+    }
+
+    fn gap(coverage: Coverage, note: String) -> Reading {
+        Reading {
+            used: None,
+            coverage,
+            note: Some(note),
+        }
+    }
+
+    fn measured(figure: UsageFigure) -> Reading {
+        Reading {
+            used: Some(figure),
+            coverage: Coverage::Measured,
+            note: None,
+        }
+    }
+
+    fn note(&self) -> String {
+        self.note
+            .clone()
+            .unwrap_or_else(|| self.coverage.note().to_string())
+    }
+}
+
 /// Which direction counts as the customer's traffic. There is no universally
 /// right answer — it depends which side of the link the interface is — so it
 /// is a setting, and the figure says which it used.
-fn pick(settings: &Settings, inbound: Option<f64>, outbound: Option<f64>) -> Option<(f64, String)> {
+///
+/// `Err` when what the basis needs was not measured, with the sentence that
+/// says so — or `None` in it when neither direction was, which the general
+/// sentence already says. `when` is how the sentence places the gap:
+/// nothing for a latest reading, " inside the window" for an average.
+fn pick(
+    settings: &Settings,
+    inbound: Option<f64>,
+    outbound: Option<f64>,
+    when: &str,
+) -> Result<(f64, String), Option<String>> {
+    let one_of = |needed: &str, other: Option<f64>, other_name: &str| {
+        other.map(|_| {
+            format!(
+                "the {needed} rate, which is what the usage basis takes, could not be \
+                 measured{when} (the {other_name} rate was): a gap, not a zero"
+            )
+        })
+    };
     match settings.usage_basis.trim().to_ascii_lowercase().as_str() {
-        "in" => inbound.map(|value| (value, "the interface's inbound rate".to_string())),
-        "out" => outbound.map(|value| (value, "the interface's outbound rate".to_string())),
+        "in" => inbound
+            .map(|value| (value, "the interface's inbound rate".to_string()))
+            .ok_or_else(|| one_of("inbound", outbound, "outbound")),
+        "out" => outbound
+            .map(|value| (value, "the interface's outbound rate".to_string()))
+            .ok_or_else(|| one_of("outbound", inbound, "inbound")),
+        // The greater of two rates needs both. With one of them missing the
+        // other may be the smaller, and calling it the greater would pass a
+        // lower bound off as the most the customer is pulling.
         _ => match (inbound, outbound) {
-            (None, None) => None,
-            (inbound, outbound) => {
-                let value = inbound
-                    .unwrap_or(f64::MIN)
-                    .max(outbound.unwrap_or(f64::MIN));
-                Some((
-                    value,
-                    "the greater of the interface's inbound and outbound rates".to_string(),
-                ))
+            (Some(inbound), Some(outbound)) => Ok((
+                inbound.max(outbound),
+                "the greater of the interface's inbound and outbound rates".to_string(),
+            )),
+            (None, None) => Err(None),
+            (inbound, _) => {
+                let (measured, missing) = if inbound.is_some() {
+                    ("inbound", "outbound")
+                } else {
+                    ("outbound", "inbound")
+                };
+                Err(Some(format!(
+                    "only the {measured} rate was measured{when} and the {missing} one could \
+                     not be, so which of the two is greater is not known — the {measured} rate \
+                     may be the smaller: a gap, not a zero"
+                )))
             }
         },
     }
 }
 
+/// How old a reading is, in the unit a person would say it in.
+fn age_text(age_ms: i64) -> String {
+    let hours = age_ms / HOUR_MS;
+    if hours >= 48 {
+        format!("{} days", hours / 24)
+    } else if hours >= 2 {
+        format!("{hours} hours")
+    } else {
+        match (age_ms / 60_000).max(1) {
+            1 => "1 minute".to_string(),
+            minutes => format!("{minutes} minutes"),
+        }
+    }
+}
+
 /// The latest rate on one interface, or why there is none.
-fn latest_figure(
-    settings: &Settings,
-    rows: &[InterfaceRow],
-    interface: &str,
-) -> (Option<UsageFigure>, Coverage) {
+///
+/// The monitor keeps a device's rows from its last poll that read them, for
+/// as long as the device stays unreachable, so the latest row may be days
+/// old. With no window asked for, a figure looks back `usage_window_hours`
+/// and no further: an older reading is what the customer was using then.
+fn latest_figure(settings: &Settings, rows: &[InterfaceRow], interface: &str, now: i64) -> Reading {
     let Some(row) = find_interface(rows, interface) else {
-        return (None, Coverage::InterfaceNeverCollected);
+        return Reading::none(Coverage::InterfaceNeverCollected);
+    };
+    let window_hours = settings.usage_window_hours.max(1);
+    let within = i64::from(window_hours) * HOUR_MS;
+    let at = match row.at {
+        Some(at) if now.saturating_sub(at) <= within => at,
+        Some(at) => {
+            return Reading::gap(
+                Coverage::NoRecentReading,
+                format!(
+                    "the latest reading of that interface is {} old, older than the usage \
+                     window of {}: monitoring has not measured it since, so it is not what is \
+                     passing now — and not a usage of zero",
+                    age_text(now.saturating_sub(at)),
+                    if window_hours == 1 {
+                        "1 hour".to_string()
+                    } else {
+                        format!("{window_hours} hours")
+                    }
+                ),
+            );
+        }
+        None => {
+            return Reading::gap(
+                Coverage::NoRecentReading,
+                "monitoring gave no time for its latest reading of that interface, so it cannot \
+                 be taken for what is passing now"
+                    .to_string(),
+            );
+        }
     };
     let inbound = row.in_bps.map(|bps| bps / MBIT);
     let outbound = row.out_bps.map(|bps| bps / MBIT);
-    match pick(settings, inbound, outbound) {
-        None => (None, Coverage::NoRateYet),
-        Some((used_mbit, basis)) => (
-            Some(UsageFigure {
-                in_mbit: inbound,
-                out_mbit: outbound,
-                used_mbit,
-                basis,
-                at: Some(row.at),
-                window: None,
-                peak_mbit: None,
-                samples: None,
-                speed_mbit: row.speed_bps.map(|bps| bps / MBIT),
-            }),
-            Coverage::Measured,
-        ),
+    match pick(settings, inbound, outbound, "") {
+        Err(None) => Reading::none(Coverage::NoRateYet),
+        Err(Some(why)) => Reading::gap(Coverage::NoRateYet, why),
+        Ok((used_mbit, basis)) => Reading::measured(UsageFigure {
+            in_mbit: inbound,
+            out_mbit: outbound,
+            used_mbit,
+            basis,
+            at: Some(at),
+            window: None,
+            peak_mbit: None,
+            samples: None,
+            speed_mbit: row.speed_bps.map(|bps| bps / MBIT),
+        }),
     }
 }
 
@@ -287,10 +418,10 @@ async fn window_figure(
     since: i64,
     until: i64,
     speed_mbit: Option<f64>,
-) -> (Option<UsageFigure>, Coverage) {
+) -> Reading {
     let inbound = series(app, device_id, "if.in_bps", interface, since, until).await;
     if let SeriesAnswer::Absent = inbound {
-        return (None, Coverage::MonitorUnavailable);
+        return Reading::none(Coverage::MonitorUnavailable);
     }
     let outbound = series(app, device_id, "if.out_bps", interface, since, until).await;
     let (inbound, outbound) = match (inbound, outbound) {
@@ -302,12 +433,12 @@ async fn window_figure(
                 why,
                 "isp: no usage figure for a customer"
             );
-            return (None, Coverage::MonitorFailed);
+            return Reading::none(Coverage::MonitorFailed);
         }
-        _ => return (None, Coverage::MonitorUnavailable),
+        _ => return Reading::none(Coverage::MonitorUnavailable),
     };
     if inbound.points.is_empty() && outbound.points.is_empty() {
-        return (None, Coverage::NoSamplesInWindow);
+        return Reading::none(Coverage::NoSamplesInWindow);
     }
     let in_mbit = mean(&inbound.points).map(|bps| bps / MBIT);
     let out_mbit = mean(&outbound.points).map(|bps| bps / MBIT);
@@ -317,30 +448,30 @@ async fn window_figure(
         .chain(outbound.points.iter())
         .map(|(_, value)| value / MBIT)
         .fold(f64::NAN, f64::max);
-    match pick(settings, in_mbit, out_mbit) {
-        None => (None, Coverage::NoSamplesInWindow),
-        Some((used_mbit, basis)) => (
-            Some(UsageFigure {
-                in_mbit,
-                out_mbit,
-                used_mbit,
-                basis: format!("{basis}, averaged over the window"),
-                at: None,
-                window: Some(Window {
-                    since,
-                    until,
-                    rollup: if inbound.rollup.is_empty() {
-                        outbound.rollup
-                    } else {
-                        inbound.rollup
-                    },
-                }),
-                peak_mbit: peak.is_finite().then_some(peak),
-                samples: u32::try_from(inbound.points.len().max(outbound.points.len())).ok(),
-                speed_mbit,
+    // Samples in one direction and not the one the basis needs is a gap in
+    // the rate, not a window with nothing in it.
+    match pick(settings, in_mbit, out_mbit, " inside the window") {
+        Err(None) => Reading::none(Coverage::NoSamplesInWindow),
+        Err(Some(why)) => Reading::gap(Coverage::NoRateYet, why),
+        Ok((used_mbit, basis)) => Reading::measured(UsageFigure {
+            in_mbit,
+            out_mbit,
+            used_mbit,
+            basis: format!("{basis}, averaged over the window"),
+            at: None,
+            window: Some(Window {
+                since,
+                until,
+                rollup: if inbound.rollup.is_empty() {
+                    outbound.rollup
+                } else {
+                    inbound.rollup
+                },
             }),
-            Coverage::Measured,
-        ),
+            peak_mbit: peak.is_finite().then_some(peak),
+            samples: u32::try_from(inbound.points.len().max(outbound.points.len())).ok(),
+            speed_mbit,
+        }),
     }
 }
 
@@ -367,10 +498,33 @@ pub struct UsedAgainstSold {
     pub of_plan_pct: Option<f64>,
 }
 
+/// Which customers a report is of: how many match the caller's filter in
+/// all, and where the next page of them begins.
+pub struct PageOf {
+    pub matching: u64,
+    pub next_cursor: Option<String>,
+}
+
+impl PageOf {
+    /// A report of one customer, asked for by id.
+    pub fn one() -> PageOf {
+        PageOf {
+            matching: 1,
+            next_cursor: None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct UsageReport {
     pub rows: Vec<UsedAgainstSold>,
+    /// How many customers this report is of: the page that was asked for.
     pub customers: u32,
+    /// How many match the filter in all. More than `customers` when this is
+    /// one page of them — and then every count here is of this page only.
+    pub matching: u64,
+    /// Pass this back as `cursor` for the next page; `None` on the last one.
+    pub next_cursor: Option<String>,
     /// How many of them have a usage figure at all.
     pub measured: u32,
     pub without_usage: u32,
@@ -393,9 +547,11 @@ pub async fn usage(
     app: &App,
     settings: &Settings,
     customers: &[Customer],
+    page: PageOf,
     window: Option<(i64, i64)>,
 ) -> AppResult<UsageReport> {
     let store = app.store();
+    let now = util::now_ms();
     let mut rows: Vec<UsedAgainstSold> = Vec::new();
     // One read of the monitor's table per device, however many customers
     // hang off it.
@@ -417,9 +573,9 @@ pub async fn usage(
         };
         let device_id = customer.service.device_id.clone();
         let interface = customer.service.interface.clone();
-        let (used, coverage) = match (&device_id, &interface) {
-            (None, _) => (None, Coverage::NoServingDevice),
-            (Some(_), None) => (None, Coverage::NoServingInterface),
+        let reading = match (&device_id, &interface) {
+            (None, _) => Reading::none(Coverage::NoServingDevice),
+            (Some(_), None) => Reading::none(Coverage::NoServingInterface),
             (Some(device_id), Some(interface)) => {
                 if !tables.contains_key(device_id) {
                     match interfaces_of(app, device_id).await {
@@ -442,21 +598,20 @@ pub async fn usage(
                     }
                 }
                 match tables.get(device_id).and_then(|rows| rows.as_ref()) {
-                    None => (
-                        None,
+                    None => Reading::none(
                         device_states
                             .get(device_id)
                             .copied()
                             .unwrap_or(Coverage::MonitorFailed),
                     ),
                     Some(table) => match window {
-                        None => latest_figure(settings, table, interface),
+                        None => latest_figure(settings, table, interface, now),
                         Some((since, until)) => {
                             let speed = find_interface(table, interface)
                                 .and_then(|row| row.speed_bps)
                                 .map(|bps| bps / MBIT);
                             if find_interface(table, interface).is_none() {
-                                (None, Coverage::InterfaceNeverCollected)
+                                Reading::none(Coverage::InterfaceNeverCollected)
                             } else {
                                 window_figure(
                                     app, settings, device_id, interface, since, until, speed,
@@ -468,10 +623,11 @@ pub async fn usage(
                 }
             }
         };
-        let of_plan_pct = match (&used, sold_mbit) {
+        let of_plan_pct = match (&reading.used, sold_mbit) {
             (Some(figure), Some(sold)) if sold > 0 => Some(figure.used_mbit / sold as f64 * 100.0),
             _ => None,
         };
+        let coverage_note = reading.note();
         rows.push(UsedAgainstSold {
             customer_id: customer.id.clone(),
             customer_name: customer.name.clone(),
@@ -480,9 +636,9 @@ pub async fn usage(
             subscriptions: u32::try_from(subscriptions.len()).unwrap_or(u32::MAX),
             device_id,
             interface,
-            used,
-            coverage,
-            coverage_note: coverage.note().to_string(),
+            used: reading.used,
+            coverage: reading.coverage,
+            coverage_note,
             of_plan_pct,
         });
     }
@@ -503,6 +659,8 @@ pub async fn usage(
         .next();
     Ok(UsageReport {
         customers: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+        matching: page.matching,
+        next_cursor: page.next_cursor,
         measured: u32::try_from(measured).unwrap_or(u32::MAX),
         without_usage: u32::try_from(rows.len() - measured).unwrap_or(u32::MAX),
         coverage: counts
@@ -569,6 +727,7 @@ pub async fn capacity(
             })
             .collect(),
     };
+    let now = util::now_ms();
     let mut report = Vec::new();
     for link in links {
         let served = db::served(app.store(), link.tower.as_deref())?;
@@ -597,15 +756,15 @@ pub async fn capacity(
         // knows can use the interface's own speed — and says so.
         let mut capacity_mbit = link.capacity_mbit;
         let mut capacity_basis = "declared";
-        let (measured, coverage) = match (&link.device_id, &link.interface) {
-            (None, _) => (None, Coverage::NoServingDevice),
-            (Some(_), None) => (None, Coverage::NoServingInterface),
+        let reading = match (&link.device_id, &link.interface) {
+            (None, _) => Reading::none(Coverage::NoServingDevice),
+            (Some(_), None) => Reading::none(Coverage::NoServingInterface),
             (Some(device_id), Some(interface)) => match interfaces_of(app, device_id).await {
-                Interfaces::Absent => (None, Coverage::MonitorUnavailable),
-                Interfaces::DeviceMissing => (None, Coverage::DeviceMissing),
+                Interfaces::Absent => Reading::none(Coverage::MonitorUnavailable),
+                Interfaces::DeviceMissing => Reading::none(Coverage::DeviceMissing),
                 Interfaces::Failed(why) => {
                     tracing::debug!(device_id, why, "isp: the monitor would not answer");
-                    (None, Coverage::MonitorFailed)
+                    Reading::none(Coverage::MonitorFailed)
                 }
                 Interfaces::Rows(rows) => {
                     if capacity_mbit <= 0
@@ -619,10 +778,10 @@ pub async fn capacity(
                         .and_then(|row| row.speed_bps)
                         .map(|bps| bps / MBIT);
                     match window {
-                        None => latest_figure(settings, &rows, interface),
+                        None => latest_figure(settings, &rows, interface, now),
                         Some((since, until)) => {
                             if find_interface(&rows, interface).is_none() {
-                                (None, Coverage::InterfaceNeverCollected)
+                                Reading::none(Coverage::InterfaceNeverCollected)
                             } else {
                                 window_figure(
                                     app, settings, device_id, interface, since, until, speed,
@@ -655,9 +814,9 @@ pub async fn capacity(
                     link.name
                 ),
             },
-            measured,
-            coverage,
-            coverage_note: coverage.note().to_string(),
+            coverage_note: reading.note(),
+            measured: reading.used,
+            coverage: reading.coverage,
             note: "both figures, not a verdict: 3:1 on a link that is never busy reads \
                    differently from 3:1 on one that saturates nightly, which is what `measured` \
                    is for"
@@ -878,6 +1037,8 @@ pub struct CustomerDetail {
 mod tests {
     use super::*;
 
+    const NOW: i64 = 1_800_000_000_000;
+
     fn settings(basis: &str) -> Settings {
         Settings {
             usage_basis: basis.to_string(),
@@ -885,47 +1046,105 @@ mod tests {
         }
     }
 
+    /// A row as the monitor last polled it, just now.
+    fn row(name: &str, in_bps: Option<f64>, out_bps: Option<f64>) -> InterfaceRow {
+        InterfaceRow {
+            name: name.to_string(),
+            in_bps,
+            out_bps,
+            at: Some(NOW),
+            ..InterfaceRow::default()
+        }
+    }
+
     #[test]
     fn a_null_rate_is_a_gap_and_not_a_zero() {
-        let rows = vec![InterfaceRow {
-            name: "ether3".to_string(),
-            in_bps: None,
-            out_bps: None,
-            ..InterfaceRow::default()
-        }];
-        let (figure, coverage) = latest_figure(&settings("greater"), &rows, "ether3");
-        assert!(figure.is_none(), "no figure at all, rather than 0 Mbit");
-        assert_eq!(coverage, Coverage::NoRateYet);
+        let rows = vec![row("ether3", None, None)];
+        let reading = latest_figure(&settings("greater"), &rows, "ether3", NOW);
+        assert!(
+            reading.used.is_none(),
+            "no figure at all, rather than 0 Mbit"
+        );
+        assert_eq!(reading.coverage, Coverage::NoRateYet);
         // An interface nobody has collected is a different nothing again.
-        let (_, missing) = latest_figure(&settings("greater"), &rows, "ether9");
-        assert_eq!(missing, Coverage::InterfaceNeverCollected);
+        let missing = latest_figure(&settings("greater"), &rows, "ether9", NOW);
+        assert_eq!(missing.coverage, Coverage::InterfaceNeverCollected);
     }
 
     #[test]
     fn the_usage_basis_decides_which_direction_is_the_customers_traffic() {
-        let rows = vec![InterfaceRow {
-            name: "ether3".to_string(),
-            in_bps: Some(2_000_000.0),
-            out_bps: Some(8_000_000.0),
-            ..InterfaceRow::default()
-        }];
-        let (greater, _) = latest_figure(&settings("greater"), &rows, "ether3");
-        let greater = greater.expect("a figure");
+        let rows = vec![row("ether3", Some(2_000_000.0), Some(8_000_000.0))];
+        let greater = latest_figure(&settings("greater"), &rows, "ether3", NOW)
+            .used
+            .expect("a figure");
         assert_eq!(greater.used_mbit, 8.0);
         assert!(greater.basis.contains("greater"), "{}", greater.basis);
-        let (inbound, _) = latest_figure(&settings("in"), &rows, "ether3");
+        assert_eq!(
+            greater.at,
+            Some(NOW),
+            "a latest reading says when it is from"
+        );
+        let inbound = latest_figure(&settings("in"), &rows, "ether3", NOW).used;
         assert_eq!(inbound.expect("a figure").used_mbit, 2.0);
-        let (outbound, _) = latest_figure(&settings("out"), &rows, "ether3");
+        let outbound = latest_figure(&settings("out"), &rows, "ether3", NOW).used;
         assert_eq!(outbound.expect("a figure").used_mbit, 8.0);
-        // Asked for one direction that has no rate: still a gap.
-        let half = vec![InterfaceRow {
-            name: "ether3".to_string(),
-            in_bps: None,
-            out_bps: Some(8_000_000.0),
-            ..InterfaceRow::default()
-        }];
-        let (figure, coverage) = latest_figure(&settings("in"), &half, "ether3");
-        assert!(figure.is_none() && coverage == Coverage::NoRateYet);
+        // Asked for one direction that has no rate: still a gap, and the
+        // sentence says which direction it was.
+        let half = vec![row("ether3", None, Some(8_000_000.0))];
+        let reading = latest_figure(&settings("in"), &half, "ether3", NOW);
+        assert!(reading.used.is_none() && reading.coverage == Coverage::NoRateYet);
+        assert!(reading.note().contains("inbound"), "{}", reading.note());
+        // The greater of the two is not known either: the one that was
+        // measured may be the smaller.
+        let reading = latest_figure(&settings("greater"), &half, "ether3", NOW);
+        assert!(reading.used.is_none() && reading.coverage == Coverage::NoRateYet);
+        assert!(
+            reading.note().contains("may be the smaller"),
+            "{}",
+            reading.note()
+        );
+    }
+
+    #[test]
+    fn a_reading_from_before_the_usage_window_is_not_a_current_figure() {
+        let settings = Settings::default();
+        let hour = 3_600_000;
+        let mut rows = vec![row("ether3", Some(2_000_000.0), Some(8_000_000.0))];
+        rows[0].at = Some(NOW - 24 * hour);
+        let edge = latest_figure(&settings, &rows, "ether3", NOW);
+        assert_eq!(
+            edge.coverage,
+            Coverage::Measured,
+            "the window's own edge is in it"
+        );
+        rows[0].at = Some(NOW - 24 * hour - 1);
+        let old = latest_figure(&settings, &rows, "ether3", NOW);
+        assert_eq!(old.coverage, Coverage::NoRecentReading);
+        assert!(old.used.is_none());
+        assert!(old.note().contains("24 hours"), "{}", old.note());
+        // A row the monitor gave no time for cannot be taken for now either.
+        rows[0].at = None;
+        let timeless = latest_figure(&settings, &rows, "ether3", NOW);
+        assert_eq!(timeless.coverage, Coverage::NoRecentReading);
+        // A window of nothing is not a setting anybody meant: an hour.
+        let zero = Settings {
+            usage_window_hours: 0,
+            ..Settings::default()
+        };
+        rows[0].at = Some(NOW - 30 * 60_000);
+        assert_eq!(
+            latest_figure(&zero, &rows, "ether3", NOW).coverage,
+            Coverage::Measured
+        );
+    }
+
+    #[test]
+    fn an_age_is_said_in_the_unit_a_person_would_use() {
+        let minute = 60_000;
+        assert_eq!(age_text(10), "1 minute");
+        assert_eq!(age_text(90 * minute), "90 minutes");
+        assert_eq!(age_text(5 * 60 * minute), "5 hours");
+        assert_eq!(age_text(6 * 24 * 60 * minute), "6 days");
     }
 
     #[test]
@@ -937,7 +1156,7 @@ mod tests {
             "something_new": 42, "at": 17
         }))
         .expect("unknown fields are ignored");
-        assert_eq!((row.name.as_str(), row.at), ("ether3", 17));
+        assert_eq!((row.name.as_str(), row.at), ("ether3", Some(17)));
         assert_eq!(row.in_bps, Some(1_500_000.0));
         assert_eq!(row.out_bps, None);
     }

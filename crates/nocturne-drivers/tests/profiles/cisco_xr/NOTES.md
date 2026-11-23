@@ -34,6 +34,15 @@ field mappings and the expressions.
   `config/SOURCE.md`), and so is `session/ssh-configure-commit.yml`. The
   two-stage commit, `abort` rather than `end`, and the `config.ignore` patterns
   are all documented behaviour, not observed behaviour.
+* **The `snmp` block.** Written from Cisco's MIBs and tested only against rows
+  written by hand. CPU is the busiest row of `cpmCPUTotal1minRev`, one row per
+  node. Memory is left out: `cempMemPoolTable` has a row per node and pool,
+  and which row is the route processor takes a look-up of `entPhysicalName`
+  that a block cannot make; the lowest index, which a "first row" would read,
+  is a line card or the admin virtual machine in every published recording
+  looked at. Temperature is left out: the XR agents of those recordings serve
+  no ENTITY-SENSOR-MIB rows, and CISCO-ENTITY-SENSOR-MIB mixes volts, amperes,
+  watts, rpm, dBm and degrees in one table, with absent sensors at -32768.
 
 ## Deliberately left out
 

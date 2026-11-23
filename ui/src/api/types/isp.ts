@@ -151,8 +151,18 @@ export type Coverage =
   | 'monitor_unavailable'
   /** Monitoring has never recorded that interface: nobody has looked. */
   | 'interface_never_collected'
-  /** The rate could not be measured (first poll, reboot, failed poll). */
+  /**
+   * The rate could not be measured (first poll, reboot, failed poll) — or
+   * only one direction was, where the usage basis needs the other or both.
+   * The row's `coverage_note` then names the direction.
+   */
   | 'no_rate_yet'
+  /**
+   * The interface's latest reading is older than the usage window
+   * (`usage_window_hours`): what monitoring last saw of a device it can no
+   * longer reach, not what is passing now. The note says how old it is.
+   */
+  | 'no_recent_reading'
   /** Nothing was recorded inside the window asked for. */
   | 'no_samples_in_window'
   /** Monitoring was asked and refused. */
@@ -166,7 +176,11 @@ export interface IspSettings {
   arrears_buckets: number[];
   /** `greater` (of the two directions), `in` or `out`. */
   usage_basis: string;
-  /** How far back a usage figure looks when the caller gives no window. */
+  /**
+   * How far back a usage figure looks when the caller gives no window: a
+   * latest reading older than this many hours is `no_recent_reading`, not a
+   * figure. One hour at the least.
+   */
   usage_window_hours: number;
   /** Put in front of an invoice number: `ACME-2026-0001`. */
   invoice_number_prefix: string;
@@ -355,7 +369,10 @@ export interface CustomersParams {
   device_id?: string;
   /** Default 200, at most 2,000. */
   limit?: number;
-  /** The number of rows already received, as a decimal string. */
+  /**
+   * The `next_cursor` the page before ended with: this page begins after the
+   * last customer of that one. A count of rows is refused (`invalid`).
+   */
   cursor?: string;
 }
 
@@ -363,7 +380,11 @@ export interface CustomerPage {
   customers: Customer[];
   /** How many match the filter in all. */
   matching: number;
-  /** Pass back as `cursor`; null on the last page. */
+  /**
+   * Pass back as `cursor` for the next page; null on the last page. It
+   * carries the last customer's sort key, so a customer added or deleted
+   * before it moves nothing on the next page.
+   */
   next_cursor: string | null;
 }
 
@@ -723,6 +744,10 @@ export interface InvoicesParams {
   until?: number;
   /** Default 100, at most 2,000. */
   limit?: number;
+  /**
+   * The `id` of the last invoice of the page before: this page begins after
+   * it, so drafts written in between (they sort first) are not repeated.
+   */
   cursor?: string;
 }
 
@@ -869,6 +894,12 @@ export interface RunResult {
    * or in `skipped`: the two always add up to this.
    */
   considered: number;
+  /**
+   * Customers the run would have looked at and did not, because the engine
+   * began shutting down part way; nothing was written for them, and
+   * `warnings` says so. Zero otherwise.
+   */
+  not_reached: number;
   /** How many invoices the run made (or would make), issued ones included. */
   drafted: number;
   issued: number;
@@ -920,6 +951,7 @@ export interface PaymentsParams {
   state?: PaymentState;
   /** Default 100, at most 2,000. */
   limit?: number;
+  /** The `id` of the last payment of the page before: this page begins after it. */
   cursor?: string;
 }
 
@@ -1007,6 +1039,7 @@ export interface CreditsParams {
   state?: CreditState;
   /** Default 100, at most 2,000. */
   limit?: number;
+  /** The `id` of the last credit note of the page before: this page begins after it. */
   cursor?: string;
 }
 
@@ -1192,7 +1225,11 @@ export interface UsageFigure {
   used_mbit: number;
   /** Which direction that is, in words. Show it. */
   basis: string;
-  /** The moment the figure is from, for a latest reading. */
+  /**
+   * The moment the figure is from, for a latest reading — always within the
+   * usage window, or there would be no figure. Show it: a latest reading is
+   * only as current as this.
+   */
   at: number | null;
   /** The window it averages, for a windowed reading. */
   window: UsageWindow | null;
@@ -1232,7 +1269,15 @@ export interface CoverageCount {
 
 export interface UsageReport {
   rows: UsedAgainstSold[];
+  /** How many customers this report is of: the page that was asked for. */
   customers: number;
+  /**
+   * How many customers match the filter in all. More than `customers` when
+   * this is one page of them — and then every count here is of this page.
+   */
+  matching: number;
+  /** Pass back as `cursor` for the next page; null on the last one. */
+  next_cursor: string | null;
   /** How many have a usage figure at all. */
   measured: number;
   without_usage: number;
@@ -1250,7 +1295,9 @@ export interface UsageParams {
   currency?: CurrencyCode | string;
   tower?: string;
   device_id?: string;
+  /** Default 200, at most 2,000: the page of customers the report covers. */
   limit?: number;
+  /** The `next_cursor` of the page before, as for `isp.customers`. */
   cursor?: string;
   /** Average over a window instead of taking the latest reading. */
   since?: number;

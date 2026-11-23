@@ -43,6 +43,15 @@ field rename:
 * **The whole configuration path.** `config/edge-rtr.txt` is hand-written (see
   `config/SOURCE.md` for why `| display set` and not the native form), and so
   is `session/ssh-configure-commit.yml`.
+* **The `snmp` block.** Written from Juniper's chassis MIB (`jnxOperatingTable`)
+  and tested only against rows written by hand. CPU is `jnxOperatingCPU` of
+  the running Routing Engine rows (`jnxOperatingDescr` and
+  `jnxOperatingState` choose them), the busiest taken; temperature is
+  `jnxOperatingTemp` of every component, its zeros ("unavailable or
+  inapplicable") dropped. Memory is left out: `jnxOperatingBuffer` is
+  buffer-pool utilisation, which Juniper's documentation of jnxBoxAnatomy
+  says "is valid for the FPC and Control Board"; reading the Routing Engine's
+  row as its memory is other tools' habit, not Juniper's word.
 
 ## Deliberately left out
 

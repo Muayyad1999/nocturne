@@ -280,6 +280,63 @@ pub fn finish(app: &App, run: &mut Run, results: &[DeviceResult]) -> AppResult<(
     Ok(())
 }
 
+/// What each device of a run the process did not live through is recorded as.
+pub const CUT_SHORT: &str = "Nocturne was closed while this run was going, so what was sent to \
+     this device and what it answered were not kept";
+
+/// Close the runs the previous process did not get to finish.
+///
+/// A run's results are written when its job ends, and the job ended with the
+/// process: the core has already marked it failed, and nothing will ever
+/// finish the run. Left alone it would read "running" until fifty newer runs
+/// pushed it out. So it is closed the way a stopped run is closed — every
+/// device it selected is skipped, and says why — and the task it came from is
+/// told that its last run did not go well. Run before anything else starts,
+/// so that no run is in flight yet.
+pub fn close_interrupted(app: &App) {
+    let Ok(runs) = app.store().list::<Run>(db::RUNS) else {
+        return;
+    };
+    for mut run in runs.into_iter().filter(|run| run.finished_at.is_none()) {
+        // The job record keeps the devices the run selected, in order; a
+        // running job is never pruned, so it is still there.
+        let device_ids = jobs::get(app, &run.job_id)
+            .map(|job| job.device_ids)
+            .unwrap_or_default();
+        let results: Vec<DeviceResult> = device_ids
+            .iter()
+            .map(|device_id| {
+                DeviceResult {
+                    device_id: device_id.clone(),
+                    name: inventory::get(app, device_id)
+                        .map(|device| device.name)
+                        .unwrap_or_else(|_| device_id.clone()),
+                    reason: Some(CUT_SHORT.to_string()),
+                    ..DeviceResult::default()
+                }
+                .with_state(DeviceState::Skipped)
+            })
+            .collect();
+        run.cancelled = true;
+        if let Err(err) = finish(app, &mut run, &results) {
+            tracing::warn!(run = %run.id, %err, "a run cut short could not be closed");
+            continue;
+        }
+        let Some(task_id) = run.task_id.clone() else {
+            continue;
+        };
+        let state = app.state::<AutomationState>();
+        let _records = state.records();
+        if let Ok(mut task) = db::task(app, &task_id)
+            && task.last_run_id.as_deref() == Some(run.id.as_str())
+            && task.last_ok.is_none()
+        {
+            task.last_ok = Some(false);
+            let _ = app.store().put(db::TASKS, &task.id, &task);
+        }
+    }
+}
+
 /// A run record as it starts, for a path that does its own fanning out.
 pub fn open_run(app: &App, fan: &Fanout, job_id: &str, devices: usize) -> Run {
     let state = app.state::<AutomationState>();

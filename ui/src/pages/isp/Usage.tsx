@@ -5,12 +5,19 @@
  * cannot be read without it: a customer with no serving interface has **no**
  * usage figure, and a screen that drew that as 0 Mbit/s would be the easiest
  * possible way to make somebody argue with a customer about a number that
- * does not exist. The nine reasons are counted, in their own words, above the
+ * does not exist. The ten reasons are counted, in their own words, above the
  * table; in the table itself a row with no figure says which of them it is.
  *
  * A figure is either the latest reading or an average over a window, and it
  * says which, and which direction it took (the `usage_basis` setting), and
- * over what resolution the monitor answered.
+ * over what resolution the monitor answered. A latest reading says when it
+ * was taken, under the figure: the engine only calls it a figure inside the
+ * usage window, and inside it the moment is still part of the fact.
+ *
+ * The report is of one page of customers, by name, as `isp.customers` pages
+ * them. When the filters match more, it says which of them these are and
+ * that every count is of this page, and it pages like the customer list —
+ * a report of the first two hundred is not a report of the estate.
  */
 
 import { Gauge } from 'lucide-react';
@@ -24,8 +31,10 @@ import { Panel } from '@/design/Panel';
 import { Select } from '@/design/Select';
 import { Skeleton } from '@/design/Skeleton';
 import { Table, type TableColumn } from '@/design/Table';
+import { Button } from '@/design/Button';
+import { ToolbarSpacer } from '@/design/Toolbar';
 import { formatCount, plural } from '@/lib/format';
-import { formatDateTime } from '@/lib/time';
+import { dayTimeText } from './calendar';
 import {
   basisText,
   coverageTally,
@@ -33,11 +42,14 @@ import {
   isMeasured,
   ofPlanText,
   ofPlanTone,
+  readingTime,
   soldText,
+  usageScopeText,
   usageText,
 } from './coverage';
-import { useLinks, useUsage } from './data';
+import { useCalendar, useLinks, useUsage } from './data';
 import { Words } from './Figures';
+import { cursorParam, usePages } from './paging';
 import { STATE_WORDS } from './records';
 import styles from './isp.module.css';
 
@@ -48,6 +60,8 @@ export function Usage() {
   const [window, setWindow] = useState('latest');
   const [state, setState] = useState('');
   const [tower, setTower] = useState('');
+  const pages = usePages(PAGE);
+  const calendar = useCalendar();
   const links = useLinks();
 
   const span = useMemo(() => {
@@ -61,7 +75,9 @@ export function Usage() {
     ...(tower === '' ? {} : { tower }),
     ...span,
     limit: PAGE,
+    ...cursorParam(pages.walked),
   });
+  const scope = report.data ? usageScopeText(report.data, pages.first) : null;
 
   // A usage row carries no tower, so the links are where the filter's options
   // come from: they are the records that say which towers exist.
@@ -76,7 +92,7 @@ export function Usage() {
       id: 'customer',
       header: 'Customer',
       required: true,
-      width: 200,
+      width: 180,
       sortValue: (row) => row.customer_name.toLowerCase(),
       cell: (row) => (
         <Link to={`/isp/customer/${row.customer_id}`}>{row.customer_name}</Link>
@@ -85,7 +101,7 @@ export function Usage() {
     {
       id: 'state',
       header: 'Account',
-      width: 110,
+      width: 100,
       cell: (row) => (
         <Badge tone={STATE_WORDS[row.state].tone} variant="outline">
           {STATE_WORDS[row.state].label}
@@ -95,7 +111,7 @@ export function Usage() {
     {
       id: 'sold',
       header: 'Sold',
-      width: 160,
+      width: 130,
       align: 'right',
       sortValue: (row) => row.sold_mbit,
       cell: (row) =>
@@ -111,12 +127,17 @@ export function Usage() {
     {
       id: 'using',
       header: 'Using',
-      width: 170,
+      width: 160,
       align: 'right',
       sortValue: (row) => row.used?.used_mbit ?? null,
       cell: (row) =>
         isMeasured(row.coverage) && row.used ? (
-          <span className={styles.amount}>{usageText(row)}</span>
+          <span className={styles.amount}>
+            {usageText(row)}
+            {readingTime(row.used, calendar) !== null && (
+              <span className={styles.rowSub}>{readingTime(row.used, calendar)}</span>
+            )}
+          </span>
         ) : (
           <Words title={row.coverage_note}>{coverageWords(row.coverage).label}</Words>
         ),
@@ -124,7 +145,7 @@ export function Usage() {
     {
       id: 'share',
       header: 'Of the plan',
-      width: 120,
+      width: 105,
       align: 'right',
       sortValue: (row) => row.of_plan_pct,
       cell: (row) =>
@@ -150,7 +171,7 @@ export function Usage() {
       // interface are different rows here.
       id: 'where',
       header: 'Measured on',
-      width: 220,
+      width: 230,
       cell: (row) =>
         row.interface === null ? (
           <Words title={row.coverage_note}>
@@ -175,7 +196,10 @@ export function Usage() {
             size="sm"
             aria-label="Usage window"
             value={window}
-            onChange={(event) => setWindow(event.target.value)}
+            onChange={(event) => {
+              setWindow(event.target.value);
+              pages.reset();
+            }}
             options={[
               { value: 'latest', label: 'Latest reading' },
               { value: '24h', label: 'Averaged over 24 hours' },
@@ -186,7 +210,10 @@ export function Usage() {
             size="sm"
             aria-label="Account state"
             value={state}
-            onChange={(event) => setState(event.target.value)}
+            onChange={(event) => {
+              setState(event.target.value);
+              pages.reset();
+            }}
             options={[
               { value: '', label: 'Any state' },
               { value: 'active', label: 'Active' },
@@ -199,7 +226,10 @@ export function Usage() {
               size="sm"
               aria-label="Tower"
               value={tower}
-              onChange={(event) => setTower(event.target.value)}
+              onChange={(event) => {
+                setTower(event.target.value);
+                pages.reset();
+              }}
               options={[
                 { value: '', label: 'Any tower' },
                 ...towers.map((name) => ({ value: name, label: name })),
@@ -221,6 +251,7 @@ export function Usage() {
         {report.isPending && <Skeleton shape="block" height={160} />}
         {report.data && (
           <>
+            {scope !== null && <p className={styles.note}>{scope}</p>}
             <p className={styles.note}>
               {formatCount(report.data.measured)} of {plural(report.data.customers, 'customer')} have
               a usage figure.{' '}
@@ -241,9 +272,9 @@ export function Usage() {
             )}
             {report.data.window && (
               <p className={styles.quiet}>
-                Averaged from {formatDateTime(report.data.window.since)} to{' '}
-                {formatDateTime(report.data.window.until)}, at the monitor's{' '}
-                {report.data.window.rollup} resolution.
+                Averaged from {dayTimeText(report.data.window.since, calendar)} to{' '}
+                {dayTimeText(report.data.window.until, calendar)}, on the business’s calendar,
+                at the monitor's {report.data.window.rollup} resolution.
               </p>
             )}
             <Table
@@ -262,6 +293,35 @@ export function Usage() {
                 />
               }
             />
+            {(pages.hasPrevious || report.data.next_cursor !== null) && (
+              <div className={styles.paging}>
+                <span className={styles.count}>
+                  {report.data.customers === 0
+                    ? `${formatCount(report.data.matching)} matching`
+                    : `${formatCount(pages.first)}–${formatCount(
+                        pages.first - 1 + report.data.customers,
+                      )} of ${formatCount(report.data.matching)}`}
+                </span>
+                <ToolbarSpacer />
+                <Button
+                  size="sm"
+                  disabled={!pages.hasPrevious || report.isFetching}
+                  onClick={pages.previous}
+                >
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={report.data.next_cursor === null || report.isFetching}
+                  onClick={() => {
+                    const cursor = report.data?.next_cursor;
+                    if (cursor != null) pages.next(cursor);
+                  }}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
             <p className={styles.quiet}>{report.data.note}</p>
           </>
         )}

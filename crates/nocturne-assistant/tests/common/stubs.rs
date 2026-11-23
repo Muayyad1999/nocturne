@@ -192,7 +192,7 @@ fn forbidden(builder: &mut AppBuilder) {
     // methods: a test that tries to reach them looks at what they would
     // have changed.
     let registered = builder.router.methods();
-    for name in NAMES.iter().chain(super::FORBIDDEN) {
+    for name in NAMES.iter().copied().chain(super::forbidden()) {
         let name: &'static str = name;
         if registered.contains(&name) || builder.router.methods().contains(&name) {
             continue;
@@ -859,12 +859,24 @@ fn features(builder: &mut AppBuilder) {
                    "variables": [{"name": "interface"}, {"name": "vlan"}]}]))
     });
 
+    // A variable is put into the text as it was given, as the real engine
+    // does (`render::render` in `crates/nocturne-automation`): a placeholder
+    // the model hands in comes back in the lines.
     router.add("templates.render", |app: App, params: Value| async move {
         let mut rows = Vec::new();
         for reference in params["device_ids"].as_array().cloned().unwrap_or_default() {
             let device = inventory::find(&app, reference.as_str().unwrap_or_default())?;
-            rows.push(json!({"device_id": device.id, "name": device.name, "ok": true,
-                             "lines": ["interface GigabitEthernet0/5", " switchport access vlan 40"]}));
+            let mut lines = vec![
+                "interface GigabitEthernet0/5".to_string(),
+                " switchport access vlan 40".to_string(),
+            ];
+            if let Some(community) = params["vars"]["community"].as_str() {
+                lines.push(format!("snmp-server community {community} RO"));
+            }
+            rows.push(
+                json!({"device_id": device.id, "name": device.name, "ok": true,
+                             "lines": lines}),
+            );
         }
         Ok(Value::Array(rows))
     });

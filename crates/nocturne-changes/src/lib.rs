@@ -16,6 +16,7 @@ pub mod db;
 pub mod model;
 pub mod plan;
 pub mod protect;
+pub mod redact;
 pub mod risk;
 pub mod rollback;
 pub mod rpc;

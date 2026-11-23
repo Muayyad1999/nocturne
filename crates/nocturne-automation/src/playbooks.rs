@@ -291,6 +291,8 @@ struct Walk<'a> {
     steps: Vec<StepResult>,
     cap: usize,
     dry_run: bool,
+    /// What the run's template steps may still render, all devices together.
+    budget: Arc<render::Budget>,
 }
 
 impl Walk<'_> {
@@ -476,6 +478,10 @@ async fn run_step(walk: &mut Walk<'_>, step: &Step) -> Result<StepOutcome, (Stri
         Some("template") => {
             let wanted = step.template.clone().unwrap_or_default();
             let template = templates::get(walk.app, &wanted.id).map_err(|err| fail(err.message))?;
+            // What `templates.apply` refuses, a playbook refuses too: these
+            // lines would become a change for a device they were not written for.
+            templates::written_for(walk.app, &template, std::slice::from_ref(&walk.device))
+                .map_err(|err| fail(err.message))?;
             let mut vars = walk.vars.clone();
             if let Value::Object(given) = &wanted.vars {
                 for (key, value) in given {
@@ -486,8 +492,13 @@ async fn run_step(walk: &mut Walk<'_>, step: &Step) -> Result<StepOutcome, (Stri
                 .map_err(|err| fail(err.message))?;
             let context =
                 render::context(walk.app, &walk.device, &bound).map_err(|err| fail(err.message))?;
-            let lines =
-                render::render(&template.body, &context).map_err(|err| fail(err.message))?;
+            let budget = walk.budget.clone();
+            let lines = tokio::task::spawn_blocking(move || {
+                render::render(&template.body, &context, &budget)
+            })
+            .await
+            .map_err(|_| fail("the rendering stopped unexpectedly".to_string()))?
+            .map_err(|err| fail(err.message))?;
             let count = lines.len();
             walk.lines.extend(lines);
             format!("{count} configuration line(s) for the change at the end of the run")
@@ -546,15 +557,29 @@ fn truncate(output: String, cap: usize) -> String {
 }
 
 /// Walk one device through the playbook.
+/// What every device of one run shares.
+#[derive(Clone)]
+struct Shared {
+    /// The most kept of one command's output.
+    cap: usize,
+    dry_run: bool,
+    /// What the run's template steps may still render, all devices together.
+    budget: Arc<render::Budget>,
+}
+
 async fn run_on_device(
     app: &App,
     ctx: &JobCtx,
     device: Device,
     source: &Source,
     vars: &Map<String, Value>,
-    cap: usize,
-    dry_run: bool,
+    shared: Shared,
 ) -> (DeviceResult, Vec<String>) {
+    let Shared {
+        cap,
+        dry_run,
+        budget,
+    } = shared;
     let context = match render::context(app, &device, vars) {
         Ok(context) => context,
         Err(err) => {
@@ -579,6 +604,7 @@ async fn run_on_device(
         steps: Vec::new(),
         cap,
         dry_run,
+        budget,
     };
 
     let expressions = profiles::expressions(app);
@@ -792,15 +818,20 @@ pub fn start(app: &App, params: RunParams) -> AppResult<Value> {
     let source = Arc::new(source);
     let vars = Arc::new(vars);
     let bucket = accumulated.clone();
+    let shared = Shared {
+        cap,
+        dry_run,
+        budget: Arc::new(render::Budget::new()),
+    };
     let work: DeviceWork = Arc::new(move |ctx, device| {
         let app = app_for_work.clone();
         let source = source.clone();
         let vars = vars.clone();
         let bucket = bucket.clone();
+        let shared = shared.clone();
         Box::pin(async move {
             let device_id = device.id.clone();
-            let (result, lines) =
-                run_on_device(&app, &ctx, device, &source, &vars, cap, dry_run).await;
+            let (result, lines) = run_on_device(&app, &ctx, device, &source, &vars, shared).await;
             if !lines.is_empty() {
                 bucket.lock().insert(device_id, lines);
             }

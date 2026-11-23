@@ -256,8 +256,11 @@ fn sustained(
             report.skip(data.id(), "this metric is not polled for the device");
             continue;
         }
-        let summary = metrics::summarise(world.store(), data.id(), metric, since, threshold)
-            .unwrap_or_default();
+        let Ok(summary) = metrics::summarise(world.store(), data.id(), metric, since, threshold)
+        else {
+            report.skip(data.id(), "the samples of this metric could not be read");
+            continue;
+        };
         if summary.is_empty() {
             report.skip(data.id(), "no samples of this metric inside the window");
             continue;

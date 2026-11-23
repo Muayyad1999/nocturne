@@ -20,7 +20,10 @@ thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 nocturne-textfsm.workspace = true
-minijinja.workspace = true
+# `fuel` is what bounds the work and the memory of one rendering (`render.rs`):
+# a template is given to a person to write, and a loop or a value can be made
+# to cost gigabytes.
+minijinja = { workspace = true, features = ["fuel"] }
 regex.workspace = true
 serde_yaml_ng.workspace = true
 indexmap.workspace = true

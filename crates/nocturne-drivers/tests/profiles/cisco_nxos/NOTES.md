@@ -35,6 +35,10 @@ says `maturity: community` and must not be given a write path.
    `show port-channel summary` capture exists in the corpus and is unused
    because `Interface` has no "member of" field.
 6. **`show ipv6 interface brief`** — `interfaces.ipv6`.
+7. **Memory over SNMP** — read `cpmCPUMemoryUsed` / `cpmCPUMemoryFree`
+   (`…109.1.1.1.1.12` / `.13`) and `cseSysMemoryUtilization` off a Nexus next
+   to `show system resources`, on one supervisor and on two, before the
+   `snmp` block names either.
 
 ## Taken from vendor documentation rather than from a capture
 
@@ -79,10 +83,15 @@ Marked here because none of it is backed by recorded output:
   priority would hand such a switch to `cisco_ios`. There is a case for it in
   `detect.yml` (`snmp.match[1]`), which fails if the priority is changed.
 * **`snmp.cpu`: `1.3.6.1.4.1.9.9.109.1.1.1.1.7`** (`cpmCPUTotal1minRev`,
-  CISCO-PROCESS-MIB), which NX-OS serves as IOS does. No memory or temperature
-  OIDs: NX-OS reports memory as a percentage (`cseSysMemoryUtilization`),
-  which is not the bytes the model holds, and its temperature lives in a
-  sensor table that also carries fan speeds and voltages.
+  CISCO-PROCESS-MIB), which NX-OS serves as IOS does: one row per processor
+  the agent reports, the busiest taken (`combine: max`). No memory: NX-OS
+  serves `cpmCPUMemoryUsed` / `cpmCPUMemoryFree`
+  (`1.3.6.1.4.1.9.9.109.1.1.1.1.12` / `.13`, kilobytes) and the percentage
+  `cseSysMemoryUtilization` (`1.3.6.1.4.1.9.9.305.1.1.2.0`), but nobody has
+  read them off a Nexus, so which row comes first on two supervisors and
+  whether "used" counts the page cache are not known. No temperature: the
+  sensors are in CISCO-ENTITY-SENSOR-MIB, one table that also carries fan
+  speeds, voltages and currents.
 * **The hand-written configuration** under `config/`, as its own `SOURCE.md`
   says.
 

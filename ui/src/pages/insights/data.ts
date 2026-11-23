@@ -150,15 +150,28 @@ export function useDraftChange(): UseMutationResult<InsightsFixResult, RpcError,
   });
 }
 
-export function useSaveSettings(): UseMutationResult<
-  InsightsSettings,
-  RpcError,
-  { section: string; value: Record<string, unknown> }
-> {
-  return useRpcMutation<InsightsSettings, { section: string; value: Record<string, unknown> }>(
-    'settings.set',
-    { invalidates: ['settings.', 'insights.'], errorToast: 'That setting could not be saved' },
-  );
+export interface SettingsWrite {
+  section: string;
+  value: Record<string, unknown>;
+}
+
+export function useSaveSettings(): UseMutationResult<InsightsSettings, RpcError, SettingsWrite> {
+  return useRpcMutation<InsightsSettings, SettingsWrite>('settings.set', {
+    invalidates: ['settings.', 'insights.'],
+    errorToast: 'That setting could not be saved',
+  });
+}
+
+/**
+ * One threshold field's own save. The engine's refusal is said beside the
+ * field that was refused, so there is no toast, and each field has its own
+ * answer: a mutation shared by sixteen fields reports only the last call.
+ */
+export function useSaveThreshold(): UseMutationResult<InsightsSettings, RpcError, SettingsWrite> {
+  return useRpcMutation<InsightsSettings, SettingsWrite>('settings.set', {
+    invalidates: ['settings.', 'insights.'],
+    errorToast: false,
+  });
 }
 
 // --------------------------------------------------------------- the index

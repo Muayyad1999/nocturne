@@ -55,7 +55,7 @@ import styles from './Automation.module.css';
 import { useSchedules, useTasks, useTriggers } from './data';
 import { given, orNone } from './given';
 import { varsFromText } from './Variables';
-import { CRON_HELP, debounceText, whenText } from './vocab';
+import { CRON_HELP, debounceText, lastRunWords, whenText } from './vocab';
 
 export interface SchedulesTabProps {
   creating: boolean;
@@ -151,17 +151,16 @@ function Schedules({ creating, onCreatingChange }: SchedulesTabProps) {
       header: 'Last',
       width: 160,
       sortValue: (schedule) => schedule.last_run_at ?? 0,
-      cell: (schedule) =>
-        !given(schedule.last_run_at) ? (
-          <span className={styles.muted}>Never</span>
-        ) : (
-          <span className={styles.cell}>
-            <StatusPill tone={schedule.last_ok === true ? 'ok' : 'crit'}>
-              {schedule.last_ok === true ? 'Ran' : 'Failed'}
-            </StatusPill>
+      cell: (schedule) => {
+        const last = lastRunWords(schedule);
+        if (last === null || !given(schedule.last_run_at)) return <span className={styles.muted}>Never</span>;
+        return (
+          <span className={styles.cell} title={last.detail}>
+            <StatusPill tone={last.tone}>{last.title}</StatusPill>
             <TimeAgo at={schedule.last_run_at} />
           </span>
-        ),
+        );
+      },
     },
   ];
 
@@ -597,7 +596,7 @@ function Triggers() {
               size="compact"
               icon={Radio}
               title="Nothing runs on an event yet"
-              description="A trigger watches an event topic — alerts.raised, devices.state — collects the burst and fires once. It may not watch what automation publishes itself: that would be a loop."
+              description="A trigger watches an event topic — alerts.raised, devices.state — collects the burst and fires once. It may not watch what automation publishes itself, or job events: that would be a loop."
               action={
                 <Button variant="primary" onClick={() => setEditing('new')}>
                   New trigger
@@ -615,6 +614,8 @@ function Triggers() {
   );
 }
 
+// Not `jobs.changed`: every method a trigger may call starts a job, so a
+// trigger on job events is set off by its own run, and the backend refuses it.
 const TOPICS = [
   'alerts.raised',
   'alerts.changed',
@@ -623,7 +624,6 @@ const TOPICS = [
   'changes.changed',
   'config.changed',
   'discovery.found',
-  'jobs.changed',
 ];
 
 function TriggerDrawer({ trigger, onClose }: { trigger: Trigger | null; onClose: () => void }) {
@@ -701,7 +701,7 @@ function TriggerDrawer({ trigger, onClose }: { trigger: Trigger | null; onClose:
         <Field
           label="Event topic"
           required
-          hint="An exact topic (alerts.raised) or a prefix ending in a dot (alerts.). Topics automation publishes itself are refused: that would be a loop."
+          hint="An exact topic (alerts.raised) or a prefix ending in a dot (alerts.). Topics automation publishes itself are refused, and so are job events (every action starts a job): either would be a loop."
         >
           <Input value={topic} list="automation-topics" onChange={(event) => setTopic(event.target.value)} />
         </Field>

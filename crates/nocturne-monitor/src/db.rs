@@ -3,8 +3,10 @@
 //! Alerts and the interface table are the two things monitoring keeps that a
 //! campus has too many of to filter, sort and page in memory: a few thousand
 //! devices with fifty ports each is a hundred thousand rows. Both get a table
-//! so the work happens in SQL. Everything else (rules, maintenance windows,
-//! channels, the per-device record) is a handful of documents.
+//! so the work happens in SQL, and so do the QoS classes, of which one
+//! router with a queue per subscriber has thousands. Everything else (rules,
+//! maintenance windows, channels, the per-device record) is a handful of
+//! documents.
 
 use nocturne_app::AppResult;
 use nocturne_app::store::Store;
@@ -31,6 +33,38 @@ CREATE TABLE IF NOT EXISTS monitor_interfaces (
     PRIMARY KEY (device_id, name)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS monitor_interfaces_problem ON monitor_interfaces (oper_up, admin_up);
+
+CREATE TABLE IF NOT EXISTS monitor_qos (
+    device_id       TEXT NOT NULL,
+    -- The row's place among the device's classes in their stable order
+    -- (interface, direction, policy, class, parent) at the last read.
+    seq             INTEGER NOT NULL,
+    -- The same order spelled in bytes (`qos::sort_key`), which is what a
+    -- page carries on from: a position moves when a class before it comes or
+    -- goes between two pages, a class's place among the names does not.
+    sort_key        BLOB NOT NULL,
+    interface       TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    policy          TEXT NOT NULL,
+    class           TEXT NOT NULL,
+    parent          TEXT,
+    -- The instance of the class's series; NULL when it has none.
+    instance        TEXT,
+    rate_bps        INTEGER,
+    bps             REAL,
+    drop_ps         REAL,
+    queue_drop_ps   REAL,
+    drop_pct        REAL,
+    queue_len       INTEGER,
+    packets         INTEGER,
+    dropped_packets INTEGER,
+    dropping        INTEGER NOT NULL DEFAULT 0,
+    unverified      INTEGER NOT NULL DEFAULT 0,
+    at              INTEGER NOT NULL,
+    PRIMARY KEY (device_id, seq)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS monitor_qos_order ON monitor_qos (device_id, sort_key, seq);
+CREATE INDEX IF NOT EXISTS monitor_qos_dropping ON monitor_qos (dropping, device_id, sort_key, seq);
 
 CREATE TABLE IF NOT EXISTS monitor_alerts (
     id           TEXT PRIMARY KEY,
@@ -146,8 +180,23 @@ fn ensure_owed_index(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     conn.execute_batch(&owed_index())
 }
 
+/// Drop a `monitor_qos` made before it had `sort_key`, so that `SCHEMA`
+/// makes it again. It holds each device's last read and nothing else, and
+/// the next read of each device fills it.
+fn drop_unkeyed_qos_table(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('monitor_qos')")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if !columns.is_empty() && !columns.iter().any(|name| name == "sort_key") {
+        conn.execute_batch("DROP TABLE monitor_qos;")?;
+    }
+    Ok(())
+}
+
 pub fn init(store: &Store) -> AppResult<()> {
     store.with(|conn| {
+        drop_unkeyed_qos_table(conn)?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(BACKFILL_NOTIFIED_AT)?;
         ensure_owed_index(conn)
@@ -189,7 +238,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(tables, 4);
+        assert_eq!(tables, 5);
     }
 
     #[test]
@@ -293,6 +342,57 @@ mod tests {
             })
             .unwrap();
         assert!(condition.contains(crate::alerts::OWED), "{condition}");
+    }
+
+    #[test]
+    fn a_qos_table_made_without_its_sort_key_is_made_again() {
+        let store = Store::in_memory().unwrap();
+        // The table as a build before `sort_key` left it, with a row in it.
+        store
+            .with(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE monitor_qos (
+                         device_id TEXT NOT NULL, seq INTEGER NOT NULL, interface TEXT NOT NULL,
+                         direction TEXT NOT NULL, policy TEXT NOT NULL, class TEXT NOT NULL,
+                         parent TEXT, instance TEXT, rate_bps INTEGER, bps REAL, drop_ps REAL,
+                         queue_drop_ps REAL, drop_pct REAL, queue_len INTEGER, packets INTEGER,
+                         dropped_packets INTEGER, dropping INTEGER NOT NULL DEFAULT 0,
+                         unverified INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL,
+                         PRIMARY KEY (device_id, seq)) WITHOUT ROWID;
+                     INSERT INTO monitor_qos (device_id, seq, interface, direction, policy, class, at)
+                     VALUES ('dev1', 0, 'Gi0/1', 'out', 'WAN', 'VOICE', 1);",
+                )
+            })
+            .unwrap();
+        init(&store).unwrap();
+        let (columns, rows): (Vec<String>, i64) = store
+            .with(|conn| {
+                let columns = conn
+                    .prepare("SELECT name FROM pragma_table_info('monitor_qos')")?
+                    .query_map([], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let rows =
+                    conn.query_row("SELECT COUNT(*) FROM monitor_qos", [], |row| row.get(0))?;
+                Ok((columns, rows))
+            })
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "sort_key"), "{columns:?}");
+        assert_eq!(rows, 0, "the next read of the device fills it again");
+        // And a table that has it is left alone.
+        store
+            .with(|conn| {
+                conn.execute(
+                    "INSERT INTO monitor_qos (device_id, seq, sort_key, interface, direction, policy, class, at)
+                     VALUES ('dev1', 0, x'00', 'Gi0/1', 'out', 'WAN', 'VOICE', 1)",
+                    [],
+                )
+            })
+            .unwrap();
+        init(&store).unwrap();
+        let rows: i64 = store
+            .with(|conn| conn.query_row("SELECT COUNT(*) FROM monitor_qos", [], |row| row.get(0)))
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

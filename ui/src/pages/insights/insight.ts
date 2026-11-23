@@ -19,6 +19,7 @@ import type {
   Coverage,
   Insight,
   InsightState,
+  InsightsSettingsRefusal,
   Severity,
 } from '@/api/types/insights';
 import type { StatusTone } from '@/design/tone';
@@ -360,4 +361,83 @@ export function subjectLine(insight: Insight): string {
  */
 export function word(count: number, one: string, many = `${one}s`): string {
   return count === 1 ? one : many;
+}
+
+// -------------------------------------------------------------- thresholds
+
+/**
+ * The largest value of a threshold the engine counts in whole units: a
+ * `u32`, and for the one `u64` (new interface errors) as far as a JavaScript
+ * number is still exact.
+ */
+export const WHOLE_U32 = 4_294_967_295;
+export const WHOLE_U64 = Number.MAX_SAFE_INTEGER;
+
+/** What a typed threshold amounts to when its field is left. */
+export type ThresholdEntry =
+  /** Nothing usable was typed: the stored value stands. */
+  | { kind: 'unchanged' }
+  /** Said beside the field; nothing is sent. */
+  | { kind: 'refused'; reason: string }
+  | { kind: 'value'; value: number };
+
+/**
+ * Reads a threshold field. `whole` is the largest whole number the threshold
+ * can hold, for one the engine counts in whole units; a fraction is refused
+ * there, because the engine would not take it (and an engine from before
+ * writes were checked would store it and then be unable to read the section
+ * at all). An empty field, or one whose text a number field could not read
+ * (`unreadable`, its `validity.badInput`), is no change: a cleared field is
+ * not a zero, and zero makes most checks match everything.
+ */
+export function readThreshold(text: string, whole?: number, unreadable = false): ThresholdEntry {
+  const typed = text.trim();
+  if (unreadable || typed === '') return { kind: 'unchanged' };
+  const value = Number(typed);
+  if (Number.isNaN(value)) return { kind: 'refused', reason: `Must be a number, not ${typed}.` };
+  if (!Number.isFinite(value)) return { kind: 'refused', reason: `Too large to be stored: ${typed}.` };
+  if (value < 0) return { kind: 'refused', reason: `Must be 0 or more, not ${typed}.` };
+  if (whole !== undefined) {
+    if (!Number.isInteger(value)) {
+      return { kind: 'refused', reason: `Must be a whole number (0 or more), not ${typed}.` };
+    }
+    if (value > whole) return { kind: 'refused', reason: `Must be at most ${formatCount(whole)}, not ${typed}.` };
+  }
+  return { kind: 'value', value };
+}
+
+/**
+ * What is wrong with a threshold as it is stored, or null when nothing is.
+ * `settings.get` answers with what is stored even when the engine cannot
+ * read it as the threshold it is (stored before writes were checked, or by
+ * hand), so the field can say so and be where it is put right.
+ *
+ * Only what the engine itself cannot read is a problem here, because that is
+ * what the sentence says: one that can be a fraction is an `f64`, which takes
+ * any number, a negative one included (that the field would not take one is
+ * this screen's rule, not the engine's), and the one `u64` holds far more
+ * than a field sends exactly.
+ */
+export function storedThresholdProblem(value: unknown, whole?: number): string | null {
+  const stored = `Stored as ${typeof value === 'string' ? `"${value}"` : String(value)}`;
+  const after = 'The checks cannot use it until it is corrected.';
+  if (typeof value !== 'number' || !Number.isFinite(value)) return `${stored}, which is not a number. ${after}`;
+  if (whole === undefined) return null;
+  if (value < 0) return `${stored}, which is below 0. ${after}`;
+  if (!Number.isInteger(value)) return `${stored}, which is not a whole number. ${after}`;
+  // u64::MAX reads back as 2^64 in a JavaScript number.
+  if (value > (whole === WHOLE_U64 ? 2 ** 64 : whole)) return `${stored}, more than it can hold. ${after}`;
+  return null;
+}
+
+/**
+ * What to say beside a threshold the engine refused to store: its own line of
+ * the refusal (`details.problems`, one per setting), else the whole message.
+ */
+export function refusalOf(error: { message: string; details?: unknown }, setting: string): string {
+  const details = error.details as Partial<InsightsSettingsRefusal> | undefined;
+  const own = Array.isArray(details?.problems)
+    ? details.problems.find((problem) => problem?.key === `thresholds.${setting}`)
+    : undefined;
+  return typeof own?.message === 'string' && own.message !== '' ? own.message : error.message;
 }

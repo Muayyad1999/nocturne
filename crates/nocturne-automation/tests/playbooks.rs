@@ -669,3 +669,47 @@ async fn a_second_run_does_not_touch_a_device_the_first_is_still_working_on() {
         "the lease is released when the run ends"
     );
 }
+
+#[tokio::test]
+async fn a_template_step_written_for_another_device_type_fails_that_device_and_drafts_nothing() {
+    // The lab switch is a test device type, and `ios_ntp` is written for
+    // `cisco_ios`: `templates.apply` refuses that, and so must a playbook.
+    let lab = lab(&["SW1"]).await;
+    let yaml = r#"
+name: NTP everywhere
+steps:
+  - name: NTP
+    template:
+      id: ios_ntp
+      vars: { servers: [192.0.2.1] }
+"#;
+    let started = lab
+        .app
+        .rpc("playbooks.run", json!({"yaml": yaml, "filter": {}}))
+        .await
+        .expect("playbooks.run");
+    let run_id = started["run_id"].as_str().expect("run id").to_string();
+    common::finished(&lab.app, &started).await;
+
+    let run = lab
+        .app
+        .rpc("playbooks.run_get", json!({"run_id": run_id}))
+        .await
+        .expect("playbooks.run_get");
+    let result = &run["results"][0];
+    assert_eq!(result["state"], json!("failed"), "{result}");
+    let error = result["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("cisco_ios") && error.contains("test_ios"),
+        "{error}"
+    );
+    assert!(
+        lab.app
+            .state::<Changes>()
+            .created
+            .lock()
+            .expect("lock")
+            .is_empty(),
+        "no change was drafted"
+    );
+}

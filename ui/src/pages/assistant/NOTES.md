@@ -17,7 +17,11 @@ context.ts       what the screen offers the model, as removable chips     (unit 
 useChats.ts      the chat list, and getting hold of a chat to talk in
 Transcript.tsx   turns, thinking, notices, usage
 ToolStep.tsx     one tool call, opened: what ran, what came back, what it may reach
+links.ts         where a step's link goes, or that it goes nowhere       (unit tested)
 ApprovalCard.tsx the inline Allow / Deny for `approval_needed`
+request.ts       an approval's detail as the lines the engine wrote     (unit tested)
+SettingsTab.tsx  the `isp_access` switch (ISP edition only)
+ledger.ts        when it is offered, and what it means                   (unit tested)
 Text.tsx         prose, lists and real code blocks
 ChatList.tsx     the history rail: find, switch, rename, delete
 Providers.tsx    the models this installation can use
@@ -29,9 +33,10 @@ Usage.tsx        what the conversations cost, from ai.usage
 Backend: all 19 `ai.*` methods, the `ai.event` stream, and the two extra
 topics the crate added (`ai.chats.changed`, `ai.providers.changed`).
 
-Tests: `ui/tests/assistant.spec.ts` (12, against a real `nocturne-server` and
-a real OpenAI-compatible endpoint served by the test process) and
-`ui/tests/assistant.shots.ts` (`pnpm shots`, 20 PNGs into
+Tests: `ui/tests/assistant.spec.ts` (17, against a real `nocturne-server` —
+the free edition, and the ISP edition for the ledger switch — and a real
+OpenAI-compatible endpoint served by the test process) and
+`ui/tests/assistant.shots.ts` (`pnpm shots`, 19 PNGs a theme into
 `tests/shots/assistant/`). Both accept `NOCTURNE_UI_DIST` to skip building the
 interface, the way `NOCTURNE_SERVER_BIN` skips cargo.
 
@@ -115,6 +120,77 @@ interface, the way `NOCTURNE_SERVER_BIN` skips cargo.
   `Chat.pending_turn` and `ModelInfo.context_window` / `.max_output` are
   serialised as `null`, not omitted; `ui/src/api/types/ai.ts` said `?:`. The
   types now say `?: T | null`. That is the only change made to that file.
+
+## The engine's newest tools (third batch)
+
+Files: `SettingsTab.tsx` + `ledger.ts` (the `isp_access` switch), `request.ts`
+(an approval's lines), `links.ts` (where a step's link goes), and changes to
+`ApprovalCard.tsx`, `ToolStep.tsx`, `index.tsx`. Tests: `ledger.test.ts`,
+`request.test.ts`, `links.test.ts`; five more end-to-end cases in
+`tests/assistant.spec.ts` (17 in all) and two more shots tests (nine more
+pictures a theme). Both e2e files take `NOCTURNE_ISP_SERVER_BIN` for the ISP edition the
+way `NOCTURNE_SERVER_BIN` stands in for the free one, and
+`NOCTURNE_WIRE_SHAPES` to append every `ai.event` and a few answers to a file.
+
+* **The ledger switch is a tab of its own, in the ISP edition only.** Nothing
+  in the interface showed the `assistant` settings section: the Settings
+  screen lists an `assistant` section that needs `ai.providers` (a method
+  that does not exist) and has no body. So the switch lives on this screen,
+  under *Settings*, offered when `app.methods` has `isp.summary`,
+  `settings.get` and `settings.set`. In the free edition the key exists,
+  false and inert, and the tab is not there; `?tab=settings` opens the
+  conversation.
+* **Off is nothing, not "counts and money".** `docs/dev/features/isp.md` and
+  this batch's brief say the assistant sees counts and money with the switch
+  off. The engine does not: with it off, `ai.tools` in the ISP edition lists
+  60 tools and none of the ledger's, and the gate refuses all five ledger
+  reads, `isp.summary` among them (`tools/mod.rs`, `available` and `rpc`).
+  The words say what the engine does; `assistant.md` agrees with them.
+* **Turning it on asks once and names the default model**: names, plans and
+  balances go to whichever model a conversation uses, which may be outside
+  the building. Turning it off does not ask. The switch shows what the
+  engine stored, never what was clicked, and the line under it is read from
+  `ai.tools`, so it shows what the engine offers rather than what the switch
+  was asked to do (a 16k model is offered none of the ledger's tools even
+  with it on, and the line says so).
+* **An approval's request is quoted, line by line.** The engine keeps an
+  alert's title, a prefix's name and a note each on one line, so that none
+  can add a line to the question. A narrow frame undid that by wrapping: in
+  the dock, half of a hostile title began a line at the frame's edge and
+  read like a line of the question. Each line the engine wrote is now its
+  own block, numbered in a gutter (CSS counters, so the numbers are not in
+  the text and a screen reader is not given them), and a wrapped part hangs
+  two columns deeper than its line's own text with no number. The frame has
+  its own ground and face; the card's words and buttons stay outside it.
+* **A long request scrolls in its frame, and says so.** The frame is capped
+  (`min(36vh, 320px)`, which keeps the whole card inside the dock at
+  1280×720) and is a keyboard stop only when it scrolls. A cut-off list was
+  silent, so a person could allow sixteen ranges having seen ten: the card
+  now says "More of the request is below" until the last line has been in
+  view, then "That is the whole request."
+* **A step links only where there is somewhere to go.** A step without a
+  `link` shows none. A `job` link opens `/ops/jobs?job=<id>` where the build
+  has the operations screen and its Jobs tab; elsewhere the job's id is a
+  fact of the step, no longer an "Open the job" that could not be followed.
+  An alert link says *Open the alerts*: alerts have no page of their own.
+  Ids are encoded into routes.
+* The new tools (`qos_status`, `top_talkers`, `list_snippets`) needed nothing
+  of their own: they are steps like every other. A test drives the end to end
+  case with a provider that has a window: with none configured the engine
+  assumes 16 000 tokens for an endpoint on this machine and offers only the
+  ten core tools, and the newest tools are not among them.
+
+What the backend (or the shell) made awkward this time:
+
+* `DockTranscript` (`app/AssistantDock`, not this slice) follows the end only
+  while the reader is within 32px of it, and decides that on the next scroll
+  event. A card that grew a second time just after it appeared could end up
+  with its buttons under the fold. The card now measures before its first
+  paint (`useLayoutEffect`) so it appears at its final size; a test holds the
+  whole card in view at 1280×720, but the race itself could not be
+  reproduced on demand.
+* An approval is still only an event (see above): a reload loses the card
+  until `approval_timeout_s` answers it with "nobody answered".
 
 ## What was changed after looking at the screenshots
 

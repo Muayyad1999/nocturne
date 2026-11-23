@@ -31,7 +31,7 @@ cockpit. That is a design constraint, not a slogan:
 | Fonts | `@fontsource-variable/inter`, `@fontsource-variable/jetbrains-mono` (bundled — the app works offline) |
 | Terminal | `@xterm/xterm` + `@xterm/addon-fit`, `-search`, `-web-links` |
 | Editor / diff | CodeMirror 6 (`@codemirror/state`, `view`, `commands`, `language`, `search`, `merge`) |
-| Charts | uPlot behind a React wrapper (time series); inline SVG for sparklines and gauges |
+| Charts | uPlot behind a React wrapper (time series); inline SVG for sparklines and gauges. A chart draws up to eight series; its CSV has every one. A time with no value in any series (put inside a hole to lift the pen) is read out as the hole — "14s, no samples" — in the table view and the tooltip, and left out of the CSV. Without a `formatValue`, a value keeps three significant digits below a thousand |
 | Virtual lists | `@tanstack/react-virtual` |
 | Tests | Vitest (logic), Playwright (screens; Chromium is pre-installed in the build environment) |
 
@@ -166,7 +166,14 @@ focus (`:focus-visible`).
 
 * **Toasts** (bottom-right, stack of 4, auto-dismiss except errors),
   **dialogs** (focus-trapped, `Esc` closes, destructive confirm requires
-  typing or a clearly red button), **context menus**.
+  typing or a clearly red button), **context menus**. A layer gives the focus
+  back to the control that opened it, also when a field inside took the focus
+  with React's `autoFocus`. When the action it confirmed removes that control
+  (an issued draft loses "Issue…"), or a control inside an open layer is
+  removed, the focus goes to the nearest control left there that is not a
+  text field, else to the layer or `main` itself, never to the page: until
+  the user's next key or press. A screen that moves the focus on purpose, in
+  the same commit, is left alone.
 
 ## Component library (`src/design/`)
 

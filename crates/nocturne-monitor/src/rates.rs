@@ -22,6 +22,13 @@
 //!   A backwards step that is explained by that wrap (it was near the end of
 //!   the range and the wrapped difference is a plausible poll interval) is an
 //!   interval, not a reboot.
+//! * an uptime read off **text** says whether the device restarted, but not
+//!   always how long passed: many devices print it to the minute. Two such
+//!   readings 30 s apart are 0 or 60 s apart by the device's account, and
+//!   five minutes apart anything from four to six. Where both readings are
+//!   whole minutes and the poller's own clock agrees with their difference
+//!   as far as a minute's rounding allows, the poller's clock measures the
+//!   interval — see [`interval`].
 //!
 //! Nothing here guesses: when an interval cannot be measured the caller gets
 //! `None` and writes no sample at all, leaving a gap in the series.
@@ -98,10 +105,17 @@ const TICKS_PER_DAY: u32 = 8_640_000;
 /// difference is at most a day: anything else is a restart.
 const WRAP_NEAR_END: u32 = u32::MAX - TICKS_PER_DAY;
 
+/// How far the difference of two uptimes printed to the minute can be from
+/// the time that passed between them: a minute of rounding, and half as much
+/// again for the two readings not being taken the same number of seconds
+/// into their polls (a login that was slow once).
+const MINUTE_ROUNDING_S: f64 = 90.0;
+
 /// The device time between two readings.
 ///
-/// `wall_elapsed_ms` is what the poller's own clock says passed; it is only
-/// used for [`TimeBase::Wall`].
+/// `wall_elapsed_ms` is what the poller's own clock says passed. It is the
+/// whole answer for [`TimeBase::Wall`], and the finer half of it for an
+/// uptime printed to the minute; it is never used against `sysUpTime`.
 pub fn interval(previous: TimeBase, current: TimeBase, wall_elapsed_ms: i64) -> Interval {
     match (previous, current) {
         (TimeBase::Ticks(before), TimeBase::Ticks(now)) => {
@@ -115,10 +129,23 @@ pub fn interval(previous: TimeBase, current: TimeBase, wall_elapsed_ms: i64) -> 
             }
         }
         (TimeBase::Seconds(before), TimeBase::Seconds(now)) => {
-            if now >= before {
-                seconds((now - before) as f64)
+            if now < before {
+                return Interval::Rebooted;
+            }
+            let device = (now - before) as f64;
+            let poller = wall_elapsed_ms as f64 / 1000.0;
+            // Both readings whole minutes: an uptime printed to the minute
+            // (`uptime is 3 hours, 12 minutes`), whose difference is the
+            // real interval rounded by up to a minute either way. The
+            // poller's clock is the finer of the two while they agree that
+            // far. Where they do not, the poller was held up or its clock
+            // was moved, and the device's account stands, as it does for an
+            // uptime printed to the second.
+            let to_the_minute = before.is_multiple_of(60) && now.is_multiple_of(60);
+            if to_the_minute && (device - poller).abs() <= MINUTE_ROUNDING_S {
+                seconds(poller)
             } else {
-                Interval::Rebooted
+                seconds(device)
             }
         }
         (TimeBase::Wall, TimeBase::Wall) => seconds(wall_elapsed_ms as f64 / 1000.0),
@@ -307,6 +334,79 @@ mod tests {
         assert_eq!(
             interval(TimeBase::Seconds(100), TimeBase::Seconds(160), 60_000),
             Interval::Elapsed(60.0)
+        );
+    }
+
+    #[test]
+    fn an_uptime_printed_to_the_minute_is_measured_by_the_poller_while_they_agree() {
+        // `uptime is 5 minutes`, read twice half a minute apart: the same
+        // minute both times, or the next one. Neither 0 s nor 60 s passed.
+        assert_eq!(
+            interval(TimeBase::Seconds(300), TimeBase::Seconds(300), 30_000),
+            Interval::Elapsed(30.0)
+        );
+        assert_eq!(
+            interval(TimeBase::Seconds(300), TimeBase::Seconds(360), 30_000),
+            Interval::Elapsed(30.0)
+        );
+        // Five minutes apart by the poller, four or six by the device.
+        assert_eq!(
+            interval(TimeBase::Seconds(600), TimeBase::Seconds(840), 299_000),
+            Interval::Elapsed(299.0)
+        );
+        assert_eq!(
+            interval(TimeBase::Seconds(600), TimeBase::Seconds(960), 301_000),
+            Interval::Elapsed(301.0)
+        );
+        // Still a restart when it went backwards.
+        assert_eq!(
+            interval(TimeBase::Seconds(600), TimeBase::Seconds(60), 300_000),
+            Interval::Rebooted
+        );
+    }
+
+    #[test]
+    fn the_device_decides_when_the_two_clocks_disagree_or_it_counts_seconds() {
+        // The poller slept through twenty minutes the device counted (a
+        // laptop lid, a clock set back): the device was there, the poller
+        // was not.
+        assert_eq!(
+            interval(TimeBase::Seconds(600), TimeBase::Seconds(1_800), 60_000),
+            Interval::Elapsed(1_200.0)
+        );
+        assert_eq!(
+            interval(TimeBase::Seconds(600), TimeBase::Seconds(1_800), -3_540_000),
+            Interval::Elapsed(1_200.0)
+        );
+        // The device says no time passed and the poller says an hour did: a
+        // restart that took exactly as long as the uptime it lost cannot be
+        // told from a device that stood still, and neither is an interval.
+        assert_eq!(
+            interval(TimeBase::Seconds(600), TimeBase::Seconds(600), 3_600_000),
+            Interval::Unusable
+        );
+        // An uptime printed to the second is exact, and is used as it is:
+        // the poller's clock also counts the seconds a login took.
+        assert_eq!(
+            interval(
+                TimeBase::Seconds(100_000),
+                TimeBase::Seconds(100_060),
+                64_000
+            ),
+            Interval::Elapsed(60.0)
+        );
+        assert_eq!(
+            interval(TimeBase::Seconds(300), TimeBase::Seconds(359), 64_000),
+            Interval::Elapsed(59.0)
+        );
+        // Two readings in one second are no interval, whatever the poller says.
+        assert_eq!(
+            interval(
+                TimeBase::Seconds(100_001),
+                TimeBase::Seconds(100_001),
+                30_000
+            ),
+            Interval::Unusable
         );
     }
 

@@ -28,6 +28,8 @@ pub struct AutomationState {
     devices: Mutex<HashMap<String, Busy>>,
     /// Schedules and triggers with a run in flight, by id.
     firing: Mutex<HashSet<String>>,
+    /// See [`AutomationState::records`].
+    records: Mutex<()>,
 }
 
 impl Default for AutomationState {
@@ -42,11 +44,25 @@ impl AutomationState {
             clock,
             devices: Mutex::new(HashMap::new()),
             firing: Mutex::new(HashSet::new()),
+            records: Mutex::new(()),
         }
     }
 
     pub fn now_ms(&self) -> i64 {
         self.clock.now_ms()
+    }
+
+    /// Held while a stored schedule, trigger or task is read, changed and
+    /// written back.
+    ///
+    /// A run takes minutes and an edit takes a click, so a run never writes
+    /// back the copy it started with: when it ends it reads the record again
+    /// under this lock and changes only what the run itself knows. Saving and
+    /// deleting take it too, so neither can land between that read and that
+    /// write. It is never held across an `.await` (the guard is not `Send`, so
+    /// the compiler refuses that in a spawned task).
+    pub fn records(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.records.lock()
     }
 
     /// Take a device for the length of a run, or say who has it.

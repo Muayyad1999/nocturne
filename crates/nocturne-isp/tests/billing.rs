@@ -518,6 +518,115 @@ async fn a_draft_the_run_cannot_issue_stays_a_draft_and_the_run_goes_on() {
     );
 }
 
+/// A run that is cut off — a power cut, the process killed — leaves numbered
+/// invoices behind it, and they must never be invoices the trail knows
+/// nothing about. So the run says it has begun, with what it set out to do,
+/// before it writes its first invoice; and its closing entry is the same
+/// run's.
+#[tokio::test]
+async fn a_billing_run_is_in_the_trail_before_its_first_invoice_is_written() {
+    let isp = Isp::start(false, &[]).await;
+    let tariff = isp
+        .tariff("Plan", 10, "flat", 2_500, "USD", "monthly")
+        .await;
+    for name in ["Run One", "Run Two", "Run Three"] {
+        let customer = isp.customer(name, "USD", json!({})).await;
+        isp.subscribe(&customer, &tariff, Some(at("2025-01-01T00:00:00Z")))
+            .await;
+    }
+    // A preview writes nothing, and the trail does not mention it.
+    let before = isp.audit().len();
+    isp.ok("isp.invoice.run", over(november(), json!({}))).await;
+    assert_eq!(isp.audit().len(), before, "a preview is not a mutation");
+
+    let run = isp
+        .ok(
+            "isp.invoice.run",
+            over(november(), json!({"dry_run": false, "issue": true})),
+        )
+        .await;
+    let entries = isp.audit_entries();
+    let started = entries
+        .iter()
+        .find(|entry| entry.source == "isp.invoice.run.start")
+        .expect("the run said it had begun");
+    let detail = started.body.clone().expect("what the run set out to do");
+    assert_eq!(detail["considered"], json!(3), "{detail}");
+    assert_eq!(detail["issue"], json!(true), "{detail}");
+    assert_eq!(detail["period_start"], json!(november().0));
+    assert_eq!(detail["period_end"], json!(november().1));
+    for row in list(&run["invoices"]) {
+        let invoice = isp
+            .ok("isp.invoice.get", json!({"id": row["invoice_id"]}))
+            .await;
+        assert!(
+            started.ts <= invoice["created_at"].as_i64().unwrap_or(i64::MIN),
+            "invoice {} was written before the trail said a run had begun",
+            invoice["number"]
+        );
+    }
+    let finished = entries
+        .iter()
+        .find(|entry| entry.source == "isp.invoice.run")
+        .expect("the run's closing entry");
+    assert!(finished.ts >= started.ts);
+    let closing = finished.body.clone().expect("the run's outcome");
+    assert!(detail["run"].is_string(), "{detail}");
+    assert_eq!(
+        closing["run"], detail["run"],
+        "the two entries are one run's"
+    );
+    assert_eq!(closing["not_reached"], json!(0));
+}
+
+/// Shutting down stops a run between two customers, rather than wherever the
+/// process happens to be when it exits, and the run says whom it did not
+/// reach — in its result and in the trail. Nothing is written for a customer
+/// it did not reach, so the next run bills them as it would have.
+#[tokio::test]
+async fn a_billing_run_stopped_by_a_shutdown_says_whom_it_did_not_reach() {
+    let isp = Isp::start(false, &[]).await;
+    let tariff = isp
+        .tariff("Plan", 10, "flat", 2_500, "USD", "monthly")
+        .await;
+    for name in ["Late One", "Late Two"] {
+        let customer = isp.customer(name, "USD", json!({})).await;
+        isp.subscribe(&customer, &tariff, Some(at("2025-01-01T00:00:00Z")))
+            .await;
+    }
+    isp.app.shutdown();
+    let run = isp
+        .ok(
+            "isp.invoice.run",
+            over(november(), json!({"dry_run": false, "issue": true})),
+        )
+        .await;
+    assert_eq!(
+        (&run["considered"], &run["drafted"], &run["not_reached"]),
+        (&json!(0), &json!(0), &json!(2)),
+        "{run:#}"
+    );
+    assert!(
+        list(&run["warnings"]).iter().any(|warning| {
+            let warning = warning.as_str().unwrap_or_default();
+            warning.contains("shutting down") && warning.contains('2')
+        }),
+        "{:#}",
+        run["warnings"]
+    );
+    assert!(list(&isp.ok("isp.invoices", json!({})).await).is_empty());
+    let finished = isp
+        .audit_entries()
+        .into_iter()
+        .find(|entry| entry.source == "isp.invoice.run")
+        .expect("the run's closing entry");
+    assert!(finished.message.contains("stopped"), "{}", finished.message);
+    assert_eq!(
+        finished.body.expect("the run's outcome")["not_reached"],
+        json!(2)
+    );
+}
+
 #[tokio::test]
 async fn a_customer_named_twice_is_billed_once_and_an_unknown_one_stops_the_run_before_it_writes() {
     let isp = Isp::start(false, &[]).await;

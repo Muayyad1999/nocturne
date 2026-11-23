@@ -35,6 +35,34 @@ fn of_plugin<'a>(permissions: &'a [Value], plugin: &str) -> Vec<&'a Value> {
         .collect()
 }
 
+/// The whole list, not the two plugins the interface needs: a grant nobody
+/// asked for is the one that is never looked at again. `core:default` once
+/// let a script in the page emit `nocturne://event` — and the shell turned
+/// that into an operating-system notification for an alert no device ever
+/// raised — and `dialog:default` let it open native file dialogs.
+#[test]
+fn the_interface_is_granted_exactly_what_the_specification_lists() {
+    let permissions = permissions();
+    let granted: Vec<&str> = permissions.iter().map(identifier).collect();
+    assert_eq!(
+        granted,
+        [
+            // Receiving `nocturne://event`, and stopping.
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            // The keyboard shortcut for the inspector; it opens nothing in
+            // a release build, which has no inspector.
+            "core:webview:allow-internal-toggle-devtools",
+            // Asked by the notification plugin's own script on every page
+            // load; refused, it puts an error in the console. It answers
+            // yes or no and shows nothing.
+            "notification:allow-is-permission-granted",
+            "clipboard-manager:allow-read-text",
+            "opener:allow-open-url",
+        ]
+    );
+}
+
 #[test]
 fn the_interface_may_read_text_from_the_clipboard_and_nothing_more() {
     let permissions = permissions();

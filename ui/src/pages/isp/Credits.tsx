@@ -15,6 +15,12 @@
  *
  * The list mixes currencies, so the amount sorts within a currency and never
  * across them.
+ *
+ * Newest first, and Next continues after the last note on screen rather than
+ * after a count of them, so a note issued meanwhile does not bring rows of
+ * this page round again (`paging.ts`). The columns fit the smallest window
+ * the application supports, State and Reason included; where a note stands
+ * is a sentence that wraps rather than being cut short.
  */
 
 import { ReceiptText } from 'lucide-react';
@@ -36,6 +42,7 @@ import { useCalendar, useCredits, useCustomers, useInvoice } from './data';
 import { Amount, Words } from './Figures';
 import { InvoiceDrawer } from './InvoiceDrawer';
 import { moneySortKey } from './money';
+import { cursorAfter, cursorParam, usePages } from './paging';
 import styles from './isp.module.css';
 
 const PAGE = 50;
@@ -44,7 +51,7 @@ const NAMES = 2_000;
 
 export function Credits() {
   const [state, setState] = useState('');
-  const [offset, setOffset] = useState(0);
+  const pages = usePages(PAGE);
   const [issuing, setIssuing] = useState(false);
   const [voiding, setVoiding] = useState<CreditNote | null>(null);
   const [allocating, setAllocating] = useState<CreditNote | null>(null);
@@ -54,15 +61,16 @@ export function Credits() {
     () => ({
       ...(state === '' ? {} : { state: state as CreditState }),
       limit: PAGE,
-      ...(offset === 0 ? {} : { cursor: String(offset) }),
+      ...cursorParam(pages.walked),
     }),
-    [state, offset],
+    [state, pages.walked],
   );
 
   const credits = useCredits(params);
   const customers = useCustomers({ limit: NAMES });
   const calendar = useCalendar();
   const rows = credits.data ?? [];
+  const after = cursorAfter(rows, PAGE);
 
   const names = useMemo(() => {
     const index = new Map<string, string>();
@@ -75,21 +83,21 @@ export function Credits() {
       id: 'number',
       header: 'Credit note',
       required: true,
-      width: 150,
+      width: 125,
       sortValue: (row) => row.number,
       cell: (row) => <span className={styles.amount}>{row.number}</span>,
     },
     {
       id: 'at',
       header: 'Agreed',
-      width: 120,
+      width: 105,
       sortValue: (row) => row.at,
       cell: (row) => <span className={styles.amount}>{dayText(row.at, calendar)}</span>,
     },
     {
       id: 'customer',
       header: 'Customer',
-      width: 180,
+      width: 140,
       sortValue: (row) => names.get(row.customer_id) ?? row.customer_id,
       cell: (row) => (
         <Link to={`/isp/customer/${row.customer_id}`}>
@@ -100,7 +108,7 @@ export function Credits() {
     {
       id: 'amount',
       header: 'Writes off',
-      width: 140,
+      width: 120,
       align: 'right',
       sortValue: (row) => moneySortKey(row.amount),
       cell: (row) => <Amount money={row.amount} muted={row.state === 'void'} />,
@@ -108,12 +116,13 @@ export function Credits() {
     {
       id: 'standing',
       header: 'Stands',
-      // Wide enough for the whole sentence about a note on the account:
-      // cut short, "on the account" reads as a balance somebody can spend.
-      width: 400,
+      width: 210,
       cell: (row) =>
         row.invoice_id === null ? (
-          <Words title="Not money, and not yet a reduction of anything: set it against an invoice to reduce what that invoice says is outstanding.">
+          <Words
+            className={styles.wraps}
+            title="Not money, and not yet a reduction of anything: set it against an invoice to reduce what that invoice says is outstanding."
+          >
             {standingText(row)}
           </Words>
         ) : (
@@ -123,7 +132,7 @@ export function Credits() {
     {
       id: 'reason',
       header: 'Reason',
-      width: 220,
+      width: 170,
       cell: (row) => (
         <span>
           {row.reason}
@@ -134,7 +143,7 @@ export function Credits() {
     {
       id: 'state',
       header: 'State',
-      width: 170,
+      width: 120,
       sortValue: (row) => row.state,
       cell: (row) => (
         <Badge tone={creditStateWords(row).tone} variant="outline">
@@ -165,7 +174,7 @@ export function Credits() {
           value={state}
           onChange={(event) => {
             setState(event.target.value);
-            setOffset(0);
+            pages.reset();
           }}
           options={[
             { value: '', label: 'Issued and void' },
@@ -218,20 +227,22 @@ export function Credits() {
           <span className={styles.count}>
             {rows.length === 0
               ? 'nothing on this page'
-              : `${formatCount(offset + 1)}–${formatCount(offset + rows.length)}`}
+              : `${formatCount(pages.first)}–${formatCount(pages.first - 1 + rows.length)}`}
           </span>
           <ToolbarSpacer />
           <Button
             size="sm"
-            disabled={offset === 0 || credits.isFetching}
-            onClick={() => setOffset(Math.max(0, offset - PAGE))}
+            disabled={!pages.hasPrevious || credits.isFetching}
+            onClick={pages.previous}
           >
             Previous
           </Button>
           <Button
             size="sm"
-            disabled={rows.length < PAGE || credits.isFetching}
-            onClick={() => setOffset(offset + PAGE)}
+            disabled={after === null || credits.isFetching}
+            onClick={() => {
+              if (after !== null) pages.next(after);
+            }}
           >
             Next
           </Button>

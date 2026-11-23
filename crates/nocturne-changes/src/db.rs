@@ -168,6 +168,9 @@ pub fn list(app: &App, filter: &Filter) -> AppResult<Vec<ChangeSummary>> {
 #[derive(Default)]
 pub struct ChangesState {
     busy: Mutex<Busy>,
+    /// Held while a change's undo is looked for and created, or the change is
+    /// marked by one: two asked for at the same moment would each find none.
+    pub(crate) undoing: Mutex<()>,
 }
 
 #[derive(Default)]

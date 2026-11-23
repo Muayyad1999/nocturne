@@ -38,7 +38,9 @@ pub enum CounterSource {
 pub struct DeviceRuntime {
     /// The device's own notion of time at the previous reading.
     pub time_base: Option<TimeBase>,
-    /// The poller's clock at the previous reading, for `TimeBase::Wall`.
+    /// The poller's clock at the previous reading, as a reading of
+    /// [`Clock::monotonic_ms`]: the length of the interval where the device
+    /// says nothing finer about it ([`crate::rates::interval`]).
     pub counters_at: i64,
     pub interfaces: HashMap<String, IfCounters>,
     /// The read the counters above came from. The two sources run on
@@ -53,6 +55,12 @@ pub struct DeviceRuntime {
     pub last_cli_mono: Option<i64>,
     /// When SNMP interfaces were last handed to the collected-data store.
     pub last_collect_mono: Option<i64>,
+    /// When the per-class QoS statistics were last asked for, and what that
+    /// read left to subtract from. Apart from the interface counters above:
+    /// QoS comes off the command line on its own cadence, also on a device
+    /// whose interfaces come from SNMP every minute.
+    pub last_qos_mono: Option<i64>,
+    pub qos: crate::qos::QosRuntime,
     /// When the agent was last asked which ifIndex is which interface
     /// ([`crate::ifindex`]), and a fingerprint of the interface names the
     /// poll had read just before: other names are a reason to ask again.

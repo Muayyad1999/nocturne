@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 
 use nocturne_drivers::hier::{ConfigTree, Node, Syntax};
 
+use crate::redact::Hider;
+
 /// Every line of a configuration, each with the section it sits in.
 pub fn lines_of(tree: &ConfigTree) -> BTreeSet<String> {
     fn walk(nodes: &[Node], prefix: &str, out: &mut BTreeSet<String>) {
@@ -42,7 +44,14 @@ impl Differences {
     }
 
     /// A sentence for a check's detail, listing at most `limit` lines of each.
-    pub fn describe(&self, limit: usize) -> String {
+    ///
+    /// The lines that differ are as likely to be secrets as anything else in
+    /// a configuration (a key somebody else changed is exactly what makes a
+    /// device differ from its prediction), and this sentence ends up in a
+    /// stored record, an event and a job log. So it names each line with its
+    /// value hidden: which line differs is what a person needs, and the value
+    /// is on the device and in the backup.
+    pub fn describe(&self, limit: usize, hide: &Hider) -> String {
         let show = |label: &str, lines: &[String]| {
             if lines.is_empty() {
                 return String::new();
@@ -50,7 +59,7 @@ impl Differences {
             let shown: Vec<String> = lines
                 .iter()
                 .take(limit)
-                .map(|line| format!("`{line}`"))
+                .map(|line| format!("`{}`", hide.path(line)))
                 .collect();
             let more = lines.len().saturating_sub(shown.len());
             format!(
@@ -117,13 +126,27 @@ mod tests {
             differences.unexpected,
             vec!["interface Gi0/1 / description y"]
         );
+        let hide = Hider::for_patterns(&[]);
         assert!(
             differences
-                .describe(2)
+                .describe(2, &hide)
                 .contains("missing from the device: `interface Gi0/1 / description x`"),
             "{}",
-            differences.describe(2)
+            differences.describe(2, &hide)
         );
-        assert!(differences.describe(2).contains("and 1 more"));
+        assert!(differences.describe(2, &hide).contains("and 1 more"));
+    }
+
+    #[test]
+    fn a_line_that_differs_is_named_without_the_secret_in_it() {
+        let planned = "enable secret 5 $1$old0$OldEnab1eHashOldEnab1e\nline vty 0 4\n password Pl4inLinePw\n transport input ssh\n";
+        let found = "enable secret 5 $1$new0$NewEnab1eHashNewEnab1e\nline vty 0 4\n transport input ssh\nsnmp-server community Intrud3rRW RW\n";
+        let sentence =
+            differences_of(planned, found, Syntax::Ios).describe(8, &Hider::for_patterns(&[]));
+        assert_eq!(
+            sentence,
+            "missing from the device: `enable secret 5 <hidden>`, `line vty 0 4 / password <hidden>`; \
+             on the device but not predicted: `enable secret 5 <hidden>`, `snmp-server community <hidden> RW`"
+        );
     }
 }

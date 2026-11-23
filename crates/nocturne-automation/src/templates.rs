@@ -10,7 +10,7 @@ use std::sync::Arc;
 use nocturne_app::error::{AppError, AppResult};
 use nocturne_app::model::Device;
 use nocturne_app::util::{new_id, now_ms};
-use nocturne_app::{App, AppBuilder};
+use nocturne_app::{App, AppBuilder, inventory};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -120,10 +120,29 @@ fn coerce(variable: &Variable, value: Value) -> AppResult<Value> {
             if variable.kind == VariableKind::Interface && text.is_empty() {
                 return Err(bad("must name an interface"));
             }
-            // A rendered line break is a second configuration line. Free text
-            // may span lines (a banner does); an interface name never does.
+            // A rendered line break is a second configuration line, and an
+            // escape sequence moves somebody's cursor. Only text that says it
+            // spans lines (a banner) may have line breaks, and nothing else.
             if variable.kind == VariableKind::Interface && text.contains(char::is_control) {
                 return Err(bad("must be one interface name, on one line"));
+            }
+            if variable.kind == VariableKind::String && variable.multiline {
+                // A text box on Windows ends its lines with CR LF.
+                let text = text.replace("\r\n", "\n");
+                if text.contains(|c: char| c.is_control() && c != '\n') {
+                    return Err(bad(
+                        "may span lines, but holds another control character (a carriage \
+                         return, a tab or an escape sequence), which has no place in \
+                         configuration",
+                    ));
+                }
+                return Ok(Value::String(text));
+            }
+            if text.contains(char::is_control) {
+                return Err(bad(
+                    "must be one line of text: a line break in it would be a second line of \
+                     configuration, and other control characters have no place in one",
+                ));
             }
             if variable.kind == VariableKind::Choice
                 && !variable
@@ -186,18 +205,38 @@ fn coerce(variable: &Variable, value: Value) -> AppResult<Value> {
                 )),
             }
         }
-        VariableKind::List => match value {
-            Value::Array(items) => Ok(Value::Array(items)),
-            // A comma- or space-separated string is what a text box gives.
-            Value::String(text) => Ok(Value::Array(
-                text.split([',', ' ', ';'])
+        VariableKind::List => {
+            let items = match value {
+                Value::Array(items) => items,
+                // A comma- or space-separated string is what a text box gives.
+                Value::String(text) => text
+                    .split([',', ' ', ';'])
                     .map(str::trim)
                     .filter(|item| !item.is_empty())
                     .map(|item| Value::String(item.to_string()))
                     .collect(),
-            )),
-            other => Ok(Value::Array(vec![other])),
-        },
+                other => vec![other],
+            };
+            if items.iter().any(holds_control) {
+                return Err(bad(
+                    "must be values of one line each: a line break in one would be a second \
+                     line of configuration",
+                ));
+            }
+            Ok(Value::Array(items))
+        }
+    }
+}
+
+/// Does any text in this value, however deep, hold a control character?
+fn holds_control(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.contains(char::is_control),
+        Value::Array(items) => items.iter().any(holds_control),
+        Value::Object(object) => object
+            .iter()
+            .any(|(key, value)| key.contains(char::is_control) || holds_control(value)),
+        _ => false,
     }
 }
 
@@ -223,17 +262,20 @@ pub struct Rendered {
 
 /// Render a body for every device, reporting per device rather than failing
 /// the lot: one switch with nothing collected must not hide the other forty.
+/// The devices share `budget`, so one call never renders more than
+/// [`render::TOTAL_BYTES`] for all of them together.
 pub fn render_for(
     app: &App,
     body: &str,
     devices: &[Device],
     vars: &Map<String, Value>,
+    budget: &render::Budget,
 ) -> Vec<Rendered> {
     devices
         .iter()
         .map(|device| {
             let outcome = render::context(app, device, vars)
-                .and_then(|context| render::render(body, &context));
+                .and_then(|context| render::render(body, &context, budget));
             match outcome {
                 Ok(lines) => Rendered {
                     device_id: device.id.clone(),
@@ -254,21 +296,63 @@ pub fn render_for(
         .collect()
 }
 
-/// Devices the template is not written for.
-fn wrong_profile<'a>(template: &Template, devices: &'a [Device]) -> Vec<&'a Device> {
+/// [`render_for`] with a budget of its own, on a thread of the blocking pool:
+/// a rendering is bounded, but it is still work that should not hold one of
+/// the threads every other request is answered on.
+pub async fn render_all(
+    app: &App,
+    body: String,
+    devices: Vec<Device>,
+    vars: Map<String, Value>,
+) -> AppResult<Vec<Rendered>> {
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || {
+        render_for(&app, &body, &devices, &vars, &render::Budget::new())
+    })
+    .await
+    .map_err(|_| AppError::internal("the rendering stopped unexpectedly"))
+}
+
+/// Refuse a template for devices it is not written for, by the device type
+/// the rendering sees: the one a device is set to, or else the detected one.
+/// A device whose type nothing has said yet is refused too, because "not
+/// known" is not "any".
+pub fn written_for(app: &App, template: &Template, devices: &[Device]) -> AppResult<()> {
     if template.profiles.is_empty() {
-        return Vec::new();
+        return Ok(());
     }
-    devices
-        .iter()
-        .filter(|device| {
-            !device.profile.is_empty()
-                && !template
+    let mut other = Vec::new();
+    let mut unknown = Vec::new();
+    for device in devices {
+        let state = inventory::state_of(app, &device.id)?;
+        match render::profile_of(device, &state) {
+            Some(profile)
+                if template
                     .profiles
                     .iter()
-                    .any(|profile| profile.eq_ignore_ascii_case(&device.profile))
-        })
-        .collect()
+                    .any(|wanted| wanted.eq_ignore_ascii_case(&profile)) => {}
+            Some(profile) => other.push(format!("{} ({profile})", device.name)),
+            None => unknown.push(device.name.clone()),
+        }
+    }
+    if !other.is_empty() {
+        return Err(AppError::invalid(format!(
+            "`{}` is written for {} and these devices are not: {}",
+            template.name,
+            template.profiles.join(", "),
+            other.join(", ")
+        )));
+    }
+    if !unknown.is_empty() {
+        return Err(AppError::invalid(format!(
+            "`{}` is written for {}, and what these devices are is not known yet: {}. Set \
+             each one's device type, or let Nocturne reach it once so that it is detected",
+            template.name,
+            template.profiles.join(", "),
+            unknown.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 // --------------------------------------------------------------------- rpc
@@ -355,21 +439,9 @@ pub struct ApplyParams {
 pub async fn apply(app: &App, params: ApplyParams) -> AppResult<Value> {
     let template = get(app, &params.template_id)?;
     let devices = select::resolve(app, &params.select)?;
-    let mismatched = wrong_profile(&template, &devices);
-    if !mismatched.is_empty() {
-        return Err(AppError::invalid(format!(
-            "`{}` is written for {} and these devices are not: {}",
-            template.name,
-            template.profiles.join(", "),
-            mismatched
-                .iter()
-                .map(|device| format!("{} ({})", device.name, device.profile))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
+    written_for(app, &template, &devices)?;
     let vars = bind(&template.variables, &params.vars)?;
-    let rendered = render_for(app, &template.body, &devices, &vars);
+    let rendered = render_all(app, template.body.clone(), devices.clone(), vars).await?;
     if let Some(failed) = rendered.iter().find(|item| !item.ok) {
         return Err(AppError::invalid(format!(
             "`{}`: {}",
@@ -651,7 +723,7 @@ pub fn register(builder: &mut AppBuilder) {
             };
             let devices = select::resolve(&app, &params.select)?;
             let vars = bind(&variables, &params.vars)?;
-            Ok(render_for(&app, &body, &devices, &vars))
+            render_all(&app, body, devices, vars).await
         },
     );
 

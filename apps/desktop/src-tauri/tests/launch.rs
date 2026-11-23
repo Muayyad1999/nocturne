@@ -5,9 +5,11 @@
 //! it can be seen from inside one. So these start the built binary, on a
 //! display, and look at its windows.
 //!
-//! They are ignored by default, because they need what a build machine may
-//! not have: a display, a session bus (that is how a second launch finds the
-//! first on Linux) and `xdotool` to see and press things. Run them with
+//! All but the first are ignored by default, because they need what a build
+//! machine may not have: a display, a session bus (that is how a second
+//! launch finds the first on Linux) and `xdotool` to see and press things.
+//! The first is about having no display, and runs everywhere. Run the others
+//! with
 //!
 //! ```bash
 //! xvfb-run -a dbus-run-session -- cargo test -p nocturne-desktop --test launch -- --ignored
@@ -235,6 +237,67 @@ fn entries(folder: &Path) -> Vec<String> {
             .collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// The one start in this file that needs nothing from the machine: no
+/// display is the point of it, so it runs with every `cargo test`.
+#[test]
+fn without_a_display_the_reason_is_in_the_log_file_and_the_start_ends_in_failure() {
+    let home = tempfile::tempdir().expect("a temporary directory");
+    let data = home.path().join("data");
+    let runtime = home.path().join("runtime");
+    std::fs::create_dir(&runtime).expect("a runtime folder");
+    let mut child = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(&data)
+        // Nothing to draw on: no X server, no Wayland compositor (an empty
+        // runtime folder holds no Wayland socket to fall back on), and GTK
+        // told to look for X11 only.
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env("GDK_BACKEND", "x11")
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path().join("share"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env_remove("NOCTURNE_DATA_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the built program starts");
+    let deadline = Instant::now() + STARTS_WITHIN;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("a child to ask about") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("the program is still running without a display");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(
+        &mut child.stderr.take().expect("stderr was piped"),
+        &mut stderr,
+    )
+    .expect("stderr is text");
+
+    // A panic ends with 101; not starting is an ordinary failure, said as one.
+    assert_eq!(status.code(), Some(1), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("Nocturne cannot start"),
+        "stderr:\n{stderr}"
+    );
+    // Started from a launcher there is no terminal: the log file is where
+    // anybody can find out why nothing appeared.
+    let log = logged(&data);
+    assert!(
+        log.contains("Nocturne cannot start") && log.contains("window system"),
+        "the reason is not in the log file:\n{log}"
+    );
 }
 
 #[test]

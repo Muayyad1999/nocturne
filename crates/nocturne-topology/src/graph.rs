@@ -52,17 +52,21 @@ impl Options {
     }
 }
 
-/// Call another feature's RPC method, tolerating a build without it.
-async fn optional_rpc(app: &App, method: &str, params: Value) -> Option<Value> {
-    match app.rpc(method, params).await {
-        Ok(value) => Some(value),
-        Err(err) => {
-            if err.code != "unknown_method" {
-                tracing::debug!(method, code = err.code, "topology: {}", err.message);
-            }
-            None
-        }
-    }
+/// How the warnings about another feature that failed to answer begin. A
+/// build without the feature is carried on without in silence; one whose
+/// feature refused leaves the drawing short of something that would
+/// otherwise look like nothing — no alert on a device, no load on a link —
+/// and says so. These name no device, because they are true of all of them.
+pub(crate) const ALERTS_UNREAD: &str = "open alerts could not be read";
+pub(crate) const UTILISATION_UNREAD: &str = "link utilisation could not be read";
+pub(crate) const LAB_UNREAD: &str = "the lab feature's wiring could not be read";
+
+/// A warning about the whole drawing rather than about some devices in it:
+/// `topology.neighbors` keeps these, although they name no device.
+pub(crate) fn about_every_device(warning: &str) -> bool {
+    [ALERTS_UNREAD, UTILISATION_UNREAD, LAB_UNREAD]
+        .iter()
+        .any(|start| warning.starts_with(start))
 }
 
 /// Build the graph the options ask for.
@@ -77,8 +81,8 @@ pub async fn build(app: &App, options: &Options) -> AppResult<Graph> {
         .map(|row| row.device.id.clone())
         .collect();
 
-    let alerts = open_alerts(app).await;
-    let mut warnings: Vec<String> = Vec::new();
+    let (alerts, alerts_unread) = open_alerts(app).await;
+    let mut warnings: Vec<String> = alerts_unread.into_iter().collect();
     let mut links: Vec<Link>;
     let mut groups: Vec<Group> = Vec::new();
     let mut nodes: Vec<Node> = Vec::new();
@@ -208,7 +212,7 @@ pub async fn build(app: &App, options: &Options) -> AppResult<Graph> {
     // Only keep links whose ends we actually have nodes for.
     let known: BTreeSet<String> = nodes.iter().map(|node| node.id.clone()).collect();
     links.retain(|link| known.contains(&link.a.node) && known.contains(&link.b.node));
-    decorate(app, &mut links, &collected, &config).await;
+    warnings.extend(decorate(app, &mut links, &collected, &config).await);
     links.sort_by_key(Link::signature);
     links.dedup_by(|a, b| a.signature() == b.signature());
 
@@ -379,8 +383,19 @@ async fn lab_links(
     collected: &Collected,
     scope: &BTreeSet<String>,
 ) -> (Vec<Link>, Vec<String>) {
-    let Some(rows) = optional_rpc(app, "labs.links", json!({})).await else {
-        return (Vec::new(), Vec::new());
+    let rows = match app.rpc("labs.links", json!({})).await {
+        Ok(rows) => rows,
+        Err(err) if err.code == "unknown_method" => return (Vec::new(), Vec::new()),
+        Err(err) => {
+            return (
+                Vec::new(),
+                vec![format!(
+                    "{LAB_UNREAD} ({}): links between lab devices are drawn from what the devices \
+                     report, and may be missing",
+                    err.message
+                )],
+            );
+        }
     };
     let Some(rows) = rows.as_array() else {
         return (Vec::new(), Vec::new());
@@ -595,18 +610,26 @@ fn member_speed(collected: &Collected, link: &Link) -> Option<u64> {
 }
 
 /// Fill in what the collected interfaces (and the monitor, when it is in the
-/// build) know about each link.
-async fn decorate(app: &App, links: &mut [Link], collected: &Collected, config: &Settings) {
-    let monitored = if config.use_monitor_utilisation {
+/// build) know about each link. Returns the warning for a monitor that was
+/// asked and could not answer.
+async fn decorate(
+    app: &App,
+    links: &mut [Link],
+    collected: &Collected,
+    config: &Settings,
+) -> Option<String> {
+    let (monitored, unread) = if config.use_monitor_utilisation {
         monitored_ports(app, links, collected).await
     } else {
-        None
+        (None, None)
     };
     for link in links.iter_mut() {
         let mut speeds: Vec<u64> = Vec::new();
         let mut states: Vec<Option<bool>> = Vec::new();
         let mut vlans: Option<String> = None;
-        let mut util: Option<f64> = None;
+        // The busier end's reading, with when it was taken: the figure is
+        // one poll of one port, and its age is that poll's.
+        let mut util: Option<(f64, Option<i64>)> = None;
         for end in [&link.a, &link.b] {
             let Some(name) = &end.interface else { continue };
             if !collected.interfaces.contains_key(&end.node) {
@@ -621,12 +644,13 @@ async fn decorate(app: &App, links: &mut [Link], collected: &Collected, config: 
                     vlans = vlans_of(collected, &end.node, name, interface);
                 }
             }
-            if let Some(value) = monitored
+            if let Some(port) = monitored
                 .as_ref()
                 .and_then(|ports| ports.get(&end.node, name))
-                .and_then(|port| port.util_pct)
+                && let Some(value) = port.util_pct
+                && util.is_none_or(|(known, _)| value > known)
             {
-                util = Some(util.map_or(value, |known: f64| known.max(value)));
+                util = Some((value, port.at));
             }
         }
         if link.speed_bps.is_none() {
@@ -636,8 +660,11 @@ async fn decorate(app: &App, links: &mut [Link], collected: &Collected, config: 
             // the same bundle, so adding them up would count it twice.
             link.speed_bps = speeds.into_iter().min();
         }
-        if link.util_pct.is_none() {
-            link.util_pct = util;
+        if link.util_pct.is_none()
+            && let Some((value, at)) = util
+        {
+            link.util_pct = Some(value);
+            link.util_at = at;
         }
         if link.vlans.is_none() {
             link.vlans = vlans;
@@ -652,6 +679,7 @@ async fn decorate(app: &App, links: &mut [Link], collected: &Collected, config: 
             };
         }
     }
+    unread
 }
 
 /// The VLANs an interface carries, from the collected VLAN table, falling back
@@ -681,17 +709,24 @@ fn vlans_of(
 }
 
 /// How many alerts are open against each device, when the monitor feature is
-/// in the build. Absent is "nobody is watching", not "none".
-async fn open_alerts(app: &App) -> BTreeMap<String, u32> {
+/// in the build — and, when it is there and could not say, the warning that
+/// takes the place of the counts. A device with no count is drawn without a
+/// badge, which is also how a device with no open alert is drawn: without the
+/// warning, a read that failed would show every card clean.
+async fn open_alerts(app: &App) -> (BTreeMap<String, u32>, Option<String>) {
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
     // Read to the end: a count taken from the first page alone gives a device
     // whose alerts are further down a clean card.
     let rows = match paged::rows(app, "alerts.list", &json!({"state": "open"}), ALERTS_PAGE).await {
         Ok(Some(rows)) => rows,
-        Ok(None) => return counts,
+        Ok(None) => return (counts, None),
         Err(err) => {
-            tracing::debug!(code = err.code, "topology: {}", err.message);
-            return counts;
+            let warning = format!(
+                "{ALERTS_UNREAD} ({}), so no device shows how many it has: a device drawn \
+                 without a count may still have alerts open",
+                err.message
+            );
+            return (counts, Some(warning));
         }
     };
     // The pages are cut by offset, newest first: an alert that fires while
@@ -708,14 +743,19 @@ async fn open_alerts(app: &App) -> BTreeMap<String, u32> {
             *counts.entry(device_id.to_string()).or_default() += 1;
         }
     }
-    counts
+    (counts, None)
 }
 
 /// What monitoring last measured on the ports these links end on, when the
 /// monitor feature is in the build and answers. Utilisation is a decoration
 /// on the graph: a monitor that refuses costs the drawing a number, not the
-/// drawing.
-async fn monitored_ports(app: &App, links: &[Link], collected: &Collected) -> Option<rates::Ports> {
+/// drawing — and a warning, so that the missing number is not taken for an
+/// unmeasured link.
+async fn monitored_ports(
+    app: &App,
+    links: &[Link],
+    collected: &Collected,
+) -> (Option<rates::Ports>, Option<String>) {
     // The same ends `decorate` goes on to look up: a named port of a device
     // whose interfaces were collected. Nothing else is worth a read.
     let devices: BTreeSet<String> = links
@@ -725,14 +765,17 @@ async fn monitored_ports(app: &App, links: &[Link], collected: &Collected) -> Op
         .map(|end| end.node.clone())
         .collect();
     if devices.is_empty() {
-        return None;
+        return (None, None);
     }
     match rates::read(app, &devices).await {
-        Ok(ports) => ports,
-        Err(err) => {
-            tracing::debug!(code = err.code, "topology: {}", err.message);
-            None
-        }
+        Ok(ports) => (ports, None),
+        Err(err) => (
+            None,
+            Some(format!(
+                "{UTILISATION_UNREAD} from monitoring ({}), so no link shows it",
+                err.message
+            )),
+        ),
     }
 }
 

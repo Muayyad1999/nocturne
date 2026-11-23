@@ -155,16 +155,30 @@ pub async fn run(
         .and_then(Value::as_str)
         .map(str::to_string);
     if !dry_run {
-        let mut task = task.clone();
         let state = app.state::<AutomationState>();
-        task.last_run_at = Some(state.now_ms());
-        task.last_run_id = run_id.clone();
-        task.last_ok = None;
-        app.store().put(db::TASKS, &task.id, &task)?;
-        app.publish("tasks.changed", &task);
-        if let Some(job_id) = job_id.clone() {
+        // Onto the task as it is stored now, not the copy this run started
+        // with: a template or an Ansible task can take minutes to get here,
+        // and a task deleted or edited meanwhile stays the way it was left.
+        let stored = {
+            let _records = state.records();
+            match app.store().get::<Task>(db::TASKS, &task.id)? {
+                Some(mut stored) => {
+                    stored.last_run_at = Some(state.now_ms());
+                    stored.last_run_id = run_id.clone();
+                    stored.last_ok = None;
+                    app.store().put(db::TASKS, &stored.id, &stored)?;
+                    Some(stored)
+                }
+                None => None,
+            }
+        };
+        if let Some(stored) = &stored {
+            app.publish("tasks.changed", stored);
+        }
+        if let (Some(job_id), Some(_)) = (job_id.clone(), stored) {
             // Record the outcome when it is known, without holding the caller.
             let app = app.clone();
+            let task_id = task.id.clone();
             tokio::spawn(async move {
                 let job = jobs::wait(&app, &job_id).await;
                 let ok = job
@@ -177,9 +191,22 @@ pub async fn run(
                         .and_then(|id| db::get_run(&app, id).ok())
                         .map(|run| run.failed == 0 && run.unreached == 0)
                         .unwrap_or(true);
-                if let Ok(mut stored) = db::task(&app, &task.id) {
-                    stored.last_ok = Some(ok);
-                    let _ = app.store().put(db::TASKS, &stored.id, &stored);
+                let recorded = {
+                    let state = app.state::<AutomationState>();
+                    let _records = state.records();
+                    match db::task(&app, &task_id) {
+                        // Only while this is still the task's last run.
+                        Ok(mut stored) if stored.last_run_id == run_id => {
+                            stored.last_ok = Some(ok);
+                            app.store()
+                                .put(db::TASKS, &stored.id, &stored)
+                                .ok()
+                                .map(|_| stored)
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(stored) = recorded {
                     app.publish("tasks.changed", &stored);
                 }
             });
@@ -243,6 +270,8 @@ pub fn register(builder: &mut AppBuilder) {
 
     router.add("tasks.save", |app: App, params: SaveParams| async move {
         let name = db::require_name(&params.name, "task")?;
+        let state = app.state::<AutomationState>();
+        let records = state.records();
         let existing = params
             .id
             .as_ref()
@@ -269,6 +298,7 @@ pub fn register(builder: &mut AppBuilder) {
         };
         check(&app, &task)?;
         app.store().put(db::TASKS, &task.id, &task)?;
+        drop(records);
         app.audit(
             "tasks.save",
             None,
@@ -280,8 +310,13 @@ pub fn register(builder: &mut AppBuilder) {
     });
 
     router.add("tasks.delete", |app: App, params: IdParams| async move {
-        let task = db::task(&app, &params.id)?;
-        app.store().delete(db::TASKS, &params.id)?;
+        let task = {
+            let state = app.state::<AutomationState>();
+            let _records = state.records();
+            let task = db::task(&app, &params.id)?;
+            app.store().delete(db::TASKS, &params.id)?;
+            task
+        };
         app.audit(
             "tasks.delete",
             None,

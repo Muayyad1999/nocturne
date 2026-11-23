@@ -686,6 +686,9 @@ fn every_new_tool(customers: usize) -> Vec<Step> {
         Step::tool("get_evidence", json!({"id": "ev-text"})),
         Step::tool("discovery_results", json!({"only_new": false})),
         Step::tool("automation_runs", json!({})),
+        Step::tool("qos_status", json!({})),
+        Step::tool("top_talkers", json!({"by": "application"})),
+        Step::tool("list_snippets", json!({"device": "SW1"})),
         Step::tool("isp_overview", json!({})),
         Step::tool("isp_customers", json!({"limit": customers})),
         Step::tool("isp_invoices", json!({})),
@@ -700,7 +703,7 @@ fn every_new_tool(customers: usize) -> Vec<Step> {
 /// tests are about what comes back, not about how soon.
 const SLOW: Duration = Duration::from_secs(240);
 
-const READS: usize = 17;
+const READS: usize = 20;
 const ROWS: usize = 20;
 const CHARS: usize = 3_000;
 

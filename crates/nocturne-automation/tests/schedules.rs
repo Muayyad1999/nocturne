@@ -3,7 +3,8 @@
 
 mod common;
 
-use common::{Scans, lab, lab_at, tick, tick_until};
+use common::{Gate, Scans, app_on, crash_copy, eventually, lab, lab_at, tick, tick_until};
+use nocturne_automation::clock::Clock;
 use nocturne_automation::db;
 use nocturne_automation::state::AutomationState;
 use serde_json::{Value, json};
@@ -370,4 +371,152 @@ async fn a_schedule_can_run_a_task_and_the_run_says_a_schedule_started_it() {
             .any(|line| line == "show version"),
         "the task really ran"
     );
+}
+
+// ------------------------------------------- what a run in flight leaves
+
+fn gate(app: &nocturne_app::App) -> std::sync::Arc<Gate> {
+    app.state::<Gate>()
+}
+
+fn stored(app: &nocturne_app::App, id: &str) -> Option<Value> {
+    app.store()
+        .get::<Value>(db::SCHEDULES, id)
+        .expect("the store answers")
+}
+
+/// A schedule on `discovery.scan`, which answers only when the test lets it,
+/// due at the scheduler's next tick.
+async fn held(app: &nocturne_app::App, now: i64) -> String {
+    let saved = app
+        .rpc(
+            "schedules.save",
+            json!({"name": "Hourly discovery", "when": {"type": "interval", "every_s": 3600},
+                   "action": {"method": "discovery.scan", "params": {}}}),
+        )
+        .await
+        .expect("schedules.save");
+    let id = saved["id"].as_str().expect("an id").to_string();
+    let mut due = stored(app, &id).expect("it was stored");
+    due["next_run_at"] = json!(now - 1000);
+    app.store().put(db::SCHEDULES, &id, &due).expect("stored");
+    id
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_schedule_whose_action_is_still_going_has_already_moved_on_to_its_next_slot() {
+    let (lab, clock) = lab_at(&["SW1"], MONDAY).await;
+    let id = held(&lab.app, MONDAY).await;
+    tick_until(5, || gate(&lab.app).calls() == 1).await;
+
+    // The action has not answered. If the process ended now, this is what the
+    // next start would find: the slot it is running is spent, and the run is
+    // recorded as started with no outcome yet.
+    let during = stored(&lab.app, &id).expect("still there");
+    let started = during["last_run_at"]
+        .as_i64()
+        .expect("the run's start is recorded");
+    assert!(started >= MONDAY);
+    assert_eq!(
+        during["next_run_at"],
+        json!(started + 3_600_000),
+        "the next slot is an hour after this run, not the one being run: {during}"
+    );
+    assert!(during["last_ok"].is_null(), "no outcome yet: {during}");
+
+    gate(&lab.app).open(1);
+    tick_until(5, || {
+        stored(&lab.app, &id).is_some_and(|schedule| schedule["last_ok"] == json!(true))
+    })
+    .await;
+    let after = stored(&lab.app, &id).expect("still there");
+    assert_eq!(after["last_run_at"], json!(started));
+    assert!(after["next_run_at"].as_i64().expect("a next run") > clock.now_ms());
+}
+
+#[tokio::test]
+async fn a_scheduled_run_the_process_did_not_live_through_is_not_started_again_when_it_comes_back()
+{
+    let dir = tempfile::tempdir().expect("a data directory");
+    let app = app_on(dir.path());
+    let id = held(&app, nocturne_app::util::now_ms()).await;
+    eventually(10, || gate(&app).calls() == 1).await;
+
+    // The action never answers: the process ends here, and what it left on
+    // disk is what the next start opens.
+    let left = crash_copy(dir.path());
+    let restarted = app_on(left.path());
+    // Three of the scheduler's one-second ticks.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        gate(&restarted).calls(),
+        0,
+        "the slot was spent before the action was called, so it is not due again"
+    );
+    let after = stored(&restarted, &id).expect("the schedule is still there");
+    assert_eq!(after["last_ok"], json!(false), "{after}");
+    assert!(
+        after["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Nocturne was closed")),
+        "it says why there is no outcome: {after}"
+    );
+    assert!(after["next_run_at"].as_i64().expect("a next run") > nocturne_app::util::now_ms());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_schedule_deleted_while_it_runs_stays_deleted() {
+    let (lab, _clock) = lab_at(&["SW1"], MONDAY).await;
+    let id = held(&lab.app, MONDAY).await;
+    tick_until(5, || gate(&lab.app).calls() == 1).await;
+
+    lab.app
+        .rpc("schedules.delete", json!({"id": id}))
+        .await
+        .expect("schedules.delete");
+    gate(&lab.app).open(1);
+    let state = lab.app.state::<AutomationState>();
+    tick_until(5, || !state.is_firing(&id)).await;
+
+    assert!(
+        stored(&lab.app, &id).is_none(),
+        "the run did not bring it back"
+    );
+    tick(7200).await;
+    assert_eq!(gate(&lab.app).calls(), 1, "and it never ran again");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_schedule_switched_off_while_it_runs_stays_off_and_still_records_the_run() {
+    let (lab, _clock) = lab_at(&["SW1"], MONDAY).await;
+    let id = held(&lab.app, MONDAY).await;
+    tick_until(5, || gate(&lab.app).calls() == 1).await;
+
+    lab.app
+        .rpc(
+            "schedules.save",
+            json!({"id": id, "name": "Renamed while it ran", "enabled": false,
+                   "when": {"type": "interval", "every_s": 3600},
+                   "action": {"method": "discovery.scan", "params": {}}}),
+        )
+        .await
+        .expect("schedules.save");
+    gate(&lab.app).open(1);
+    let state = lab.app.state::<AutomationState>();
+    tick_until(5, || !state.is_firing(&id)).await;
+
+    let after = stored(&lab.app, &id).expect("still there");
+    assert_eq!(after["enabled"], json!(false), "{after}");
+    assert_eq!(after["name"], json!("Renamed while it ran"));
+    assert!(
+        after["next_run_at"].is_null(),
+        "a schedule that is off has no next run"
+    );
+    assert_eq!(
+        after["last_ok"],
+        json!(true),
+        "the run that was going is recorded"
+    );
+    tick(7200).await;
+    assert_eq!(gate(&lab.app).calls(), 1, "and it does not run again");
 }

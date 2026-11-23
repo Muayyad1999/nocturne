@@ -297,13 +297,16 @@ pub const HIDDEN_ELSEWHERE: &str = "<hidden>";
 
 /// Take the numbers off placeholders that are not this chat's.
 ///
-/// Evidence, incident timelines and handovers are redacted by the feature
-/// that stores them, with placeholders numbered in *its* table. To a model
-/// they look exactly like this chat's — and a `<secret:1>` it copied out of
-/// an evidence item into a line it proposes would be restored to whatever
-/// this chat's first secret happens to be: the wrong value, sent towards a
-/// device. So before this chat's own redaction runs over such an answer,
-/// every placeholder in it becomes a marker that restores to nothing.
+/// A stored configuration, a change, a terminal screen, a log line, an
+/// evidence item, an incident's timeline: each is redacted by the feature
+/// that holds it, with placeholders numbered in *its* table — one table per
+/// answer, for most of them. To a model they look exactly like this chat's,
+/// and a `<secret:1>` it copied out of one into a line it proposes would be
+/// restored to whatever this chat's first secret happens to be: the wrong
+/// value, sent towards a device, under a plan a person reads with that value
+/// hidden. No feature ever holds this chat's table, so every placeholder in
+/// an answer is foreign, and before this chat's own redaction runs over the
+/// answer each becomes a marker that restores to nothing.
 pub fn without_foreign_placeholders(value: &Value) -> Value {
     match value {
         Value::String(text) => Value::String(strip_placeholders(text)),
@@ -317,6 +320,11 @@ pub fn without_foreign_placeholders(value: &Value) -> Value {
         ),
         other => other.clone(),
     }
+}
+
+/// As [`without_foreign_placeholders`], for one text (an error's message).
+pub fn hide_foreign_placeholders(text: &str) -> String {
+    strip_placeholders(text)
 }
 
 fn strip_placeholders(text: &str) -> String {

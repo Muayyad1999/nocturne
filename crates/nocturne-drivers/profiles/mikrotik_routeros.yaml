@@ -445,15 +445,50 @@ collect:
         dropped_packets: dropped
         queued_packets: queued_packets
 
+# SNMP health. `maturity: verified` above speaks for the command-line reads:
+# no SNMP walk recorded from a RouterOS device is in this repository. This
+# block is written from MikroTik's own MIB (mikrotik.mib of RouterOS 6.49.17,
+# revision 2020-10-08, and of 7.25.1, revision 2026-09-01), from
+# HOST-RESOURCES-MIB (RFC 2790) and from the OIDs RouterOS prints with
+# `/system resource print oid`, all read on 2026-11-23. The monitor's tests
+# read it against rows written by hand in the layout published recordings of
+# real routers show. Nobody has pointed it at a router.
 snmp:
   cpu:
-    - 1.3.6.1.2.1.25.3.3.1.2        # hrProcessorLoad, per core
+    - 1.3.6.1.2.1.25.3.3.1.2                    # hrProcessorLoad: percent of the last minute each core was not idle, one row per core; their mean is the router's load
+  # Memory is one row of hrStorageTable. From RouterOS 5.0 it is row 65536
+  # ("main memory", 1024-byte units): the two OIDs `/system resource print oid`
+  # prints as used-memory and total-memory. On 4.x and older that row does not
+  # exist and memory is unknown, rather than the disk that is row 1 there.
+  # The row is named, not chosen by hrStorageType: RouterOS 6.17 and 6.26 type
+  # it hrStorageOther. No memory_free: hrStorageUsed is what is allocated,
+  # never what is free, and MikroTik's own MIB has no memory object at all.
   memory_used:
-    - 1.3.6.1.4.1.14988.1.1.1.4.1.3 # mtxrHlMemoryUsed (older boards)
-  memory_free:
-    - 1.3.6.1.2.1.25.2.3.1.6        # hrStorageUsed over the memory entry
+    - instance: 1.3.6.1.2.1.25.2.3.1.6.65536    # hrStorageUsed.65536
   memory_total:
-    - 1.3.6.1.4.1.14988.1.1.1.4.1.4 # mtxrHlMemoryTotal
+    - instance: 1.3.6.1.2.1.25.2.3.1.5.65536    # hrStorageSize.65536 (not hrMemorySize.0: one published recording has the two disagree)
+  # The health gauge table (added around RouterOS 6.47), rows whose unit is
+  # celsius(1), in whole degrees. The same column carries rpm, dV, dA, dW and
+  # status rows: never list it without the test. The MIB of 6.49.17 and of
+  # 7.11 types the column Gauge32, and 7.12 made it Integer32 (its changelog:
+  # "snmp - changed mtxrGaugeValue type to integer"). Before that, a
+  # temperature below zero arrives as its 32-bit two's complement (a forum
+  # report from 7.6: -1 °C as 4294967295); `signed` reads it back as the
+  # negative number it is.
   temperature:
-    - 1.3.6.1.4.1.14988.1.1.3.10    # mtxrHlTemperature, tenths of a degree
-    - 1.3.6.1.4.1.14988.1.1.3.11    # mtxrHlProcessorTemperature
+    - oid: 1.3.6.1.4.1.14988.1.1.3.100.1.3      # mtxrGaugeValue
+      signed: true
+      where:
+        - {oid: 1.3.6.1.4.1.14988.1.1.3.100.1.4, is: 1}   # mtxrGaugeUnit = celsius(1)
+    # A board older than the gauge table has only these two scalars, in
+    # tenths of a degree (the MIB's Temperature, DISPLAY-HINT "d-1"). A board
+    # that has the table serves them too, for the same sensors, so they are
+    # read only where the table gave no temperature.
+    - oid: 1.3.6.1.4.1.14988.1.1.3.10.0         # mtxrHlTemperature.0
+      scale: 0.1
+      label: temperature
+      fallback: true
+    - oid: 1.3.6.1.4.1.14988.1.1.3.11.0         # mtxrHlProcessorTemperature.0
+      scale: 0.1
+      label: cpu-temperature
+      fallback: true

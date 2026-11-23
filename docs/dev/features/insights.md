@@ -34,18 +34,62 @@ struct Insight { id,                               // stable: hash of (check, de
 
 | Method | Params → Result |
 |---|---|
-| `insights.scan` | `{device_ids?, checks?}` → `{job_id}` (also runs automatically, debounced, after `collect.updated` and `config.changed` for the affected device) |
+| `insights.scan` | `{device_ids?, checks?}` → `{job_id}` (also runs automatically, debounced, after `collect.updated` and `config.changed` for the affected device). `checks` runs those checks, switched off or not; the job's result is `{devices, opened, resolved, open, findings, checks_run, took_ms, settings_problems}`, and the job's log has a warning for each setting that could not be used |
 | `insights.list` | `{state?: open, severity?, category?, check?, device_id?, query?, limit?, cursor?}` → `{insights, counts: {by_severity, by_category}}` |
 | `insights.get` | `{id}` |
 | `insights.dismiss` | `{id, days?: null /* forever */, note?}` / `insights.reopen {id}` |
-| `insights.checks` | → `[{id, title, category, default_severity, needs: [kinds], enabled, description}]` — the catalogue, with what data each needs |
-| `insights.settings` | via settings section `insights`: `{enabled_checks: {id: bool}, thresholds: {.., qos_drop_ps: 10.0}, include_lab: true, raise_alerts_from: "high"}` |
+| `insights.checks` | → `[{id, title, category, default_severity, needs: [kinds], enabled, description, not_evaluated, thresholds: [names], problems?: [{key, value, message}]}]` — the catalogue, with what data each needs, the thresholds it compares against, and the settings it reads that cannot be used (absent when there are none; while there is one the check does not run) |
+| `insights.settings` | via settings section `insights`: `{enabled_checks: {id: bool}, thresholds: {.., qos_drop_ps: 10.0}, include_lab: true, raise_alerts_from: "high", auto_scan: true, auto_scan_delay_ms: 5000}` — see "Settings" below |
 | `insights.fix` | `{id}` → `{change_id}` — `changes.create` with the suggestion's config lines (origin `user`, titled from the insight); `invalid` when the insight has no config fix |
-| `insights.coverage` | → per check: devices evaluated / skipped for missing data — so "no findings" is never mistaken for "checked" |
+| `insights.coverage` | → `null` before the first scan, then `{scanned_at, devices, link_source, links, checks: [{check, title, category, enabled, evaluated, skipped, findings, reasons: [{reason, devices}], scanned_at}], missing_sources, took_ms, settings_problems: [{key, value, message}]}` — per check: devices evaluated / skipped for missing data — so "no findings" is never mistaken for "checked". A scan limited by `checks` writes the rows of those checks; every other check keeps the row of the last scan that ran it, with that scan's `scanned_at`, or — if none ever did — says `not part of this scan, which was limited to other checks` (on, nothing evaluated). Only a check that is switched off says `the check is switched off`, whichever scan ran |
 
 Insights that disappear from two consecutive scans of their device become
-`resolved`. Open insights at or above `raise_alerts_from` call
-`alerts.raise` (dedup key = insight id) when the monitor is present.
+`resolved` — scans that evaluated the device *and could judge the
+insight's subject*. A check that decided for a device and could not judge
+one thing on it (a QoS class measured too briefly since a gap in its
+samples, or whose own samples stopped) holds that subject: its finding is
+neither seen again (`last_seen` stays) nor counted clean, so it is not
+resolved on no measurement and then opened again as a second occurrence.
+Open insights at or above `raise_alerts_from` call `alerts.raise` (dedup
+key = insight id) when the monitor is present.
+
+**What counts as measured.** A metric is recorded for a device only while
+one of its series holds a sample. The core creates a series row the first
+time anybody names the series — a `metrics.query` of one nobody records
+leaves a row with nothing in it, for as long as the device exists — and
+such a row is not a measurement. A read of samples or log entries that
+fails is never an empty one: the check says the data could not be read and
+does not evaluate the device, and a figure beside a finding that could not
+be read says `could not be read`, never `not recorded for this class`.
+
+## Settings
+
+Every threshold a check compares against is in the section, and a value of
+the wrong kind is caught twice:
+
+* **On write.** `settings.set` refuses a write that sets a value its key
+  cannot hold — a fraction for a whole number (`backup_age_days: 7.5`), a
+  negative or too large one, a word for a number, `null`, a severity that is
+  not one, an `enabled_checks` entry that is not true or false, `thresholds`
+  or `enabled_checks` that is not an object: `invalid`, a `message` that
+  names each setting and what it has to be ("`thresholds.backup_age_days`
+  must be a whole number of days (0 or more), not 7.5"), and `details:
+  {section: "insights", problems: [{key, value, message}]}` sorted by key,
+  for the screen to put beside each setting. Nothing of a refused write is
+  stored. Only what the write sets is judged, so a value already stored
+  wrong never blocks a write that corrects something else. A key this
+  version does not know is accepted and does nothing, as before.
+* **On read.** A value stored before writes were checked, or by hand, never
+  stops the feature: the section is read key by key, the value takes its
+  default and becomes a problem `{key, value, message}`. A check that reads
+  it — its own `enabled_checks` entry, or a threshold in its `thresholds` —
+  does not run: its coverage row is on, evaluated nothing, and gives `it
+  could not run, because a setting it reads cannot be used: <message>`; its
+  findings stay as they are. Problems are listed against those checks in
+  `insights.checks`, all of them in `insights.coverage.settings_problems`
+  and in the scan job's result and log. A bad `include_lab`,
+  `raise_alerts_from`, `auto_scan` or `auto_scan_delay_ms` takes its default
+  and is reported the same way; no check reads it.
 
 Event (contract): `insights.changed {device_id?, opened, resolved}`.
 
@@ -63,7 +107,10 @@ Physical / interface
 * `interface_errors` — input errors/CRC growing between the last two
   collections (not merely non-zero since boot); rate over the threshold.
 * `interface_flapping` — ≥ N up/down transitions in an hour (from
-  `if.oper` samples or `logs.signal` link events), default 4.
+  `if.oper` samples or `logs.signal` link events), default 4. Samples count
+  only where monitoring took some in that hour; otherwise the device's link
+  log lines are counted, and with neither — or neither readable — the
+  device is not evaluated, never called stable.
 * `err_disabled` — ports in err-disabled state (with the cause when the
   platform prints it).
 * `high_utilisation` — sustained > 80 % (samples), with the hours it peaks.
@@ -174,14 +221,27 @@ Quality of service (contract: `docs/dev/spec-qos.md`, "Insights")
   minutes a finding quotes were measured; *freshness* — a class whose
   newest sample is older than that is not reported, and a device whose
   newest QoS sample is older than that is not evaluated ("the read is
-  failing"), neither clean nor dropping. Read from the core's series tables,
+  failing"), neither clean nor dropping. A class that cannot be judged now
+  is **undecided** and held (see the resolve rule): its own newest sample
+  is older than that while the device's is not (gone, or its counters
+  could not be compared), or its run since the last hole is under five
+  samples or `sustained_minutes` with a sample at or over the threshold in
+  it. A run that short entirely under the threshold is judged: not
+  dropping now. A device none of whose classes could be judged is not
+  evaluated ("no class could be judged yet …"). The hold lasts as long as
+  the class has a sample in the window: once its last one is older than
+  4 × `sustained_minutes` (at least an hour) the class is not seen at all,
+  and its finding resolves like any other, after two scans that evaluated
+  the device. That is how a class taken out of the policy stops being
+  reported; it is also what happens to one that is still configured but
+  no longer read. Read from the core's series tables,
   not from `nocturne-monitor`; instance
   `<interface>|<in|out>|<policy>/<class>`, the policy split from the class
   at the last `/`. The finding's subject is that name with spaces for the
   bars (`GigabitEthernet0/0 out WAN-EDGE/VOICE`); the two configuration
   checks' subject is `policy-map NAME`.
-  * Decided per device. A device with any `qos.queue_drop_ps` series
-    separates congestion from policing: only that series is judged
+  * Decided per device. A device with any `qos.queue_drop_ps` series that
+    holds a sample separates congestion from policing: only that series is judged
     (**medium**), and a class with `qos.drop_ps` and no congestion series is
     a class without a queue — a policer doing its job — and is not reported.
   * A device with `qos.drop_ps` only has no congestion counter — its
@@ -192,12 +252,14 @@ Quality of service (contract: `docs/dev/spec-qos.md`, "Insights")
     window (samples, minutes, share over the threshold), the share of
     offered packets dropped (`qos.drop_pct`) and the traffic in the class
     (`qos.bps`), both over the same run of samples as the drops — each
-    "not recorded for this class" where the series is absent — and the
-    peak hour of the day over `history_hours`. The suggestion carries
+    "not recorded for this class" where the series is absent, and "could
+    not be read" where reading it failed — and the peak hour of the day
+    over `history_hours` ("could not be read" likewise). The suggestion carries
     `show policy-map interface <name> <input|output>` only for a device
     whose configuration grammar is `ios` and an interface name that is one.
   * Not evaluated: no `qos.*` drop series for the device; none inside the
-    window; samples that stop before now (above); or a
+    window; samples that stop before now (above); no class that could be
+    judged (above); samples that could not be read; or a
     `thresholds.qos_drop_ps` that is not above zero, which would call every
     measured class a dropping one. Never "not dropping". (A device that
     separates the two and whose classes are measured now but have no
@@ -211,8 +273,13 @@ Quality of service (contract: `docs/dev/spec-qos.md`, "Insights")
 
 Table-driven per check with hand-built collected rows and configs; the
 "not enough data" path of each; stable ids across scans; resolve after two
-clean scans; dismiss with expiry; debounced auto-scan on events; coverage
-report; `insights.fix` → `changes.create` payload; alert raising threshold;
+clean scans, and never on scans that could not judge the subject; dismiss
+with expiry; debounced auto-scan on events; coverage report, also after a
+scan limited to some checks; a series row with no sample, and a read the
+store cannot answer (an unreadable stored value stands in for it), neither
+of them a measurement; a value of the wrong kind refused on write, and one
+already stored stopping only the checks that read it;
+`insights.fix` → `changes.create` payload; alert raising threshold;
 a scan over 500 devices × 48 interfaces finishes in well under a second
 (these run after every collection).
 

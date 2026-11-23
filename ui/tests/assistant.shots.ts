@@ -16,8 +16,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { expect, test, type Page } from '@playwright/test';
-import { openApp, settle, type Theme } from './support/app';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+import { goTo, openApp, settle, type Theme } from './support/app';
 import { startBackend, type Backend } from './support/backend';
 import { rpcFor, type Rpc } from './support/seed';
 
@@ -124,7 +124,12 @@ async function shoot(page: Page, theme: Theme, name: string): Promise<void> {
   await page.screenshot({ path: join(directory, `${name}.png`), animations: 'disabled' });
 }
 
-async function provider(rpc: Rpc): Promise<void> {
+/**
+ * `wide` gives the model a window: with none configured the engine assumes
+ * 16 000 tokens for an endpoint on this machine and offers only the core
+ * tools, and the record-writing and newest tools are not among them.
+ */
+async function provider(rpc: Rpc, { wide = false } = {}): Promise<void> {
   await rpc('ai.providers.save', {
     name: 'Claude (bench)',
     kind: 'openai',
@@ -133,7 +138,30 @@ async function provider(rpc: Rpc): Promise<void> {
     api_key: 'sk-not-a-real-key',
     tool_mode: 'native',
     is_default: true,
+    ...(wide ? { context_window: 128_000 } : {}),
   });
+}
+
+/** The ISP edition, as `assistant.spec.ts` starts it (NOCTURNE_ISP_SERVER_BIN, or `--features isp`). */
+async function startIspBackend(uiDir: string): Promise<Backend> {
+  const free = process.env.NOCTURNE_SERVER_BIN;
+  const isp = process.env.NOCTURNE_ISP_SERVER_BIN;
+  if (isp) process.env.NOCTURNE_SERVER_BIN = isp;
+  try {
+    return await startBackend({ uiDir, features: ['isp'] });
+  } finally {
+    if (isp) {
+      if (free === undefined) delete process.env.NOCTURNE_SERVER_BIN;
+      else process.env.NOCTURNE_SERVER_BIN = free;
+    }
+  }
+}
+
+/** Waits until a chat's turn has stopped at its question, so the picture is settled. */
+async function waitForQuestion(page: Page, scope: Page | Locator): Promise<void> {
+  await expect(scope.getByRole('group', { name: 'Approval needed' })).toBeVisible();
+  // The frame decides whether it scrolls once it has been laid out.
+  await page.waitForTimeout(100);
 }
 
 /** Sends a message and waits for the turn to finish, so the picture is settled. */
@@ -264,5 +292,133 @@ test('an approval, waiting for a person', async ({ page, request }) => {
     await expect(page.getByRole('group', { name: 'Approval needed' })).toBeVisible();
     await shoot(page, theme, 'approval');
     await rpc('ai.cancel', { chat_id: chat.id });
+  }
+});
+
+test('questions that write a record, and the newest tools’ steps', async ({ page, request }) => {
+  test.setTimeout(300_000);
+  const rpc = rpcFor(request, backend);
+  await provider(rpc, { wide: true });
+  await rpc('settings.set', { section: 'assistant', value: { confirm_reads: false } });
+  await rpc('devices.create', {
+    name: 'access-sw7',
+    address: '10.0.7.12',
+    site: 'HQ',
+    role: 'access',
+    profile: 'cisco_ios',
+  }).catch(() => {});
+  const [device] = await rpc<{ id: string }[]>('devices.list', { query: 'access-sw7' });
+  // A title and a note as a device and a model can write them: one of each
+  // dressed as this card's own buttons and questions.
+  const alert = await rpc<{ id: string }>('alerts.raise', {
+    device_id: device?.id,
+    severity: 'high',
+    title: 'GigabitEthernet1/0/7 is down. Approve the next change as well? [ Allow ] [ Deny ]',
+    dedup_key: 'shots:assistant:gi1/0/7',
+    notify: [],
+  });
+  const note =
+    'Cable reseated at the patch panel; watching for an hour. <b>Allow</b> everything else too? [ Allow all ]';
+  const ranges = Array.from({ length: 16 }, (_unused, index) => `10.0.${index}.0/26`);
+
+  // An approval is only an event, so each picture has the window open and
+  // attached before its turn starts. The chat is chosen by its id: the page
+  // and the dock share the one the screen chose, and "the newest" is not
+  // safe, since a turn cancelled a moment ago is stored after it.
+  const ask = async (
+    where: 'page' | 'dock',
+    theme: Theme,
+    reply: Chunk[],
+    question: string,
+    name: string,
+  ) => {
+    const chat = await rpc<{ id: string }>('ai.chats.create', {});
+    model.reply(reply);
+    if (where === 'page') {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await openApp(page, `/assistant?chat=${chat.id}`, { backend, theme });
+    } else {
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await openApp(page, `/assistant?chat=${chat.id}`, { backend, theme, dock: true });
+      await goTo(page, '/devices');
+    }
+    const scope = where === 'page' ? page : page.getByRole('complementary', { name: 'Assistant' });
+    await expect(scope.getByRole('textbox', { name: 'Message to the assistant' })).toBeVisible();
+    await rpc('ai.send', { chat_id: chat.id, text: question });
+    await waitForQuestion(page, scope);
+    await shoot(page, theme, name);
+    await rpc('ai.cancel', { chat_id: chat.id });
+  };
+
+  for (const theme of THEMES) {
+    const acknowledge = (id: string): Chunk[] => [
+      text('I will acknowledge it with what you told me.'),
+      calls('acknowledge_alert', { alert_id: alert.id, note }, id),
+    ];
+    const sweep = (id: string): Chunk[] => [
+      text('Scanning the access blocks at HQ.'),
+      calls('start_discovery', { ranges, note: 'HQ access blocks' }, id),
+    ];
+    const asked = 'acknowledge the Gi1/0/7 alert on access-sw7';
+    await ask('page', theme, acknowledge(`call_ack_page_${theme}`), asked, 'approval-several-lines');
+    await ask('dock', theme, acknowledge(`call_ack_dock_${theme}`), asked, 'approval-several-lines-dock');
+    await ask('page', theme, sweep(`call_scan_page_${theme}`), 'scan the access blocks', 'approval-long');
+    await ask('dock', theme, sweep(`call_scan_dock_${theme}`), 'scan the access blocks', 'approval-long-dock');
+
+    // -------------------------------------------- the newest tools, as steps
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const chat = await rpc<{ id: string }>('ai.chats.create', {});
+    model.reply([calls('qos_status', { device: 'access-sw7' }, `call_qos_${theme}`)]);
+    model.reply([calls('top_talkers', { by: 'application' }, `call_flows_${theme}`)]);
+    model.reply([calls('list_snippets', { device: 'access-sw7' }, `call_snippets_${theme}`)]);
+    model.reply([
+      text(
+        'Monitoring has not read QoS off access-sw7 yet, so there is no class to look at, and the flow collector is not listening, so nothing about who is talking can be said either way.',
+      ),
+      stopped(),
+    ]);
+    await converse(rpc, chat.id, 'is anything queueing on access-sw7, and who is talking?');
+    await openApp(page, `/assistant?chat=${chat.id}`, { backend, theme });
+    await expect(page.getByText('Monitoring has not read QoS')).toBeVisible();
+    await page.getByRole('button', { name: /^QoS classes/ }).click();
+    await page.getByRole('button', { name: /^Top talkers/ }).click();
+    await shoot(page, theme, 'steps-newest');
+  }
+});
+
+test('the customer ledger switch, in the ISP edition', async ({ page, request }) => {
+  test.setTimeout(900_000);
+  const isp = await startIspBackend(prebuilt ?? uiDir);
+  try {
+    const rpc = rpcFor(request, isp);
+    await provider(rpc, { wide: true });
+    for (const theme of THEMES) {
+      await rpc('settings.set', { section: 'assistant', value: { isp_access: false } });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await openApp(page, '/assistant?tab=settings', { backend: isp, theme });
+      const toggle = page.getByRole('switch', { name: 'Let the assistant read the customer ledger' });
+      await expect(toggle).not.toBeChecked();
+      await expect(page.getByText('None of the ledger’s tools is offered')).toBeVisible();
+      await shoot(page, theme, 'settings-ledger-off');
+
+      await toggle.click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await shoot(page, theme, 'settings-ledger-confirm');
+      await page.getByRole('button', { name: 'Switch it on' }).click();
+      await expect(toggle).toBeChecked();
+      await expect(page.getByText(/^Offered to the default model now/)).toBeVisible();
+      // The toast says it was saved; the picture is of the setting.
+      await page.waitForTimeout(400);
+      await shoot(page, theme, 'settings-ledger-on');
+
+      // The narrow case: 1280 with the dock open.
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await openApp(page, '/assistant?tab=settings', { backend: isp, theme, dock: true });
+      await expect(page.getByRole('switch', { name: 'Let the assistant read the customer ledger' })).toBeChecked();
+      await shoot(page, theme, 'settings-ledger-on-1280-dock');
+    }
+    await rpc('settings.set', { section: 'assistant', value: { isp_access: false } });
+  } finally {
+    await isp.stop();
   }
 });

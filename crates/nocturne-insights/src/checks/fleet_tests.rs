@@ -234,6 +234,28 @@ fn high_cpu_memory_and_temperature_tables() {
 }
 
 #[test]
+fn resource_samples_that_cannot_be_read_are_not_said_to_be_missing() {
+    let mut hot = world(vec![device("a", "SW1")]);
+    metric(&mut hot, "a", "cpu.pct", &samples(95.0));
+    let series = hot.store().series_id("a", "cpu.pct", "").expect("series");
+    hot.store()
+        .with(|conn| {
+            conn.execute(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?1, ?2, 'unreadable')",
+                rusqlite::params![series, NOW - 60_000],
+            )
+        })
+        .expect("the sample is stored");
+    let report = run("high_cpu", &hot);
+    assert!(report.findings.is_empty());
+    assert!(report.evaluated().is_empty());
+    assert_eq!(
+        report.skips().map(|(_, reason)| reason).collect::<Vec<_>>(),
+        ["the samples of this metric could not be read"]
+    );
+}
+
+#[test]
 fn resource_thresholds_are_settings() {
     let mut world = world(vec![device("a", "SW1")]);
     metric(&mut world, "a", "cpu.pct", &samples(70.0));

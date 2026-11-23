@@ -38,6 +38,7 @@ pub mod model;
 pub mod notify;
 pub mod poll;
 pub mod probe;
+pub mod qos;
 pub mod rates;
 pub mod read;
 pub mod rules;
@@ -83,6 +84,7 @@ pub fn init(builder: &mut nocturne_app::AppBuilder) {
     builder.state(state::MonitorState::default());
 
     status::register(&mut builder.router);
+    qos::register(&mut builder.router);
     ifindex::register(&mut builder.router);
     metrics::register(&mut builder.router);
     checks::register(&mut builder.router);

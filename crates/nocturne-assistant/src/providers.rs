@@ -169,6 +169,25 @@ pub fn use_real_providers(app: &App) {
     *app.state::<Override>().provider.lock() = None;
 }
 
+/// The window a turn with this provider is planned for: the one configured,
+/// or else the one the provider assumes — 16,000 tokens for a model on the
+/// local network nobody configured one for. `ai.tools` and `ai.status` ask
+/// this too, so a screen never lists tools the model is not offered. `0`
+/// (unknown) when the provider cannot be built, which a turn cannot use
+/// either.
+pub fn context_window(app: &App, record: &ProviderRecord) -> u32 {
+    record.context_window.unwrap_or_else(|| {
+        build(app, record)
+            .map(|provider| provider.context_window())
+            .unwrap_or(0)
+    })
+}
+
+/// Whether the default provider's model gets the small tool set.
+fn small_default(app: &App, default: Option<&ProviderRecord>) -> bool {
+    default.is_some_and(|record| crate::settings::small_context(context_window(app, record)))
+}
+
 /// Build a live provider from a record, taking its key out of the vault.
 pub fn build(app: &App, record: &ProviderRecord) -> AppResult<Arc<dyn Provider>> {
     if let Some(provider) = app.state::<Override>().provider.lock().clone() {
@@ -584,10 +603,7 @@ pub fn register(builder: &mut AppBuilder) {
 
     router.add("ai.status", |app: App, _: NoParams| async move {
         let default = default_provider(&app).ok();
-        let small = default
-            .as_ref()
-            .and_then(|record| record.context_window)
-            .is_some_and(crate::settings::small_context);
+        let small = small_default(&app, default.as_ref());
         Ok(Status {
             configured: default.is_some(),
             default: default.map(|record| entry(&app, record)),
@@ -598,10 +614,7 @@ pub fn register(builder: &mut AppBuilder) {
     });
 
     router.add("ai.tools", |app: App, _: NoParams| async move {
-        let small = default_provider(&app)
-            .ok()
-            .and_then(|record| record.context_window)
-            .is_some_and(crate::settings::small_context);
+        let small = small_default(&app, default_provider(&app).ok().as_ref());
         Ok(crate::tools::available(&app, small)
             .into_iter()
             .map(|tool| {

@@ -8,13 +8,16 @@
 // different part of it.
 #![allow(dead_code)]
 
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nocturne_app::testing::{self, Lab};
-use nocturne_app::{App, AppBuilder, jobs};
+use nocturne_app::{App, AppBuilder, AppConfig, jobs};
 use nocturne_automation::clock::VirtualClock;
 use nocturne_automation::state::AutomationState;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 
 /// Every `changes.create` the feature made, in order — the stub stands in for
 /// `nocturne-changes`, which this crate must not depend on.
@@ -29,12 +32,66 @@ pub struct Changes {
 #[derive(Default)]
 pub struct Backups(pub Mutex<Vec<String>>);
 
-fn stubs(builder: &mut AppBuilder) {
+/// Stands in for work that takes as long as the test wants: `discovery.scan`
+/// (on the allow-list, and not otherwise part of this harness) does not answer
+/// until the gate lets it through, and neither does `changes.create` while
+/// `hold_changes` is set. Every call is counted when it arrives, so "the action
+/// is in flight" is something a test can wait for.
+pub struct Gate {
+    arrived: AtomicU32,
+    permits: Semaphore,
+    pub hold_changes: AtomicBool,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Gate {
+            arrived: AtomicU32::new(0),
+            permits: Semaphore::new(0),
+            hold_changes: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Gate {
+    /// Calls that have arrived, answered or not.
+    pub fn calls(&self) -> u32 {
+        self.arrived.load(Ordering::SeqCst)
+    }
+
+    /// Let `count` calls through, waiting ones first.
+    pub fn open(&self, count: usize) {
+        self.permits.add_permits(count);
+    }
+
+    async fn pass(&self) {
+        self.arrived.fetch_add(1, Ordering::SeqCst);
+        self.permits
+            .acquire()
+            .await
+            .expect("the gate is never closed for good")
+            .forget();
+    }
+}
+
+pub fn stubs(builder: &mut AppBuilder) {
     builder.state(Changes::default());
     builder.state(Backups::default());
+    builder.state(Gate::default());
+    builder
+        .router
+        .add("discovery.scan", |app: App, _params: Value| async move {
+            let gate = app.state::<Gate>();
+            gate.pass().await;
+            Ok(json!({"scanned": gate.calls()}))
+        });
     builder
         .router
         .add("changes.create", |app: App, params: Value| async move {
+            let gate = app.state::<Gate>();
+            if gate.hold_changes.load(Ordering::SeqCst) {
+                gate.pass().await;
+            }
             let state = app.state::<Changes>();
             let mut created = state.created.lock().expect("lock");
             let id = format!("chg-{}", created.len() + 1);
@@ -119,6 +176,45 @@ pub async fn lab_at(names: &[&str], base_ms: i64) -> (Lab, Arc<VirtualClock>) {
     builder.state(AutomationState::with_clock(clock.clone()));
     let lab = testing::lab(builder, names).await;
     (lab, clock)
+}
+
+/// An app on a data directory, opened the way a process opens one: the core,
+/// this feature and the stubs, with the real clock.
+pub fn app_on(dir: &Path) -> App {
+    let mut builder = AppBuilder::new(AppConfig::at(dir)).expect("an app on that directory");
+    nocturne_app::init(&mut builder);
+    nocturne_automation::init(&mut builder);
+    stubs(&mut builder);
+    builder.build()
+}
+
+/// What a process that ends this instant leaves behind: a copy of its data
+/// directory taken while it runs, which is what the next start opens. The
+/// database is in WAL mode, so the copy takes the log with it; the lock file
+/// stays behind, as a dead process's lock would.
+pub fn crash_copy(dir: &Path) -> tempfile::TempDir {
+    let copy = tempfile::tempdir().expect("a directory for the copy");
+    for entry in std::fs::read_dir(dir).expect("the data directory") {
+        let entry = entry.expect("an entry");
+        if entry.file_name() == "nocturne.lock" || !entry.path().is_file() {
+            continue;
+        }
+        std::fs::copy(entry.path(), copy.path().join(entry.file_name())).expect("copied");
+    }
+    copy
+}
+
+/// Real time, for the tests that open a data directory: wait until `ready`
+/// holds, for at most `seconds`.
+pub async fn eventually(seconds: u64, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    while std::time::Instant::now() < deadline {
+        if ready() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(ready(), "the condition never became true in {seconds}s");
 }
 
 /// Spin the runtime until `ready` holds, or give up. For paused-time tests,

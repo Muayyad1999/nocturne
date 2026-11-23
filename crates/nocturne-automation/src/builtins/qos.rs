@@ -27,12 +27,13 @@
 //! And one rule that holds for every line: **a line is rendered the way the
 //! device will show it afterwards.** The change pipeline compares the device
 //! with what it predicted from these lines, and a difference rolls the change
-//! back. That is why an interface gets its long name and a DSCP its
-//! canonical spelling (see `IOS_DSCP` below).
+//! back. That is why an interface gets its full name (`IOS_INTERFACE`, which
+//! the general IOS templates share) and a DSCP its canonical spelling (see
+//! `IOS_DSCP` below).
 
 use serde_json::json;
 
-use super::{template, var, with_default, with_help};
+use super::{IOS_INTERFACE, template, var, with_default, with_help};
 use crate::model::{Template, TemplateKind, Variable, VariableKind};
 
 fn qos(template: Template) -> Template {
@@ -72,27 +73,25 @@ const IOS_DSCP: &str = r#"
 {% macro spelled(numbers) %}{% for number in numbers | sort %}{% set found = namespace(word=number) %}{% for word in codes %}{% if codes[word] == number %}{% set found.word = word %}{% endif %}{% endfor %}{{ found.word }}{% if not loop.last %} {% endif %}{% endfor %}{% endmacro %}
 "#;
 
-/// What `interface` must look like once `ifname` has spelled it out: one
-/// word that starts with a letter and ends in its number. The variable's
-/// kind only says "one line", and `GigabitEthernet0/1 shutdown` or `range
-/// Gi0/1 - 24` is one line too.
-const IOS_PORT: &str = "^[A-Za-z][A-Za-z0-9_/.:-]{0,62}[0-9]$";
-
 /// The largest rate any of these templates takes, in kbit/s: 128 Gbit/s. It
 /// is not what a device can shape (the device has the last word on that); it
 /// is what keeps a slip of the keyboard, or a number made to overflow, out
 /// of a configuration line.
 const MOST_KBPS: i64 = 128_000_000;
 
-/// A body with the two constants above written into it.
+/// A body with the ceiling above written into it.
 fn body(text: &str) -> String {
-    text.replace("@IOS_PORT@", IOS_PORT)
-        .replace("@MOST_KBPS@", &MOST_KBPS.to_string())
+    text.replace("@MOST_KBPS@", &MOST_KBPS.to_string())
 }
 
-/// The same, behind the DSCP names and macros.
-fn body_with_dscp(text: &str) -> String {
-    body(&[IOS_DSCP, text].concat())
+/// An IOS body: behind the interface check every IOS template shares.
+fn ios_body(text: &str) -> String {
+    body(&[IOS_INTERFACE, text].concat())
+}
+
+/// The same, behind the DSCP names and macros as well.
+fn ios_body_with_dscp(text: &str) -> String {
+    body(&[IOS_INTERFACE, IOS_DSCP, text].concat())
 }
 
 pub(super) fn all() -> Vec<Template> {
@@ -200,13 +199,12 @@ pub(super) fn all() -> Vec<Template> {
                      a rate it cannot shape.",
                 ),
             ],
-            &body_with_dscp(
+            &ios_body_with_dscp(
                 r#"
 {% macro check_share(value, label) %}
 {% if value < 1 or value > 100 %}{{ fail(label ~ " must be between 1 and 100 percent, not " ~ value) }}{% endif %}
 {% endmacro %}
-{% set port = interface | ifname %}
-{% if port is not matching('@IOS_PORT@') %}{{ fail("WAN interface must be one interface, by its name: GigabitEthernet0/1") }}{% endif %}
+{% set port = ios_interface(interface, "WAN interface", "GigabitEthernet0/1") %}
 {% if policy_name is not matching('^[A-Za-z0-9_-]{1,31}$') %}{{ fail("Policy name must be one word of letters, digits, `-` and `_`, 31 characters at most: the class maps are named after it and an IOS name ends at 40") }}{% endif %}
 {% set seen = namespace(codes=[], classes=[]) %}
 {% for label, values in [("Voice DSCP", voice_dscp), ("Video DSCP", video_dscp), ("Critical data DSCP", critical_dscp)] %}
@@ -296,10 +294,9 @@ interface {{ port }}
                      so two uplinks with different circuits do not share one.",
                 ),
             ],
-            &body(
+            &ios_body(
                 r#"
-{% set port = interface | ifname %}
-{% if port is not matching('@IOS_PORT@') %}{{ fail("Uplink interface must be one interface, by its name: GigabitEthernet0/1") }}{% endif %}
+{% set port = ios_interface(interface, "Uplink interface", "GigabitEthernet0/1") %}
 {% if rate_kbps < 8 or rate_kbps > @MOST_KBPS@ %}{{ fail("Circuit rate must be between 8 and @MOST_KBPS@ kbit/s, not " ~ rate_kbps) }}{% endif %}
 {% set name = policy_name or ('SHAPE-' ~ rate_kbps ~ 'K') %}
 {% if name is not matching('^[A-Za-z0-9_-]{1,40}$') %}{{ fail("Policy name must be one word of letters, digits, `-` and `_`, 40 characters at most") }}{% endif %}
@@ -369,11 +366,10 @@ interface {{ port }}
                      trust the uplinks first.",
                 ),
             ],
-            &body_with_dscp(
+            &ios_body_with_dscp(
                 r#"
 {% set mode = mode | lower %}
-{% set port = interface | ifname %}
-{% if port is not matching('@IOS_PORT@') %}{{ fail("Access port must be one interface, by its name: GigabitEthernet1/0/5") }}{% endif %}
+{% set port = ios_interface(interface, "Access port", "GigabitEthernet1/0/5") %}
 {% set given = dscp | string | lower %}
 {% set code = code_of(given) | int %}
 {% set mark = spelled([code]) if code >= 0 else '' %}
@@ -408,10 +404,20 @@ interface {{ port }}
              upload is what the target sends. IPv4 only: the pages this follows show \
              no other target. Connections that are fast-tracked bypass \
              simple queues, so the subscriber's traffic must not match a FastTrack rule. \
-             Syntax: MikroTik RouterOS documentation, \"Queues\", Simple Queue \
+             Simple queues have a strict order, and a packet stops at the first queue \
+             that matches it: a new queue goes to the end of the list, so a queue above \
+             it whose target covers the subscriber (a subnet, a catch-all) takes the \
+             traffic and these limits never apply. Name that queue in `place_before` \
+             and the new one goes in front of it (`place-before`). A queue's name is \
+             unique on the router, so this adds a queue and does not change one: run \
+             again for a subscriber who has a queue, the router refuses it. Syntax: \
+             MikroTik RouterOS documentation, \"Queues\", Simple Queue \
              (https://help.mikrotik.com/docs/spaces/ROS/pages/328088/Queues); the `k` \
              suffix as in \"Queue Burst\" \
-             (https://help.mikrotik.com/docs/spaces/ROS/pages/137986091/Queue+Burst).",
+             (https://help.mikrotik.com/docs/spaces/ROS/pages/137986091/Queue+Burst); \
+             `place-before`, and an item named by its name rather than a number that \
+             only a `print` in the same session gives, \"Command Line Interface\" \
+             (https://help.mikrotik.com/docs/spaces/ROS/pages/328134/Command+Line+Interface).",
             TemplateKind::Config,
             &["mikrotik_routeros"],
             vec![
@@ -456,6 +462,15 @@ interface {{ port }}
                     ),
                     "0 for none.",
                 ),
+                with_help(
+                    with_default(
+                        var("place_before", "Before the queue", String, false),
+                        "".into(),
+                    ),
+                    "The name of a queue already on the router that would otherwise take this \
+                     subscriber's traffic first, such as a queue for the whole subnet. Left \
+                     empty, the queue goes to the end of the list.",
+                ),
             ],
             &body(
                 r#"
@@ -468,7 +483,9 @@ interface {{ port }}
 {% if (up and not down) or (down and not up) %}{{ fail("Give both guaranteed rates or neither: RouterOS writes them as one `limit-at` pair, upload/download") }}{% endif %}
 {% if up > upload_kbps %}{{ fail("Guaranteed upload (" ~ up ~ " kbit/s) is above the upload limit (" ~ upload_kbps ~ " kbit/s)") }}{% endif %}
 {% if down > download_kbps %}{{ fail("Guaranteed download (" ~ down ~ " kbit/s) is above the download limit (" ~ download_kbps ~ " kbit/s)") }}{% endif %}
-/queue simple add name={{ queue_name }} target={{ target }} max-limit={{ upload_kbps }}k/{{ download_kbps }}k{% if up %} limit-at={{ up }}k/{{ down }}k{% endif %}
+{% if place_before and place_before is not matching('^[A-Za-z0-9_.@-]{1,64}$') %}{{ fail("Before the queue must be the name of one queue, one word of letters, digits and . _ - @, 64 characters at most") }}{% endif %}
+{% if place_before and place_before | lower == queue_name | lower %}{{ fail("Before the queue names the queue being added: give the queue it has to go in front of") }}{% endif %}
+/queue simple add name={{ queue_name }} target={{ target }} max-limit={{ upload_kbps }}k/{{ download_kbps }}k{% if up %} limit-at={{ up }}k/{{ down }}k{% endif %}{% if place_before %} place-before={{ place_before }}{% endif %}
 "#,
             ),
         )),
@@ -482,7 +499,11 @@ interface {{ port }}
              (`priority=1`) and best effort last (`priority=8`). The first rule marks \
              every packet leaving the interface as best effort and the DSCP rules after \
              it re-mark the classes, so a packet mark set earlier on that traffic is \
-             replaced. The rules are added at the end of the postrouting chain. One \
+             replaced. The rules are added at the end of the postrouting chain, each with \
+             the comment `<prefix>-qos`, so that what this template added can be found \
+             again. The queues are added first: a queue's name is unique on the router, \
+             so running the template a second time is refused at its first line, before \
+             a single rule is added twice. One \
              direction only: this shapes what the router sends out of the interface. \
              IPv4 only (`/ip firewall mangle`). Fast-tracked connections bypass the \
              firewall, so their packets are never marked and match no class: keep this \
@@ -494,7 +515,7 @@ interface {{ port }}
              (https://help.mikrotik.com/docs/spaces/ROS/pages/137986076/HTB+Hierarchical+Token+Bucket); \
              \"Mangle\" for `mark-packet` \
              (https://help.mikrotik.com/docs/spaces/ROS/pages/48660587/Mangle); \"Common \
-             Firewall Matchers and Actions\" for `dscp` and `out-interface` \
+             Firewall Matchers and Actions\" for `dscp`, `out-interface` and `comment` \
              (https://help.mikrotik.com/docs/spaces/ROS/pages/250708064/Common+Firewall+Matchers+and+Actions); \
              \"Packet Flow in RouterOS\" for the order of mangle and the interface queue \
              (https://help.mikrotik.com/docs/spaces/ROS/pages/328227/Packet+Flow+in+RouterOS).",
@@ -591,21 +612,21 @@ interface {{ port }}
 {% set critical = rate_kbps * critical_percent // 100 %}
 {% set best = rate_kbps - voice - video - critical %}
 {% if voice < 1 or video < 1 or critical < 1 or best < 1 %}{{ fail("An uplink rate of " ~ rate_kbps ~ " kbit/s is too small to divide: a class would be guaranteed less than 1 kbit/s") }}{% endif %}
-/ip firewall mangle add chain=postrouting out-interface={{ interface }} action=mark-packet new-packet-mark={{ name_prefix }}-best-effort passthrough=yes
-{% for value in voice_dscp %}
-/ip firewall mangle add chain=postrouting out-interface={{ interface }} dscp={{ value }} action=mark-packet new-packet-mark={{ name_prefix }}-voice passthrough=no
-{% endfor %}
-{% for value in video_dscp %}
-/ip firewall mangle add chain=postrouting out-interface={{ interface }} dscp={{ value }} action=mark-packet new-packet-mark={{ name_prefix }}-video passthrough=no
-{% endfor %}
-{% for value in critical_dscp %}
-/ip firewall mangle add chain=postrouting out-interface={{ interface }} dscp={{ value }} action=mark-packet new-packet-mark={{ name_prefix }}-critical passthrough=no
-{% endfor %}
 /queue tree add name={{ name_prefix }} parent={{ interface }} max-limit={{ rate_kbps }}k
 /queue tree add name={{ name_prefix }}-voice parent={{ name_prefix }} packet-mark={{ name_prefix }}-voice limit-at={{ voice }}k max-limit={{ rate_kbps }}k priority=1
 /queue tree add name={{ name_prefix }}-video parent={{ name_prefix }} packet-mark={{ name_prefix }}-video limit-at={{ video }}k max-limit={{ rate_kbps }}k priority=3
 /queue tree add name={{ name_prefix }}-critical parent={{ name_prefix }} packet-mark={{ name_prefix }}-critical limit-at={{ critical }}k max-limit={{ rate_kbps }}k priority=5
 /queue tree add name={{ name_prefix }}-best-effort parent={{ name_prefix }} packet-mark={{ name_prefix }}-best-effort limit-at={{ best }}k max-limit={{ rate_kbps }}k priority=8
+/ip firewall mangle add chain=postrouting out-interface={{ interface }} action=mark-packet new-packet-mark={{ name_prefix }}-best-effort passthrough=yes comment={{ name_prefix }}-qos
+{% for value in voice_dscp %}
+/ip firewall mangle add chain=postrouting out-interface={{ interface }} dscp={{ value }} action=mark-packet new-packet-mark={{ name_prefix }}-voice passthrough=no comment={{ name_prefix }}-qos
+{% endfor %}
+{% for value in video_dscp %}
+/ip firewall mangle add chain=postrouting out-interface={{ interface }} dscp={{ value }} action=mark-packet new-packet-mark={{ name_prefix }}-video passthrough=no comment={{ name_prefix }}-qos
+{% endfor %}
+{% for value in critical_dscp %}
+/ip firewall mangle add chain=postrouting out-interface={{ interface }} dscp={{ value }} action=mark-packet new-packet-mark={{ name_prefix }}-critical passthrough=no comment={{ name_prefix }}-qos
+{% endfor %}
 "#,
             ),
         )),

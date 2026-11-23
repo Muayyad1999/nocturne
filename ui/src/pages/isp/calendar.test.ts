@@ -15,6 +15,8 @@ import {
   periodText,
   previousMonth,
   recentMonths,
+  revenueWindow,
+  timeText,
 } from './calendar';
 
 /** The business's calendars these tests use. */
@@ -230,5 +232,39 @@ describe('the calendar itself', () => {
     // fixed offset and says so.
     expect(computerOffsetMinutes(Date.UTC(2025, 9, 1))).toBe(780);
     expect(computerOffsetMinutes(Date.UTC(2025, 5, 1))).toBe(720);
+  });
+});
+
+describe('the window a revenue report asks for', () => {
+  const now = Date.UTC(2026, 10, 23, 9, 30);
+
+  it('leaves the end of a rolling window to the engine, so what is written later is in it', () => {
+    // An end fixed when the window was chosen left a payment recorded a
+    // minute later out of every refetch that followed.
+    expect(revenueWindow('30d', now, BAGHDAD)).toEqual({ since: now - 30 * 86_400_000 });
+    expect(revenueWindow('12m', now, BAGHDAD)).toEqual({ since: now - 365 * 86_400_000 });
+    expect(revenueWindow('30d', now, BAGHDAD)).not.toHaveProperty('until');
+  });
+
+  it('gives a month both of its bounds, in the business’s calendar', () => {
+    expect(revenueWindow('2026-10', now, BAGHDAD)).toEqual({
+      since: Date.UTC(2026, 9, 1) - BAGHDAD * 60_000,
+      until: Date.UTC(2026, 10, 1) - BAGHDAD * 60_000,
+    });
+  });
+
+  it('falls back to the last thirty days for a month it cannot place', () => {
+    expect(revenueWindow('2026-10', now, null)).toEqual({ since: now - 30 * 86_400_000 });
+    expect(revenueWindow('soon', now, UTC)).toEqual({ since: now - 30 * 86_400_000 });
+  });
+});
+
+describe('the time of day on the business’s clock', () => {
+  it('reads the wall clock of the calendar, not of the browser', () => {
+    const at = Date.UTC(2026, 10, 22, 21, 5, 9);
+    expect(timeText(at, UTC)).toBe('21:05:09');
+    expect(timeText(at, BAGHDAD)).toBe('00:05:09');
+    expect(timeText(at, null)).toBe('—');
+    expect(dayTimeText(at, BAGHDAD)).toBe('2026-11-23 00:05:09');
   });
 });

@@ -6,7 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: The tag to build (for a dry run, any existing tag)
+        description: >-
+          The tag to build. It has to name the version the code at that tag
+          carries (`v` + `[workspace.package] version` in Cargo.toml), as a
+          pushed tag does.
         required: true
 
 permissions:
@@ -18,17 +21,52 @@ jobs:
   # they raced, and the Ubuntu one was refused with "Resource not accessible
   # by integration" on create-a-release, so a tag shipped without its Linux
   # packages. Making the release once, here, removes the race: the builders
-  # are given its id and only ever upload.
+  # only ever upload to it.
   release:
     name: The release the installers are uploaded to
     runs-on: ubuntu-24.04
     outputs:
       id: ${{ steps.make.outputs.id }}
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      # Every installer's file name, the version inside each package,
+      # `--version` and `app.info` come from this one number. Two tags that
+      # built the same number shipped files that could not be told apart, and
+      # a report saying "0.1.0" could not be tied to either.
+      - id: version
+        name: The tag names the version the code carries
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          carried=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\([^"]*\)".*/\1/p;}' Cargo.toml | head -n 1)
+          if [ -z "$carried" ]; then
+            echo "::error::Cargo.toml has no [workspace.package] version"
+            exit 1
+          fi
+          if [ "$TAG" != "v$carried" ]; then
+            echo "::error::The tag is $TAG, but the code at it is version $carried. Set the version in Cargo.toml ([workspace.package]), commit, and tag v<version>."
+            exit 1
+          fi
+          # The desktop bundle takes its version from Cargo.toml only while
+          # tauri.conf.json does not name one of its own.
+          if jq -e 'has("version")' apps/desktop/src-tauri/tauri.conf.json > /dev/null; then
+            echo "::error::apps/desktop/src-tauri/tauri.conf.json names a version of its own; it must come from Cargo.toml"
+            exit 1
+          fi
+          echo "version=$carried" >> "$GITHUB_OUTPUT"
+          case "$carried" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
       - id: make
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           set -euo pipefail
           # A re-run must not make a second release for the same tag. The
@@ -49,12 +87,16 @@ jobs:
             echo "id=$existing" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          body=$'See `docs/STATUS.md` for what is built and how it has been checked.\n\nThese installers are not signed yet, so Windows SmartScreen and macOS Gatekeeper will warn about them.'
+          body=$'Which file to take, and how to get past the warnings on first start: `docs/TRYING-IT.md`. What is built and how it has been checked: `docs/STATUS.md`.\n\nNone of these files is signed by a certificate authority. Windows SmartScreen warns about the installers; macOS opens the app only once it has been allowed in System Settings → Privacy & Security.'
+          # A draft, published by hand once its files are all there. A tag
+          # with a pre-release part (`v0.2.0-alpha.1`) is marked as one, so
+          # that publishing it does not make it the repository's latest.
           id=$(gh api "repos/${{ github.repository }}/releases" \
             -f tag_name="$TAG" \
             -f name="Nocturne $TAG" \
             -f body="$body" \
             -F draft=true \
+            -F prerelease="$PRERELEASE" \
             --jq .id)
           echo "made the release for $TAG ($id)"
           echo "id=$id" >> "$GITHUB_OUTPUT"
@@ -91,6 +133,9 @@ jobs:
             target: universal-apple-darwin
             edition: isp
     runs-on: ${{ matrix.os }}
+    env:
+      EDITION: ${{ matrix.edition }}
+      VERSION: ${{ needs.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,12 +145,17 @@ jobs:
         if: matrix.target != ''
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - name: Install the Linux WebView and bundling dependencies
+      # The Ayatana indicator library, not the old libappindicator: the CLI
+      # makes the packages depend on whichever of the two it finds here, and
+      # Debian 12 and 13 ship only the Ayatana one. `rpm` is for the check
+      # below, which reads the RPM back.
+      - name: Install the Linux WebView, tray and bundling dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            rpm rpm2cpio cpio
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: ui/package.json
@@ -116,9 +166,34 @@ jobs:
           cache-dependency-path: ui/pnpm-lock.yaml
       - run: pnpm --dir ui install --frozen-lockfile
       - run: pnpm --dir ui build
-      - uses: tauri-apps/tauri-action@v0
+      # Windows Installer takes a version of numbers only, at most four of
+      # them, so `0.2.0-alpha.3` is given to the MSI as `0.2.0.3`. Every
+      # other package keeps the version as it is.
+      - name: The MSI's version
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          core=${VERSION%%[-+]*}
+          pre=${VERSION#"$core"}
+          pre=${pre#-}
+          pre=${pre%%+*}
+          if [ -n "$pre" ]; then
+            number=$(printf '%s' "$pre" | grep -oE '[0-9]+$' || true)
+            if [ -z "$number" ] || [ "$number" -gt 65535 ]; then
+              echo "::error::The MSI needs a number at the end of the pre-release part of $VERSION (such as 0.2.0-alpha.3)"
+              exit 1
+            fi
+            printf '{"bundle":{"windows":{"wix":{"version":"%s.%s"}}}}\n' "$core" "$number" \
+              > apps/desktop/src-tauri/tauri.msi.conf.json
+            echo "MSI_CONFIG=--config tauri.msi.conf.json" >> "$GITHUB_ENV"
+          fi
+      # Builds only. Nothing goes to the release until the check after this
+      # has read every file back.
+      - id: build
+        uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_LINUX_AYATANA_APPINDICATOR: "true"
         with:
           projectPath: apps/desktop/src-tauri
           # `--config` is merged over `tauri.conf.json`; the path is relative
@@ -126,11 +201,34 @@ jobs:
           args: >-
             ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
             ${{ matrix.edition == 'isp' && '--features isp --config tauri.isp.conf.json' || '' }}
-          # The release already exists; this only adds files to it.
-          releaseId: ${{ needs.release.outputs.id }}
+            ${{ env.MSI_CONFIG }}
+      # Each installer is unpacked and its program asked what it is: the
+      # edition comes from the engine it was built with, so a misapplied
+      # `--features` or `--config` fails here instead of shipping.
+      - name: Every installer is named for its edition and carries it
+        shell: bash
+        env:
+          ARTIFACTS: ${{ steps.build.outputs.artifactPaths }}
+          UPLOAD_DIR: checked-installers
+        run: bash apps/desktop/scripts/check-installers.sh
+      - name: Upload them to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          UPLOAD_DIR: checked-installers
+        run: |
+          set -euo pipefail
+          if [ -z "$(ls -A "$UPLOAD_DIR" 2> /dev/null)" ]; then
+            echo "::error::nothing to upload"
+            exit 1
+          fi
+          gh release upload "$TAG" "$UPLOAD_DIR"/* --clobber
 
   server:
     name: Server binary (${{ matrix.edition }}, ${{ matrix.os }})
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -141,11 +239,19 @@ jobs:
         # whole of the commercial control — see `docs/dev/spec-editions.md`.
         edition: [free, isp]
     runs-on: ${{ matrix.os }}
+    env:
+      EDITION: ${{ matrix.edition }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - run: rustup toolchain install
+      # macos-latest is an Apple silicon runner. One binary holding both
+      # architectures, as the desktop app does, so an Intel Mac is not left
+      # without a server.
+      - name: Add both macOS architectures
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
@@ -161,64 +267,126 @@ jobs:
       - name: Build the server
         shell: bash
         run: |
-          if [ "${{ matrix.edition }}" = "isp" ]; then
-            cargo build --release -p nocturne-server --features isp
+          set -euo pipefail
+          features=""
+          if [ "$EDITION" = "isp" ]; then features="--features isp"; fi
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            for target in aarch64-apple-darwin x86_64-apple-darwin; do
+              cargo build --release -p nocturne-server $features --target "$target"
+            done
+            mkdir -p target/release
+            lipo -create -output target/release/nocturne-server \
+              target/aarch64-apple-darwin/release/nocturne-server \
+              target/x86_64-apple-darwin/release/nocturne-server
           else
-            cargo build --release -p nocturne-server
+            cargo build --release -p nocturne-server $features
           fi
-      - name: Name the binary after its platform
+      # Named for what it is and where it runs, in a folder of the same name,
+      # so that both editions can be unpacked side by side.
+      - name: Put the binary in a folder named for it
         shell: bash
         run: |
-          mkdir -p artifacts
-          name="nocturne-server-${{ matrix.edition }}-${{ runner.os }}-${{ runner.arch }}"
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Linux) platform=linux-x64 ;;
+            Windows) platform=windows-x64 ;;
+            macOS) platform=macos-universal ;;
+          esac
+          name="nocturne-server-$EDITION-$platform"
+          mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/nocturne-server.exe "artifacts/$name.exe"
+            cp target/release/nocturne-server.exe "dist/$name/"
           else
-            cp target/release/nocturne-server "artifacts/$name"
+            cp target/release/nocturne-server "dist/$name/"
+          fi
+          echo "SERVER_NAME=$name" >> "$GITHUB_ENV"
+      - name: Rosetta, to start the Intel half of the macOS binary
+        if: runner.os == 'macOS'
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2> /dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
           fi
       # Nothing else in either workflow ever *runs* a release build, so without
       # this a tag could ship a server that does not start, or one carrying
       # the "build the interface first" fallback page instead of the
-      # interface. Both are silent: the compile succeeds either way.
+      # interface. Both are silent: the compile succeeds either way. On macOS
+      # each architecture in the binary is started in turn.
       - name: It starts, it answers, and it is carrying the real interface
         shell: bash
         run: |
           set -euo pipefail
-          bin=$(ls artifacts/nocturne-server-*)
-          dir=$(mktemp -d)
-          "$bin" --data-dir "$dir" --port 8799 > server.log 2>&1 &
-          server=$!
-          trap 'kill "$server" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 60); do
-            if "$bin" call --data-dir "$dir" app.methods > methods.json 2>/dev/null; then break; fi
-            sleep 1
-          done
-          cat server.log
-          # `ui="embedded"` and `ui="not built (fallback page)"` are the two
-          # things this is here to tell apart.
-          grep -q 'ui="embedded"' server.log
-          # One method from the core and one from four different feature
-          # crates: proof the whole suite assembled, not just that a binary
-          # with a working `--help` came out.
-          for method in app.info terminal.open changes.apply monitor.status ipam.prefixes tools.list; do
-            grep -q "\"$method\"" methods.json || { echo "missing: $method"; exit 1; }
-          done
-          # And the edition is what the artefact says it is. This is the last
-          # point at which a mistake is still cheap: a free installer that
-          # answers `isp.customers` has shipped somebody else's subscriber
-          # ledger to everyone, and an ISP build that does not answer it is a
-          # paid artefact missing the thing it was paid for.
-          if [ "${{ matrix.edition }}" = "isp" ]; then
-            grep -q '"isp.customers"' methods.json || { echo "the ISP edition has no billing methods"; exit 1; }
-            grep -q '"isp.summary"' methods.json
-          elif grep -q '"isp\.' methods.json; then
-            echo "the free edition is carrying billing methods:"
-            grep -o '"isp\.[a-z.]*"' methods.json
-            exit 1
+          bin=$(ls "dist/$SERVER_NAME"/nocturne-server*)
+          slices=native
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            slices=$(lipo -archs "$bin")
+            case " $slices " in
+              *" x86_64 "*" arm64 "* | *" arm64 "*" x86_64 "*) ;;
+              *) echo "::error::the macOS server holds $slices, not both architectures"; exit 1 ;;
+            esac
           fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nocturne-server-${{ matrix.edition }}-${{ runner.os }}-${{ runner.arch }}
-          path: artifacts/*
-          retention-days: 14
+          for slice in $slices; do
+            run=""
+            if [ "$slice" != native ]; then run="arch -$slice"; fi
+            echo "== $slice"
+            dir=$(mktemp -d)
+            $run "$bin" --data-dir "$dir" --port 0 > server.log 2>&1 &
+            server=$!
+            answered=false
+            for _ in $(seq 1 60); do
+              if $run "$bin" call --data-dir "$dir" app.methods > methods.json 2> /dev/null; then
+                answered=true
+                break
+              fi
+              sleep 1
+            done
+            kill "$server" 2> /dev/null || true
+            wait "$server" 2> /dev/null || true
+            cat server.log
+            if [ "$answered" != true ]; then
+              echo "::error::the server did not answer ($slice)"
+              exit 1
+            fi
+            # `ui="embedded"` and `ui="not built (fallback page)"` are the two
+            # things this is here to tell apart.
+            grep -q 'ui="embedded"' server.log
+            # One method from the core and one from four different feature
+            # crates: proof the whole suite assembled, not just that a binary
+            # with a working `--help` came out.
+            for method in app.info terminal.open changes.apply monitor.status ipam.prefixes tools.list; do
+              grep -q "\"$method\"" methods.json || { echo "missing: $method"; exit 1; }
+            done
+            # And the edition is what the artefact says it is. This is the last
+            # point at which a mistake is still cheap: a free server that
+            # answers `isp.customers` has shipped somebody else's subscriber
+            # ledger to everyone, and an ISP build that does not answer it is a
+            # paid artefact missing the thing it was paid for.
+            if [ "$EDITION" = "isp" ]; then
+              grep -q '"isp.customers"' methods.json || { echo "the ISP edition has no billing methods"; exit 1; }
+              grep -q '"isp.summary"' methods.json
+            elif grep -q '"isp\.' methods.json; then
+              echo "the free edition is carrying billing methods:"
+              grep -o '"isp\.[a-z.]*"' methods.json
+              exit 1
+            fi
+          done
+      # A tarball keeps the execute bit that a bare file or a workflow
+      # artefact loses; Windows needs no such bit and gets a zip.
+      - name: Pack it
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$SERVER_NAME' -DestinationPath '$SERVER_NAME.zip'"
+            echo "SERVER_FILE=dist/$SERVER_NAME.zip" >> "$GITHUB_ENV"
+          else
+            tar -czf "$SERVER_NAME.tar.gz" "$SERVER_NAME"
+            echo "SERVER_FILE=dist/$SERVER_NAME.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - name: Upload it to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" "$SERVER_FILE" --clobber

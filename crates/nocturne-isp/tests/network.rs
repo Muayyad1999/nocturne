@@ -635,3 +635,244 @@ async fn a_customers_detail_puts_what_they_owe_beside_what_they_use() {
         "the interface did not report a speed, so there is none"
     );
 }
+
+/// With the default basis a figure is the greater of the two directions,
+/// and while one of them could not be measured nobody knows which is
+/// greater: the one that was measured may be the smaller. That is a gap,
+/// not a figure that happens to be a lower bound.
+#[tokio::test]
+async fn the_greater_of_two_directions_is_not_known_while_one_of_them_could_not_be_measured() {
+    let isp = Isp::start(true, &["RB1"]).await;
+    let device = isp.device("RB1");
+    let customer = isp
+        .customer(
+            "Half Hamid",
+            "USD",
+            json!({"device_id": device, "interface": "ether5"}),
+        )
+        .await;
+    let tariff = isp
+        .tariff("Home 10", 10, "flat", 2_500, "USD", "monthly")
+        .await;
+    isp.subscribe(&customer, &tariff, None).await;
+    // The outbound counter was read and the inbound one was not: a counter
+    // that went backwards in one direction only.
+    isp.monitor().interface(
+        &device,
+        "ether5",
+        None,
+        Some(3_000_000.0),
+        Some(100_000_000),
+    );
+
+    let report = isp.ok("isp.usage", json!({})).await;
+    let row = usage_row(&report, &customer);
+    assert_eq!(row["coverage"], json!("no_rate_yet"), "{row}");
+    assert!(
+        row["used"].is_null(),
+        "3 Mbit is not the greater of two rates: {row}"
+    );
+    assert!(row["of_plan_pct"].is_null(), "{row}");
+    let note = row["coverage_note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("inbound"),
+        "the note says which direction: {note}"
+    );
+    assert_eq!(report["measured"], json!(0));
+
+    // Over a window, the same: outbound samples and no inbound ones is not
+    // a window with nothing in it, and not a figure either.
+    let since = now() - DAY_MS;
+    isp.monitor().samples(
+        &device,
+        "if.out_bps",
+        "ether5",
+        &[(since + 1_000, 3_000_000.0), (since + 2_000, 5_000_000.0)],
+    );
+    let windowed = isp.ok("isp.usage", json!({"since": since})).await;
+    let row = usage_row(&windowed, &customer);
+    assert_eq!(row["coverage"], json!("no_rate_yet"), "{row}");
+    assert!(row["used"].is_null(), "{row}");
+    assert!(
+        row["coverage_note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("inbound"),
+        "{row}"
+    );
+
+    // Asked for the direction that was measured, there is a figure, and its
+    // basis names that direction.
+    isp.ok(
+        "settings.set",
+        json!({"section": "isp", "value": {"usage_basis": "out"}}),
+    )
+    .await;
+    let outbound = isp.ok("isp.usage", json!({})).await;
+    let row = usage_row(&outbound, &customer);
+    assert_eq!(row["coverage"], json!("measured"));
+    assert_eq!(row["used"]["used_mbit"], json!(3.0));
+    assert!(
+        row["used"]["basis"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("outbound"),
+        "{row}"
+    );
+
+    // A link's load is the same reading, and the same rule.
+    isp.ok(
+        "settings.set",
+        json!({"section": "isp", "value": {"usage_basis": "greater"}}),
+    )
+    .await;
+    isp.ok(
+        "isp.link.save",
+        json!({"name": "Feed", "tower": "Tower A", "device_id": device,
+               "interface": "ether5", "capacity_mbit": 100}),
+    )
+    .await;
+    let capacity = list(&isp.ok("isp.capacity", json!({})).await);
+    assert_eq!(
+        capacity[0]["coverage"],
+        json!("no_rate_yet"),
+        "{}",
+        capacity[0]
+    );
+    assert!(capacity[0]["measured"].is_null(), "{}", capacity[0]);
+}
+
+/// The monitor keeps a device's rows from its last poll that read them, for
+/// as long as the device stays unreachable. A reading from before the usage
+/// window (24 hours unless the setting says otherwise) is not what a
+/// customer is using now, and a reading inside it says when it was taken.
+#[tokio::test]
+async fn a_latest_reading_from_before_the_usage_window_is_not_what_a_customer_is_using_now() {
+    let isp = Isp::start(true, &["TOWER1"]).await;
+    let device = isp.device("TOWER1");
+    let tariff = isp
+        .tariff("Home 10", 10, "flat", 2_500, "USD", "monthly")
+        .await;
+    let stale = isp
+        .customer(
+            "Stale Sami",
+            "USD",
+            json!({"device_id": device, "interface": "ether5"}),
+        )
+        .await;
+    let fresh = isp
+        .customer(
+            "Fresh Farah",
+            "USD",
+            json!({"device_id": device, "interface": "ether6"}),
+        )
+        .await;
+    for customer in [&stale, &fresh] {
+        isp.subscribe(customer, &tariff, None).await;
+    }
+    let six_days_ago = now() - 6 * DAY_MS;
+    isp.monitor().interface_at(
+        &device,
+        "ether5",
+        Some(14_000_000.0),
+        Some(2_000_000.0),
+        None,
+        six_days_ago,
+    );
+    let before = now();
+    isp.monitor().interface(
+        &device,
+        "ether6",
+        Some(4_000_000.0),
+        Some(1_000_000.0),
+        None,
+    );
+
+    let report = isp.ok("isp.usage", json!({})).await;
+    let sami = usage_row(&report, &stale);
+    assert_eq!(sami["coverage"], json!("no_recent_reading"), "{sami}");
+    assert!(
+        sami["used"].is_null(),
+        "a six-day-old 14 Mbit is not today's: {sami}"
+    );
+    assert!(sami["of_plan_pct"].is_null(), "{sami}");
+    let note = sami["coverage_note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("6 days") && note.contains("24 hours"),
+        "the note says how old the reading is and what the window is: {note}"
+    );
+    let farah = usage_row(&report, &fresh);
+    assert_eq!(farah["coverage"], json!("measured"));
+    assert!(
+        farah["used"]["at"].as_i64().unwrap_or_default() >= before,
+        "a latest reading carries the moment it was taken: {farah}"
+    );
+    assert_eq!(report["measured"], json!(1));
+    assert!(
+        list(&report["coverage"])
+            .iter()
+            .any(|line| line["coverage"] == json!("no_recent_reading")
+                && line["customers"] == json!(1)),
+        "{}",
+        report["coverage"]
+    );
+
+    // The window is the business's to set: with a week of it, the reading
+    // from six days ago counts, and says when it is from.
+    isp.ok(
+        "settings.set",
+        json!({"section": "isp", "value": {"usage_window_hours": 24 * 7}}),
+    )
+    .await;
+    let week = isp.ok("isp.usage", json!({"customer_id": stale})).await;
+    let sami = usage_row(&week, &stale);
+    assert_eq!(sami["coverage"], json!("measured"));
+    assert_eq!(sami["used"]["at"], json!(six_days_ago));
+    assert_eq!(sami["used"]["used_mbit"], json!(14.0));
+}
+
+/// The report is of one page of customers, and says how many there are in
+/// all and how to read the next page — so "3 of 5 have a figure" is not
+/// read as being about everybody.
+#[tokio::test]
+async fn a_usage_report_of_one_page_says_how_many_customers_it_is_a_page_of() {
+    let isp = Isp::start(false, &[]).await;
+    let mut customers = Vec::new();
+    for name in ["Ann", "Ben", "Cat", "Dan", "Eve"] {
+        customers.push(isp.customer(name, "USD", json!({})).await);
+    }
+    let first = isp.ok("isp.usage", json!({"limit": 2})).await;
+    assert_eq!(first["customers"], json!(2));
+    assert_eq!(first["matching"], json!(5), "{first}");
+    assert!(first["next_cursor"].is_string(), "{first}");
+
+    // Paged to the end, every customer is in it once, and the last page
+    // says it is the last.
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor = serde_json::Value::Null;
+    loop {
+        let mut params = json!({"limit": 2});
+        if !cursor.is_null() {
+            params["cursor"] = cursor.clone();
+        }
+        let page = isp.ok("isp.usage", params).await;
+        assert_eq!(page["matching"], json!(5));
+        seen.extend(
+            list(&page["rows"])
+                .iter()
+                .map(|row| row["customer_id"].as_str().expect("an id").to_string()),
+        );
+        cursor = page["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    assert_eq!(seen, customers);
+
+    // One customer's report is a report of one.
+    let one = isp
+        .ok("isp.usage", json!({"customer_id": customers[0]}))
+        .await;
+    assert_eq!(one["matching"], json!(1));
+    assert!(one["next_cursor"].is_null());
+}

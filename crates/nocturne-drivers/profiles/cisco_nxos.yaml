@@ -274,11 +274,20 @@ collect:
         part_id: PID
         serial: SN
 
+# SNMP health. Written from Cisco's MIB files (CISCO-PROCESS-MIB revision
+# 2020-04-21, read on 2026-11-23 from github.com/cisco/cisco-mibs) and its
+# MIB support lists for Nexus 5000, 7000 and 9000. Nobody has read any of it
+# off a Nexus.
 snmp:
   cpu:
-    # cpmCPUTotal1minRev (CISCO-PROCESS-MIB), which NX-OS serves as IOS does.
-    - 1.3.6.1.4.1.9.9.109.1.1.1.1.7
-  # No memory or temperature OIDs: NX-OS reports memory as a percentage
-  # (cseSysMemoryUtilization), which is not the bytes the model holds, and its
-  # temperature lives in a sensor table that also carries fans and voltages.
+    - oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.7        # cpmCPUTotal1minRev: one row per processor the agent reports; the busiest is the figure
+      combine: max
+  # No memory, on purpose. NX-OS serves cpmCPUMemoryUsed / cpmCPUMemoryFree
+  # (1.3.6.1.4.1.9.9.109.1.1.1.1.12 / .13, kilobytes) and the ready-made
+  # percentage cseSysMemoryUtilization (1.3.6.1.4.1.9.9.305.1.1.2.0), but
+  # nobody has read them off a Nexus beside `show system resources`: which row
+  # comes first on two supervisors, and whether "used" counts the page cache,
+  # are not known. Unknown until then.
+  # No temperature, on purpose: NX-OS sensors are in CISCO-ENTITY-SENSOR-MIB,
+  # one table for fans, voltages, currents and temperatures.
   # See tests/profiles/cisco_nxos/NOTES.md.

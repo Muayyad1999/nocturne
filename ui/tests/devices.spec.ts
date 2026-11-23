@@ -293,6 +293,35 @@ test.describe('import and export', () => {
     await expect(dialog).toBeHidden();
     expect(console.messages, backend.log()).toEqual([]);
   });
+
+  test('exports the ticked devices when it is asked for from the selection bar', async ({ page }) => {
+    const console = watchConsole(page);
+    await openApp(page, '/devices', { backend });
+
+    // The dialog is mounted with the list, before anything is ticked: what it
+    // offers has to follow the selection when it opens, not when it mounted.
+    await page.getByRole('searchbox', { name: 'Search devices' }).fill('imported-sw1');
+    await expect(rows(page)).toHaveCount(1);
+    await page.getByRole('checkbox', { name: 'Select row' }).click();
+    const bar = page.getByRole('region', { name: 'Actions for the selected devices' });
+    await expect(bar).toContainText('1 selected');
+    await bar.getByRole('button', { name: 'Export' }).click();
+
+    const dialog = page.getByRole('dialog', { name: 'Export devices' });
+    await expect(dialog.getByRole('radio', { name: 'The 1 selected' })).toBeChecked();
+    await expect(dialog.getByRole('radio', { name: 'Every device' })).not.toBeChecked();
+    // What the engine exported for that choice: the one device and no other.
+    await expect(dialog).toContainText('imported-sw1');
+    await expect(dialog).not.toContainText('imported-sw2');
+
+    // The whole inventory is still one choice away.
+    await dialog.getByText('Every device', { exact: true }).click();
+    await expect(dialog).toContainText('imported-sw2');
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    expect(console.messages, backend.log()).toEqual([]);
+  });
 });
 
 test.describe('the bulk bar', () => {

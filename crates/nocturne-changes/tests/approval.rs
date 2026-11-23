@@ -402,23 +402,242 @@ async fn an_unverified_device_type_always_needs_a_human() {
     );
 }
 
+async fn set_autonomy(app: &nocturne_app::App, mode: &str) {
+    app.rpc(
+        "settings.set",
+        json!({"section": "assistant", "value": {"autonomy": mode}}),
+    )
+    .await
+    .unwrap();
+}
+
+/// What the assistant is answered when it asks to start a change it may not
+/// start, and proof that nothing went to the device.
+async fn refused_to_the_assistant(
+    lab: &nocturne_app::testing::Lab,
+    name: &str,
+    id: &str,
+) -> String {
+    let app = &lab.app;
+    lab.fake(name).clear_seen();
+    let err = app
+        .rpc("changes.assistant_apply", json!({"id": id}))
+        .await
+        .expect_err("the assistant may not start this change");
+    assert_eq!(err.code, "forbidden", "{err:?}");
+    assert_eq!(
+        err.details.as_ref().unwrap()["needs"],
+        "human_approval",
+        "{err:?}"
+    );
+    assert!(
+        err.message.contains("Apply"),
+        "it says that a person has to press Apply: {}",
+        err.message
+    );
+    assert!(
+        lab.fake(name).seen().is_empty(),
+        "the device was not even connected to: {:?}",
+        lab.fake(name).seen()
+    );
+    let after = app.rpc("changes.get", json!({"id": id})).await.unwrap();
+    assert_eq!(after["state"], "approved", "{after:#}");
+    assert_eq!(
+        after["approval"]["by"], "user",
+        "the approval is the person's"
+    );
+    err.message
+}
+
 #[tokio::test]
-async fn a_change_that_is_already_approved_may_be_started_by_the_assistant() {
+async fn an_approval_is_not_permission_for_the_assistant_to_start_the_change() {
+    // A person approves in the afternoon what they mean to apply tonight; text
+    // a stranger wrote into the assistant's context must not start it now.
     let lab = lab(&["SW1"]).await;
     let app = &lab.app;
+    let before = lab.fake("SW1").running_config();
     let change = planned(app, &lab.id("SW1"), desk_change(), json!({})).await;
     approve(app, &change).await.unwrap();
     let id = change["id"].as_str().unwrap();
 
-    // Autonomy is `draft`, but a human has signed this one off already.
+    // Autonomy is `draft` (the default): the assistant applies nothing,
+    // approved or not.
+    let message = refused_to_the_assistant(&lab, "SW1", id).await;
+    assert!(message.contains("draft"), "{message}");
+    assert_eq!(lab.fake("SW1").running_config(), before);
+
+    // The person who approved it can still apply it.
+    run_job(app, "changes.apply", json!({"id": id})).await;
+    let applied = app.rpc("changes.get", json!({"id": id})).await.unwrap();
+    assert_eq!(applied["state"], "applied", "{applied:#}");
+    assert_eq!(applied["approval"]["by"], "user");
+}
+
+#[tokio::test]
+async fn whatever_the_autonomy_an_approved_change_that_needs_a_person_is_not_started_by_the_assistant()
+ {
+    let lab = with_address(&["SW1"]).await;
+    let app = &lab.app;
+    let device = lab.id("SW1");
+    set_autonomy(app, "low_risk").await;
+    // So that a person may apply to the unverified device type below: what
+    // holds the assistant back there has to be the autonomy gate itself.
+    app.rpc(
+        "settings.set",
+        json!({"section": "changes", "value": {"allow_unverified_writes": true}}),
+    )
+    .await
+    .unwrap();
+
+    // Protected resources: the management SVI.
+    let hits = planned(app, &device, management_change(), json!({})).await;
+    assert!(!hit_kinds(&hits).is_empty());
+    approve(app, &hits).await.unwrap();
+    let message = refused_to_the_assistant(&lab, "SW1", hits["id"].as_str().unwrap()).await;
+    assert!(message.contains("protected resources"), "{message}");
+    app.rpc("changes.cancel", json!({"id": hits["id"]}))
+        .await
+        .unwrap();
+
+    // High risk, with nothing protected in it: a line Nocturne can derive no
+    // undo for (the port is a trunk already, so there is nothing to put back).
+    let risky = planned(
+        app,
+        &device,
+        json!({"type": "lines", "lines": [
+            "interface GigabitEthernet0/1",
+            "switchport mode trunk",
+            "exit",
+        ]}),
+        json!({}),
+    )
+    .await;
+    assert!(hit_kinds(&risky).is_empty(), "{:?}", hit_kinds(&risky));
+    assert!(
+        matches!(
+            plan(&risky)["risk"]["level"].as_str(),
+            Some("high" | "critical")
+        ),
+        "{:#}",
+        plan(&risky)["risk"]
+    );
+    approve(app, &risky).await.unwrap();
+    let message = refused_to_the_assistant(&lab, "SW1", risky["id"].as_str().unwrap()).await;
+    assert!(message.contains("risk"), "{message}");
+    app.rpc("changes.cancel", json!({"id": risky["id"]}))
+        .await
+        .unwrap();
+
+    // A device type nobody has checked against real hardware.
+    app.rpc(
+        "devices.update",
+        json!({"id": device, "profile": "test_ios"}),
+    )
+    .await
+    .unwrap();
+    let unverified = planned(app, &device, desk_change(), json!({})).await;
+    assert_eq!(plan(&unverified)["maturity"], "experimental");
+    approve(app, &unverified).await.unwrap();
+    let message = refused_to_the_assistant(&lab, "SW1", unverified["id"].as_str().unwrap()).await;
+    assert!(message.contains("verified"), "{message}");
+    app.rpc("changes.cancel", json!({"id": unverified["id"]}))
+        .await
+        .unwrap();
+
+    // A protected device.
+    app.rpc(
+        "devices.update",
+        json!({"id": device, "profile": VERIFIED_PROFILE, "protected": true}),
+    )
+    .await
+    .unwrap();
+    let guarded = planned(app, &device, desk_change(), json!({})).await;
+    approve(app, &guarded).await.unwrap();
+    let message = refused_to_the_assistant(&lab, "SW1", guarded["id"].as_str().unwrap()).await;
+    assert!(message.contains("protected device"), "{message}");
+}
+
+#[tokio::test]
+async fn an_approved_change_the_autonomy_allows_is_started_by_the_assistant_and_stays_the_persons()
+{
+    let lab = lab(&["LAB1"]).await;
+    let app = &lab.app;
+    set_autonomy(app, "lab").await;
+    let change = planned(app, &lab.id("LAB1"), desk_change(), json!({})).await;
+    let id = change["id"].as_str().unwrap();
+    let approved = app
+        .rpc(
+            "changes.approve",
+            json!({"id": id, "plan_hashes": [plan(&change)["plan_hash"]], "note": "tonight"}),
+        )
+        .await
+        .unwrap();
+    let signed = approved["approval"].clone();
+
     let started = app
         .rpc("changes.assistant_apply", json!({"id": id}))
         .await
-        .unwrap();
+        .expect("a lab-only, low-risk change in `lab` mode");
     finish(app, &started).await;
     let applied = app.rpc("changes.get", json!({"id": id})).await.unwrap();
-    assert_eq!(applied["state"], "applied");
+    assert_eq!(applied["state"], "applied", "{applied:#}");
+    assert_eq!(
+        applied["approval"], signed,
+        "the person's approval is kept as they gave it"
+    );
     assert_eq!(applied["approval"]["by"], "user");
+
+    // The trail says who started it, and on whose approval.
+    let started_by = audit(app)
+        .into_iter()
+        .filter(|(source, _)| source == "changes.apply")
+        .map(|(_, message)| message)
+        .find(|message| message.contains("started"))
+        .expect("an entry for the start of the apply");
+    assert!(
+        started_by.contains("assistant") && started_by.contains("user"),
+        "{started_by}"
+    );
+}
+
+#[tokio::test]
+async fn an_approval_that_does_not_bind_the_stored_plan_starts_nothing_for_the_assistant() {
+    // `lab` mode would let the assistant start this lab-only, low-risk change
+    // a person approved — but only the plan they approved.
+    let lab = lab(&["LAB1"]).await;
+    let app = &lab.app;
+    set_autonomy(app, "lab").await;
+    let before = lab.fake("LAB1").running_config();
+    let change = planned(app, &lab.id("LAB1"), desk_change(), json!({})).await;
+    let id = change["id"].as_str().unwrap();
+    approve(app, &change).await.unwrap();
+
+    // As the record reads while it is planned again (still `approved`, its
+    // approval taken away), and approved for a plan that is not the one kept.
+    let mut stored: serde_json::Value = app.store().get("changes", id).unwrap().unwrap();
+    let mut stale = stored["approval"].clone();
+    stale["plan_hashes"] = json!(["0".repeat(64)]);
+    for approval in [json!(null), stale] {
+        stored["approval"] = approval;
+        app.store().put("changes", id, &stored).unwrap();
+        lab.fake("LAB1").clear_seen();
+        let err = app
+            .rpc("changes.assistant_apply", json!({"id": id}))
+            .await
+            .expect_err("an approval that does not name the stored plan starts nothing");
+        assert_eq!(err.code, "conflict", "{err:?}");
+        let err = app
+            .rpc("changes.apply", json!({"id": id}))
+            .await
+            .expect_err("nor does it for a person");
+        assert_eq!(err.code, "conflict", "{err:?}");
+        assert!(
+            lab.fake("LAB1").seen().is_empty(),
+            "the device was connected to: {:?}",
+            lab.fake("LAB1").seen()
+        );
+    }
+    assert_eq!(lab.fake("LAB1").running_config(), before);
 }
 
 /// A device type nobody has checked against real hardware gets no write

@@ -380,6 +380,137 @@
   line-height: 1.5;
 }
 
+/*
+ * The request is quoted, not spoken: devices, other people and the model
+ * wrote parts of it, so it sits in a frame of its own, in another face, on
+ * another ground than the card's words and buttons. It scrolls inside the
+ * frame, so a request of sixteen ranges cannot push the buttons away.
+ */
+/* At 1280×720 the dock has about 500px for a whole card; this keeps it in. */
+.request {
+  max-height: min(36vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-1);
+}
+
+.request:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.requestHead {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--sp-6);
+  padding: var(--sp-4) var(--sp-8);
+  border-bottom: 1px dashed var(--line-strong);
+  background: var(--bg-1);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.45;
+}
+
+.requestTitle {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.requestBody {
+  counter-reset: request-line;
+  margin: 0;
+  padding: var(--sp-8) var(--sp-8) var(--sp-8) var(--sp-4);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * One block per line the engine wrote, numbered in a gutter. A line too long
+ * for the frame wraps two columns deeper than its own text and gets no
+ * number, so a wrapped piece of a device's title never passes for a line of
+ * the question. `--lead` is the line's own indentation (`request.ts`).
+ */
+.requestLine {
+  --hang: calc((var(--lead, 0) + 2) * 1ch);
+  position: relative;
+  display: block;
+  min-height: 1.5em;
+  padding-left: calc(4ch + var(--hang));
+  text-indent: calc(-1 * var(--hang));
+  counter-increment: request-line;
+}
+
+.requestLine::before {
+  /* The number is for the eye: a screen reader is given the lines alone. */
+  content: counter(request-line);
+  content: counter(request-line) / '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3ch;
+  color: var(--text-3);
+  text-align: right;
+  text-indent: 0;
+  user-select: none;
+}
+
+.requestEmpty {
+  margin: 0;
+  padding: var(--sp-8);
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/*
+ * A character that does not show, written out where it stands (`request.ts`):
+ * boxed, smaller and in the warning colour, so that it is never taken for
+ * text somebody typed. `text-indent` is reset because a request line hangs
+ * its continuations with a negative one, which an inline block inherits.
+ */
+.unseen {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 3px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-style: normal;
+  line-height: 1.25;
+  text-indent: 0;
+  white-space: nowrap;
+}
+
+/* The card's own words about the frame, so outside it. */
+.requestMore {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: calc(-1 * var(--sp-4)) 0 0;
+  color: var(--text-1);
+  font-size: var(--fs-11);
+  font-weight: 500;
+}
+
+.requestMore svg {
+  flex: none;
+  color: var(--ai);
+}
+
+.requestMore[data-end] {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
 .approvalActions {
   display: flex;
   gap: var(--sp-8);

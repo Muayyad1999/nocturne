@@ -417,11 +417,19 @@ async fn a_credit_note_is_never_counted_as_money_received() {
         "a credit note turned up in the payments"
     );
 
-    // It is in the audit trail, with its reason, like every other mutation.
-    let audited = isp
-        .audit()
-        .into_iter()
-        .any(|(source, message)| source == "isp.credit.issue" && message.contains("never came up"));
+    // It is in the audit trail, with its reason, like every other mutation:
+    // the reason is in the entry's detail, and not in the message other
+    // features repeat.
+    let audited = isp.audit_entries().into_iter().any(|entry| {
+        entry.source == "isp.credit.issue"
+            && !entry.message.contains("never came up")
+            && entry.body.as_ref().is_some_and(|body| {
+                body["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("never came up")
+            })
+    });
     assert!(audited, "the credit note is not in the audit trail");
 }
 

@@ -146,6 +146,24 @@ describe('a chart that asked for one', () => {
     );
   });
 
+  it('saves every series in the file, the ones past the eight a chart draws too', async () => {
+    const ports = Array.from({ length: 10 }, (_, index) => ({
+      id: `port-${index + 1}`,
+      label: `if.oper · FastEthernet0/${index + 1}`,
+      values: [0, 0, index === 9 ? 1 : 0],
+    }));
+    await render({ series: ports, exportMenu: {} });
+    // The chart says it draws eight of them…
+    expect(document.body.textContent).toContain('2 more not shown');
+    act(() => exportButton()?.click());
+    act(() => menuItems()[2]?.click());
+
+    // …and the file still has all ten.
+    const [header, ...rows] = String(saved.files[0]?.content).trimEnd().split('\r\n');
+    expect(header?.split(',')).toEqual(['time_utc', ...ports.map((port) => port.label)]);
+    expect(rows.at(-1)).toBe('2026-11-22T21:02:00.000Z,0,0,0,0,0,0,0,0,0,1');
+  });
+
   it('names the files after the title when the screen gave no name', async () => {
     await render({ exportMenu: {} });
     act(() => exportButton()?.click());

@@ -121,6 +121,35 @@ test.beforeAll(async ({ request }) => {
     })
     .toBe('applied');
 
+  // One applied and then asked to be undone: the undo is a change of its own,
+  // planned from the device and waiting to be approved.
+  // Plain text: what this one is applied with has to verify on the simulator.
+  ids.undone = await plan(rpc, 'Describe the plotter port', [
+    'interface FastEthernet0/11',
+    'description plotter, third floor',
+    'exit',
+  ]);
+  const undone = await rpc<{ targets: { plan: { plan_hash: string } }[] }>('changes.get', {
+    id: ids.undone,
+  });
+  await rpc('changes.approve', {
+    id: ids.undone,
+    plan_hashes: [undone.targets[0]?.plan.plan_hash],
+  });
+  await rpc('changes.apply', { id: ids.undone });
+  await expect
+    .poll(async () => (await rpc<{ state: string }>('changes.get', { id: ids.undone })).state, {
+      timeout: 180_000,
+    })
+    .toBe('applied');
+  const asked = await rpc<{ change: { id: string } }>('changes.rollback', { id: ids.undone });
+  ids.undo = asked.change.id;
+  await expect
+    .poll(async () => (await rpc<{ state: string }>('changes.get', { id: ids.undo })).state, {
+      timeout: 60_000,
+    })
+    .toBe('planned');
+
   // And one the assistant drafted, so the list shows the AI tint.
   ids.assistant = await plan(
     rpc,
@@ -165,6 +194,16 @@ for (const theme of THEMES) {
     await openApp(page, `/changes/${ids.applied}`, { backend, theme });
     await expect(page.getByTestId('apply-step').first()).toBeVisible();
     await shoot(page, theme, 'applied');
+
+    // The way back from a change, before anybody has approved it.
+    await openApp(page, `/changes/${ids.undo}`, { backend, theme });
+    await expect(page.getByTestId('undoes')).toContainText('Nothing has been sent');
+    await expect(page.getByTestId('command-line').first()).toBeVisible();
+    await shoot(page, theme, 'undo');
+    // …and the change it undoes, pointing at it.
+    await openApp(page, `/changes/${ids.undone}`, { backend, theme });
+    await expect(page.getByTestId('undone-by')).toBeVisible();
+    await shoot(page, theme, 'undo-waiting');
 
     // Drafting one.
     await openApp(page, '/changes', { backend, theme });

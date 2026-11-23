@@ -5,6 +5,7 @@
 //! written against (`docs/dev/features/monitor.md`), so field names and enum
 //! spellings here are a contract.
 
+use nocturne_drivers::model::Direction;
 use serde::{Deserialize, Serialize};
 
 // --------------------------------------------------------------- severity
@@ -474,6 +475,121 @@ pub struct IfStatus {
     pub at: i64,
 }
 
+// --------------------------------------------------------------------- QoS
+
+/// One class of a QoS policy as monitoring last read it: what it is, and
+/// what it did over the interval that ended with that read.
+///
+/// The identity and the counters are the device's own
+/// (`nocturne_drivers::model::QosClass`); the rates are computed here, from
+/// two readings of the counters over the device's own uptime between them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QosStatus {
+    pub device_id: String,
+    /// The interface the policy is attached to; empty where the platform
+    /// attaches it to something else.
+    pub interface: String,
+    /// `in` or `out`, seen from the device.
+    pub direction: Direction,
+    pub policy: String,
+    pub class: String,
+    /// The class this one's policy sits in. A parent's counters include its
+    /// children's.
+    pub parent: Option<String>,
+    /// The instance of this class's `qos.*` series, to chart it by. `null`
+    /// when it has none: it is past `qos_max_series`, or it cannot be told
+    /// from another class of the device by name.
+    pub instance: Option<String>,
+    /// The configured rate, where the platform prints one.
+    pub rate_bps: Option<u64>,
+    /// The rates are `null` when the interval could not be measured (the
+    /// first read, a restart, a failed read, a counter that went backwards)
+    /// or the platform does not print the counter — a gap, never a zero.
+    pub bps: Option<f64>,
+    pub drop_ps: Option<f64>,
+    /// Congestion drops only; `null` also where the device counts one kind
+    /// of drop.
+    pub queue_drop_ps: Option<f64>,
+    /// Drops as a share of the packets offered over the interval; `null`
+    /// also when none were.
+    pub drop_pct: Option<f64>,
+    /// Queue depth at the read: a gauge, known from the first read on.
+    pub queue_len: Option<u64>,
+    /// The counters as last read.
+    pub packets: Option<u64>,
+    pub dropped_packets: Option<u64>,
+    /// Losing packets to congestion, as far as the device can tell: its
+    /// congestion drops are above zero, or — where the device keeps one drop
+    /// counter for a class and so cannot say which — its drops are. A class
+    /// whose every drop is a policer's is the policy working, and is not.
+    /// What `problem_only` selects.
+    pub dropping: bool,
+    /// When the counters were read. Later than the device's last successful
+    /// read only never; earlier when reads have been failing since.
+    pub at: i64,
+    /// The read that produced this row has not been checked against a real
+    /// device of its platform.
+    pub unverified: bool,
+}
+
+/// Where a device stands with the QoS read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QosState {
+    /// The last read worked. No rows then means no policy is attached.
+    Ok,
+    /// Nothing can be asked: the device's type has no QoS read, or there is
+    /// no command line to ask it on.
+    Unsupported,
+    /// The last read did not work; `error` says why.
+    Failed,
+    /// It can be read and has not been yet.
+    #[default]
+    Never,
+}
+
+/// One device's entry in the coverage of `monitor.qos`: what the absence of
+/// rows means for it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QosDeviceCoverage {
+    pub device_id: String,
+    pub state: QosState,
+    /// When the read that `state` describes was made.
+    pub at: Option<i64>,
+    pub unverified: bool,
+    /// The device has more classes than `qos_max_series`: the table holds
+    /// them all, the series and the alert rules only the first so many.
+    pub series_capped: bool,
+    /// Why the read failed. With `ok`: what a read that worked could not
+    /// place and left out.
+    pub error: Option<String>,
+    /// Classes held for the device, and how many of them have series.
+    pub classes: u64,
+    pub series: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QosCoverage {
+    pub devices: Vec<QosDeviceCoverage>,
+}
+
+/// What monitoring remembers of a device's last QoS read. `state` is `None`
+/// until one has been attempted.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QosRecord {
+    /// `Ok` or `Failed`; the other two states are not outcomes of a read.
+    pub state: Option<QosState>,
+    pub at: Option<i64>,
+    pub error: Option<String>,
+    pub unverified: bool,
+    pub series_capped: bool,
+    pub classes: u64,
+    pub series: u64,
+}
+
 // ------------------------------------------------------------------ health
 
 /// The device-level numbers of the last poll that produced them.
@@ -527,6 +643,8 @@ pub struct DeviceRecord {
     /// was found on a device that was not there, and says nothing about the
     /// service now.
     pub up_since: Option<i64>,
+    /// The outcome of the last QoS read.
+    pub qos: QosRecord,
 }
 
 #[cfg(test)]

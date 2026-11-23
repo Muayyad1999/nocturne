@@ -169,3 +169,12 @@
 .tooltipLabel {
   color: var(--text-2);
 }
+
+/* A hole read out: in the table where a time would be, and as the whole tooltip. */
+.hole {
+  color: var(--text-3);
+}
+
+.tooltipTime[data-hole] {
+  margin-bottom: 0;
+}

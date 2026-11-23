@@ -19,7 +19,7 @@
 
 use nocturne_drivers::hier::Syntax;
 
-use crate::model::Severity;
+use crate::model::{Severity, insight_id};
 use crate::report::CheckReport;
 use crate::settings::{Settings, Thresholds};
 use crate::testdata::*;
@@ -1163,6 +1163,11 @@ fn a_policy_named_after_an_interface_is_split_from_its_class_at_the_last_slash()
     );
 }
 
+/// The insight id a class of device `a` is held by when it cannot be judged.
+fn held(instance: &str) -> String {
+    insight_id("qos_class_dropping", "a", &instance.replace('|', " "))
+}
+
 /// Samples every four minutes from `from` to `to` minutes ago, inclusive.
 fn every_four_minutes(from: i64, to: i64, value: f64) -> Vec<(i64, f64)> {
     (0..)
@@ -1222,6 +1227,11 @@ fn samples_that_stop_are_not_evaluated_rather_than_called_clean_or_still_droppin
     let report = run("qos_class_dropping", &one_gone);
     assert!(report.findings.is_empty(), "{:?}", subjects(&report));
     assert_eq!(report.evaluated().len(), 1);
+    assert_eq!(
+        report.undecided_ids().iter().collect::<Vec<_>>(),
+        [&held(VOICE)],
+        "a finding about the class that stopped is neither seen nor clean"
+    );
 
     // The queueing policy went twenty-two minutes ago and the policed class
     // is still measured: the device is being read, and has no queue left.
@@ -1267,7 +1277,25 @@ fn only_the_stretch_since_the_last_hole_in_a_series_is_judged() {
             .map(|finding| &finding.title)
             .collect::<Vec<_>>()
     );
-    assert_eq!(report.evaluated().len(), 1, "measured now, so decided");
+    // Nor are three samples, all of them over the threshold, a class that has
+    // stopped dropping: it is not known yet which it is, and a finding about
+    // it must not be counted clean on the strength of them.
+    assert!(
+        report.evaluated().is_empty(),
+        "measured too briefly to be decided"
+    );
+    let reasons = reasons(&report);
+    assert_eq!(reasons.len(), 1);
+    assert!(
+        reasons[0].starts_with("no class could be judged yet"),
+        "{}",
+        reasons[0]
+    );
+    assert_eq!(
+        report.undecided_ids().iter().collect::<Vec<_>>(),
+        [&held(VOICE)],
+        "and the class is held"
+    );
 
     // Twenty minutes since: reported, for the twenty minutes that were
     // measured and with the figures of those twenty minutes only.
@@ -1360,6 +1388,125 @@ fn drops_during_one_hour_that_is_over_are_not_dropping_now() {
         ["16 samples over 60 minutes, 100 % of them above the threshold"]
     );
     assert_eq!(evidence(&report, "Peak hour").len(), 1);
+}
+
+#[test]
+fn a_congestion_series_that_holds_no_sample_does_not_make_a_device_one_that_counts_congestion_apart()
+ {
+    // The device has one drop counter per class, and it is dropping. Then
+    // somebody asks `metrics.query` for its congestion series, which nobody
+    // records: the read creates the series row and puts nothing in it.
+    let alice = "ether1|out|subscribers/alice";
+    let mut world = world(vec![device("a", "RB1").syntax(Syntax::Routeros)]);
+    sampled(&mut world, "qos.drop_ps", alice, &steady(25.0));
+    world
+        .store()
+        .series_id("a", "qos.queue_drop_ps", alice)
+        .expect("an empty series");
+    world.reindex_series();
+
+    let report = run("qos_class_dropping", &world);
+    assert_eq!(
+        subjects(&report),
+        ["a:ether1 out subscribers/alice"],
+        "still judged on the counter it has"
+    );
+    assert_eq!(report.findings[0].severity, Some(Severity::Low));
+}
+
+/// A stored sample whose value is text: SQLite keeps it, and an aggregate
+/// over it cannot be read as a number. The application's own writer never
+/// stores one; it stands in for a read the store could not answer.
+fn unreadable(world: &mut World, metric: &str, instance: &str, at: i64) {
+    let series = world
+        .store()
+        .series_id("a", metric, instance)
+        .expect("series");
+    world
+        .store()
+        .with(|conn| {
+            conn.execute(
+                "INSERT INTO samples (series_id, ts, value) VALUES (?1, ?2, 'unreadable')",
+                rusqlite::params![series, at],
+            )
+        })
+        .expect("the sample is stored");
+    world.reindex_series();
+}
+
+#[test]
+fn qos_samples_that_cannot_be_read_are_not_a_device_with_nothing_dropping() {
+    // VOICE is dropping to congestion, and a policed class is measured now.
+    // The congestion series cannot be read.
+    let mut world = router();
+    sampled(&mut world, "qos.queue_drop_ps", VOICE, &steady(90.0));
+    sampled(&mut world, "qos.drop_ps", VOICE, &steady(90.0));
+    sampled(
+        &mut world,
+        "qos.drop_ps",
+        "GigabitEthernet0/0|in|WAN-IN/SCAVENGER",
+        &steady(80.0),
+    );
+    unreadable(&mut world, "qos.queue_drop_ps", VOICE, NOW - 2 * MINUTE);
+
+    let report = run("qos_class_dropping", &world);
+    assert!(report.findings.is_empty(), "{:?}", subjects(&report));
+    assert!(
+        report.evaluated().is_empty(),
+        "a read that failed decides nothing"
+    );
+    let reasons = reasons(&report);
+    assert_eq!(reasons.len(), 1);
+    assert!(reasons[0].contains("could not be read"), "{}", reasons[0]);
+}
+
+#[test]
+fn policed_samples_that_cannot_be_read_are_not_taken_for_a_qos_read_that_stopped() {
+    // The queueing class was last read twenty-two minutes ago. What would
+    // say the device is still being read is its policed class, measured now
+    // — and those samples cannot be read. That is not known to be a read
+    // that stopped, nor a device with no queue left.
+    let scavenger = "GigabitEthernet0/0|in|WAN-IN/SCAVENGER";
+    let mut world = router();
+    sampled(
+        &mut world,
+        "qos.queue_drop_ps",
+        VOICE,
+        &every_four_minutes(58, 22, 90.0),
+    );
+    sampled(&mut world, "qos.drop_ps", scavenger, &steady(80.0));
+    unreadable(&mut world, "qos.drop_ps", scavenger, NOW - 2 * MINUTE);
+
+    let report = run("qos_class_dropping", &world);
+    assert!(report.findings.is_empty(), "{:?}", subjects(&report));
+    assert!(report.evaluated().is_empty());
+    let reasons = reasons(&report);
+    assert_eq!(reasons.len(), 1);
+    assert!(
+        reasons[0].starts_with("the QoS samples could not be read"),
+        "{}",
+        reasons[0]
+    );
+}
+
+#[test]
+fn a_figure_beside_a_finding_that_cannot_be_read_is_not_said_to_be_unrecorded() {
+    let mut world = router();
+    sampled(&mut world, "qos.queue_drop_ps", VOICE, &steady(90.0));
+    sampled(&mut world, "qos.drop_pct", VOICE, &steady(12.0));
+    unreadable(&mut world, "qos.drop_pct", VOICE, NOW - 2 * MINUTE);
+
+    let report = run("qos_class_dropping", &world);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(
+        evidence(&report, "Share of offered packets dropped"),
+        ["could not be read"],
+        "the series is there: it is not 'not recorded'"
+    );
+    assert_eq!(
+        evidence(&report, "Traffic in the class"),
+        ["not recorded for this class"]
+    );
 }
 
 #[test]

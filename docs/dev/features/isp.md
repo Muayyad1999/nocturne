@@ -122,7 +122,16 @@ guess.
   write path to the network at all.
 * **A payment is never invented.** Nothing marks an invoice paid except a
   recorded payment, and nothing adjusts a balance except a recorded entry.
-* **Every mutation is audited** (`audit(...)`), because this is money.
+* **Every mutation is audited** (`audit(...)`), because this is money. An
+  entry's message is the line other features repeat — an incident's
+  timeline takes in every entry filed under one of its devices, a log search
+  hands messages on — so it **names a customer by id and carries nothing
+  anybody typed**: no name, no reason (for a state change, a void, a reissue,
+  a voided payment or credit note, a credit note itself), no line
+  description, no payment method. Those are in the entry's detail, where a
+  person reading the trail finds them. A customer's own entries are filed
+  under no device: their record is not part of the history of the device
+  that serves them.
 * **A customer's personal details are not secrets but are not public either.**
   A phone number, an e-mail address, a postal address, an account code and a
   note never reach a model, under any setting: `nocturne-ai::redact` is for
@@ -160,8 +169,8 @@ nothing here touches a device.
 | Method | Params | Result |
 |---|---|---|
 | `isp.currencies` | — | the accepted codes, their minor digits, their scale, and what 1,000 minor units of each is |
-| `isp.summary` | — | counts, states, per-currency arrears, usage coverage — **and no personal detail**, which makes it the one method fit to put in front of a model |
-| `isp.customers` | `{query?, state?, currency?, tower?, device_id?, limit?, cursor?}` | `{customers, matching, next_cursor}` |
+| `isp.summary` | — | counts, states, per-currency arrears, what was received in the last 30 days (to one millisecond past now, as `isp.revenue`), usage coverage — **and no personal detail**, which makes it the one method fit to put in front of a model |
+| `isp.customers` | `{query?, state?, currency?, tower?, device_id?, limit?, cursor?}` | `{customers, matching, next_cursor}`, by name. `cursor` is the `next_cursor` of the page before (decision 20); the count and the page are read together |
 | `isp.customer.get` | `{id, invoices?}` | the customer, their subscriptions, their invoices, their balance per currency (`outstanding`, `on_account`, `credit_on_account`, `overpaid` — none netted against another), and their usage row |
 | `isp.customer.save` | `{id?, code?, name?, currency?, phone?, email?, address?, site?, device_id?, interface?, tower?, location?, tags?, notes?}` | `{customer, created, warnings}` |
 | `isp.customer.state` | `{id, state, reason?}` | `{customer, was, device_changed: false, note}` |
@@ -176,25 +185,25 @@ nothing here touches a device.
 | `isp.links` | — | the upstream links and tower feeds |
 | `isp.link.save` | `{id?, name?, description?, device_id?, interface?, tower?, capacity_mbit?, cost_per_mbit?, clear_cost?, cost_period?}` | `{link, created}`. A field left out keeps what is stored, so taking a figure off again is said outright: `capacity_mbit: 0` for the capacity, `clear_cost: true` for the wholesale cost (refused, `invalid`, together with `cost_per_mbit`). No cost is no margin, not a margin against a cost of nothing |
 | `isp.link.delete` | `{id}` | `{deleted, name}` |
-| `isp.invoices` | `{customer_id?, state?, currency?, since?, until?, limit?, cursor?}` | invoices with their derived settlement. `since`/`until` select invoices whose period overlaps `[since, until)`: a period is half-open, so one month's bounds list that month and not the one before |
+| `isp.invoices` | `{customer_id?, state?, currency?, since?, until?, limit?, cursor?}` | invoices with their derived settlement, newest period first. `since`/`until` select invoices whose period overlaps `[since, until)`: a period is half-open, so one month's bounds list that month and not the one before. `cursor` is the `id` of the last invoice of the page before (decision 20) |
 | `isp.invoice.get` | `{id}` | the invoice, its status, what is paid, what is outstanding, its payments |
 | `isp.invoice.draft` | `{customer_id, month \| period_start + period_end, allow_empty?}` | `{invoice, skipped, warnings}`. `month` is `"2025-10"`, a month of the business's calendar (decision 13) |
-| `isp.invoice.run` | `{month \| period_start + period_end, customer_ids?, dry_run?, issue?}` | `{period_start, period_end, utc_offset_minutes, dry_run, considered, drafted, issued, invoices, skipped, totals, warnings, note}`: a per-customer preview (default) or the invoices it wrote, everyone left out and why, and the totals per currency. Every active customer, however many (decision 16) |
+| `isp.invoice.run` | `{month \| period_start + period_end, customer_ids?, dry_run?, issue?}` | `{period_start, period_end, utc_offset_minutes, dry_run, considered, not_reached, drafted, issued, invoices, skipped, totals, warnings, note}`: a per-customer preview (default) or the invoices it wrote, everyone left out and why, and the totals per currency. Every active customer, however many, and whom a shutdown kept it from (decision 16) |
 | `isp.invoice.line.add` | `{invoice_id, description, amount}` | drafts only |
 | `isp.invoice.line.remove` | `{invoice_id, line_id}` | drafts only |
 | `isp.invoice.issue` | `{id, due_at?, issued_at?}` | the frozen invoice, with its number. `due_at` is read as a day and may be the day of issue (decision 15). Refused (`invalid`) when the lines come to less than nothing (decision 18) |
 | `isp.invoice.void` | `{id, reason}` | the void invoice; the reason is required. Refused (`conflict`) while a recorded payment or an issued credit note stands against it |
 | `isp.invoice.reissue` | `{id, reason}` | `{voided, draft, note}`; refused whenever the void would be |
-| `isp.payments` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the payments, void ones included |
+| `isp.payments` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the payments, void ones included, newest first. `cursor` is the `id` of the last payment of the page before (decision 20) |
 | `isp.payment.record` | `{customer_id, invoice_id?, amount, method, reference?, note?, at?, conversion?}` | `{payment, invoice, warnings}` |
 | `isp.payment.void` | `{id, reason}` | the void payment; it is never deleted |
-| `isp.credits` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the credit notes, newest first |
+| `isp.credits` | `{customer_id?, invoice_id?, since?, until?, state?, limit?, cursor?}` | the credit notes, newest first. `cursor` is the `id` of the last credit note of the page before (decision 20) |
 | `isp.credit.issue` | `{customer_id, invoice_id?, amount, reason, note?, at?}` | `{credit, invoice?, warnings}` |
 | `isp.credit.allocate` | `{id, invoice_id}` | `{credit, invoice, warnings}` — a note that was issued on the account, set against one invoice; once only |
 | `isp.credit.void` | `{id, reason}` | the void credit note; the debt it cancelled comes back |
 | `isp.arrears` | `{customer_id?}` | one aged report **per currency**, plus who owes what, and — never netted against it — `overpaid` per currency and `customers_overpaid`, who is in credit |
 | `isp.revenue` | `{since, until?, convert?}` | issued and received per currency, what is outstanding, and a converted figure only if the caller supplied the rates. The window is `[since, until)`; with no `until` it ends one millisecond past now, so what was written this instant is counted (the same for `isp.usage` and `isp.capacity`) |
-| `isp.usage` | `{customer_id? \| filters, since?, until?}` | used against sold, with coverage per row and counted per reason |
+| `isp.usage` | `{customer_id? \| filters, limit?, cursor?, since?, until?}` | used against sold, with coverage per row and counted per reason, for one page of the customers `isp.customers` would list with the same filters and cursor: `customers` is how many are in it, `matching` how many there are in all, and `next_cursor` where the next page begins. Every count is of the page (decision 6) |
 | `isp.capacity` | `{link_id?, tower?, since?, until?}` | sold against capacity as a ratio with both figures, and what is measured |
 | `isp.margin` | `{link_id?, tower?, customer_id?}` | revenue per currency, the wholesale cost, and the margin **in the cost's currency only** |
 
@@ -220,7 +229,9 @@ note stands against, or — for a note on the account, where no invoice moved �
 new to stay right.
 
 Settings section `isp`: `payment_terms_days` (14), `arrears_buckets`
-(`[30, 60, 90]`), `usage_basis` (`greater`), `usage_window_hours` (24),
+(`[30, 60, 90]`), `usage_basis` (`greater`), `usage_window_hours` (24: how far
+back a figure looks when no window is asked for — an older latest reading is
+`no_recent_reading`, decision 6; one hour at the least),
 `invoice_number_prefix` (`""`), `utc_offset_minutes` (`0`, `-720..=840`: the
 business's calendar, decision 13). They are read and saved with the core's
 `settings.get` / `settings.set {section: "isp"}`, which takes any value; the
@@ -296,9 +307,28 @@ test reads the schema back to keep it that way. TypeScript:
    `in`, `out`), because it depends on which side of the link the serving
    interface is, and every figure says in `basis` which it used. A usage
    figure is `null` unless `coverage == "measured"`, and `Coverage`
-   distinguishes nine states, including the one that matters most in a
+   distinguishes ten states, including the one that matters most in a
    dispute: `interface_never_collected` ("nobody has looked") against
-   `no_rate_yet` ("the interval could not be measured").
+   `no_rate_yet` ("the interval could not be measured"). Three rules keep
+   a figure from claiming more than was measured:
+   * **The greater of two rates needs both.** While one direction could not
+     be measured the other may be the smaller, so `greater` with one
+     direction missing is `no_rate_yet`, not the one that was measured —
+     over a window too, where samples in one direction only are a gap in
+     the rate and not a window with nothing in it (`no_samples_in_window`
+     is kept for that). The row's `coverage_note` names the missing
+     direction.
+   * **A latest reading is only current inside the usage window.** The
+     monitor keeps a device's rows from its last poll that read them, for as
+     long as the device stays unreachable, so with no window asked for, a
+     reading older than `usage_window_hours` is `no_recent_reading` and its
+     note says how old it is. A current one carries the moment it is from
+     (`used.at`), and the screen shows it.
+   * **A report says what part of the estate it covers.** `isp.usage` reads
+     one page of customers; `matching` is how many the filter matches in
+     all, and `customers`, `measured`, `without_usage` and every per-reason
+     count are of that page. A report of more than one page is read page by
+     page (`next_cursor`), never mistaken for the whole.
 7. **Margin is only worked out in the currency the wholesale cost is in.**
    Revenue behind a tower can be in several; the others are returned
    untouched in `unconverted`, with a note saying so, rather than converted
@@ -442,6 +472,22 @@ test reads the schema back to keep it that way. TypeScript:
     the run as a whole is in `warnings`. A customer named twice in
     `customer_ids` is billed once. Suspended and cancelled accounts are not
     considered unless named.
+
+    **A run that writes is in the trail before its first draft.** Each
+    customer is billed in a transaction of its own, so a run cut off part way
+    — the process killed, the power gone — leaves numbered invoices behind
+    it. They are never invoices the trail knows nothing about:
+    `isp.invoice.run.start` says what the run set out to do (the period, how
+    many customers, whether it issues) before anything is written, and the
+    closing `isp.invoice.run` entry carries the same `run` id. The one way a
+    run stops early is **between two customers, when Nocturne is shutting
+    down** — the only place it can stop and still say exactly whom it reached.
+    It then writes its closing entry, says in `warnings` that it stopped, and
+    counts in `not_reached` whom it never looked at; nothing was written for
+    them, and the next run bills them and lists the rest as billed already.
+    `considered` is then how many it looked at, and still `invoices` plus
+    `skipped`. The loop never awaits, so a request dropped part way cannot
+    end it anywhere else.
 17. **A figure nobody could have meant is refused where it is entered.** One
     entry may be at most 1,000,000,000,000,000 minor units either side of
     zero (`money::ENTRY_LIMIT_MINOR`: ten million million dollars), and one
@@ -480,6 +526,23 @@ test reads the schema back to keep it that way. TypeScript:
     a draft neither charges it nor lists it in `skipped`, whatever kind of
     plan it was, so a billing run does not say of it that a plan "in force"
     could not be charged (decision 16).
+20. **A page continues after a row, not after a count of rows.** The
+    invoices, payments and credit notes are listed newest first, so whatever
+    is written between two page requests — a billing run's drafts, a payment
+    being recorded — sorts in front of the page already read, and an offset
+    would hand part of that page back; a customer deleted from the first
+    page of a list by name would make an offset skip one. So `isp.invoices`,
+    `isp.payments` and `isp.credits` take as `cursor` the `id` of the last
+    row of the page before — none of those rows is ever deleted or changes
+    its place in the order, so its id is the whole position — and
+    `isp.customers` (and `isp.usage`, which pages the same list) gives a
+    `next_cursor` that carries the last customer's name and id, because a
+    name can change and a customer with no ledger can be deleted. A page
+    begins strictly after that position in the list's own order. A count of
+    rows, which is what the cursor used to be, is refused (`invalid`) rather
+    than read as a position. A list that is an array says there may be more
+    by being a full page; `isp.customers` and `isp.usage` read one row more
+    than they return and say so with `next_cursor`.
 
 ## Tax, refunds and credit notes
 

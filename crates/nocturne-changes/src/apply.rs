@@ -31,6 +31,7 @@ use crate::db;
 use crate::model::{
     Change, ChangeState, GuardPlan, Options, Plan, Step, TargetResult, TargetState,
 };
+use crate::redact::Hider;
 use crate::settings::Settings;
 use crate::verify;
 
@@ -41,15 +42,19 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
     let settings = Settings::read(&app);
     let parallel = (options.parallel.max(1) as usize).min(settings.parallel_limit.max(1) as usize);
 
-    let planned: Vec<(usize, String, Plan)> = change
+    let planned: Vec<(usize, String, Plan, Option<String>)> = change
         .targets
         .iter()
         .enumerate()
         .filter_map(|(index, target)| {
-            target
-                .plan
-                .clone()
-                .map(|plan| (index, target.device_id.clone(), plan))
+            target.plan.clone().map(|plan| {
+                (
+                    index,
+                    target.device_id.clone(),
+                    plan,
+                    verify::exact_configuration(&target.intent),
+                )
+            })
         })
         .collect();
     if planned.len() != change.targets.len() {
@@ -60,6 +65,7 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
     for target in &mut change.targets {
         target.result = Some(TargetResult {
             state: TargetState::Pending,
+            redacted: true,
             ..TargetResult::default()
         });
     }
@@ -76,7 +82,7 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
                 stop = true;
                 break;
             }
-            let (index, device_id, plan) = planned[next].clone();
+            let (index, device_id, plan, exact) = planned[next].clone();
             next += 1;
             let app = app.clone();
             let ctx = ctx.clone();
@@ -85,7 +91,14 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
             let settings = settings.clone();
             in_flight.push(async move {
                 let result = apply_device(
-                    &app, &ctx, &change_id, &device_id, &plan, &options, &settings,
+                    &app,
+                    &ctx,
+                    &change_id,
+                    &device_id,
+                    &plan,
+                    exact.as_deref(),
+                    &options,
+                    &settings,
                 )
                 .await;
                 (index, result)
@@ -96,6 +109,13 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
         };
         let failed = result.state != TargetState::Applied;
         let device_id = planned[index].1.clone();
+        let plan = &planned[index].2;
+        // The audit trail is kept for ever and is read by more people than a
+        // change is: it names the lines that were sent without the values in
+        // them, and says which steps failed rather than quoting what a
+        // device answered. The lines themselves are in the change.
+        let hide = Hider::for_profiles(&app, std::slice::from_ref(&plan.profile));
+        hide.learn_lines(&plan.commands);
         app.audit(
             "changes.apply",
             Some(&device_id),
@@ -110,8 +130,9 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
             json!({
                 "change_id": change_id,
                 "state": result.state,
-                "commands": planned[index].2.commands,
-                "error": result.error,
+                "plan_hash": plan.plan_hash,
+                "commands": hide.lines(&plan.commands),
+                "failed_steps": failed_steps(&result),
                 "before_version_id": result.before_version_id,
                 "after_version_id": result.after_version_id,
             }),
@@ -147,6 +168,7 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
                 started_at: now_ms(),
                 finished_at: Some(now_ms()),
                 error: Some(reason.to_string()),
+                redacted: true,
                 ..TargetResult::default()
             });
         }
@@ -155,6 +177,11 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
     change.state = outcome(&change);
     change.job_id = None;
     let summary = db::save(&app, &mut change)?;
+    // An undo that put devices back makes the change it undoes read as
+    // rolled back on them — cancelled part way or not.
+    crate::rollback::undone(&app, &change);
+    // The errors were recorded with their values hidden; the job's result
+    // carries them, the audit entry says only which steps failed.
     let states: Vec<Value> = change
         .targets
         .iter()
@@ -166,6 +193,17 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
             })
         })
         .collect();
+    let audited: Vec<Value> = change
+        .targets
+        .iter()
+        .map(|target| {
+            json!({
+                "device_id": target.device_id,
+                "state": target.result.as_ref().map(|result| result.state),
+                "failed_steps": target.result.as_ref().map(failed_steps).unwrap_or_default(),
+            })
+        })
+        .collect();
     app.audit(
         "changes.apply",
         None,
@@ -174,7 +212,7 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
             change.title,
             change.state.as_str().replace('_', " ")
         ),
-        json!({"change_id": change.id, "state": change.state, "devices": states}),
+        json!({"change_id": change.id, "state": change.state, "devices": audited}),
     );
     if cancelled {
         // The record is written; the job itself is reported as cancelled so
@@ -182,6 +220,18 @@ pub async fn run(app: App, ctx: JobCtx, change_id: String) -> AppResult<Value> {
         return Err(nocturne_app::jobs::cancelled());
     }
     Ok(json!({"change_id": change.id, "state": summary.state, "devices": states}))
+}
+
+/// The steps of a device's result that did not go well, by name and in
+/// order, each once.
+fn failed_steps(result: &TargetResult) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for step in result.steps.iter().filter(|step| !step.ok) {
+        if !names.contains(&step.name) {
+            names.push(step.name.clone());
+        }
+    }
+    names
 }
 
 /// The state of the change once every device has been dealt with.
@@ -232,6 +282,12 @@ fn outcome(change: &Change) -> ChangeState {
 // ----------------------------------------------------------------- one device
 
 /// Records what happens on one device: steps, job log and live events.
+///
+/// Everything that is recorded here is kept in the change, and most of it is
+/// published and logged as it happens, so it is recorded with the secret
+/// values hidden (`hide`): a detail quotes the line a device rejected or the
+/// lines that differ from the prediction, an error quotes what the device
+/// answered, and any of those can be a key.
 struct Run<'a> {
     app: &'a App,
     ctx: &'a JobCtx,
@@ -239,11 +295,12 @@ struct Run<'a> {
     device_id: String,
     device_name: String,
     result: TargetResult,
+    hide: Hider,
 }
 
 impl Run<'_> {
     fn step(&mut self, name: &str, ok: bool, detail: impl Into<String>) {
-        let detail = detail.into();
+        let detail = self.hide.text(&detail.into());
         self.result.steps.push(Step {
             name: name.to_string(),
             ok,
@@ -269,8 +326,14 @@ impl Run<'_> {
 
     fn fail(&mut self, state: TargetState, error: impl Into<String>) {
         self.result.state = state;
-        self.result.error = Some(error.into());
+        self.result.error = Some(self.hide.text(&error.into()));
         self.result.finished_at = Some(now_ms());
+    }
+
+    /// Keep the lines that were sent, each with the device's answer.
+    fn sent(&mut self, lines: &[nocturne_drivers::session::CommandOutput]) {
+        let hidden: Vec<_> = lines.iter().map(|line| self.hide.sent(line)).collect();
+        self.result.sent.extend(hidden);
     }
 
     fn done(&mut self, state: TargetState) {
@@ -291,13 +354,14 @@ fn session_lost(err: &DriverError) -> bool {
     )
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn apply_device(
     app: &App,
     ctx: &JobCtx,
     change_id: &str,
     device_id: &str,
     plan: &Plan,
+    exact: Option<&str>,
     options: &Options,
     settings: &Settings,
 ) -> TargetResult {
@@ -308,7 +372,8 @@ async fn apply_device(
                 state: TargetState::Failed,
                 started_at: now_ms(),
                 finished_at: Some(now_ms()),
-                error: Some(err.message),
+                error: Some(Hider::for_patterns(&[]).text(&err.message)),
+                redacted: true,
                 ..TargetResult::default()
             };
         }
@@ -322,8 +387,12 @@ async fn apply_device(
         result: TargetResult {
             state: TargetState::Applying,
             started_at: now_ms(),
+            // Everything `Run` adds to it goes through `hide`.
+            redacted: true,
             ..TargetResult::default()
         },
+        // Until the session says what the device really is.
+        hide: Hider::for_profiles(app, std::slice::from_ref(&device.profile)),
     };
 
     // 1. Connect.
@@ -352,7 +421,9 @@ async fn apply_device(
         }
     };
     let syntax = cli.platform.profile.config.syntax;
-    let secrets = cli.platform.profile.config.secrets.clone();
+    run.hide = Hider::for_platform(&cli.platform);
+    run.hide.learn_lines(&plan.commands);
+    run.hide.learn_lines(&plan.rollback);
 
     // 2. Drift check: the plan is only valid for the configuration it was made against.
     let before = match cli.session().fetch_config(false).await {
@@ -360,10 +431,11 @@ async fn apply_device(
         Err(err) => {
             run.step("drift check", false, err.to_string());
             run.fail(TargetState::Failed, err.to_string());
-            finish(&mut run, cli, &secrets, settings).await;
+            finish(&mut run, cli, settings).await;
             return run.result;
         }
     };
+    run.hide.learn(&before);
     if sha256(&before) != plan.base_sha256 {
         let message = format!(
             "the configuration of `{}` changed since this was planned — plan again, look at what is different, and approve the new plan",
@@ -381,7 +453,7 @@ async fn apply_device(
             run.result.before_version_id = Some(version.id);
         }
         run.fail(TargetState::Failed, message);
-        finish(&mut run, cli, &secrets, settings).await;
+        finish(&mut run, cli, settings).await;
         return run.result;
     }
     run.step(
@@ -440,7 +512,7 @@ async fn apply_device(
                     err.message
                 ),
             );
-            finish(&mut run, cli, &secrets, settings).await;
+            finish(&mut run, cli, settings).await;
             return run.result;
         }
     }
@@ -462,7 +534,7 @@ async fn apply_device(
                         guard.name
                     ),
                 );
-                finish(&mut run, cli, &secrets, settings).await;
+                finish(&mut run, cli, settings).await;
                 return run.result;
             }
         }
@@ -472,7 +544,7 @@ async fn apply_device(
     let sent = cli.session().configure(&plan.commands).await;
     let rejected = match sent {
         Ok(result) => {
-            run.result.sent = result.lines.clone();
+            run.sent(&result.lines);
             match (result.failed_at, result.commit_error.clone()) {
                 (None, None) => {
                     run.step(
@@ -514,7 +586,6 @@ async fn apply_device(
                 settings,
                 syntax,
                 armed,
-                &secrets,
                 err,
             )
             .await;
@@ -538,15 +609,20 @@ async fn apply_device(
         }
         match cli.session().fetch_config(false).await {
             Ok(after) => {
+                // What the device holds now may be somebody else's doing,
+                // and is as secret as what it held before.
+                run.hide.learn(&after);
                 let checks = verify::run_checks(
                     app,
                     &mut cli,
                     plan,
+                    exact,
                     &options.verify,
                     &baseline,
                     &before,
                     &after,
                     syntax,
+                    &run.hide,
                 )
                 .await;
                 let bad: Vec<String> = checks
@@ -579,7 +655,6 @@ async fn apply_device(
                     settings,
                     syntax,
                     armed,
-                    &secrets,
                     err,
                 )
                 .await;
@@ -605,7 +680,7 @@ async fn apply_device(
             },
             message,
         );
-        finish(&mut run, cli, &secrets, settings).await;
+        finish(&mut run, cli, settings).await;
         return run.result;
     }
 
@@ -648,7 +723,7 @@ async fn apply_device(
         ),
     }
     run.done(TargetState::Applied);
-    finish(&mut run, cli, &secrets, settings).await;
+    finish(&mut run, cli, settings).await;
     run.result
 }
 
@@ -748,7 +823,7 @@ async fn roll_back(
     } else {
         match cli.session().configure(&plan.rollback).await {
             Ok(result) => {
-                run.result.sent.extend(result.lines.clone());
+                run.sent(&result.lines);
                 if let Some(at) = result.failed_at {
                     run.step(
                         "rollback",
@@ -780,6 +855,7 @@ async fn roll_back(
                 return false;
             }
         };
+        run.hide.learn(&now);
         let differences = compare::differences_of(before, &now, syntax);
         if differences.is_empty() {
             run.step(
@@ -790,29 +866,28 @@ async fn roll_back(
             return true;
         }
         if attempt == 1 {
+            let remaining = differences.describe(8, &run.hide);
             run.step(
                 "rollback",
                 false,
-                format!(
-                    "the device is still not what it was before the change — {}",
-                    differences.describe(8)
-                ),
+                format!("the device is still not what it was before the change — {remaining}"),
             );
             return false;
         }
         // Second try: ask the engine for the difference from here.
         let second = hier::remediate(&now, before, syntax);
         if !second.supported || second.commands.is_empty() {
+            let remaining = differences.describe(8, &run.hide);
             run.step(
                 "rollback",
                 false,
                 format!(
-                    "the device is not what it was before the change and no further commands could be derived — {}",
-                    differences.describe(8)
+                    "the device is not what it was before the change and no further commands could be derived — {remaining}"
                 ),
             );
             return false;
         }
+        run.hide.learn_lines(&second.commands);
         run.step(
             "rollback",
             true,
@@ -822,7 +897,7 @@ async fn roll_back(
             ),
         );
         match cli.session().configure(&second.commands).await {
-            Ok(result) => run.result.sent.extend(result.lines),
+            Ok(result) => run.sent(&result.lines),
             Err(err) => {
                 run.step("rollback", false, err.to_string());
                 return false;
@@ -845,11 +920,10 @@ async fn lost(
     settings: &Settings,
     syntax: Syntax,
     armed: bool,
-    secrets: &[String],
     err: DriverError,
 ) -> TargetResult {
     // Let go of the session (and the device's lock) before trying again.
-    take_transcript(&mut run, &mut cli, secrets, settings);
+    take_transcript(&mut run, &mut cli, settings);
     drop(cli);
     let device_id = run.device_id.clone();
     let attempts = settings.reconnect_attempts.clamp(1, 10);
@@ -927,19 +1001,17 @@ async fn lost(
             }
         ),
     );
-    finish(&mut run, cli, secrets, settings).await;
+    finish(&mut run, cli, settings).await;
     run.result
 }
 
 /// Take the (redacted) transcript off a session.
-fn take_transcript(run: &mut Run<'_>, cli: &mut Cli, secrets: &[String], settings: &Settings) {
+fn take_transcript(run: &mut Run<'_>, cli: &mut Cli, settings: &Settings) {
     if !settings.keep_transcripts {
         return;
     }
     let text = cli.take_transcript();
-    let redactor =
-        nocturne_ai::Redactor::with_rules(secrets).unwrap_or_else(|_| nocturne_ai::Redactor::new());
-    let mut redacted = redactor.redact(&text);
+    let mut redacted = run.hide.transcript(&text);
     const LIMIT: usize = 200_000;
     if redacted.len() > LIMIT {
         let cut = redacted
@@ -953,7 +1025,7 @@ fn take_transcript(run: &mut Run<'_>, cli: &mut Cli, secrets: &[String], setting
     run.result.transcript.push_str(&redacted);
 }
 
-async fn finish(run: &mut Run<'_>, mut cli: Cli, secrets: &[String], settings: &Settings) {
-    take_transcript(run, &mut cli, secrets, settings);
+async fn finish(run: &mut Run<'_>, mut cli: Cli, settings: &Settings) {
+    take_transcript(run, &mut cli, settings);
     cli.close().await;
 }

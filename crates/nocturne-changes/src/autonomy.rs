@@ -6,23 +6,40 @@
 //! that always need a human whatever the setting says — a protected device, a
 //! protected resource, a high or critical risk, or a device type nobody has
 //! checked against real hardware.
+//!
+//! The gate is the same for a change a person has already approved. An
+//! approval is consent to that plan, given in the Changes screen, where
+//! applying is a second act: a person approves in the afternoon what they
+//! mean to apply in the evening's window. And the assistant's context holds
+//! text strangers wrote (device output, log lines, descriptions), so a model
+//! can be talked into asking. The approval does not widen what the setting
+//! lets the assistant do.
 
 use nocturne_app::error::AppError;
 use nocturne_app::{App, inventory};
 
-use crate::model::{Change, RiskLevel};
+use crate::model::{Change, ChangeState, RiskLevel};
 use crate::settings::{Autonomy, autonomy};
 
 fn refuse(change: &Change, reason: String) -> AppError {
-    AppError::forbidden(format!(
-        "{reason} Ask the person you are working with to look at the change `{}` in the Changes screen and approve it there; they can see the exact commands, the predicted difference and the risk.",
-        change.title
-    ))
-    .with_details(serde_json::json!({"change_id": change.id, "needs": "human_approval"}))
+    let ask = if change.state == ChangeState::Approved {
+        format!(
+            "A person has approved the change `{}`, but an approval is not permission for the assistant to start it: ask them to apply it themselves (Apply, in the Changes screen) when they mean it to go out.",
+            change.title
+        )
+    } else {
+        format!(
+            "Ask the person you are working with to look at the change `{}` in the Changes screen and approve it there; they can see the exact commands, the predicted difference and the risk.",
+            change.title
+        )
+    };
+    AppError::forbidden(format!("{reason} {ask}"))
+        .with_details(serde_json::json!({"change_id": change.id, "needs": "human_approval"}))
 }
 
-/// May the assistant apply this change without a human? Returns the value to
-/// record as `approval.by`.
+/// May the assistant apply this change without a human present? Asked the
+/// same way of a planned change and of an approved one. Returns the value to
+/// record as `approval.by` when the policy itself signs a planned change.
 pub fn decide(app: &App, change: &Change) -> Result<String, AppError> {
     let mode = autonomy(app);
     let mut lab_only = true;

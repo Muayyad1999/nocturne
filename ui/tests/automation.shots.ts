@@ -260,6 +260,19 @@ for (const theme of THEMES) {
       await page.setViewportSize({ width: 1280, height: 720 });
       await shoot(page, theme, 'automation-template-1280');
       await page.setViewportSize({ width: 1440, height: 900 });
+
+      // The one value that may span lines: the banner's text, in a text area,
+      // rendered for a real switch.
+      await openApp(page, '/automation/templates', { backend, theme });
+      await page.getByRole('cell', { name: 'Login banner (IOS)' }).first().dblclick();
+      await page
+        .getByRole('textbox', { name: 'Banner text', exact: true })
+        .fill('Authorised use only.\nDisconnect now if you are not.');
+      await page.getByRole('combobox', { name: 'Preview against' }).click();
+      await page.getByRole('option', { name: 'Campus/AS1' }).click();
+      // Below the body: the text area, and the four lines it rendered.
+      await page.getByText('Campus/AS1: 4 lines').scrollIntoViewIfNeeded();
+      await shoot(page, theme, 'automation-template-banner');
     });
 
     test('playbooks', async ({ page }) => {

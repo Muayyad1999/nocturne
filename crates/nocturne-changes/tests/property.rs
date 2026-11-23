@@ -185,8 +185,24 @@ async fn planning_an_intended_configuration_reaches_it_and_rolling_back_undoes_i
             panic!("the device is not B after the change ({left:?})\n{context}\n--- device ---\n{on_device}");
         });
 
-        // …and undo it.
-        run_job(app, "changes.rollback", json!({"id": change["id"]})).await;
+        // …and undo it: the undo is planned from the device and applied
+        // like any change.
+        let asked = app
+            .rpc("changes.rollback", json!({"id": change["id"]}))
+            .await
+            .unwrap_or_else(|err| panic!("{err}\n{context}"));
+        finish(app, &asked).await;
+        let undo = app
+            .rpc("changes.get", json!({"id": asked["change"]["id"]}))
+            .await
+            .unwrap();
+        let undone = apply(app, &undo).await;
+        assert_eq!(
+            target_state(&undone),
+            "applied",
+            "{:?}\n{context}",
+            undone["targets"][0]["result"]["error"]
+        );
         let rolled_back = app
             .rpc("changes.get", json!({"id": change["id"]}))
             .await

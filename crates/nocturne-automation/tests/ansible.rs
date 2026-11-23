@@ -218,6 +218,30 @@ async fn a_template_exports_as_a_playbook_too_and_an_unmappable_platform_is_unsu
     );
 }
 
+#[tokio::test]
+async fn a_template_is_not_exported_for_a_device_it_is_not_written_for() {
+    // The playbook would push RouterOS lines with the IOS module: the same
+    // refusal `templates.apply` gives.
+    let lab = lab(&["SW1"]).await;
+    let credential = credential(&lab, "s3cret-ansible-pw").await;
+    real_device(&lab, "SW-A", &credential).await;
+    let err = lab
+        .app
+        .rpc(
+            "ansible.export_playbook",
+            json!({"template_id": "routeros_ntp_client", "device_ids": ["SW-A"],
+                   "vars": {"servers": ["192.0.2.1"]}}),
+        )
+        .await
+        .expect_err("RouterOS lines for an IOS device");
+    assert_eq!(err.code, "invalid");
+    assert!(
+        err.message.contains("mikrotik_routeros") && err.message.contains("SW-A (cisco_ios)"),
+        "{}",
+        err.message
+    );
+}
+
 #[cfg(unix)]
 mod process {
     use super::*;

@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::boundary;
 use super::{DEVICE_ARG, Tool, ToolCtx, ToolOk, params, schema};
+use crate::redact::ChatRedactor;
 use crate::shape::{self, Table};
 use crate::view::Link;
 
@@ -702,6 +703,16 @@ struct RenderParams {
 
 async fn render_template(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let input: RenderParams = params(input)?;
+    // Every placeholder in an answer is hidden on the way back (the gate
+    // cannot tell one the model handed in from one a feature numbered), so
+    // a secret given as a placeholder comes back `<hidden>` in the lines.
+    // Without saying so, the lines look ready to propose and are not.
+    let secrets_given = input
+        .vars
+        .as_object()
+        .into_iter()
+        .flat_map(|vars| vars.values())
+        .any(|value| ChatRedactor::has_placeholders(&shape::scalar_text(value)));
     let rendered = ctx
         .rpc(
             boundary::TEMPLATES_RENDER,
@@ -733,6 +744,13 @@ async fn render_template(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
                 )
             }
         ));
+    }
+    if secrets_given && body.contains(crate::redact::HIDDEN_ELSEWHERE) {
+        body.push_str(
+            "\n\nA value you gave is a placeholder: the lines show it as `<hidden>`. Put your own \
+             placeholder back where `<hidden>` stands when you pass the lines to propose_change — \
+             `<hidden>` restores to nothing, and the change engine refuses a line that carries it.",
+        );
     }
     Ok(ToolOk::new(
         format!("Rendered for {} device(s).{body}", rows.len()),

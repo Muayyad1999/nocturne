@@ -94,9 +94,13 @@ is `SettingsTab.tsx` and not `Calendar.tsx`.
   and page (both are ordered by name in the engine, and the join is by id,
   not by position) and `isp.arrears` for what each owes. While either is in
   flight the cell is a skeleton — not a dash, which would read as "nothing".
-* **Paging is the engine's.** `cursor` is the number of rows already seen as a
-  decimal string, so Previous and Next move by one page and the count comes
-  from `matching`. Nothing fetches the whole book to count it.
+* **Paging is the engine's, and continues after a row.** Next sends the
+  engine's `next_cursor` (customers, usage) or the `id` of the last row on
+  screen (invoices, payments, credit notes); the screen keeps the cursors of
+  the pages it walked, so Previous goes back one (`paging.ts`). A count of
+  rows is no longer a cursor: a run or a payment between two pages would
+  have repeated rows. The count comes from `matching`. Nothing fetches the
+  whole book to count it.
 * **A dialog's form is prepared as it opens, and not again.** A save
   reports back only after the lists behind it have been read again
   (`useRpcMutation` awaits the invalidation), and the invoice or the

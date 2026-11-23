@@ -9,6 +9,8 @@ import {
   inFavour,
   oldestText,
   oldestTone,
+  owedById,
+  owedCell,
 } from './ageing';
 
 function money(currency: 'USD' | 'IQD', minor: number): Money {
@@ -153,5 +155,43 @@ describe('ageing what is owed', () => {
   it('says what Nocturne does about arrears, which is to write them down', () => {
     expect(BOOKKEEPING_NOTE).toContain('does not suspend');
     expect(BOOKKEEPING_NOTE).toContain('on the router');
+  });
+});
+
+describe('what a customer list says each customer owes', () => {
+  const arrears = {
+    customers: [
+      { customer_id: 'zagros', outstanding: money('IQD', 149_000) },
+      { customer_id: 'tigris', outstanding: money('USD', 22_500) },
+      { customer_id: 'tigris', outstanding: money('IQD', 3_000) },
+    ],
+  } as unknown as Pick<Arrears, 'customers'>;
+  const owed = owedById(arrears);
+  const read = { isPending: false, isError: false };
+
+  it('gives each customer what they owe in each currency, apart', () => {
+    expect(owedCell(read, owed, 'zagros')).toEqual({
+      kind: 'owes',
+      amounts: [money('IQD', 149_000)],
+    });
+    expect(owedCell(read, owed, 'tigris')).toEqual({
+      kind: 'owes',
+      amounts: [money('USD', 22_500), money('IQD', 3_000)],
+    });
+    expect(owedCell(read, owed, 'dohuk')).toEqual({ kind: 'nothing' });
+  });
+
+  it('does not say nothing is owed when the arrears could not be read', () => {
+    // A failed read has no customers in it, which is not the same as a
+    // ledger in which nobody owes anything.
+    const failed = { isPending: false, isError: true };
+    const empty = owedById(undefined);
+    for (const customer of ['zagros', 'tigris', 'dohuk']) {
+      expect(owedCell(failed, empty, customer)).toEqual({ kind: 'not_read' });
+      expect(owedCell(failed, owed, customer)).toEqual({ kind: 'not_read' });
+    }
+    expect(owedCell({ isPending: true, isError: false }, empty, 'zagros')).toEqual({
+      kind: 'pending',
+    });
   });
 });

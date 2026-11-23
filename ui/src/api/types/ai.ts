@@ -47,7 +47,12 @@ export interface ProviderEntry {
   /** The backend sends `null` when no effort is set, not an absent field. */
   effort?: Effort | null;
   tool_mode: ToolMode;
-  /** Tokens of context. Under 16 000 the assistant offers a smaller tool set. */
+  /**
+   * Tokens of context, as configured; `null` when nobody set one, and the
+   * engine then plans with the provider's own assumption (16 000 for an
+   * OpenAI-compatible endpoint on the local network). A window of 16 000 or
+   * fewer is offered the ten core tools only, with tighter result caps.
+   */
   context_window?: number | null;
   max_output_tokens?: number | null;
   /** Whether a key is stored in the vault for this provider. */
@@ -162,22 +167,39 @@ export interface AiStatus {
   autonomy: Autonomy;
   /** Always true: there is no way to send a model unredacted device output. */
   redaction: boolean;
-  /** How many tools this installation can offer the model. */
+  /**
+   * How many tools a turn with the default provider would be offered now:
+   * the core ten for a small window, the ledger's only while `isp_access` is
+   * on. Decided from the window a turn uses, configured or assumed.
+   */
   tools: number;
 }
 
 /** `ai.status` (no params) → {@link AiStatus} */
 
-/** One tool the assistant can use here, and the RPC methods it may reach. */
+/**
+ * One tool the assistant can use here, and the RPC methods it may reach.
+ * Real entry: `{"name":"qos_status","title":"QoS classes","touches_device":false,
+ * "methods":["monitor.qos","devices.get"]}`.
+ */
 export interface AiToolInfo {
   name: string;
   title: string;
-  /** It opens a session to a device, so `confirm_reads` asks about it. */
+  /**
+   * It opens a session to a device or sends probes to addresses (a discovery
+   * scan), so `confirm_reads` asks about it.
+   */
   touches_device: boolean;
   methods: string[];
 }
 
-/** `ai.tools` (no params) → {@link AiToolInfo}[] — what the assistant can reach in this build */
+/**
+ * `ai.tools` (no params) → {@link AiToolInfo}[] — the tools a turn with the
+ * default provider would be offered now: those whose methods this build
+ * registers, the ISP ledger's (`isp_overview`, `isp_customers`,
+ * `isp_invoices`) only while `isp_access` is on, and the core ten for a
+ * small window. With no provider configured, every tool the build has.
+ */
 
 // --------------------------------------------------------------------- chats
 
@@ -202,7 +224,12 @@ export interface Chat {
   prefix: string;
 }
 
-/** What a tool result is about, so the chat can draw a card. */
+/**
+ * What a tool result is about, so the chat can draw a card. The engine leaves
+ * a link out — the key is absent, never `null` — when what a feature gave as
+ * an id is not one (empty, longer than 128 characters, or holding white
+ * space). A `job` id is a core job (`jobs.get`).
+ */
 export interface AiLink {
   type: 'device' | 'change' | 'lab' | 'alert' | 'job';
   id: string;
@@ -225,6 +252,7 @@ export type UiBlock =
       input_summary: string;
       /** What came back, on one line. */
       result_summary: string;
+      /** Absent when the tool pointed at nothing, or at something that is not an id. */
       link?: AiLink;
     }
   | { type: 'notice'; text: string };
@@ -422,14 +450,32 @@ export type AiEvent =
       call_id: string;
       status: ToolStatus;
       result_summary: string;
+      /** Absent when the tool pointed at nothing, or at something that is not an id. */
       link?: AiLink;
     }
-  /** A tool is waiting for `ai.approve`. */
+  /**
+   * A tool is waiting for `ai.approve`. Published after the `tool_start` of
+   * the call it is about and before that call's `tool_end`.
+   */
   | {
       type: 'approval_needed';
       call_id: string;
       name: string;
       title: string;
+      /**
+       * Plain text, never markup. For `confirm_reads` it is one line of the
+       * call's arguments; for a tool that writes a record
+       * (`acknowledge_alert`, `reserve_address`, `start_discovery`) it is the
+       * question itself, several lines showing exactly what would be
+       * written, with an alert's title, a prefix's name, the note or a
+       * scan's ranges quoted in it — text that devices, other people and the
+       * model wrote. Render it as text with its line breaks kept. Real one:
+       * `"Acknowledge this alert?\n  [high] GigabitEthernet0/3 is down — SW1\n
+       *   alert yi3yo246t6q665jk, firing since 2026-11-23 09:44:07Z\nwith the
+       * note:\n  \"Cable reseated at the patch panel; watching for an
+       * hour.\"\nThe alert stays open until it resolves; nothing is sent to
+       * any device."`.
+       */
       detail: string;
     }
   /** A fallback model answered, the context was compacted, the turn was cut short. */
@@ -480,6 +526,18 @@ export interface AssistantSettings {
   result_rows: number;
   /** Characters of one tool result kept, head and tail. Default 8000. */
   result_chars: number;
+  /**
+   * May the model read the ISP customer ledger? Default false, and false
+   * means the ledger's tools are not offered and the gate refuses its five
+   * reads: nothing of the ledger reaches a model. True lets it see the
+   * ledger's totals and, per customer, the id, name, state, plan and
+   * balance, and invoices by number, state and amount — never a phone
+   * number, an address, an e-mail, an account code or a note. Read when the
+   * tools are offered and again on every call, so switching it off closes
+   * the ledger mid-turn too. The key exists in the free edition as well,
+   * where it is false and changes nothing.
+   */
+  isp_access: boolean;
   /** The team's own standing instructions, added to every turn. */
   system_prompt_extra: string;
   /** Seconds to wait for an answer to an approval request. Default 300. */

@@ -212,9 +212,12 @@ test.describe('running commands across devices', () => {
     await expect(runHeader(page).getByText('1 skipped', { exact: true })).toBeVisible({ timeout: 30_000 });
     await page.getByRole('tab', { name: 'Devices' }).click();
 
+    // The group says what "skipped" can mean, and claims nothing it cannot
+    // know (a run cut short by Nocturne closing is skipped too); the device
+    // says which of them it was.
     const skipped = page.getByRole('region', { name: /^Skipped/ });
-    await expect(skipped).toContainText('Nocturne deliberately left these alone');
-    await expect(skipped).toContainText('Nothing was sent and nothing failed');
+    await expect(skipped).toContainText('another run held the device');
+    await expect(skipped).toContainText('nothing failed that Nocturne saw');
     await expect(skipped).toContainText('is already being worked on by the run');
 
     // Give the device back, so the tests after this one are not skipped too.
@@ -351,6 +354,38 @@ test.describe('templates', () => {
 
     expect(console.messages).toEqual([]);
   });
+
+  test('a value over several lines gets a text area, and a template that never stops is stopped and says so', async ({
+    page,
+  }) => {
+    const console = watchConsole(page);
+    await openApp(page, '/automation/templates', { backend });
+
+    await page.getByRole('button', { name: 'New template' }).first().click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Welcome banner');
+    await page.getByRole('textbox', { name: 'Template body' }).fill('banner motd ^C\n{{ text }}\n^C');
+
+    // The body reads a name nothing provides: declare it, as text over several lines.
+    await page.getByRole('button', { name: 'Declare text as a variable' }).click();
+    await page.getByRole('checkbox', { name: 'several lines' }).check();
+    await page.getByRole('textbox', { name: 'text', exact: true }).fill('Authorised use only.\nDisconnect now.');
+
+    await page.getByRole('combobox', { name: 'Preview against' }).click();
+    await page.getByRole('option', { name: 'Campus/AS1' }).click();
+    // Four lines, the two of the value among them: rendered by the engine, for that switch.
+    await expect(page.getByText('Campus/AS1: 4 lines')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Disconnect now.', { exact: true })).toBeVisible();
+
+    // Nine million turns of a loop that writes nothing: the engine stops it
+    // and says why, in its own words.
+    await page
+      .getByRole('textbox', { name: 'Template body' })
+      .fill('{% for i in range(3000) %}{% for j in range(3000) %}{% endfor %}{% endfor %}');
+    const refusal = page.getByRole('alert').filter({ hasText: 'Campus/AS1' });
+    await expect(refusal).toContainText('steps of work for this one device and was stopped', { timeout: 20_000 });
+
+    expect(console.messages).toEqual([]);
+  });
 });
 
 // ------------------------------------------------------ schedules, triggers
@@ -393,6 +428,54 @@ test.describe('schedules and triggers', () => {
     await expect(page.getByText('would run in a loop')).toBeVisible();
 
     await page.keyboard.press('Escape');
+    expect(console.messages).toEqual([]);
+  });
+
+  test('a trigger may not watch job events either: every action it runs starts a job', async ({ page }) => {
+    const console = watchConsole(page);
+    await openApp(page, '/automation/schedules', { backend });
+
+    await page.getByRole('button', { name: 'New trigger' }).first().click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('After every job');
+    await page.getByRole('combobox', { name: 'Event topic' }).fill('jobs.changed');
+    await page.getByRole('combobox', { name: 'Task' }).selectOption({ label: 'Lab health' });
+    await page.getByRole('button', { name: 'Create the trigger' }).click();
+
+    await expect(page.getByText('`jobs.changed` takes in events a trigger')).toBeVisible();
+    await expect(page.getByText('would run in a loop')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    const rows = page.getByRole('row').filter({ hasText: 'After every job' });
+    await expect(rows).toHaveCount(0);
+    expect(console.messages).toEqual([]);
+  });
+
+  test('a schedule whose run is going says so, and then says how it went', async ({ page, request }) => {
+    const console = watchConsole(page);
+    const rpc = rpcFor(request, backend);
+    // A playbook that waits holds the run open long enough to be seen.
+    const task = await rpc<{ id: string }>('tasks.save', {
+      name: 'Slow evidence',
+      select: { device_ids: ['Campus/AS1'] },
+      action: { type: 'playbook', yaml: 'name: Slow evidence\nsteps:\n  - name: Wait\n    pause: 8\n' },
+    });
+    await rpc('schedules.save', {
+      name: 'Evidence on demand',
+      when: { type: 'daily', at: '03:30' },
+      action: { method: 'tasks.run', params: { id: task.id } },
+    });
+    await openApp(page, '/automation/schedules', { backend });
+
+    const row = page.getByRole('row').filter({ hasText: 'Evidence on demand' });
+    await expect(row).toContainText('Never');
+    await row.getByRole('button', { name: 'Row actions' }).click();
+    await page.getByRole('menuitem', { name: 'Run it now…' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Run now' }).click();
+
+    // Written down when it starts, before its outcome is known: running, not failed.
+    await expect(row).toContainText('Running', { timeout: 10_000 });
+    await expect(row).not.toContainText('Failed');
+    await expect(row).toContainText('Ran', { timeout: 40_000 });
     expect(console.messages).toEqual([]);
   });
 
