@@ -62,6 +62,7 @@ pub struct Snapshot {
     pub routes: Option<Vec<Route>>,
     pub health: Option<Health>,
     pub inventory: Option<Vec<InventoryItem>>,
+    pub qos: Option<Vec<QosClass>>,         // `Some(vec![])` = no policy attached; `None` = not read
     pub problems: Vec<Problem>,
     pub steps: Vec<StepReport>,
 }
@@ -110,12 +111,28 @@ Semantics (write them into the module docs and `docs/profiles.md`):
   are kept, missing ones are filled. Rows with no match are appended only if
   `merge_on` is unset. Single-row kinds (`facts`, `health`) merge every step
   into the one row the same way.
+* A step that runs and yields no rows has still created the table: the kind
+  is `Some(vec![])`, collected and empty, with no problem. That is how "no
+  policy attached" (`qos`) stays apart from a read that failed (`None` and a
+  `Failed` problem) and from a platform without the read (`None` and
+  `Unsupported`).
 * A failing step: `optional: true` → recorded in `steps`, collection goes on.
   Otherwise the kind fails only if **no** step produced rows; if an earlier
   step succeeded the kind is kept and a `Partial` problem recorded.
 * Rows become model structs through serde (`model.rs` has lenient
   deserialisers). A row that does not deserialise is dropped and counted in
   one `Partial` problem per kind that quotes the first offending row's error.
+* Numbers are exact or absent. The `num` filter keeps whole numbers exact up
+  to `u64::MAX` (a counter in the upper half of 64 bits is not rounded
+  through a float), a sum that leaves that range is a field error (the field
+  is left out and counted in a `Partial` problem), and the lenient `u64`
+  deserialiser reads a number beyond 64 bits as absent, never as `u64::MAX`.
+* The `kv` parser fails the step when a listing gives no rows and yet has
+  lines that begin like items (an index, then text that is not `key=value`):
+  a RouterOS listing printed as a table is not an empty listing.
+* The message of every `Problem`, and a step's `error`, is cut at 2 000
+  characters with a note of how many were left out: both quote device
+  output, and a device can print a line of any length.
 * Interface names are canonicalised (`ifname::long`) in every model field
   that holds one (`Interface.name`, `Neighbor.local_interface`,
   `MacEntry.interface`, `ArpEntry.interface`, `Route.interface`, …) so the
@@ -177,6 +194,17 @@ privileged reads is out of scope — read-only as the login user). An abstract
 base (`_cli_ios_like`) that IOS-style platforms extend is encouraged where it
 removes repetition.
 
+A second field, `unverified: [<kind>, …]`, is the same honesty about one
+read: the kinds a profile collects with a parser that has not met output
+recorded from a real device. It exists so that a `verified` profile can gain
+a read for which no recording can be had without either lying about it or
+giving up `verified` (and with it write access) for everything else.
+`Profile::is_unverified(kind)` answers it; `ProfileSummary.unverified` lists
+the kinds. It is inherited like any list (a child that inherits the steps
+inherits the caveat), and a kind listed without `collect` steps, or twice, is
+a load error. The QoS specification (`spec-qos.md`, "A read that has not met a
+real device") says what the rest of Nocturne does with it.
+
 Every non-abstract profile fills, as far as the platform allows:
 
 * `detect`: SSH banner patterns, `sysDescr` patterns, `sysObjectID` prefixes
@@ -205,8 +233,9 @@ Every non-abstract profile fills, as far as the platform allows:
   applicable, counters), `neighbors` (LLDP and the vendor protocol — CDP,
   MNDP…), `vlans`, `mac_table`, `arp`, `routes`, `health` (CPU, memory,
   temperature, uptime), `inventory` (modules, transceivers, PSUs, fans with
-  serials). Prefer one robust command per kind; add optional steps for
-  enrichment.
+  serials), `qos` (per-class statistics of the policies in force: the row is
+  `model::QosClass`, specified in `spec-qos.md`). Prefer one robust command
+  per kind; add optional steps for enrichment.
 * `snmp`: OIDs for CPU / memory / temperature of that vendor.
 
 Sources to consult for facts (commands, prompts, behaviours — not code to
@@ -231,7 +260,8 @@ crates/nocturne-drivers/tests/profiles/<profile_id>/
   detect.yml             # banners / sysDescr / sysObjectID / probe outputs that must (or must not) select this profile
   captures/<case>/       # one directory per recorded device
     <command slug>.txt   #   raw output of each command the collectors run (real captures; note the source in SOURCE.md)
-    expect.yml           #   expected model data per kind (exact row count; listed fields must match exactly)
+    expect.yml           #   expected model data per kind (exact row count; listed fields must match exactly),
+                         #   and `origin: recorded | documented | synthetic` (recorded unless stated)
   config/<case>.txt      # a real running-config: must survive clean_config idempotently, parse with the profile's syntax,
                          #   and `remediate(cfg, cfg)` must produce no commands
   session/<case>.yml     # optional scripted transcript for a full login → init → exec → config → save run through CliSession
@@ -241,11 +271,37 @@ One test function walks every directory and reports all failures with the
 profile, file and field. Captures come from the ntc-templates corpus wherever
 it has the command (copy the `.raw` verbatim and say which file it was in
 `SOURCE.md`); where it has none, a capture may be written by hand **only**
-from documented output formats, and must be marked `synthetic: true` in
-`expect.yml` — a profile whose collectors are only covered by synthetic
-captures cannot be `maturity: verified`. Expected values are derived by
-reading the raw output, not by running the collector and pasting what it
-printed.
+from documented output formats, and must be marked `origin: synthetic` in
+`expect.yml` (`synthetic: true` is the older spelling) — a profile whose
+collectors are only covered by synthetic captures cannot be `maturity:
+verified`. Expected values are derived by reading the raw output, not by
+running the collector and pasting what it printed.
+
+A capture says what it is, in `expect.yml`:
+
+| `origin` | The files are | Counts as real device output |
+|---|---|---|
+| `recorded` (default) | printed by a device of the platform and recorded | yes |
+| `documented` | a sample printed in the vendor's documentation, copied as it stands; `SOURCE.md` must give the page's address (`https://…`) | no |
+| `synthetic` | written by hand, or printed by something that is not the platform (the simulator) | no |
+
+Stating both `origin` and `synthetic` is refused. `count: 0` with no `rows`
+is a complete expectation: the read must work and find nothing. A case that
+expects the read to fail (`problems`) does not count as covering the kind.
+
+Rules the harness enforces on top of the expectations
+(`tests/harness_rules.rs` breaks each on purpose):
+
+* `maturity: verified` needs, for every kind the profile collects and does
+  **not** list under `unverified`, a `recorded` capture that passes.
+* A kind listed under `unverified` needs at least one passing capture that
+  collects it, of any origin.
+* **A `recorded` capture that lists a kind still under `unverified` fails the
+  profile** — whether or not its expectations pass — until the kind is taken
+  off the list. A documented sample does not: it is what a listed kind is
+  expected to be tested against. Neither does a recorded case that holds no
+  output for the kind's commands (a device that refused the command): it has
+  shown the parser nothing.
 
 Also required: unit tests for the collector semantics (merge, optional steps,
 partial failure, policy refusal, command de-duplication, undefined fields),

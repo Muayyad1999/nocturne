@@ -33,7 +33,7 @@ Contents:
 | `cli` | Log in, keep its place in the output, drive the pager, notice a refused command |
 | `config` | Fetch the configuration, diff two fetches, apply lines, save, arm a dead-man switch |
 | `policy` | Tell a read from a change before anything is sent — the AI and the automation never get past this |
-| `collect` | Fill the common model: interfaces, neighbours, VLANs, MAC table, ARP, routes, health, inventory |
+| `collect` | Fill the common model: interfaces, neighbours, VLANs, MAC table, ARP, routes, health, inventory, per-class QoS statistics |
 | `snmp` | Read CPU, memory and temperature without a login |
 
 Everything is optional. A profile with nothing but a prompt and a read-only
@@ -368,6 +368,7 @@ snmp:
 | `extends` | Id of the profile to inherit from. |
 | `ntc_platform` | Platform name in the ntc-templates index, for `parser: {ntc: auto}`. |
 | `maturity` | `verified`, `community` or `experimental`. Never inherited. |
+| `unverified` | Kinds this profile collects with a parser that has not yet met output recorded from a real device, e.g. `[qos]`. See [Maturity](#maturity-how-far-to-trust-a-profile). Each must be a kind the profile has `collect` steps for. |
 | `interface_names` | `cisco` (default: `Gi1/0/1` is expanded to `GigabitEthernet1/0/1` everywhere, so data from different commands joins up) or `verbatim` (names are kept exactly as printed — right for RouterOS, Linux, Junos). |
 
 ### `detect`
@@ -440,8 +441,8 @@ arguments the read action really takes.
 ### `collect`
 
 A map from kind to a list of steps. The kinds are `facts`, `interfaces`,
-`neighbors`, `vlans`, `mac_table`, `arp`, `routes`, `health` and `inventory`;
-`facts` and `health` are one row, the rest are tables.
+`neighbors`, `vlans`, `mac_table`, `arp`, `routes`, `health`, `inventory` and
+`qos`; `facts` and `health` are one row, the rest are tables.
 
 | Key of a step | Meaning |
 |---|---|
@@ -457,10 +458,62 @@ A dotted key fills a nested field: `counters.in_errors`, `extra.image`.
 What happens when things go wrong is fixed, and worth knowing:
 
 * a kind with no steps is reported as **unsupported**, not as empty;
-* if every step failed, the kind is **failed** and the errors are kept;
+* a step that ran and found nothing gives an **empty table**, which is an
+  answer: no neighbours, no policy attached. It is stored as such;
+* if every step failed, the kind is **failed**, the errors are kept, and
+  nothing is stored — what was read before stays, and is never replaced by
+  an empty table;
 * if one step failed but another produced rows, the kind is kept and a
   **partial** problem says what is missing;
-* a row that does not fit the model is dropped and counted, not patched up.
+* a row that does not fit the model is dropped and counted, not patched up;
+* a number that does not fit in 64 bits — printed that large, or the sum of
+  two that are — is left out and counted, never cut down to the largest
+  number that does fit;
+* the message of a problem quotes what the device printed, up to 2 000
+  characters of it.
+
+### The `qos` kind
+
+One row per class, per direction, per interface — the per-class statistics of
+whatever the platform calls a QoS policy.
+
+| Field | Meaning |
+|---|---|
+| `interface` | The interface the policy is attached to. Leave it out when the platform attaches the policy to something else (a RouterOS queue on an address). |
+| `direction` | `in` or `out`, seen from the device (`input`/`output` and `ingress`/`egress` are understood too). **Required**: a row that does not say which way is dropped and counted as a problem, not filed under one. |
+| `policy` | The policy the class belongs to: an IOS policy-map; on RouterOS the menu the queue is in, `queue simple` or `queue tree`. |
+| `class` | The class; on RouterOS the queue. `class-default` is a class like any other. |
+| `parent` | The class, or queue, this one sits under, when policies nest. A parent's counters include its children's: add up one level, never the whole table. |
+| `rate_bps` | What the class is held to or promised: a shaper's rate, a policer's CIR, a priority rate, a bandwidth guarantee, a queue's max-limit. |
+| `packets`, `bytes` | Classified into the class. |
+| `dropped_packets`, `dropped_bytes` | Every drop, whatever the reason. |
+| `queue_dropped_packets` | Dropped from the queue — tail drop, WRED: **congestion**. |
+| `police_dropped_packets` | Dropped by a policer: **the policy doing what it was told to**. |
+| `queued_packets` | Queue depth at the moment of the read. |
+| `offered_rate_bps`, `drop_rate_bps` | Rates as the device averages them itself, kept apart from anything Nocturne computes from the counters. |
+
+Every number is optional. Map only what the platform prints: a counter that
+is left out is "the device does not say", and a zero is a zero. That matters
+most for the two drop fields — Nocturne alerts on congestion and deliberately
+not on a policer, so fill them only where the output really tells the two
+apart, and fill `dropped_packets` alone where it does not (RouterOS counts
+one kind of drop).
+
+A policy that nests is a tree, and most platforms show the tree by
+indentation only. TextFSM cannot count columns, but it can match them:
+`cisco_ios` reads the level of a class from the column its `Class-map:` line
+starts in, keeps the name of the policy and of the class open at each level in
+`Filldown` values, and stops with `-> Error "…"` at anything it cannot place.
+Read its `collect.qos` step before writing one for another platform; an
+error that fails the read is better than a counter under the wrong parent.
+
+The same goes for an answer the template does not recognise at all. A
+template that reads zero rows out of text it does not understand has said
+"no policy attached", which nobody said. `cisco_ios` starts in a state that
+knows only what may stand before the first interface (nothing, the two lines
+of `exec prompt timestamp`, a log message) and stops at anything else, and it
+insists on the order interface → attached policy → class, so that a class is
+never filed under a name left over from the interface before it.
 
 ### `snmp`
 
@@ -543,7 +596,9 @@ collect:
 the device's own properties, with `-` turned into `_`
 (`mac-address` → `mac_address`). Wrapped lines, comments that run over
 several lines, RouterOS 7's lower-case flags and items without an index are
-all handled.
+all handled. A listing that has items but none in `key=value` form — a table,
+which is what RouterOS prints where `detail` or `terse` is left out — fails
+the step: it is not an empty listing, and is not read as one.
 
 ```yaml
 # profile
@@ -642,7 +697,7 @@ Filters Nocturne adds for network data:
 | `duration` | `"2 weeks, 3 days" \| duration` | `1468800` (seconds) |
 | `bps` | `"10 Gb/s" \| bps` | `10000000000` (bits per second) |
 | `bytes` | `"64.0MiB" \| bytes` | `67108864` |
-| `num` | `"17%" \| num` | `17` (nothing, when it is not a number) |
+| `num` | `"17%" \| num` | `17` (nothing, when it is not a number). Whole numbers are exact up to 2⁶⁴−1, so 64-bit counters can be added up. |
 | `mac` | `"aabb.ccdd.eeff" \| mac` | `"aa:bb:cc:dd:ee:ff"` |
 | `ifname` | `"Gi1/0/1" \| ifname` | `"GigabitEthernet1/0/1"` |
 | `cidr(mask)` | `"10.0.0.1" \| cidr("255.255.255.0")` | `"10.0.0.1/24"` |
@@ -758,8 +813,9 @@ captures/<case>/
                 <command slug>.txt — the recorded output of each command, verbatim
                 expect.yml       — per kind, the exact row `count` and the `rows` that must
                                    come out (each row is found by its first field; every
-                                   field listed must match exactly). `synthetic: true` when
-                                   the capture was written by hand.
+                                   field listed must match exactly). `count: 0` with no
+                                   rows is a read that must work and find nothing.
+                                   `origin:` says what the files are (below).
                 SOURCE.md        — where every file came from
 config/<case>.txt
                 a real running configuration: it must survive cleaning unchanged, parse with
@@ -782,6 +838,29 @@ Expected values are written by **reading the raw output**, not by running the
 collector and pasting what it printed. Otherwise the test only proves the
 code does what it does.
 
+### What a capture is: `origin`
+
+A capture proves as much as its source. `expect.yml` says which of three
+things the files of a case are, and a case is only as good as its weakest
+file:
+
+| `origin` | The files are | Counts towards `verified` |
+|---|---|---|
+| `recorded` (the default) | Printed by a device of this platform and recorded: the ntc-templates corpus, a device you ran the command on. | yes |
+| `documented` | A sample printed in the vendor's own documentation, copied as it stands there. `SOURCE.md` must give the page's address. | no |
+| `synthetic` | Written by hand from a documented format, or printed by something that is not the platform — Nocturne's simulator included. (`synthetic: true` is the older spelling.) | no |
+
+A documented sample is worth having — it is the vendor's own account of the
+format — but it is not a recording: it has been through an editor and a
+typesetter, nobody can say which release printed it, and samples that have
+lost their indentation or gained a typing error are easy to find. Never call
+anything `recorded` that was not.
+
+A case may also expect the read to **fail** (`problems:` with `code: failed`
+and the text the message must contain, and `qos: {}` under `kinds`): that is
+how a profile's refusals are tested. Such a case proves the failure is
+reported; it does not count as covering the kind.
+
 ## Maturity: how far to trust a profile
 
 | `maturity` | What it claims |
@@ -794,6 +873,47 @@ code does what it does.
 and the UI says which you are using. Be honest: a wrong `verified` is worse
 than an honest `experimental`, because somebody will trust it at two in the
 morning.
+
+### One read that has not met a real device: `unverified`
+
+Sometimes a profile has earned `verified` for everything it does and then
+gains one more read for which no recording exists — the vendor documents the
+command, nobody has a device to run it on. Lowering the whole profile to
+`community` would take write access away from a platform that has earned it,
+and leaving it `verified` would be a lie about that one read. So the profile
+says exactly what is true:
+
+```yaml
+# profile
+id: example_unverified
+name: Example (one unverified read)
+description: A profile that says which of its reads nobody has seen work on real hardware.
+maturity: community
+unverified: [qos]
+policy: {read_only: ['^show\s+\S']}
+collect:
+  qos:
+    - command: show policy-map interface
+      parser: {regex: '(?m)^\s+Class-map: (?P<class>\S+)'}
+      map: {class: class, direction: "'out'"}
+```
+
+What follows from it:
+
+* Data collected for a listed kind is marked — `collect.get` and
+  `collect.status` carry `unverified: true` on it, `profiles.list` lists the
+  kinds — and every screen that shows it says the read has not been checked
+  against a real device of that platform.
+* The profile test accepts documented and synthetic captures for a listed
+  kind, and insists on at least one that the read succeeds on.
+* **The test fails as soon as a `recorded` capture covers a kind that is
+  still listed.** The caveat comes off the day a recording arrives, in the
+  same change — not whenever somebody remembers.
+
+`cisco_ios` and `mikrotik_routeros` list `qos`. If you have such a device,
+recording the command is read-only and takes a minute;
+`crates/nocturne-drivers/tests/profiles/<id>/captures/SOURCE.md` says how to
+anonymise and cite it.
 
 ## Checklist for a new profile
 
@@ -816,4 +936,6 @@ morning.
 - [ ] Nothing is invented anywhere: a field the device does not print is left
       out.
 - [ ] Test data under `tests/profiles/<id>/`, with `SOURCE.md` saying where
-      every capture came from.
+      every capture came from, and `origin:` saying what it is. Nothing that
+      was not recorded from a device is called a recording.
+- [ ] A read with no recording behind it is listed under `unverified`.
