@@ -1,4 +1,4 @@
-import { ChartLine, Table as TableIcon } from 'lucide-react';
+import { ChartLine, Copy, FileSpreadsheet, ImageDown, Share, Table as TableIcon } from 'lucide-react';
 import {
   useEffect,
   useLayoutEffect,
@@ -7,11 +7,23 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react';
+import {
+  CaptureError,
+  chartCsv,
+  chartToPng,
+  copyImageOrSave,
+  fileStem,
+  savePicture,
+  tellImageCopied,
+} from '@/lib/capture';
 import { cx } from '@/lib/cx';
+import { download, tellSaved } from '@/lib/download';
 import { formatCompact, formatCount, type Numeric } from '@/lib/format';
 import { formatDate, formatDateTime, formatTime } from '@/lib/time';
 import { IconButton } from '../Button';
+import { DropdownMenu } from '../DropdownMenu';
 import { EmptyState } from '../EmptyState';
+import type { MenuEntry } from '../Menu';
 import { Skeleton } from '../Skeleton';
 import { Table, type TableColumn } from '../Table';
 import { useTokens } from '../theme';
@@ -41,6 +53,27 @@ export interface ChartSeries {
   tone?: StatusTone;
 }
 
+/**
+ * The chart's export menu. Off unless a screen asks for it.
+ *
+ * It offers a PNG of the chart (the plot with its title and legend, in the
+ * theme on screen), the same picture on the clipboard, and the numbers as
+ * CSV with gaps as empty cells. None of that stores anything. A screen that
+ * can also *keep* the chart adds its own entry through `extra` — see
+ * `useKeepAsEvidence` in `@/app/KeepAsEvidence`.
+ */
+export interface ChartExportMenu {
+  /** The stem of the file names (`<stem>.png`, `<stem>.csv`). Defaults to the title. */
+  filename?: string;
+  /**
+   * A line under the plot in the picture, for what the picture cannot show by
+   * itself: gaps, coverage, where the numbers came from.
+   */
+  note?: string;
+  /** Further entries, under a separator: "Keep as evidence…". */
+  extra?: readonly MenuEntry[];
+}
+
 export interface TimeSeriesChartProps {
   /** Names what is plotted. A single series has no legend: the title is its name. */
   title: string;
@@ -62,6 +95,11 @@ export interface TimeSeriesChartProps {
   loading?: boolean;
   /** Label the time axis in UTC instead of local time. */
   utc?: boolean;
+  /**
+   * Adds an export menu to the header (PNG, copy image, CSV, and whatever
+   * the screen adds). Absent by default: no existing chart changes.
+   */
+  exportMenu?: ChartExportMenu;
   className?: string;
 }
 
@@ -87,6 +125,8 @@ const TOKENS = [
   '--idle',
   '--maint',
 ] as const;
+
+const PICTURE_TOKENS = ['--text-1', '--text-3'] as const;
 
 const MAX_SERIES = SLOT_TOKENS.length;
 /** Direct labels at the line ends are only legible for a few series. */
@@ -150,11 +190,14 @@ export function TimeSeriesChart({
   max,
   loading = false,
   utc = false,
+  exportMenu,
   className,
 }: TimeSeriesChartProps) {
   const series = allSeries.slice(0, MAX_SERIES);
   const notShown = allSeries.length - series.length;
   const tokens = useTokens(TOKENS);
+  // The picture's own text. Read apart from TOKENS, which the plot is built from.
+  const ink = useTokens(PICTURE_TOKENS);
   const colors = series.map((entry, index) =>
     entry.tone ? tokens[`--${entry.tone}`] : tokens[SLOT_TOKENS[(entry.slot ?? index + 1) - 1] ?? '--series-1'],
   );
@@ -423,6 +466,60 @@ export function TimeSeriesChart({
   ];
   const tableRows = useMemo(() => timestamps.map((_, index) => index), [timestamps]);
 
+  /**
+   * The chart as a picture: the plot's own canvas, as it is on screen, with
+   * the title and the legend of the series that are drawn. Made when asked
+   * for, from what is plotted at that moment.
+   */
+  const picture = (): Promise<Blob> => {
+    const plot = chart.current;
+    const container = plotRef.current;
+    if (!plot || !container) {
+      return Promise.reject(new CaptureError('Show the chart rather than the table to make a picture of it.'));
+    }
+    return chartToPng({
+      plot: plot.ctx.canvas,
+      title,
+      subtitle,
+      legend:
+        series.length >= 2
+          ? series.flatMap((entry, index) =>
+              hidden.has(entry.id) ? [] : [{ label: entry.label, color: colors[index] ?? ink['--text-1'] }],
+            )
+          : undefined,
+      note: exportMenu?.note,
+      colors: { background: surfaceColor(container), text: ink['--text-1'], muted: ink['--text-3'] },
+    });
+  };
+
+  const stem = fileStem(exportMenu?.filename ?? title);
+  const exportItems: MenuEntry[] = exportMenu
+    ? [
+        {
+          label: 'Save as PNG',
+          icon: ImageDown,
+          disabled: view !== 'chart',
+          onSelect: () => void savePicture(picture(), `${stem}.png`).then(tellSaved),
+        },
+        {
+          label: 'Copy image',
+          icon: Copy,
+          disabled: view !== 'chart',
+          // Called inside the click, with the promise of the picture: see `copyImageOrSave`.
+          onSelect: () => void copyImageOrSave(picture(), `${stem}.png`).then(tellImageCopied),
+        },
+        {
+          label: 'Save numbers as CSV',
+          icon: FileSpreadsheet,
+          // Every series, hidden or not: the file is the numbers, not the view.
+          onSelect: () => download(`${stem}.csv`, chartCsv({ timestamps, series }), 'text/csv;charset=utf-8'),
+        },
+        ...(exportMenu.extra && exportMenu.extra.length > 0
+          ? [{ type: 'separator' } as const, ...exportMenu.extra]
+          : []),
+      ]
+    : [];
+
   return (
     <figure className={cx(styles.chart, className)}>
       <div className={styles.header}>
@@ -430,6 +527,14 @@ export function TimeSeriesChart({
           <span className={styles.title}>{title}</span>
           {subtitle && <span className={styles.subtitle}>{subtitle}</span>}
         </figcaption>
+        {!empty && exportMenu && (
+          <DropdownMenu
+            aria-label={`Export ${title}`}
+            placement="bottom-end"
+            items={exportItems}
+            trigger={<IconButton icon={Share} size="sm" aria-label="Export this chart" tooltipPlacement="left" />}
+          />
+        )}
         {!empty && (
           <IconButton
             icon={view === 'chart' ? TableIcon : ChartLine}

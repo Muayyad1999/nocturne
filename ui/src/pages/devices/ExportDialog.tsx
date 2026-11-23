@@ -15,7 +15,7 @@ import { ErrorState } from '@/design/ErrorState';
 import { Field } from '@/design/Field';
 import { RadioGroup } from '@/design/RadioGroup';
 import { Skeleton } from '@/design/Skeleton';
-import { toast } from '@/design/Toast';
+import { download as saveAs } from '@/lib/download';
 import { formatCount } from '@/lib/format';
 import styles from './ImportDialog.module.css';
 
@@ -51,16 +51,9 @@ export function ExportDialog({ open, onClose, selection }: ExportDialogProps) {
 
   const text = exported.data?.text ?? '';
 
-  const download = () => {
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = FILENAME[format] ?? 'devices.txt';
-    link.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Saved ${link.download}`);
-  };
+  // Says what became of it: a download the window could not hand over is an
+  // error, not "Saved".
+  const download = () => saveAs(FILENAME[format] ?? 'devices.txt', text);
 
   return (
     <Dialog

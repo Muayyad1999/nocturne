@@ -39,6 +39,7 @@ import type {
   AuditRef,
   ChangeRef,
   DeviceRef,
+  Evidence,
   GeneratedReport,
   Handover,
   HandoverConfigChange,
@@ -180,6 +181,7 @@ export const ENTRY_WORD: Record<TimelineKind, string> = {
   status: 'Status',
   log: 'Log',
   gap: 'Gap',
+  evidence: 'Evidence',
 };
 
 export const ENTRY_TONE: Record<TimelineKind, StatusTone> = {
@@ -191,6 +193,7 @@ export const ENTRY_TONE: Record<TimelineKind, StatusTone> = {
   log: 'idle',
   // A hole in the evidence is a warning, not a neutral line.
   gap: 'warn',
+  evidence: 'info',
 };
 
 /** How long an incident lasted, or has been running. */
@@ -236,6 +239,8 @@ export function refLink(reference: Ref | AuditRef, deviceId?: string | null): st
       return deviceId ? `/config?device=${encodeURIComponent(deviceId)}` : null;
     case 'lab':
       return `/lab/${id}`;
+    case 'evidence':
+      return `/ops/evidence?item=${id}`;
     default:
       return null;
   }
@@ -525,6 +530,27 @@ function jobItem(job: JobRef): HandoverItem {
   };
 }
 
+function evidenceItem(item: Evidence): HandoverItem {
+  const from = item.source.from === 'operator' ? 'supplied by a person' : item.source.from;
+  return {
+    id: item.id,
+    text: item.title,
+    detail: [
+      item.kind,
+      item.source.device,
+      from,
+      item.incident_ids.length > 0 ? `on ${plural(item.incident_ids.length, 'incident')}` : 'not attached',
+      `sha256 ${item.sha256.slice(0, 12)}…`,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    to: `/ops/evidence?item=${encodeURIComponent(item.id)}`,
+    tone: 'info',
+    lab: item.source.lab,
+    at: instant(item.captured_at),
+  };
+}
+
 function items(list: HandoverItem[], sentence: string): HandoverBody {
   return list.length > 0 ? { kind: 'items', items: list } : { kind: 'nothing', sentence };
 }
@@ -709,6 +735,24 @@ export function handoverSections(handover: Handover): HandoverSection[] {
     body: items(handover.jobs_failed.map(jobItem), 'No job failed in this period.'),
   });
 
+  // A handover saved before evidence existed has no such section at all, and
+  // that is not a shift in which nothing was captured: it gets no section
+  // here either, as in the engine's own export.
+  if (handover.evidence !== undefined) {
+    const evidence = readSection(handover.evidence, gaps, 'evidence');
+    sections.push({
+      id: 'evidence',
+      title: 'Evidence captured',
+      summary: evidence.present ? `${formatCount(evidence.value.captured.length)} kept` : undefined,
+      note: evidence.present
+        ? 'What was captured in the period, oldest first: the records, with their sources and hashes. Their content is under Evidence, not in the handover.'
+        : undefined,
+      body: evidence.present
+        ? items(evidence.value.captured.map(evidenceItem), 'Nothing was kept as evidence in this period.')
+        : unavailable(evidence),
+    });
+  }
+
   return sections;
 }
 
@@ -819,6 +863,7 @@ export const RESOLVABLE_KINDS: ReadonlySet<string> = new Set([
   'note',
   'handover',
   'report',
+  'evidence',
 ]);
 
 /** The tone of an audit action: destructive actions are not quiet. */

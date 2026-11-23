@@ -1,4 +1,4 @@
-import { useRef, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import { useFocusScope } from '../overlay/focus';
 import { useLayer } from '../overlay/layers';
 import { Portal } from '../overlay/Portal';
@@ -33,6 +33,19 @@ export function MenuPopup({ anchor, items, onClose, placement = 'bottom-start', 
   });
   // The menu focuses its own first item; the scope only gives focus back.
   useFocusScope(true, menuRef, { trap: false, autoFocus: false });
+
+  // … except that the menu mounts hidden, until it has been measured, and a
+  // hidden element refuses the focus: the menu's own attempt, made in that
+  // first moment, did nothing, the focus stayed on the trigger, and the arrow
+  // keys never reached an item. So it is given again once the menu is placed.
+  const placed = style.visibility !== 'hidden';
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (!placed || !menu || menu.contains(document.activeElement)) return;
+    menu
+      .querySelector<HTMLElement>('[role^="menuitem"]:not([aria-disabled="true"])')
+      ?.focus({ preventScroll: true });
+  }, [placed]);
 
   return (
     <Portal>

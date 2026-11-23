@@ -13,6 +13,11 @@ export interface CodeBlockProps {
   /** Names the block in its header: a file, a device, a command. */
   title?: string;
   lineNumbers?: boolean;
+  /**
+   * The number of the first line, for text that is a piece of something
+   * longer: a page of a long capture is numbered as the whole is. Default 1.
+   */
+  firstLine?: number;
   /** Offers a button that copies the text exactly as given. */
   copyable?: boolean;
   /** Wrap long lines instead of scrolling sideways. */
@@ -29,6 +34,7 @@ export function CodeBlock({
   code,
   title,
   lineNumbers = false,
+  firstLine = 1,
   copyable = true,
   wrap = false,
   maxHeight,
@@ -51,6 +57,10 @@ export function CodeBlock({
   };
 
   const lines = splitLines(code);
+  // The gutter is four digits wide; a number with more would run into the
+  // text, so it is widened for a capture that long.
+  const digits = String(firstLine + Math.max(lines.length, 1) - 1).length;
+  const gutter = digits > 4 ? { width: `${digits}ch` } : undefined;
 
   return (
     <div className={cx(styles.block, className)} data-wrap={wrap || undefined}>
@@ -72,8 +82,8 @@ export function CodeBlock({
           <code className={styles.numbered}>
             {lines.map((line, index) => (
               <span key={index} className={styles.line}>
-                <span className={styles.number} aria-hidden="true">
-                  {index + 1}
+                <span className={styles.number} style={gutter} aria-hidden="true">
+                  {index + firstLine}
                 </span>
                 <span className={styles.text}>{line}</span>
                 {'\n'}

@@ -37,7 +37,6 @@ function rendered(format: Format): Rendered {
 
 // The dialog renders nothing itself; the engine's answer is stood in for here.
 vi.mock('./data', () => ({
-  download: vi.fn(),
   useRendered: (_method: string, params: { format: Format } | null) => ({
     data: params ? rendered(params.format) : undefined,
     isPending: false,

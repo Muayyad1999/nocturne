@@ -1,0 +1,30 @@
+/* "Keep as evidence": what will be read, a title, and where to attach it. */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/* The engine's own sentence, under a headline for the kind of refusal. */
+.refused {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--crit);
+  border-radius: var(--radius-control);
+  background: var(--crit-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.refused b {
+  font-weight: var(--fw-semibold);
+}

@@ -2,11 +2,12 @@
  * Operations — the record of what happened, and the screen a NOC engineer
  * lives in during and after an incident.
  *
- * Six tabs on one route (`/ops/:tab?`), each a view over records that already
- * exist: **Incidents** (with the timeline that is the centre of this screen),
- * **Handover**, **Reports**, **Notes**, **Audit** and **Jobs**. Everything
- * comes from `nocturne-ops` (`docs/dev/features/ops.md`, types in
- * `api/types/ops.ts`) except the job history, which is the core's `jobs.*`.
+ * Seven tabs on one route (`/ops/:tab?`), each a view over records that
+ * already exist: **Incidents** (with the timeline that is the centre of this
+ * screen), **Handover**, **Reports**, **Notes**, **Evidence**, **Audit** and
+ * **Jobs**. Everything comes from `nocturne-ops` (`docs/dev/features/ops.md`,
+ * types in `api/types/ops.ts`) except the job history, which is the core's
+ * `jobs.*`.
  *
  * Nothing on this screen writes to a device; there is no method behind it that
  * could. What it does do is make claims about the past, so the rules it keeps
@@ -25,6 +26,7 @@
 
 import {
   ClipboardList,
+  FileCheck2,
   FileText,
   ListTree,
   Notebook,
@@ -47,6 +49,7 @@ import { TabPanel, Tabs, type TabItem } from '@/design/Tabs';
 import { formatCount } from '@/lib/format';
 import { AuditTab } from './Audit';
 import { useIncident, useIncidents } from './data';
+import { EvidenceTab } from './Evidence';
 import { HandoverTab } from './Handover';
 import { IncidentList } from './IncidentList';
 import { IncidentPage } from './IncidentPage';
@@ -92,6 +95,13 @@ const TABS: readonly OpsTab[] = [
     icon: Notebook,
     needs: 'notes.list',
     about: 'Runbooks and what the last engineer learned at 3am, attached to devices, sites and tags.',
+  },
+  {
+    id: 'evidence',
+    label: 'Evidence',
+    icon: FileCheck2,
+    needs: 'evidence.list',
+    about: 'What a device printed, the map as it was drawn and the samples behind a graph, kept with their source, their time and a hash.',
   },
   {
     id: 'audit',
@@ -156,6 +166,7 @@ function Operations() {
     handover: useHasMethod('handover.generate'),
     reports: useHasMethod('reports.kinds'),
     notes: useHasMethod('notes.list'),
+    evidence: useHasMethod('evidence.list'),
     audit: useHasMethod('audit.search'),
     jobs: useHasMethod('jobs.list'),
   };
@@ -237,6 +248,20 @@ function Operations() {
       for (const stop of stops) stop();
     };
   }, []);
+
+  // Offered in the palette only where the tab exists.
+  const hasEvidence = present.evidence === true;
+  useEffect(() => {
+    if (!hasEvidence) return;
+    return registerCommand({
+      id: 'ops.evidence',
+      title: 'Open the evidence',
+      group: areaLabel,
+      keywords: ['evidence', 'capture', 'attachment', 'what the device printed'],
+      icon: FileCheck2,
+      run: () => navigate(`${areaPath}/evidence`),
+    });
+  }, [hasEvidence]);
 
   const openIncident = (id: string | null) => {
     const next = new URLSearchParams(search);
@@ -327,6 +352,8 @@ function Body({ tab, incidentId, onOpenIncident, present }: BodyProps) {
       return <ReportsTab />;
     case 'notes':
       return <NotesTab />;
+    case 'evidence':
+      return <EvidenceTab />;
     case 'audit':
       return <AuditTab />;
     case 'jobs':

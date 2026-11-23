@@ -50,7 +50,7 @@ import { Switch } from '@/design/Switch';
 import { Table, type TableColumn } from '@/design/Table';
 import { TabPanel, Tabs, type TabItem } from '@/design/Tabs';
 import { TimeAgo } from '@/design/TimeAgo';
-import { toast } from '@/design/Toast';
+import { download } from '@/lib/download';
 import { formatCount, plural } from '@/lib/format';
 import { formatTimestamp } from '@/lib/time';
 import styles from './Automation.module.css';
@@ -271,10 +271,10 @@ export function RunView({ runId }: RunViewProps) {
             <>
               <Button
                 icon={Download}
-                onClick={() => {
-                  download(`${run.name || 'run'}.${exported.format === 'text' ? 'txt' : exported.format}`, exported.text);
-                  toast.success('Saved');
-                }}
+                // `download` says what became of it, a failure included.
+                onClick={() =>
+                  download(`${run.name || 'run'}.${exported.format === 'text' ? 'txt' : exported.format}`, exported.text)
+                }
               >
                 Save to a file
               </Button>
@@ -289,16 +289,6 @@ export function RunView({ runId }: RunViewProps) {
       )}
     </div>
   );
-}
-
-/** Hands the text to the browser as a file. Nothing leaves the machine. */
-function download(name: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 // -------------------------------------------------------------------- live

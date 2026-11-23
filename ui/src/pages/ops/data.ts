@@ -2,8 +2,10 @@
  * Everything the Operations screen reads and writes.
  *
  * All of it is `nocturne-ops` (`docs/dev/features/ops.md`), except the job
- * history, which is the core's own `jobs.*`, and three reads that only exist
- * to turn an id into a name: `devices.list`, `alerts.list`, `changes.list`.
+ * history, which is the core's own `jobs.*`, the list of terminal sessions
+ * evidence can be captured from (`terminal.list`), and three reads that only
+ * exist to turn an id into a name: `devices.list`, `alerts.list`,
+ * `changes.list`.
  * Those three belong to other features, so every hook that uses one is
  * written to work without it — the backend already reports a missing source
  * inside its own answers, and `useHasMethod` decides whether a *control* that
@@ -24,10 +26,21 @@ import type { AiEventEnvelope, AiStatus, Chat } from '@/api/types/ai';
 import type { Alert } from '@/api/types/monitor';
 import type { ChangeSummary } from '@/api/types/changes';
 import type { Device, Job, JobFilter } from '@/api/types/core';
+import type { SessionInfo } from '@/api/types/terminal';
 import type {
   AuditActionsResult,
   AuditSearchParams,
   AuditSearchResult,
+  Evidence,
+  EvidenceAddTextParams,
+  EvidenceAttachParams,
+  EvidenceCaptureTerminalParams,
+  EvidenceDeleteParams,
+  EvidenceDeleteResult,
+  EvidenceListParams,
+  EvidenceListResult,
+  EvidenceRenameParams,
+  EvidenceWithBody,
   GeneratedReport,
   Handover,
   HandoverHead,
@@ -147,7 +160,7 @@ export function useHandover(since: number, until: number | null, enabled = true)
   return useRpc<Handover>(
     'handover.generate',
     until === null ? { since } : { since, until },
-    { enabled, invalidateOn: ['incidents.changed', 'alerts.changed', 'changes.changed'] },
+    { enabled, invalidateOn: ['incidents.changed', 'alerts.changed', 'changes.changed', 'evidence.changed'] },
   );
 }
 
@@ -254,6 +267,89 @@ export function useDeleteNote() {
   });
 }
 
+// ------------------------------------------------------------------- evidence
+
+/**
+ * A page of the evidence list, newest first. Heads only: a body is read when
+ * one item is opened, never for a list.
+ *
+ * The list moves on `evidence.changed`, which the engine publishes for every
+ * capture, rename, attachment and deletion, whichever screen asked for it —
+ * so a capture made from the terminal or the map shows up here by itself.
+ */
+export function useEvidenceList(params: EvidenceListParams, enabled = true) {
+  return useRpc<EvidenceListResult>('evidence.list', params, {
+    enabled,
+    invalidateOn: ['evidence.changed'],
+  });
+}
+
+/** One item with its body. */
+export function useEvidenceItem(id: string | null) {
+  return useRpc<EvidenceWithBody>('evidence.get', id ? { id } : undefined, {
+    enabled: id !== null,
+    invalidateOn: ['evidence.changed'],
+  });
+}
+
+/** An evidence write moves the item, the incidents it is on, the audit trail and the handover. */
+const EVIDENCE_WRITES = ['evidence.', 'incidents.', 'audit.', 'handover.'];
+
+export function useRenameEvidence() {
+  return useRpcMutation<Evidence, EvidenceRenameParams>('evidence.rename', {
+    invalidates: EVIDENCE_WRITES,
+    errorToast: 'The title could not be changed',
+  });
+}
+
+export function useAttachEvidence() {
+  return useRpcMutation<Evidence, EvidenceAttachParams>('evidence.attach', {
+    invalidates: EVIDENCE_WRITES,
+    errorToast: 'It could not be attached',
+  });
+}
+
+export function useDetachEvidence() {
+  return useRpcMutation<Evidence, EvidenceAttachParams>('evidence.detach', {
+    invalidates: EVIDENCE_WRITES,
+    errorToast: 'It could not be detached',
+  });
+}
+
+export function useDeleteEvidence() {
+  return useRpcMutation<EvidenceDeleteResult, EvidenceDeleteParams>('evidence.delete', {
+    invalidates: EVIDENCE_WRITES,
+    errorToast: 'The evidence could not be deleted',
+  });
+}
+
+/**
+ * The two captures this screen can ask for itself. Neither toasts a failure:
+ * the dialog that asked shows the engine's own reason where the person is
+ * looking, and an `unavailable` there is an answer, not a breakage.
+ */
+export function useCaptureTerminal() {
+  return useRpcMutation<EvidenceWithBody, EvidenceCaptureTerminalParams>('evidence.capture_terminal', {
+    invalidates: EVIDENCE_WRITES,
+    errorToast: false,
+  });
+}
+
+export function useAddEvidenceText() {
+  return useRpcMutation<EvidenceWithBody, EvidenceAddTextParams>('evidence.add_text', {
+    invalidates: EVIDENCE_WRITES,
+    errorToast: false,
+  });
+}
+
+/** The terminal sessions the engine holds, to capture from one. Only called where the method exists. */
+export function useTerminalSessions(enabled: boolean) {
+  return useRpc<SessionInfo[]>('terminal.list', undefined, {
+    enabled,
+    invalidateOn: ['terminal.opened', 'terminal.closed', 'terminal.removed'],
+  });
+}
+
 // ---------------------------------------------------------------------- audit
 
 export function useAuditTrail(params: AuditSearchParams) {
@@ -323,16 +419,6 @@ export function useRendered(
   params: Record<string, unknown> | null,
 ): UseQueryResult<Rendered, RpcError> {
   return useRpc<Rendered>(method, params ?? undefined, { enabled: params !== null });
-}
-
-/** Saves text as a file. What is saved is exactly what was shown. */
-export function download(filename: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }
 
 // ------------------------------------------------------------------ assistant

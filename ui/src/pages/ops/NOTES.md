@@ -8,9 +8,11 @@ which needed no change — it is complete and it is right).
 ## Shape
 
 ```
-index.tsx          the route: six tabs, and `?incident=<id>` for one incident
+index.tsx          the route: seven tabs, and `?incident=<id>` for one incident
 ops.ts             the reasoning, with no React in it           (unit tested)
 ops.test.ts        30 tests, about the four things that can mislead
+evidenceReading.ts  the same for evidence: text, drawings, charts, coverage
+evidenceReading.test.ts  its tests, on real answers of a real engine
 data.ts            every read and write, and the topics that refresh them
 author.ts          who is writing this, remembered in the browser
 Unavailable.tsx    the three kinds of nothing, told apart
@@ -21,6 +23,10 @@ Timeline.tsx       the centrepiece: merged sources, evidence, the note box
 Handover.tsx       the generated summary, the prose, the saved copies
 Reports.tsx        seven kinds, four formats, and a statement of coverage
 Notes.tsx          runbooks, with `[[device]]` links as the backend resolved them
+Evidence.tsx       the list of what was kept: filters, the engine's cursor, coverage
+EvidenceItem.tsx   one item: its facts, its incidents, rename / attach / delete
+EvidenceBody.tsx   what is in it, one viewer per kind (and the only <img> of a drawing)
+AttachEvidence.tsx "Attach evidence…" on a timeline: pick, capture a session, or text
 Audit.tsx          the record: filterable, linked, not editable
 Jobs.tsx           the full history, with one job's log in a drawer
 ExportDialog.tsx   a rendered document before it becomes a file
@@ -38,6 +44,13 @@ they exist — `alerts.list`, `changes.list`, `ai.status`, `ai.chats.create`,
 Events: `incidents.changed`, `handover.changed`, `notes.changed`,
 `reports.changed`, `audit.appended`, `jobs.changed`, `alerts.changed`,
 `changes.changed`, `config.changed`, `devices.changed`, `ai.event`.
+
+Evidence adds `evidence.*` (list, get, rename, attach, detach, delete,
+capture_terminal, add_text here; capture_chart and capture_topology through
+`@/app/KeepAsEvidence`), `terminal.list` to choose a session to capture from,
+and the event `evidence.changed`. It is specified in
+`docs/dev/spec-capture.md` and `docs/dev/features/ops.md` ("Evidence
+(contract)"), and its own decisions are at the end of this file.
 
 ## Decisions
 
@@ -215,3 +228,132 @@ component keeps its own name; the React-free module beside it is named for
 what it does (`comparison.ts` beside `Compare.tsx`). Run
 `./scripts/check-case-collisions.sh` before calling work in this directory
 finished: it also looks at files that are not committed yet.
+
+## Evidence
+
+* **A drawing has one way onto the page.** A stored SVG is not sanitised —
+  it is the record of what `topology.export` returned — so it is shown as an
+  `<img>` on a `data:` address and as nothing else. `lib/capture.ts`
+  (`svgDataUrl`) is the only function that gives an SVG the image type, the
+  only caller in this folder is `EvidenceBody.tsx`, and
+  `EvidenceBody.test.tsx` reads the source of every file that touches a body
+  so that the first `innerHTML`, frame or `window.open` fails a test.
+  `data:` and not `blob:`, because a `blob:` address has this application's
+  origin and "open image in new tab" would then run the drawing's script next
+  to the access token; a `data:` document reaches nothing. The image takes no
+  pointer events either, so it has no context menu of its own to offer that.
+  **Download SVG** saves the stored bytes as `text/plain`: a window that
+  followed the link instead of saving it would show source.
+* **Text is shown by the engine's own rule.** `visibleText` is
+  `nocturne-ops`' `text::visible` again: every control character but the line
+  break and the tab is a picture of itself, a direction override is U+FFFD. A
+  body on this screen and in an exported review read alike, and nothing here
+  writes a body into the terminal emulator. *Copy* (the code block's button)
+  copies what is on screen; *Download as stored* saves the stored bytes, whose
+  SHA-256 is the one the item states — the end-to-end test hashes the file.
+* **A long text is shown a page of lines at a time.** An item holds up to
+  256 KiB, which is 131,000 lines of one character, and a numbered line is
+  three elements. Put on screen whole, that item took Chromium seven seconds
+  to show and five to answer every click after it (393,000 elements,
+  measured). `textPage` puts `TEXT_PAGE_LINES` (5,000) on screen, says which
+  lines those are and how many there are, and numbers them as the whole is
+  (`firstLine` on the code block); the download is always all of it. A page
+  appears in a fifth of a second. The body view is memoised on the item, so
+  a dialog opened over it does not build the page again. The button that
+  leads to the first or last page is disabled once it is there, so the focus
+  goes to the text instead of to nowhere.
+* **The list gives up two columns when it is narrow.** Six columns do not fit
+  beside the open assistant dock at 1280: the table scrolled sideways and the
+  title was cut to a dozen characters. Below 860 px of list the size and the
+  incident are left out (the item's page has both). The device column keeps
+  its width: a device's name cut short is worse than a title cut short, which
+  has a tooltip and a page of its own.
+* **A chart is re-drawn, not replayed.** `storedChart` aligns the stored
+  series and marks the holes the same way the Monitoring screen does
+  (`pages/monitoring/series.ts`), but reads the body defensively: an item
+  stores whatever the monitor answered, redacted string by string, so a point
+  that is not a finite time and a finite number is left out and counted, and
+  the count is on screen. It is a second copy of the alignment rather than an
+  import because that folder was being changed by somebody else while this
+  was written; if the two are ever made one, it belongs in `lib/`.
+* **Coverage is words under the picture.** The engine's `coverage` (points,
+  first, last, longest stretch between two samples, bucket) is written out per
+  series, and a series with no points says "nothing was recorded for it",
+  which is a different sentence from a series that could not be read.
+* **The list says what it is a page of.** `evidence.list` pages by cursor and
+  gives no total, so the line under the filters is one of "all N", "the newest
+  N; older ones exist" or the same for an older page — never a count the
+  engine did not give. The search field says it does not look inside the
+  content, because the engine's `query` does not.
+* **Text a person handed in says so everywhere**: a badge in the list, in the
+  item's header, in the picker and in the handover line, and the capture form
+  says it before the text is sent. The engine redacts it; it cannot vouch for
+  it.
+* **A tombstone is drawn as what it is.** An `evidence` entry without a `ref`
+  is the engine's record that an item was there and was deleted. It is not a
+  link, it has no Detach, its word is *Deleted*, and the hash of what it was
+  stays behind the line's disclosure. The delete confirmation names the
+  incidents that will get one before anything is deleted.
+* **A capture is never lost to a failed attachment.** "Capture and attach" is
+  two calls. When the second fails the dialog says the item is kept, names it,
+  and offers to try the attachment again — it does not capture a second copy.
+* **Gating.** The tab needs `evidence.list`; "Attach evidence…" and Detach
+  need `evidence.attach`; capturing from a session needs
+  `evidence.capture_terminal` *and* `terminal.list`; "Keep as evidence…" needs
+  the capture method for its kind. A refusal — `unavailable`, a limit, a
+  session that is gone — is shown in the engine's own sentence where the
+  person is looking, never as a toast alone, and never paraphrased.
+
+### How the hostile cases are tested
+
+`tests/ops.spec.ts` shows the screens a drawing with a script, an `onload`,
+frames, a `javascript:` link and addresses to fetch, by replacing what is
+stored for a real item in the engine's own table (`storeBody`: the engine's
+drawing never contains any of that, so no call stores one). From there on
+nothing is stood in for: `evidence.get` and `incidents.export` of the running
+engine answer with it. The case listens for every request, dialog and message
+in the viewer, on the timeline, in the HTML preview of the review, for the
+PNG and for "Copy image", and requires none. It was checked the other way
+round too: with the drawing put in the page as markup, the requests for its
+images are made and the case fails.
+
+### What had to change outside this folder
+
+Three things in the design system, each because an evidence control could
+not otherwise be worked from the keyboard or shown at all:
+
+* `CodeBlock` takes `firstLine`, so a page of a long text is numbered where
+  it stands.
+* A dialog now hands the focus back when it closes
+  (`design/overlay/focus.ts`). It always meant to; the page under a modal is
+  inert until after the hand-back was tried, so the focus fell to the body
+  and the next Tab started at the top of the page — after every dialog in the
+  application.
+* A menu now takes the focus when it opens (`design/Menu/MenuPopup.tsx`). It
+  mounts hidden until it is measured, and a hidden element refuses the focus,
+  so the arrow keys never reached an item: no dropdown menu could be worked
+  from the keyboard, the chart's export menu among them.
+
+### For other screens
+
+* **A chart's export menu** is `exportMenu` on `TimeSeriesChart`, off by
+  default. `exportMenu={{}}` gives PNG, copy image and CSV; add
+  `extra: keep.chartEntries(() => ({ kind: 'chart', series, since, until,
+  step_s }))` from `useKeepAsEvidence()` (`@/app/KeepAsEvidence`) for "Keep as
+  evidence…", and render `{keep.dialog}` once. `series` is `{device_id,
+  metric, instance?}` per line; `until` must be a number, so a chart that runs
+  to now passes `Date.now()` from inside the function.
+* **Saving a file** is `download(filename, content, type?)` from
+  `@/lib/download`, which toasts what became of it. Do not write another
+  anchor-and-click.
+
+### What is not here, and why
+
+* **Capturing a session log** (`evidence.capture_log`) — the log drawer
+  belongs to the Terminal screen and is being built there; the types are in
+  `api/types/ops.ts`.
+* **Keeping a chart from the Monitoring screen** — the menu and the dialog
+  exist; turning them on is that screen's change.
+* **A picture of the screen.** There is none anywhere, on purpose
+  (`docs/dev/spec-capture.md`, "Not building").
+

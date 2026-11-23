@@ -15,3 +15,29 @@
   color: var(--crit);
   font-size: 12px;
 }
+
+/* What the picture is, and is not. */
+.note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* The PNG preview: the engine's drawing on its own white, framed so its edge
+   shows in either theme. */
+.picture {
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: #ffffff;
+}
+
+.picture img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  pointer-events: none;
+  user-select: none;
+}

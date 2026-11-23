@@ -25,8 +25,9 @@ import { Select } from '@/design/Select';
 import { Skeleton } from '@/design/Skeleton';
 import { toast } from '@/design/Toast';
 import { copyText } from '@/lib/clipboard';
+import { download } from '@/lib/download';
 import { formatBytes, plural } from '@/lib/format';
-import { download, useRendered, type ExportMethod } from './data';
+import { useRendered, type ExportMethod } from './data';
 import styles from './Export.module.css';
 import { usePrintFrame } from './PrintFrame';
 
@@ -95,9 +96,9 @@ export function ExportDialog({ open, onClose, title, description, method, params
             icon={Download}
             disabled={!document_}
             onClick={() => {
-              if (!document_) return;
-              download(document_.filename, document_.content);
-              toast.success(`Saved ${document_.filename}`);
+              // Says what became of it: a download that could not be handed
+              // to the browser is an error, not "Saved".
+              if (document_) download(document_.filename, document_.content);
             }}
           >
             Download

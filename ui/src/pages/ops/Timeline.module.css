@@ -360,3 +360,27 @@
     align-items: center;
   }
 }
+
+/* "Attach evidence…" sits at the end of the header row, out of the way of the counts. */
+.attach {
+  margin-left: auto;
+}
+
+/* What is left of deleted evidence: present, legible, and plainly not a link. */
+.entry[data-tombstone] .text {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.tombstoneIcon {
+  flex: none;
+  align-self: center;
+  color: var(--text-3);
+}
+
+.tombstoneMark {
+  color: var(--text-3);
+}

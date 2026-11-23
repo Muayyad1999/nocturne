@@ -1,0 +1,331 @@
+/* Evidence: the list, one item, and the three ways an item is shown. */
+
+.main,
+.aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.titleCell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+/* A name gives way to the pill beside it, but never altogether: a row whose
+   name has no width cannot be opened. */
+.titleCell > :first-child {
+  flex: 0 1 auto;
+  min-width: 5ch;
+}
+
+.titleCell > :not(:first-child) {
+  flex: none;
+}
+
+/* Wide enough for its placeholder, which says what the search reads. */
+.search {
+  max-width: 340px;
+}
+
+/* The table and its paging, measured to decide which columns there is room for. */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+.paging {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-8);
+}
+
+/* ------------------------------------------------------------ the viewer */
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.viewerActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.viewerWhat {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+/* Which lines of a long text are on screen, and the way to the others. */
+.textPages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.textPageButtons {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.viewerNote {
+  margin: 0;
+  max-width: 82ch;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.viewerWarn {
+  margin: 0;
+  color: var(--warn);
+  font-size: var(--fs-12);
+}
+
+.unknownBody {
+  margin: 0;
+  padding: var(--sp-16);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+  color: var(--text-2);
+  font-size: var(--fs-13);
+}
+
+/* The drawing is the engine's own, on its own white: the frame says where it
+   ends in either theme. */
+.drawing {
+  max-height: 68vh;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: #ffffff;
+}
+
+.drawingImage {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  /* A picture, not a control: it takes no pointer, so it cannot be dragged
+     out into a new tab. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.chartCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding: var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg-1);
+}
+
+.gaps {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  margin: 0;
+  color: var(--warn);
+  font-size: var(--fs-12);
+}
+
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.coverageTitle {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+}
+
+.coverageList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-12);
+}
+
+.coverageList li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-12);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  color: var(--text-2);
+}
+
+.coverageName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+}
+
+/* A series with no sample is said, and looks unlike one that has some. */
+.coverageEmpty {
+  color: var(--warn);
+}
+
+/* -------------------------------------------------------------- the facts */
+
+.factLink {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.factId {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+}
+
+.hash {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.hashText {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.hashNote {
+  margin: var(--sp-8) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.params {
+  margin-top: var(--sp-8);
+  color: var(--text-2);
+  font-size: var(--fs-12);
+}
+
+.params summary {
+  cursor: pointer;
+}
+
+.params summary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.paramsBody {
+  margin: var(--sp-6) 0 0;
+  padding: var(--sp-8);
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--bg-0);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.attached {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attached li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+/* ---------------------------------------------------- attaching from a timeline */
+
+.attachBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-12);
+  min-width: 0;
+}
+
+/* The list to pick from scrolls inside the dialog, so the buttons stay put. */
+.pick {
+  max-height: 280px;
+  padding: var(--sp-8);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.pickTitle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  overflow-wrap: anywhere;
+}
+
+.refused {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--crit);
+  border-radius: var(--radius-control);
+  background: var(--crit-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  overflow-wrap: anywhere;
+}
+
+.refused b {
+  font-weight: var(--fw-semibold);
+}
+
+.operatorNote {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-control);
+  background: var(--warn-soft);
+  color: var(--text-1);
+  font-size: var(--fs-12);
+}

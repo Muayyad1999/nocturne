@@ -17,6 +17,13 @@
  * for one: a **gap**, which is a source that could not be read and means the
  * lines around it may be incomplete, and a **suggestion**, which is an offer.
  *
+ * **Evidence** sits on the timeline too, at the time it was captured: an
+ * entry that is a reference to the item (it opens it), never its content.
+ * When an item has been deleted the entry stays as a **tombstone** — the
+ * engine's own sentence saying that evidence was here and when it went, with
+ * the hash of what it was in the provenance. It is drawn as what it is: not
+ * a link, not an event, and not a hole.
+ *
  * Every line carries its evidence — which record and which of its fields it
  * came from — behind a disclosure, because this timeline ends up in a review
  * document that somebody will be asked to believe.
@@ -27,7 +34,7 @@
  * aim at anything.
  */
 
-import { CornerDownLeft, Link2, Plus, Search, TriangleAlert } from 'lucide-react';
+import { CornerDownLeft, FileCheck2, FileX2, Link2, Plus, Search, TriangleAlert, Unlink } from 'lucide-react';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import type { Incident, IncidentsSuggestResult, TimelineEntry } from '@/api/types/ops';
@@ -42,6 +49,7 @@ import { Tooltip } from '@/design/Tooltip';
 import { formatCount, formatDuration, plural } from '@/lib/format';
 import { formatDate, formatTime, formatTimestamp } from '@/lib/time';
 import { UnavailableNote } from './Unavailable';
+import { attachedEvidenceId, isTombstone } from './evidenceReading';
 import {
   ENTRY_TONE,
   ENTRY_WORD,
@@ -66,6 +74,15 @@ export interface TimelineProps {
   /** Adopts a suggestion: the ids go to `incidents.link`. */
   onLink: (link: { alert_ids?: string[]; change_ids?: string[] }) => void;
   linking: boolean;
+  /**
+   * Opens "Attach evidence…". Absent in a build without `evidence.*`: the
+   * button is then not shown at all.
+   */
+  onAttachEvidence?: () => void;
+  /** Takes an attached item off this timeline. The item itself stays. */
+  onDetachEvidence?: (evidenceId: string) => void;
+  /** The evidence id being detached right now, for the button's spinner. */
+  detaching?: string | null;
 }
 
 export function Timeline({
@@ -76,11 +93,15 @@ export function Timeline({
   noting,
   onLink,
   linking,
+  onAttachEvidence,
+  onDetachEvidence,
+  detaching = null,
 }: TimelineProps) {
   const offered = suggestions(suggested);
   const rows = mergeTimeline(incident.timeline, offered);
   const days = timelineDays(rows, (at) => formatDate(at));
   const gaps = incident.timeline.filter((entry) => entry.kind === 'gap');
+  const tombstones = incident.timeline.filter(isTombstone).length;
 
   return (
     <section className={styles.timeline} aria-label="Incident timeline">
@@ -96,7 +117,22 @@ export function Timeline({
             {plural(gaps.length, 'gap')}
           </Badge>
         )}
+        {tombstones > 0 && (
+          <Badge
+            tone="idle"
+            variant="outline"
+            title="Evidence that was attached here and has since been deleted. Each line says when, and keeps the hash of what it was."
+          >
+            <Icon icon={FileX2} size={12} />
+            {plural(tombstones, 'deleted item')}
+          </Badge>
+        )}
         {suggestionsPending && <span className={styles.count}>looking for what else happened…</span>}
+        {onAttachEvidence && (
+          <Button size="sm" variant="secondary" icon={FileCheck2} className={styles.attach} onClick={onAttachEvidence}>
+            Attach evidence…
+          </Button>
+        )}
       </header>
 
       {gaps.length > 0 && (
@@ -106,7 +142,15 @@ export function Timeline({
         </p>
       )}
 
-      <Scroller rows={rows} days={days} incident={incident} onLink={onLink} linking={linking} />
+      <Scroller
+        rows={rows}
+        days={days}
+        incident={incident}
+        onLink={onLink}
+        linking={linking}
+        onDetachEvidence={onDetachEvidence}
+        detaching={detaching}
+      />
 
       {suggested && suggested.unavailable.length > 0 && (
         <div className={styles.suggestGaps}>
@@ -133,9 +177,11 @@ interface ScrollerProps {
   incident: Incident;
   onLink: (link: { alert_ids?: string[]; change_ids?: string[] }) => void;
   linking: boolean;
+  onDetachEvidence?: (evidenceId: string) => void;
+  detaching: string | null;
 }
 
-function Scroller({ rows, days, incident, onLink, linking }: ScrollerProps) {
+function Scroller({ rows, days, incident, onLink, linking, onDetachEvidence, detaching }: ScrollerProps) {
   const box = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const count = rows.length;
@@ -176,7 +222,13 @@ function Scroller({ rows, days, incident, onLink, linking }: ScrollerProps) {
             <ol className={styles.list}>
               {day.rows.map((row) =>
                 row.kind === 'entry' ? (
-                  <EntryRow key={row.key} entry={row.entry} deviceIds={incident.device_ids} />
+                  <EntryRow
+                    key={row.key}
+                    entry={row.entry}
+                    deviceIds={incident.device_ids}
+                    onDetachEvidence={onDetachEvidence}
+                    detaching={detaching}
+                  />
                 ) : (
                   <SuggestionRow
                     key={row.key}
@@ -194,26 +246,42 @@ function Scroller({ rows, days, incident, onLink, linking }: ScrollerProps) {
   );
 }
 
-function EntryRow({ entry, deviceIds }: { entry: TimelineEntry; deviceIds: readonly string[] }) {
-  const to = entryLink(entry, deviceIds);
+function EntryRow({
+  entry,
+  deviceIds,
+  onDetachEvidence,
+  detaching,
+}: {
+  entry: TimelineEntry;
+  deviceIds: readonly string[];
+  onDetachEvidence?: (evidenceId: string) => void;
+  detaching: string | null;
+}) {
   const at = instant(entry.ts);
   const gap = entry.kind === 'gap';
+  // An evidence entry without a reference is what is left of a deleted item.
+  // It has nowhere to go, and it must not look like a line that does.
+  const tombstone = isTombstone(entry);
+  const evidenceId = attachedEvidenceId(entry);
+  const to = tombstone ? null : entryLink(entry, deviceIds);
   return (
     <li
       className={styles.entry}
       data-testid="timeline-row"
       data-row={entry.id}
       data-kind={entry.kind}
-      data-tone={ENTRY_TONE[entry.kind]}
+      data-tone={tombstone ? 'idle' : ENTRY_TONE[entry.kind]}
+      data-tombstone={tombstone ? '' : undefined}
     >
       <Tooltip content={formatTimestamp(entry.ts)} describe={false}>
         <time className={styles.when} dateTime={at ? new Date(at).toISOString() : undefined}>
           {at === null ? '—' : formatTime(at)}
         </time>
       </Tooltip>
-      <span className={styles.kind}>{ENTRY_WORD[entry.kind]}</span>
+      <span className={styles.kind}>{tombstone ? 'Deleted' : (ENTRY_WORD[entry.kind] ?? entry.kind)}</span>
       <div className={styles.body}>
         <p className={styles.text}>
+          {tombstone && <Icon icon={FileX2} size={13} className={styles.tombstoneIcon} />}
           {to ? (
             <Link to={to} className={styles.textLink}>
               {entry.text}
@@ -235,6 +303,23 @@ function EntryRow({ entry, deviceIds }: { entry: TimelineEntry; deviceIds: reado
           )}
           <Evidence entry={entry} />
           {gap && <span className={styles.gapMark}>the lines around this may be incomplete</span>}
+          {tombstone && (
+            <span className={styles.tombstoneMark}>
+              the item is gone; its hash is in where this came from
+            </span>
+          )}
+          {evidenceId !== null && onDetachEvidence && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={Unlink}
+              loading={detaching === evidenceId}
+              title="Takes this entry off the timeline. The evidence itself stays under Evidence."
+              onClick={() => onDetachEvidence(evidenceId)}
+            >
+              Detach
+            </Button>
+          )}
         </p>
       </div>
     </li>

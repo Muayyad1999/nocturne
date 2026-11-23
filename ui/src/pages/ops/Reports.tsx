@@ -27,13 +27,12 @@ import { Input } from '@/design/Input';
 import { Panel } from '@/design/Panel';
 import { Select } from '@/design/Select';
 import { Skeleton } from '@/design/Skeleton';
-import { toast } from '@/design/Toast';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
+import { download } from '@/lib/download';
 import { formatBytes, formatCount, plural } from '@/lib/format';
 import { formatDateTime, formatTimestamp } from '@/lib/time';
 import { useAuthor } from './author';
 import {
-  download,
   useDeleteReport,
   useReport,
   useReportKinds,
@@ -192,7 +191,6 @@ export function ReportsTab() {
               if (!shown) return;
               const filename = 'filename' in shown ? shown.filename : `${shown.kind}.${format}`;
               download(filename, shown.content);
-              toast.success(`Saved ${filename}`);
             }}
           >
             Download

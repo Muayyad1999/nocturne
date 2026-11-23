@@ -3,7 +3,7 @@
  * keep Tab inside it, and give focus back to where it came from on close.
  */
 
-import { useEffect, useLayoutEffect, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 const FOCUSABLE = [
   'a[href]',
@@ -39,10 +39,13 @@ export function useFocusScope(
   ref: RefObject<HTMLElement | null>,
   { trap = true, restore = true, autoFocus = true }: FocusScopeOptions = {},
 ): void {
+  const cameFrom = useRef<HTMLElement | null>(null);
+
   useLayoutEffect(() => {
     const container = ref.current;
     if (!active || !container) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cameFrom.current = previous;
 
     if (autoFocus && !container.contains(document.activeElement)) {
       const target =
@@ -60,6 +63,23 @@ export function useFocusScope(
       if (restore && lost && previous?.isConnected) previous.focus({ preventScroll: true });
     };
   }, [active, ref, restore, autoFocus]);
+
+  // Under a modal layer the page is inert, and an inert element refuses the
+  // focus. The layer stack lifts that in a passive cleanup, which runs after
+  // the layout cleanup above — so for a dialog the hand-back there did
+  // nothing, and the focus fell to the body: the next Tab started at the top
+  // of the page. This cleanup runs after the stack's (a layer registers
+  // before it scopes the focus), and makes the hand-back if it is still owed.
+  useEffect(() => {
+    if (!active || !restore) return;
+    return () => {
+      const previous = cameFrom.current;
+      const current = document.activeElement;
+      if (previous?.isConnected && (!current || current === document.body)) {
+        previous.focus({ preventScroll: true });
+      }
+    };
+  }, [active, restore]);
 
   useEffect(() => {
     const container = ref.current;

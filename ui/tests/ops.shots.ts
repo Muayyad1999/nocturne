@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { expect, test, type Page } from '@playwright/test';
-import type { Incident } from '../src/api/types/ops';
+import type { EvidenceWithBody, Incident } from '../src/api/types/ops';
 import { goTo, openApp, settle, type Theme } from './support/app';
 import { startBackend, type Backend } from './support/backend';
 import { rpcFor, type Rpc } from './support/seed';
@@ -40,6 +40,8 @@ let uiDir: string;
 let prebuilt: string | undefined;
 let incidentId = '';
 let jobId = '';
+/** The evidence the engine was asked to keep, one of each kind. */
+const evidence = { terminal: '', text: '', drawing: '', chart: '', long: '' };
 
 async function finished(rpc: Rpc, id: string): Promise<void> {
   await expect
@@ -205,6 +207,90 @@ test.beforeAll(async ({ request }) => {
     author: 'mo',
   });
 
+  // ---- evidence, one of each kind, every one captured by the engine.
+  // A second simulated switch that is still powered on, with a real terminal
+  // session on it and something printed.
+  await rpc('labs.node.add', { lab_id: lab.id, model: 'switch', name: 'SW2' });
+  const second =
+    (await rpc<{ id: string; name: string }[]>('devices.list')).find((device) => device.name === 'Campus/SW2')?.id ?? '';
+  const session = await rpc<{ id: string }>('terminal.open', { device_id: second });
+  for (const command of ['show version', 'show interfaces status']) {
+    await rpc('terminal.input', { session_id: session.id, data: `${command}\r` });
+  }
+  await expect
+    .poll(
+      async () => (await rpc<{ text: string }>('terminal.snapshot', { session_id: session.id, lines: 80 })).text,
+      { timeout: 30_000 },
+    )
+    .toContain('Processor board ID');
+  const capture = await rpc<EvidenceWithBody>('evidence.capture_terminal', {
+    session_id: session.id,
+    lines: 80,
+    title: 'SW2 while the uplink was dark',
+  });
+  evidence.terminal = capture.id;
+  await rpc('evidence.attach', { id: capture.id, incident_id: incidentId, author: 'mo' });
+
+  const drawing = await rpc<EvidenceWithBody>('evidence.capture_topology', {
+    title: 'The campus as it was drawn at the time',
+  });
+  evidence.drawing = drawing.id;
+  await rpc('evidence.attach', { id: drawing.id, incident_id: incidentId, author: 'mo' });
+
+  // Samples with a real hole in them: polls, a pause, polls.
+  const since = Date.now() - 30_000;
+  const pollOnce = async () => {
+    await finished(rpc, (await rpc<{ job_id: string }>('monitor.poll_now', { device_ids: [second] })).job_id);
+    await new Promise((done) => setTimeout(done, 2_100));
+  };
+  for (let index = 0; index < 4; index += 1) await pollOnce();
+  await new Promise((done) => setTimeout(done, 12_000));
+  for (let index = 0; index < 3; index += 1) await pollOnce();
+  const chart = await rpc<EvidenceWithBody>('evidence.capture_chart', {
+    series: [
+      { device_id: second, metric: 'up' },
+      { device_id: second, metric: 'cpu.pct' },
+    ],
+    since,
+    until: Date.now() + 1_000,
+    step_s: 1,
+    title: 'SW2 reachability and CPU around the pause',
+  });
+  evidence.chart = chart.id;
+
+  // Text a person holds, with what a device can print in it: it is kept as
+  // supplied by a person, and its control characters are shown, not obeyed.
+  const text = await rpc<EvidenceWithBody>('evidence.add_text', {
+    text: [
+      'SW1#\u001b[2J\u001b[31mshow logging | include LINK\u001b[0m\u0007',
+      '%LINK-3-UPDOWN: Interface FastEthernet0/1, changed state to down',
+      'no shutdown\rshutdown   ',
+      'enable secret ThisIsNotARealSecret',
+    ].join('\n'),
+    title: 'Read out from the console over the phone',
+    note: 'ticket NET-431',
+  });
+  evidence.text = text.id;
+
+  // A paste of more lines than the viewer puts on screen at once.
+  const long = await rpc<EvidenceWithBody>('evidence.add_text', {
+    // 5,500 lines of about forty bytes: inside the 256 KiB an item holds.
+    text: Array.from(
+      { length: 5_500 },
+      (_value, index) => `Gi1/0/${(index % 48) + 1} is up, line protocol is up [${index + 1}]`,
+    ).join('\n'),
+    title: 'The whole of a show interfaces, as it was pasted',
+  });
+  evidence.long = long.id;
+
+  // One that was attached and then deleted, so the timeline has a tombstone.
+  const gone = await rpc<EvidenceWithBody>('evidence.add_text', {
+    text: 'show ip interface brief',
+    title: 'First look, before the session was logged',
+  });
+  await rpc('evidence.attach', { id: gone.id, incident_id: incidentId, author: 'mo' });
+  await rpc('evidence.delete', { id: gone.id, author: 'mo' });
+
   // The second engine gets one device and nothing else: the first hour.
   await rpcFor(request, fresh)('devices.create', {
     name: 'core-sw1',
@@ -226,6 +312,12 @@ async function shoot(page: Page, theme: Theme, name: string): Promise<void> {
   await mkdir(directory, { recursive: true });
   await settle(page);
   await page.screenshot({ path: join(directory, `${name}.png`), animations: 'disabled' });
+}
+
+/** Closes the "Download started" notices, so they are not in the next pictures. */
+async function dismissNotices(page: Page): Promise<void> {
+  const dismiss = page.getByRole('region', { name: 'Notifications' }).getByRole('button', { name: 'Dismiss' });
+  while ((await dismiss.count()) > 0) await dismiss.first().click();
 }
 
 for (const theme of THEMES) {
@@ -268,6 +360,132 @@ for (const theme of THEMES) {
     await goTo(page, `/ops/jobs?job=${jobId}`);
     await expect(page.getByRole('dialog')).toBeVisible({ timeout: 60_000 });
     await shoot(page, theme, 'jobs');
+  });
+
+  test(`evidence — ${theme}`, async ({ page }) => {
+    test.setTimeout(600_000);
+
+    // The list: kinds, lab labels, what is attached, and what it is a page of.
+    await openApp(page, '/ops/evidence', { backend: working, theme });
+    await expect(page.getByTestId('evidence-row').first()).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'evidence-list');
+
+    // A terminal capture: preformatted text, its source and its hash.
+    await goTo(page, `/ops/evidence?item=${evidence.terminal}`);
+    await expect(page.getByTestId('evidence-text')).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'evidence-terminal');
+
+    // Text a person handed in: labelled as that, control characters as pictures.
+    await goTo(page, `/ops/evidence?item=${evidence.text}`);
+    await expect(page.getByTestId('evidence-pictured')).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'evidence-text-supplied');
+
+    // The engine's drawing, as an image.
+    await goTo(page, `/ops/evidence?item=${evidence.drawing}`);
+    const drawing = page.getByTestId('evidence-drawing');
+    await expect(drawing).toBeVisible({ timeout: 60_000 });
+    await expect
+      .poll(async () => drawing.evaluate((img: HTMLImageElement) => (img.complete ? img.naturalWidth : 0)))
+      .toBeGreaterThan(0);
+    await shoot(page, theme, 'evidence-drawing');
+    // The PNG "Save as PNG" makes of it, to be looked at like the chart's.
+    const savingDrawing = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Save as PNG' }).click();
+    await (await savingDrawing).saveAs(join(SHOTS, THEME_FOLDER[theme], 'saved-drawing.png'));
+    await dismissNotices(page);
+
+    // A capture of more lines than are put on screen at once: which lines
+    // are shown, and the way to the others.
+    await goTo(page, `/ops/evidence?item=${evidence.long}`);
+    await expect(page.getByTestId('evidence-lines-shown')).toBeVisible({ timeout: 60_000 });
+    await page.getByRole('button', { name: 'Later lines' }).click();
+    await shoot(page, theme, 'evidence-text-paged');
+    await goTo(page, `/ops/evidence?item=${evidence.drawing}`);
+    await expect(page.getByTestId('evidence-drawing')).toBeVisible({ timeout: 60_000 });
+
+    // The delete confirmation, which names the incident that keeps a tombstone.
+    await page.getByRole('button', { name: 'Delete…' }).click();
+    await expect(page.getByRole('dialog', { name: 'Delete this evidence?' })).toBeVisible();
+    await shoot(page, theme, 'evidence-delete-confirm');
+    await page.keyboard.press('Escape');
+
+    // A chart drawn again from the stored points: the gap, and the coverage in words.
+    await goTo(page, `/ops/evidence?item=${evidence.chart}`);
+    const figure = page.locator('figure');
+    await expect(figure.locator('canvas')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId('evidence-gaps')).toBeVisible();
+    await shoot(page, theme, 'evidence-chart');
+    await figure.getByRole('button', { name: 'Export this chart' }).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+    await shoot(page, theme, 'evidence-chart-export-menu');
+    // What "Save as PNG" hands over, kept beside the screenshots so that the
+    // picture itself can be looked at: the plot with its title, its legend
+    // and the note about the gap, in the theme on screen.
+    const savingChart = page.waitForEvent('download');
+    await page.getByRole('menuitem', { name: 'Save as PNG' }).click();
+    await (await savingChart).saveAs(join(SHOTS, THEME_FOLDER[theme], 'saved-chart.png'));
+    await dismissNotices(page);
+
+    // The incident's timeline: evidence entries that open their item, and a
+    // tombstone drawn as what it is.
+    await goTo(page, `/ops/incidents?incident=${incidentId}`);
+    await expect(page.locator('[data-tombstone]')).toBeVisible({ timeout: 60_000 });
+    await page.locator('[data-tombstone]').scrollIntoViewIfNeeded();
+    await shoot(page, theme, 'incident-evidence-and-tombstone');
+
+    // "Attach evidence…": pick from what is kept, or capture from a session.
+    await page.getByRole('button', { name: 'Attach evidence…' }).click();
+    const attach = page.getByRole('dialog', { name: 'Attach evidence' });
+    await expect(attach.getByRole('radio').first()).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'attach-evidence-pick');
+    await attach.getByRole('tab', { name: 'From a terminal session' }).click();
+    await expect(attach.getByRole('combobox', { name: 'Session' })).toBeVisible();
+    await shoot(page, theme, 'attach-evidence-session');
+    await attach.getByRole('tab', { name: 'Text I hold' }).click();
+    await expect(attach.getByRole('textbox', { name: 'Text' })).toBeVisible();
+    await shoot(page, theme, 'attach-evidence-text');
+    await page.keyboard.press('Escape');
+
+    // The handover lists what was captured in the period.
+    await goTo(page, '/ops/handover');
+    const section = page.locator('[data-section="evidence"]');
+    await expect(section).toBeVisible({ timeout: 60_000 });
+    await section.scrollIntoViewIfNeeded();
+    await shoot(page, theme, 'handover-evidence');
+
+    // The map's export: a PNG of the engine's drawing, and "Keep as evidence".
+    await goTo(page, '/topology');
+    await page.getByRole('button', { name: 'Export this drawing' }).click({ timeout: 60_000 });
+    const exporting = page.getByRole('dialog', { name: 'Export this drawing' });
+    await exporting.getByRole('combobox', { name: 'Format' }).selectOption('png');
+    await expect(exporting.getByRole('img', { name: 'The drawing that will be saved' })).toBeVisible({
+      timeout: 60_000,
+    });
+    await shoot(page, theme, 'topology-export-png');
+    await exporting.getByRole('button', { name: 'Keep as evidence…' }).click();
+    await expect(page.getByRole('dialog', { name: 'Keep as evidence' })).toBeVisible();
+    await shoot(page, theme, 'keep-as-evidence');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+  });
+
+  test(`evidence — ${theme}, narrow and with the dock`, async ({ page }) => {
+    test.setTimeout(600_000);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    await openApp(page, '/ops/evidence', { backend: working, theme, dock: true });
+    await expect(page.getByTestId('evidence-row').first()).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'evidence-list-1280-dock');
+
+    await goTo(page, `/ops/evidence?item=${evidence.terminal}`);
+    await expect(page.getByTestId('evidence-text')).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'evidence-terminal-1280-dock');
+
+    await goTo(page, `/ops/evidence?item=${evidence.chart}`);
+    await expect(page.locator('figure canvas')).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'evidence-chart-1280-dock');
+
+    await page.setViewportSize({ width: 1440, height: 900 });
   });
 
   test(`operations — ${theme}, narrow and with the dock`, async ({ page }) => {
@@ -314,5 +532,9 @@ for (const theme of THEMES) {
     await goTo(page, '/ops/jobs');
     await expect(page.getByText('Nothing has run yet')).toBeVisible({ timeout: 60_000 });
     await shoot(page, theme, 'empty-jobs');
+
+    await goTo(page, '/ops/evidence');
+    await expect(page.getByText('No evidence has been kept yet').first()).toBeVisible({ timeout: 60_000 });
+    await shoot(page, theme, 'empty-evidence');
   });
 }

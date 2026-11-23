@@ -1,8 +1,9 @@
 /**
  * The operations record (`nocturne-ops`): the human side of a NOC. The
  * overview a shift starts with, incidents with a timeline that gathers
- * itself, the handover note at the end of a shift, reports, runbook notes, a
- * search over all of it, and the audit trail joined to what it mentions.
+ * itself, the handover note at the end of a shift, reports, runbook notes,
+ * evidence (what a device printed, kept with its source), a search over all
+ * of it, and the audit trail joined to what it mentions.
  *
  * These types mirror the backend's parameter and result structs exactly:
  * field names are the backend's (`snake_case`), timestamps are milliseconds
@@ -295,7 +296,16 @@ export type TimelineKind =
    * list of kinds; added because a timeline with a hole in it has to be able
    * to say where the hole is.
    */
-  | 'gap';
+  | 'gap'
+  /**
+   * An attached evidence item, at the time it was captured. `id` is
+   * `evidence:<evidence id>`, `text` is the item's title and `ref` is
+   * `{ type: 'evidence', id }`: a reference, never the item's text. An entry
+   * of this kind **without** a `ref` is a tombstone: the item was deleted,
+   * `text` says when, `source.from` is `evidence.delete` and the SHA-256 of
+   * what was there stays in `source.evidence`.
+   */
+  | 'evidence';
 
 /** Where a timeline entry came from. Every entry has one. */
 export interface Provenance {
@@ -622,6 +632,13 @@ export interface Handover {
     }[];
   } | null;
   jobs_failed: JobRef[];
+  /**
+   * What was captured in the period, oldest first: real records with ids and
+   * hashes, never their content. `null` when the table could not be read (the
+   * reason is in `unavailable`), and absent altogether from a handover saved
+   * before evidence existed: neither of those is "nothing was captured".
+   */
+  evidence?: { captured: Evidence[] } | null;
   /** Empty from `generate`; the human part is written through `handover.save`. */
   notes: string;
   unavailable: Unavailable[];
@@ -852,6 +869,250 @@ export interface NotesSaveParams {
   author?: string;
 }
 
+// ------------------------------------------------------------------- evidence
+
+/**
+ * Evidence: a record of something Nocturne itself read, at a stated time,
+ * from a stated source. Text or data, never pixels.
+ *
+ * Contract: `docs/dev/spec-capture.md` ("Evidence") and
+ * `docs/dev/features/ops.md` ("Evidence (contract)"). Every shape below was
+ * typed from a real answer of `nocturne-server` and from the recording in the
+ * backend's own test run, not from the specification's prose.
+ *
+ * Two rules decide how a screen may show an item, and both are about what is
+ * *in* it rather than about this type:
+ *
+ * - **A drawing is hostile input.** `body.svg` is stored as `topology.export`
+ *   returned it; it is not sanitised and may hold a `<script>`, an `onload`
+ *   or an address to fetch. Show it only as an `<img>` whose `src` is a
+ *   `data:` or `blob:` address made from the string, where a browser runs no
+ *   script and fetches nothing. Never as markup, never in a frame or an
+ *   `<object>`, never a window opened on the address.
+ * - **Text is stored as it was printed**, escape sequences included. Show it
+ *   as text; never write it into a terminal emulator.
+ */
+export type EvidenceKind =
+  /** The last lines of a terminal session. */
+  | 'terminal'
+  /** A piece of a session log. */
+  | 'log'
+  /** Text a person handed in. Its source is `operator`, and it says so wherever it is shown. */
+  | 'text'
+  /** The topology's own drawing (SVG). */
+  | 'topology'
+  /** Samples of one or more series over a period, with their coverage. */
+  | 'chart';
+
+/** Where an item came from. Recorded by the engine, not typed by a person. */
+export interface EvidenceSource {
+  /**
+   * The method the content was read with — `terminal.snapshot`,
+   * `terminal.logs.read`, `topology.export`, `metrics.query_many` — or
+   * `operator` for text a person handed in.
+   */
+  from: string;
+  session_id?: string;
+  session_title?: string;
+  device_id?: string;
+  /** The device's name when the item was captured. */
+  device?: string;
+  /** The far end of the session (`lab:Ops/SW1`, `admin@10.0.0.1`). */
+  peer?: string;
+  /** It comes from, or shows, a simulated device. */
+  lab: boolean;
+  /** What was asked for: lines, a view and filter, the series and period. Redacted like the rest. */
+  params?: unknown;
+  /**
+   * The engine's own remark, with the person's note after it when one was
+   * given: `text as sent by the client, redacted on arrival; the operator's
+   * note: ticket NET-431`, or which bytes of a log were read.
+   */
+  note?: string;
+}
+
+/** An evidence item without its body: what a list, an event and a handover carry. */
+export interface Evidence {
+  id: string;
+  kind: EvidenceKind;
+  title: string;
+  captured_at: number;
+  source: EvidenceSource;
+  /** Always `true`: there is no way to store an item otherwise. */
+  redacted: boolean;
+  /** Lines of text. Absent for a drawing and for a chart. */
+  lines?: number;
+  /** The size of the body as stored (for a chart, of its JSON). */
+  bytes: number;
+  /** Of the body as stored, in hexadecimal. */
+  sha256: string;
+  /** The incidents it is attached to. */
+  incident_ids: string[];
+}
+
+/**
+ * One series of a stored chart, exactly as `metrics.query_many` returned it,
+ * holes included. The monitor sends these fields; they are all optional here
+ * because the item stores whatever was answered, string by string redacted,
+ * and a screen must not assume more than it checks.
+ */
+export interface EvidenceChartSeries {
+  device_id?: string;
+  metric?: string;
+  instance?: string;
+  /** `[time in ms, value]`, only the buckets that had data: a gap is a missing point. */
+  points?: unknown;
+  step_s?: number;
+  rollup?: string;
+  [other: string]: unknown;
+}
+
+/** How much of the period one series has samples for, as it was read. */
+export interface EvidenceSeriesCoverage {
+  device_id: string;
+  /** The device's name when the item was captured. */
+  device: string;
+  lab: boolean;
+  metric: string;
+  /** Empty for a device-level metric. */
+  instance: string;
+  points: number;
+  /** Absent for a series without points. */
+  first_at?: number;
+  last_at?: number;
+  /** The longest stretch between two neighbouring points. Absent with fewer than two. */
+  longest_gap_ms?: number;
+  step_s?: number;
+  /** `raw`, `5m`, `1h`: where the points came from. */
+  rollup?: string;
+}
+
+export interface EvidenceCoverage {
+  since: number;
+  until: number;
+  /** Points over all the series. */
+  points: number;
+  /** One entry per series, in the order they were asked for. */
+  series: EvidenceSeriesCoverage[];
+}
+
+/** The content of an item. Only `evidence.get` and the capture methods return it. */
+export type EvidenceBody =
+  /** kind `terminal` | `log` | `text` */
+  | { type: 'text'; text: string }
+  /** kind `topology`. Hostile input: see {@link EvidenceKind}. */
+  | { type: 'svg'; svg: string }
+  /** kind `chart` */
+  | { type: 'chart'; series: EvidenceChartSeries[]; coverage: EvidenceCoverage };
+
+export interface EvidenceWithBody extends Evidence {
+  body: EvidenceBody;
+}
+
+export interface EvidenceCaptureTerminalParams {
+  session_id: string;
+  /** 1 to 10,000. Default 200. */
+  lines?: number;
+  title?: string;
+}
+
+export interface EvidenceCaptureLogParams {
+  /** The log's name, as `terminal.logs.list` gives it. */
+  name: string;
+  /** Default 0. */
+  offset?: number;
+  /** At most 262,144 bytes, which is also the default. */
+  limit?: number;
+  title?: string;
+}
+
+/** The same graph `topology.export` is asked for, without the format: the engine stores its SVG. */
+export interface EvidenceCaptureTopologyParams {
+  view?: string;
+  layer?: unknown;
+  filter?: unknown;
+  include_endpoints?: boolean;
+  title?: string;
+}
+
+export interface EvidenceSeriesRef {
+  device_id: string;
+  metric: string;
+  /** Empty or absent for a device-level metric. */
+  instance?: string;
+}
+
+export interface EvidenceCaptureChartParams {
+  /** Every device must be in the inventory. */
+  series: EvidenceSeriesRef[];
+  since: number;
+  /** Must be after `since`. */
+  until: number;
+  step_s?: number;
+  title?: string;
+}
+
+export interface EvidenceAddTextParams {
+  text: string;
+  title: string;
+  /** Recorded whether or not the session can still be found, so it must be shaped like an id. */
+  session_id?: string;
+  device_id?: string;
+  /** At most 1,000 characters. */
+  note?: string;
+}
+
+export interface EvidenceListParams {
+  kind?: EvidenceKind;
+  device_id?: string;
+  incident_id?: string;
+  /** Words that must all occur in the title, the device, the session or the note. The content is not searched. */
+  query?: string;
+  /** Default 50, at most 200. */
+  limit?: number;
+  cursor?: string;
+}
+
+export interface EvidenceListResult {
+  /** Newest first. */
+  items: Evidence[];
+  /** Present when older items remain. */
+  next_cursor?: string;
+}
+
+export interface EvidenceRenameParams {
+  id: string;
+  /** At most 200 characters. */
+  title: string;
+}
+
+export interface EvidenceAttachParams {
+  id: string;
+  incident_id: string;
+  author?: string;
+}
+
+export interface EvidenceDeleteParams {
+  id: string;
+  author?: string;
+}
+
+export interface EvidenceDeleteResult {
+  deleted: true;
+  /** The incidents that keep a tombstone where the item was. */
+  tombstones: string[];
+}
+
+/**
+ * `details` of an `invalid` refusal past a stated limit. Nothing was stored
+ * and nothing was cut; `message` says what to do instead.
+ */
+export interface EvidenceLimitDetails {
+  limit: 'text_bytes' | 'svg_bytes' | 'points' | 'items' | 'params_bytes';
+  max: number;
+  actual: number;
+}
+
 // --------------------------------------------------------------------- search
 
 export interface SearchParams {
@@ -978,6 +1239,16 @@ export interface AuditActionsResult {
 /** `notes.get` `{ id }` → {@link Note} */
 /** `notes.save` {@link NotesSaveParams} → {@link Note} */
 /** `notes.delete` `{ id }` → `{ deleted: boolean }` */
+/** `evidence.capture_terminal` {@link EvidenceCaptureTerminalParams} → {@link EvidenceWithBody} — the engine asks `terminal.snapshot` itself; `unavailable` without the terminal feature */
+/** `evidence.capture_log` {@link EvidenceCaptureLogParams} → {@link EvidenceWithBody} */
+/** `evidence.capture_topology` {@link EvidenceCaptureTopologyParams} → {@link EvidenceWithBody} — the SVG `topology.export` returns */
+/** `evidence.capture_chart` {@link EvidenceCaptureChartParams} → {@link EvidenceWithBody} — the points `metrics.query_many` returns: gaps stay gaps */
+/** `evidence.add_text` {@link EvidenceAddTextParams} → {@link EvidenceWithBody} — `source.from` is `operator` */
+/** `evidence.list` {@link EvidenceListParams} → {@link EvidenceListResult} */
+/** `evidence.get` `{ id }` → {@link EvidenceWithBody} */
+/** `evidence.rename` {@link EvidenceRenameParams} → {@link Evidence} */
+/** `evidence.attach` / `evidence.detach` {@link EvidenceAttachParams} → {@link Evidence}, with its `incident_ids` as they now are */
+/** `evidence.delete` {@link EvidenceDeleteParams} → {@link EvidenceDeleteResult} */
 /** `search.query` {@link SearchParams} → {@link SearchResult} */
 /** `audit.search` {@link AuditSearchParams} → {@link AuditSearchResult} — the core's audit trail, filtered and joined */
 /** `audit.actions` `{ since? }` → {@link AuditActionsResult} — for a filter menu */
@@ -995,6 +1266,13 @@ export type NotesChangedEvent = NoteHead | { id: string; deleted: true };
 
 /** `reports.changed` — a {@link ReportHead}, or `{ id, deleted: true }`. */
 export type ReportsChangedEvent = ReportHead | { id: string; deleted: true };
+
+/**
+ * `evidence.changed` — the {@link Evidence} without its body, or
+ * `{ id, deleted: true }`. Attach, detach, rename and delete also publish
+ * `incidents.changed` for each incident whose timeline moved.
+ */
+export type EvidenceChangedEvent = Evidence | { id: string; deleted: true };
 
 // ------------------------------------------------------------------- settings
 

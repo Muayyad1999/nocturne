@@ -36,11 +36,13 @@ import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { toast } from '@/design/Toast';
 import { formatCount, plural } from '@/lib/format';
 import { formatTimestamp } from '@/lib/time';
+import { AttachEvidenceDialog } from './AttachEvidence';
 import { useAuthor } from './author';
 import {
   useAcknowledgeIncident,
   useAddNote,
   useDeleteIncident,
+  useDetachEvidence,
   useIncident,
   useLinkToIncident,
   useReopenIncident,
@@ -49,6 +51,7 @@ import {
   useSyncIncident,
   useUpdateIncident,
 } from './data';
+import { attachedEvidenceId } from './evidenceReading';
 import { ExportDialog } from './ExportDialog';
 import styles from './Incident.module.css';
 import opsStyles from './Ops.module.css';
@@ -92,6 +95,11 @@ export function IncidentPage({ id, onClose }: IncidentPageProps) {
   const [resolving, setResolving] = useState(false);
   const [reopening, setReopening] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // Evidence is attached and detached only where the engine has it: a build
+  // without `evidence.*` shows neither the button nor a dead "Detach".
+  const hasEvidence = useHasMethod('evidence.attach') === true;
+  const detach = useDetachEvidence();
+  const [attaching, setAttaching] = useState(false);
 
   if (incident.isError) {
     return (
@@ -197,6 +205,17 @@ export function IncidentPage({ id, onClose }: IncidentPageProps) {
             suggestionsPending={suggested.isPending}
             noting={note.isPending}
             onNote={(text, at) => note.mutate({ id, text, ts: at ?? undefined, author })}
+            onAttachEvidence={hasEvidence ? () => setAttaching(true) : undefined}
+            onDetachEvidence={
+              hasEvidence
+                ? (evidenceId) =>
+                    detach.mutate(
+                      { id: evidenceId, incident_id: id, ...(author.trim() === '' ? {} : { author: author.trim() }) },
+                      { onSuccess: () => toast.success('Detached. The evidence itself is still kept.') },
+                    )
+                : undefined
+            }
+            detaching={detach.isPending ? (detach.variables?.id ?? null) : null}
             linking={link.isPending}
             onLink={(ids) =>
               link.mutate(
@@ -287,8 +306,11 @@ export function IncidentPage({ id, onClose }: IncidentPageProps) {
         method="incidents.export"
         params={{ id }}
         title="Post-incident review"
-        description="Written by the engine from this record: the timeline with its evidence column, the gaps in it, the cause and the follow-ups."
+        description="Written by the engine from this record: the timeline with its evidence column, the gaps in it, the cause, the follow-ups, and an appendix with every piece of attached evidence."
       />
+      {attaching && (
+        <AttachEvidenceDialog incident={record} author={author} onClose={() => setAttaching(false)} />
+      )}
     </>
   );
 }
@@ -453,6 +475,9 @@ function Who({
 
 function Links({ record }: { record: Incident }) {
   const hasChanges = useHasMethod('changes.list');
+  const hasEvidence = useHasMethod('evidence.list') === true;
+  // Counted from the timeline, which is where an attachment is recorded.
+  const attached = record.timeline.filter((entry) => attachedEvidenceId(entry) !== null).length;
   return (
     <Panel title="What it touches">
       <div className={styles.stack}>
@@ -521,6 +546,20 @@ function Links({ record }: { record: Incident }) {
             </ul>
           )}
         </div>
+        {hasEvidence && (
+          <div>
+            <p className={styles.linkLabel}>Evidence</p>
+            <p className={opsStyles.sentence}>
+              {attached === 0 ? (
+                'None attached. “Attach evidence…” on the timeline puts some here.'
+              ) : (
+                <Link to={`/ops/evidence?attached=${encodeURIComponent(record.id)}`}>
+                  {plural(attached, 'item')} attached
+                </Link>
+              )}
+            </p>
+          </div>
+        )}
         <p className={opsStyles.sentence}>
           <Link to={`/ops/audit?reference=incident:${encodeURIComponent(record.id)}`}>
             Every action recorded about this incident
