@@ -82,6 +82,10 @@ mod tests {
             "terminal.list",
             "sftp.open",
             "keys.generate",
+            "terminal.snippets.render",
+            "terminal.snippets.send",
+            "terminal.snippets.export",
+            "terminal.snippets.import",
             // configuration
             "config.backup",
             "config.search",

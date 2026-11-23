@@ -19,9 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+use crate::api::audit_unredacted;
 use crate::model::kind_name;
 use crate::platform;
-use crate::text::{incomplete_utf8_suffix, redact_transcript};
+use crate::text::{incomplete_utf8_suffix, redact_window};
 use nocturne_transport::TransportKind;
 
 const SCHEMA: &str = "
@@ -43,6 +44,25 @@ const DEFAULT_LIST: u32 = 100;
 const MAX_LIST: u32 = 1000;
 const DEFAULT_READ: u64 = 256 * 1024;
 const MAX_READ: u64 = 1024 * 1024;
+/// How far back from an offset the start of its line is looked for: as far
+/// as a page can reach, so that a line a page can hold is always read from
+/// its start, wherever in it a read falls. (The writer ends a line itself
+/// after 64 KiB of output without a line break, but that is counted in what
+/// the device sent, a read at a time, and a byte that is not text is three
+/// in the file.)
+///
+/// Not one byte further, and four short of it. A line too long for a page is
+/// handed out in pieces, each a full page less the up to three bytes of a
+/// character it would have split; the read after a piece must not find its
+/// way back to the start of the line, or it would be given the same piece
+/// again for ever.
+const LINE_SCAN: u64 = MAX_READ - 4;
+/// How much of the file on either side of a page is read, and never
+/// returned, to learn whether the page lies inside a private key. A key in a
+/// log is a few kilobytes, timestamps included.
+const KEY_CONTEXT: u64 = 256 * 1024;
+/// How much is read at a time while looking for the end of a long line.
+const SCAN_STEP: u64 = 64 * 1024;
 
 /// `YYYY-MM/<file>.log`: exactly one directory and one file, neither able to climb out.
 static NAME: LazyLock<Regex> =
@@ -302,10 +322,11 @@ async fn list(app: &App, filter: ListParams) -> AppResult<Vec<SessionLogInfo>> {
 #[derive(Debug, Deserialize)]
 struct ReadParams {
     name: String,
-    /// Byte offset into the file.
+    /// Byte offset into the file. The page starts with the line it falls in.
     #[serde(default)]
     offset: u64,
-    /// Most bytes to read.
+    /// About how many bytes to read: whole lines up to this much, and always
+    /// at least one.
     #[serde(default)]
     limit: Option<u64>,
     /// `false` returns the text as written; by default device secrets are hidden.
@@ -316,6 +337,9 @@ struct ReadParams {
 #[derive(Debug, Serialize)]
 struct ReadResult {
     text: String,
+    /// Where `text` starts: the start of the line the requested offset fell
+    /// in, so at or before it.
+    offset: u64,
     /// Size of the file in bytes.
     size: u64,
     eof: bool,
@@ -325,84 +349,217 @@ struct ReadResult {
     redacted: bool,
 }
 
-/// Up to `limit` bytes of `path` from `offset`, and the size of the file.
-async fn read_chunk(path: &Path, offset: u64, limit: u64) -> io::Result<(Vec<u8>, u64)> {
-    let mut file = tokio::fs::File::open(path).await?;
-    let size = file.metadata().await?.len();
+/// Up to `length` bytes of `file` from `from`.
+async fn read_range(file: &mut tokio::fs::File, from: u64, length: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    if offset < size {
-        file.seek(SeekFrom::Start(offset)).await?;
-        file.take(limit).read_to_end(&mut bytes).await?;
+    if length > 0 {
+        file.seek(SeekFrom::Start(from)).await?;
+        file.take(length).read_to_end(&mut bytes).await?;
     }
-    Ok((bytes, size))
+    Ok(bytes)
 }
 
-/// Cut a chunk read at an arbitrary place down to whole characters and, when
-/// more of the file follows, whole lines. Returns how many bytes were dropped
-/// at the start, and the text.
-fn whole_lines(
-    mut bytes: Vec<u8>,
-    starts_inside_file: bool,
-    more_follows: bool,
-) -> (usize, Vec<u8>) {
-    let skipped = if starts_inside_file {
-        bytes
+/// Where the line that `offset` falls in starts, or `None` when that is
+/// further back than [`LINE_SCAN`].
+async fn line_start(file: &mut tokio::fs::File, offset: u64) -> io::Result<Option<u64>> {
+    // No line break in `[searched, offset)` so far.
+    let mut searched = offset;
+    while searched > 0 {
+        let room = LINE_SCAN - (offset - searched);
+        if room == 0 {
+            return Ok(None);
+        }
+        // One byte first: a page asked for where the last one ended starts
+        // a line, and the byte before it says so.
+        let step = if searched == offset { 1 } else { SCAN_STEP };
+        let step = step.min(searched).min(room);
+        let from = searched - step;
+        let chunk = read_range(file, from, step).await?;
+        if let Some(newline) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(Some(from + newline as u64 + 1));
+        }
+        searched = from;
+    }
+    Ok(Some(0))
+}
+
+/// A page of a log: whole lines, as many as fit in `limit` bytes and never
+/// fewer than one.
+struct Page {
+    /// Where the page starts in the file.
+    start: u64,
+    bytes: Vec<u8>,
+    /// Size of the file.
+    size: u64,
+}
+
+impl Page {
+    fn end(&self) -> u64 {
+        self.start + self.bytes.len() as u64
+    }
+}
+
+/// Read the page that `offset` falls in.
+///
+/// A page is cut at line breaks at both ends, wherever the caller's offset
+/// and limit happen to fall. Half a line cannot be redacted: `enable secret
+/// Sup3rS3cret` read from its sixteenth byte is a word with nothing to say
+/// what it is. So a page begins with the line the offset is in, and when not
+/// even one line fits in `limit` it is that one line.
+async fn read_page(path: &Path, offset: u64, limit: u64) -> io::Result<Page> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let size = file.metadata().await?.len();
+    let offset = offset.min(size);
+    let (mut start, at_line_start) = match line_start(&mut file, offset).await? {
+        Some(start) => (start, true),
+        // A line longer than anything the writer makes. The page begins
+        // where it was asked to; there is nothing better to offer.
+        None => (offset, false),
+    };
+    let mut bytes = read_range(&mut file, start, limit).await?;
+    if !at_line_start {
+        // The offset may have fallen inside a character: skip its remainder.
+        let inside = bytes
             .iter()
             .take(3)
             .take_while(|byte| matches!(byte, 0x80..=0xBF))
-            .count()
-    } else {
-        0
-    };
-    bytes.drain(..skipped);
-    if more_follows {
+            .count();
+        bytes.drain(..inside);
+        start += inside as u64;
+    }
+    if start + (bytes.len() as u64) < size {
         match bytes.iter().rposition(|byte| *byte == b'\n') {
             Some(newline) => bytes.truncate(newline + 1),
             None => {
-                let incomplete = incomplete_utf8_suffix(&bytes);
-                bytes.truncate(bytes.len() - incomplete);
+                // Not one whole line in `limit` bytes: read on to the end of
+                // this one, for as long as a page may be.
+                loop {
+                    let have = bytes.len() as u64;
+                    if have >= MAX_READ || start + have >= size {
+                        break;
+                    }
+                    let step = SCAN_STEP.min(MAX_READ - have);
+                    let more = read_range(&mut file, start + have, step).await?;
+                    if more.is_empty() {
+                        break;
+                    }
+                    if let Some(newline) = more.iter().position(|byte| *byte == b'\n') {
+                        bytes.extend_from_slice(&more[..=newline]);
+                        break;
+                    }
+                    bytes.extend_from_slice(&more);
+                }
+                if !bytes.ends_with(b"\n") && start + (bytes.len() as u64) < size {
+                    // Longer than a page may be: at least never split a character.
+                    let incomplete = incomplete_utf8_suffix(&bytes);
+                    bytes.truncate(bytes.len() - incomplete);
+                }
             }
         }
     }
-    (skipped, bytes)
+    Ok(Page { start, bytes, size })
+}
+
+/// The lines of a piece of the file. Bytes that are not UTF-8 (a device can
+/// print anything) become replacement characters, as in the page itself.
+fn lines_of(bytes: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(bytes)
+        .split('\n')
+        .map(str::to_string)
+        .collect()
+}
+
+/// The page with its secrets hidden.
+///
+/// A page of whole lines is enough for every secret but a private key, which
+/// is longer than a line: a page can hold lines of one and neither of its
+/// markers. So the file is read a little way to both sides of the page, and
+/// what is found there decides whether the page's lines are key material.
+async fn redact_page(
+    path: &Path,
+    page: &Page,
+    rules: &[String],
+) -> io::Result<crate::text::Redaction> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let before_from = page.start.saturating_sub(KEY_CONTEXT);
+    let before = read_range(&mut file, before_from, page.start - before_from).await?;
+    let after = read_range(
+        &mut file,
+        page.end(),
+        KEY_CONTEXT.min(page.size - page.end()),
+    )
+    .await?;
+
+    let mut lines = lines_of(&before);
+    if before.is_empty() || before.ends_with(b"\n") {
+        // The page starts a line of its own: what `split` left after the last
+        // line break before it is not a line.
+        lines.pop();
+    }
+    let first = lines.len();
+    lines.extend(lines_of(&page.bytes));
+    let last = lines.len();
+    lines.extend(lines_of(&after));
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    Ok(redact_window(&lines, first..last, rules))
 }
 
 async fn read(app: &App, request: ReadParams) -> AppResult<ReadResult> {
     let name = request.name.as_str();
     let path = path_of(app, name)?;
     let limit = request.limit.unwrap_or(DEFAULT_READ).clamp(1, MAX_READ);
-    let (bytes, size) = read_chunk(&path, request.offset, limit)
+    let unreadable = |err: io::Error| match err.kind() {
+        io::ErrorKind::NotFound => AppError::not_found(format!("session log `{name}`")),
+        _ => AppError::new("io", format!("session log `{name}` cannot be read: {err}")),
+    };
+    let page = read_page(&path, request.offset, limit)
         .await
-        .map_err(|err| match err.kind() {
-            io::ErrorKind::NotFound => AppError::not_found(format!("session log `{name}`")),
-            _ => AppError::new("io", format!("session log `{name}` cannot be read: {err}")),
-        })?;
-    let offset = request.offset.min(size);
-    let more_follows = offset + (bytes.len() as u64) < size;
-    let (skipped, bytes) = whole_lines(bytes, offset > 0, more_follows);
-    let next_offset = offset + (skipped + bytes.len()) as u64;
+        .map_err(unreadable)?;
+    let next_offset = page.end();
 
-    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let indexed: Option<(Option<String>, String)> = app.store().with(|conn| {
+        conn.query_row(
+            "SELECT device_id, title FROM terminal_session_logs WHERE name = ?1",
+            params![name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+    })?;
+    let device_id = indexed
+        .as_ref()
+        .and_then(|(device_id, _)| device_id.clone());
+
     let (text, redacted) = if request.redact == Some(false) {
-        (text, false)
+        // A read past the end shows nothing, so there is nothing to record:
+        // following a log that is still being written asks there again and again.
+        if !page.bytes.is_empty() {
+            let title = indexed.as_ref().map_or(name, |(_, title)| title.as_str());
+            audit_unredacted(
+                app,
+                device_id.as_deref(),
+                "session log",
+                title,
+                json!({
+                    "source": "log",
+                    "name": name,
+                    "offset": page.start,
+                    "bytes": page.bytes.len(),
+                }),
+            );
+        }
+        (String::from_utf8_lossy(&page.bytes).into_owned(), false)
     } else {
-        let device_id: Option<String> = app.store().with(|conn| {
-            conn.query_row(
-                "SELECT device_id FROM terminal_session_logs WHERE name = ?1",
-                params![name],
-                |row| row.get(0),
-            )
-            .optional()
-            .map(Option::flatten)
-        })?;
-        let redaction =
-            redact_transcript(&text, &platform::secret_rules(app, device_id.as_deref()));
+        let rules = platform::secret_rules(app, device_id.as_deref());
+        let redaction = redact_page(&path, &page, &rules)
+            .await
+            .map_err(unreadable)?;
         (redaction.text, redaction.redacted)
     };
     Ok(ReadResult {
         text,
-        size,
-        eof: next_offset >= size,
+        offset: page.start,
+        size: page.size,
+        eof: next_offset >= page.size,
         next_offset,
         redacted,
     })
@@ -539,21 +696,5 @@ mod tests {
         ] {
             assert!(!NAME.is_match(bad), "{bad}");
         }
-    }
-
-    #[test]
-    fn chunks_are_cut_to_whole_lines_and_characters() {
-        // More follows: stop after the last complete line.
-        let (skipped, text) = whole_lines(b"one\ntwo\nthr".to_vec(), false, true);
-        assert_eq!((skipped, text.as_slice()), (0, &b"one\ntwo\n"[..]));
-        // The end of the file is returned as it is.
-        let (_, text) = whole_lines(b"one\ntwo\nthr".to_vec(), false, false);
-        assert_eq!(text, b"one\ntwo\nthr");
-        // A line longer than the chunk: at least never split a character.
-        let (_, text) = whole_lines("caf\u{e9}".as_bytes()[..4].to_vec(), false, true);
-        assert_eq!(text, b"caf");
-        // A read that starts inside a character skips its remainder.
-        let (skipped, text) = whole_lines("\u{2603}now\n".as_bytes()[1..].to_vec(), true, true);
-        assert_eq!((skipped, text.as_slice()), (2, &b"now\n"[..]));
     }
 }

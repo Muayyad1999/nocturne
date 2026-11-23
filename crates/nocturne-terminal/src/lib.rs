@@ -15,6 +15,7 @@ mod keys;
 mod logs;
 mod model;
 mod open;
+mod pastemode;
 mod platform;
 mod ring;
 mod session;
@@ -40,6 +41,7 @@ pub fn init(builder: &mut AppBuilder) {
     );
     builder.state(session::TerminalState::default());
     builder.state(sftp::SftpState::default());
+    builder.state(snippets::Library::default());
     logs::init(builder);
 
     open::register(&mut builder.router);

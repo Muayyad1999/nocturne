@@ -32,6 +32,7 @@ use crate::logs;
 use crate::model::{
     Attached, ClosedEvent, OutputEvent, RemovedEvent, SessionInfo, SessionState, kind_name,
 };
+use crate::pastemode::PasteMode;
 use crate::ring::Ring;
 use crate::sessionlog::{SessionLog, Subject};
 use crate::settings::TerminalSettings;
@@ -71,6 +72,8 @@ struct Shared {
     seq: u64,
     /// Output that is in the ring but has not been announced yet.
     pending: Vec<u8>,
+    /// Whether the far end has asked for pastes to be bracketed.
+    paste_mode: PasteMode,
 }
 
 pub(crate) struct Session {
@@ -235,6 +238,7 @@ impl Session {
                 ring: Ring::new(scrollback),
                 seq: 0,
                 pending: Vec::new(),
+                paste_mode: PasteMode::default(),
             }),
             writer: OnceLock::new(),
             log: tokio::sync::Mutex::new(None),
@@ -337,6 +341,7 @@ impl Session {
         let mut shared = self.shared.lock();
         shared.info.bytes_in += data.len() as u64;
         shared.ring.push(data);
+        shared.paste_mode.feed(data);
         let mut announced = false;
         let mut rest = data;
         loop {
@@ -403,11 +408,18 @@ impl Session {
         }
     }
 
-    /// The last `count` lines on the terminal, as plain text.
-    pub fn recent_lines(&self, count: usize) -> String {
+    /// Everything the scrollback still holds, as the lines a person would
+    /// have read. All of it, also when only the last few are wanted: whether
+    /// those are part of a private key is decided by the lines before them.
+    pub fn plain_lines(&self) -> Vec<String> {
         let raw = self.shared.lock().ring.snapshot(0);
-        let lines = text::plain_lines(&raw);
-        lines[lines.len().saturating_sub(count)..].join("\n")
+        text::plain_lines(&raw)
+    }
+
+    /// The program at the far end has asked for pastes to be bracketed
+    /// (DECSET 2004): a shell or an editor, never a network device.
+    pub fn wants_bracketed_paste(&self) -> bool {
+        self.shared.lock().paste_mode.is_on()
     }
 
     async fn log_output(&self, app: &App, data: &[u8]) {
@@ -447,6 +459,11 @@ impl Session {
                 shared.info.close_reason.as_deref().unwrap_or("closed"),
             )),
         }
+    }
+
+    /// Why the session cannot be typed into, when it cannot.
+    pub fn ensure_open(&self) -> AppResult<()> {
+        self.live_writer().map(|_| ())
     }
 
     fn title(&self) -> String {

@@ -177,19 +177,61 @@ async fn attach(app: &App, params: SessionRef) -> AppResult<Attached> {
         .attach())
 }
 
+/// The audit action of a read that returned device output with its secrets
+/// showing. Named after `config.view_unredacted`, which records the same
+/// thing for a stored configuration.
+pub(crate) const VIEW_UNREDACTED: &str = "terminal.view_unredacted";
+
+/// Record that someone asked to see terminal output with its secrets. The
+/// detail says which output and how much of it, never what it said.
+pub(crate) fn audit_unredacted(
+    app: &App,
+    device_id: Option<&str>,
+    what: &str,
+    title: &str,
+    detail: serde_json::Value,
+) {
+    app.audit(
+        VIEW_UNREDACTED,
+        device_id,
+        format!("Viewed unredacted {what} of `{title}`"),
+        detail,
+    );
+}
+
 async fn snapshot(app: &App, params: SnapshotParams) -> AppResult<SnapshotResult> {
     let session = app.state::<TerminalState>().get(&params.session_id)?;
-    let lines = params
+    let wanted = params
         .lines
         .unwrap_or(DEFAULT_SNAPSHOT_LINES)
         .clamp(1, MAX_SNAPSHOT_LINES);
     let info = session.info();
-    let text = session.recent_lines(lines);
+    let all = session.plain_lines();
+    let window = all.len().saturating_sub(wanted)..all.len();
     let (text, redacted) = if params.redact == Some(false) {
+        let text = all[window.clone()].join("\n");
+        // A session that has printed nothing shows nothing: no view to record.
+        if !text.is_empty() {
+            audit_unredacted(
+                app,
+                info.device_id.as_deref(),
+                "terminal output",
+                &info.title,
+                json!({
+                    "source": "snapshot",
+                    "session_id": info.id,
+                    "title": info.title,
+                    "lines": window.len(),
+                }),
+            );
+        }
         (text, false)
     } else {
         let rules = platform::secret_rules(app, info.device_id.as_deref());
-        let redaction = text::redact_transcript(&text, &rules);
+        // The whole scrollback goes in and the window comes out: the lines
+        // above the window say whether it begins inside a private key.
+        let lines: Vec<&str> = all.iter().map(String::as_str).collect();
+        let redaction = text::redact_window(&lines, window, &rules);
         (redaction.text, redaction.redacted)
     };
     Ok(SnapshotResult {

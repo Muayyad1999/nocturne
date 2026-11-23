@@ -133,9 +133,16 @@ A snippet is still `{id, name, text, profile?, tags}`. What is new:
 | Method | Params → Result |
 |---|---|
 | `terminal.snippets.render` | `{id, values: {name: String}}` → `{text, lines, sha256, variables}` — strict: a missing value without a default, or a value for a variable the snippet does not have, is `invalid`; a value containing a line break or a control character is refused, so a value cannot smuggle in a second command |
-| `terminal.snippets.send` | `{id, values, session_ids: [..], expect_sha256}` → `{sent: [{session_id, lines}]}` — renders again on the server, refuses when the hash is not the one the person confirmed, types the text into those sessions, and audits the snippet's name, the sessions, the devices, the line count and the hash — never the text and never the values. That audit entry is the record of what was sent where |
+| `terminal.snippets.send` | `{id, values, session_ids: [..], expect_sha256}` → `{sent: [{session_id, lines}], failed: [{session_id, code, message}]}` — renders again on the server, refuses when the hash is not the one the person confirmed, types the text into those sessions, and audits the snippet's name, the sessions, the devices, the line count and the hash — never the text and never the values. That audit entry is the record of what was sent where |
 | `terminal.snippets.export` | → `{format: "nocturne.snippets/1", snippets: [..]}` |
-| `terminal.snippets.import` | `{document, on_conflict: skip \| replace \| rename, dry_run?}` → `{created, replaced, skipped, problems: [..]}` |
+| `terminal.snippets.import` | `{document, on_conflict: skip \| replace \| rename, dry_run?}` → `{created, replaced, skipped, renamed, problems: [..], applied, dry_run}` — the whole document or none of it |
+
+This section is the design. The contract as built — every field and refusal,
+how the variant for a session's device type is chosen (`chosen`,
+`chosen_instead` on `terminal.snippets.list {session_id}`), the `\{{` escape
+for a literal pair of braces, the limits — is in
+[`features/terminal.md`](features/terminal.md); where the two differ, that
+one is right.
 
 A rendered snippet reaches a device only after the paste confirmation has
 shown the exact lines, like any other paste, and nothing presses Enter that
@@ -149,7 +156,8 @@ Session logs get a screen: a drawer over `terminal.logs.list` / `.read` /
 lines as evidence". A session log on disk is what the device printed, like a
 stored configuration; it is redacted when it is read, and a read with
 `redact: false` (on `terminal.logs.read` or `terminal.snapshot`) is audited,
-as an unredacted configuration view is.
+as an unredacted configuration view is: action `terminal.view_unredacted`,
+once per call.
 
 ## In the interface
 

@@ -36,3 +36,19 @@ pub(crate) fn secret_rules(app: &App, device_id: Option<&str>) -> Vec<String> {
         .map(|platform| platform.profile.config.secrets.clone())
         .unwrap_or_default()
 }
+
+/// The device type of a target, as snippets are filed under it: the profile
+/// the device is set to, else the one detection remembered. `None` when
+/// neither is known — a target that is not in the inventory, or a device
+/// nothing has been detected on. The generic profile such a device is driven
+/// with is a fallback, not a type: nobody files a snippet under it.
+pub(crate) fn device_type(app: &App, device_id: Option<&str>) -> Option<String> {
+    let device = inventory::get(app, device_id?).ok()?;
+    if !device.profile.is_empty() {
+        return Some(device.profile);
+    }
+    inventory::state_of(app, &device.id)
+        .ok()?
+        .detected_profile
+        .filter(|profile| !profile.is_empty())
+}

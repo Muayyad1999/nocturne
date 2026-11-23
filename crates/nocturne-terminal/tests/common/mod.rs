@@ -312,6 +312,9 @@ pub struct Script {
     /// Throw away whatever is typed during `after_pause`, as a console that
     /// has not started reading yet does with the keypress that wakes it.
     pub wake_sink: bool,
+    /// Print the banner and then stop taking input while the line stays up:
+    /// a connection that has died without either end having said so yet.
+    pub deaf: bool,
 }
 
 impl Default for Script {
@@ -328,6 +331,7 @@ impl Default for Script {
             blast: None,
             listen_only: false,
             wake_sink: false,
+            deaf: false,
         }
     }
 }
@@ -341,9 +345,17 @@ pub struct Heard {
     pub sessions: AtomicUsize,
     /// Bytes received in total.
     pub bytes: AtomicUsize,
+    /// Every byte received, in order, exactly as it arrived: the only way to
+    /// tell a carriage return from a line feed, which both end a line here.
+    pub raw: Mutex<Vec<u8>>,
 }
 
 impl Heard {
+    /// Everything received so far, as text.
+    pub fn raw(&self) -> String {
+        String::from_utf8_lossy(&self.raw.lock()).into_owned()
+    }
+
     pub fn lines(&self) -> Vec<String> {
         self.lines.lock().clone()
     }
@@ -400,6 +412,7 @@ async fn read_line(script: &Script, heard: &Heard, backend: &mut Backend) -> Opt
             continue;
         };
         heard.bytes.fetch_add(bytes.len(), Ordering::AcqRel);
+        heard.raw.lock().extend_from_slice(&bytes);
         for byte in bytes.iter().copied() {
             if byte == b'\r' || byte == b'\n' {
                 if script.echo {
@@ -451,6 +464,12 @@ async fn play(script: Script, heard: Arc<Heard>, mut backend: Backend) {
         if !text.is_empty() && !send(&backend, &text).await {
             return;
         }
+    }
+    if script.deaf {
+        let Backend { input, output } = backend;
+        drop(input);
+        output.closed().await;
+        return;
     }
     if script.listen_only {
         while read_line(&script, &heard, &mut backend).await.is_some() {}
