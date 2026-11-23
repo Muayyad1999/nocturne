@@ -475,8 +475,18 @@ async fn an_http_check_times_every_phase_of_a_real_request() {
         .rpc("probe.history", json!({"kind": "http"}))
         .await
         .unwrap();
-    assert_eq!(runs["runs"][0]["ok"], false);
-    assert_eq!(runs["runs"][0]["result"], Value::Null);
+    // Found by what it was aimed at, not by place: on a fast machine both runs
+    // start in the same millisecond, and within one the history is ordered by
+    // id, which is stable but says nothing about which came first.
+    let target = format!("http://127.0.0.1:{closed}/");
+    let failed_run = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["target"] == target.as_str())
+        .unwrap_or_else(|| panic!("the failure is in the history: {runs}"));
+    assert_eq!(failed_run["ok"], false);
+    assert_eq!(failed_run["result"], Value::Null);
 }
 
 #[tokio::test]
