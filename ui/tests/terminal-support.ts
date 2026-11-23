@@ -58,6 +58,12 @@ export interface FakeDevice {
    * do, so only this can show which of the two — or both — arrived.
    */
   receivedWith(marker: string): string | null;
+  /**
+   * The same for every console that was sent `marker`, one entry each: for
+   * text that goes to several sessions, where "once in each and nowhere
+   * else" is the thing to see.
+   */
+  everyReceivedWith(marker: string): string[];
   /** What arrived inside paste brackets, one entry per bracketed paste. */
   readonly bracketed: readonly string[];
   /** Forgets all of the above, so a test reads only what it did itself. */
@@ -66,6 +72,44 @@ export interface FakeDevice {
   hangUp(): void;
   stop(): Promise<void>;
 }
+
+/**
+ * What `show secret` makes the console print, and the two values in it that
+ * must not come back from the engine unless someone asked for them as
+ * written. Synthetic: no device printed these.
+ */
+export const SECRETS = {
+  lines: ['enable secret Sup3rS3cretEnable', 'snmp-server community Publ1cR0 RO'],
+  values: ['Sup3rS3cretEnable', 'Publ1cR0'],
+} as const;
+
+/**
+ * What `show key` makes the console print: the markers of an OpenSSH private
+ * key around two lines of base64. Synthetic — it was written here, it is not
+ * a key and no device printed it. `body` is what must not be read back
+ * unless someone asked for the text as written.
+ */
+export const PRIVATE_KEY = {
+  lines: [
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW',
+    'QyNTUxOQAAACBTeW50aGV0aWNLZXlCb2R5Tm90QVJlYWxLZXlKdXN0QmFzZTY0VGV4dHh4',
+    '-----END OPENSSH PRIVATE KEY-----',
+  ],
+  body: ['b3BlbnNzaC1rZXktdjEAAAAABG5vbmU', 'QyNTUxOQAAACBTeW50aGV0aWNLZXlCb2R5'],
+} as const;
+
+/**
+ * What `show markup` makes the console print, inside colour escape
+ * sequences: a line a browser would act on if it were ever treated as
+ * anything but text. `flag` is the property its scripts would set on the
+ * window; a screen that shows the line as text leaves it undefined.
+ * Synthetic.
+ */
+export const MARKUP = {
+  flag: '__nocturneMarkupRan',
+  line: '<img src=x onerror="window.__nocturneMarkupRan=1"><script>window.__nocturneMarkupRan=2</script><b>bold</b>',
+} as const;
 
 /** What a terminal puts around a paste when the far end has asked for it. */
 const PASTE_START = '\u001b[200~';
@@ -79,6 +123,12 @@ const PASTE_END = '\u001b[201~';
  *                  apart from the echo of the command itself
  *   lines <n>      prints `line NNNNN …`, n of them, as fast as it can
  *   link <url>     prints the URL on a line of its own
+ *   show secret    prints two lines of configuration that hold secrets
+ *                  (`SECRETS`), for what is read back to hide — or not
+ *   show key       prints a private key (`PRIVATE_KEY`), the one secret
+ *                  that is longer than a line
+ *   show markup    prints HTML in red (`MARKUP`), for a screen to show as
+ *                  the text it is
  *   brackets on    asks the terminal to bracket pastes, as a shell does;
  *                  a bracketed paste is then kept (`bracketed`) and not run
  *   anything else  `% Unknown command: …`
@@ -179,6 +229,9 @@ export async function startFakeDevice(): Promise<FakeDevice> {
     receivedWith(marker) {
       return received.find((input) => input.text.includes(marker))?.text ?? null;
     },
+    everyReceivedWith(marker) {
+      return received.filter((input) => input.text.includes(marker)).map((input) => input.text);
+    },
     get bracketed() {
       return bracketed;
     },
@@ -206,6 +259,18 @@ function answer(socket: Socket, command: string): void {
   }
   if (command.startsWith('say ')) {
     socket.write(`[${command.slice(4)}]\r\n`);
+    return;
+  }
+  if (command === 'show secret') {
+    socket.write(`${SECRETS.lines.join('\r\n')}\r\n`);
+    return;
+  }
+  if (command === 'show key') {
+    socket.write(`${PRIVATE_KEY.lines.join('\r\n')}\r\n`);
+    return;
+  }
+  if (command === 'show markup') {
+    socket.write(`\u001b[31m${MARKUP.line}\u001b[0m\r\n`);
     return;
   }
   if (command.startsWith('link ')) {
@@ -250,13 +315,22 @@ export interface TerminalEngine {
  */
 export async function startTerminalEngine(): Promise<TerminalEngine> {
   const device = await startFakeDevice();
-  const uiDir = await mkdtemp(join(tmpdir(), 'nocturne-ui-'));
+  // `NOCTURNE_UI_DIST` names a build of the interface that already exists, as
+  // `NOCTURNE_SERVER_BIN` names a built server: it is served as it stands and
+  // left where it is. Without it the interface is built here, from the tree.
+  const prebuilt = process.env.NOCTURNE_UI_DIST;
+  const uiDir = prebuilt ? resolve(prebuilt) : await mkdtemp(join(tmpdir(), 'nocturne-ui-'));
+  const removeUi = async () => {
+    if (!prebuilt) await rm(uiDir, { recursive: true, force: true });
+  };
   let backend: Backend | undefined;
   try {
-    await run('pnpm', ['exec', 'vite', 'build', '--outDir', uiDir, '--emptyOutDir'], {
-      cwd: UI_DIR,
-      timeout: 180_000,
-    });
+    if (!prebuilt) {
+      await run('pnpm', ['exec', 'vite', 'build', '--outDir', uiDir, '--emptyOutDir'], {
+        cwd: UI_DIR,
+        timeout: 180_000,
+      });
+    }
     backend = await startBackend({ uiDir });
 
     const engine = backend;
@@ -290,13 +364,13 @@ export async function startTerminalEngine(): Promise<TerminalEngine> {
       async stop() {
         await engine.stop();
         await device.stop();
-        await rm(uiDir, { recursive: true, force: true });
+        await removeUi();
       },
     };
   } catch (error) {
     await backend?.stop();
     await device.stop();
-    await rm(uiDir, { recursive: true, force: true });
+    await removeUi();
     throw error;
   }
 }
@@ -388,6 +462,152 @@ export async function announceLag(page: Page, missed: number): Promise<void> {
     if (!loss.deliver) throw new Error('the event stream is not open');
     loss.deliver(JSON.stringify({ topic: 'events.lagged', payload: { missed: count }, at: Date.now() }));
   }, missed);
+}
+
+// ---------------------------------------------------------- an older build
+
+/**
+ * Presents the engine as a build that lacks some methods: its real answer to
+ * `app.methods` with the names that match taken out, and nothing else
+ * touched. A build without a feature cannot be staged from outside a full
+ * one, and what the interface must do there — draw no control for a method
+ * that is not there — depends on this one list. Every other call goes to the
+ * real engine as it is.
+ *
+ * Answers with the methods the page went on to call, so a test can also
+ * require that none of the withheld ones was tried.
+ *
+ * Call before the application is opened.
+ */
+export async function withholdMethods(page: Page, withheld: (method: string) => boolean): Promise<{ called: string[] }> {
+  const record = { called: [] as string[] };
+  await page.route('**/api/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { method?: string } | null;
+    const method = body?.method ?? '';
+    record.called.push(method);
+    if (method !== 'app.methods') {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const envelope = (await response.json()) as { ok: boolean; result?: string[] };
+    if (envelope.ok && Array.isArray(envelope.result)) {
+      envelope.result = envelope.result.filter((name) => !withheld(name));
+    }
+    await route.fulfill({ response, json: envelope });
+  });
+  return record;
+}
+
+// ------------------------------------------------------ what the page tells
+
+/**
+ * Everything the page sends from now on, as text: the address and the body
+ * of each request, and each frame it writes to a WebSocket. For a test that
+ * has to show that something the page holds was told to no one.
+ */
+export function watchSent(page: Page): { readonly sent: readonly string[] } {
+  const sent: string[] = [];
+  page.on('request', (request) => {
+    sent.push(`${request.method()} ${request.url()} ${request.postData() ?? ''}`);
+  });
+  page.on('websocket', (socket) => {
+    socket.on('framesent', (frame) => sent.push(`ws ${socket.url()} ${String(frame.payload)}`));
+  });
+  return { sent };
+}
+
+/**
+ * Counts the page's reads of the system clipboard (`readText` and `read`),
+ * across reloads. The calls still go through: the Terminal's Paste button
+ * reads the clipboard, and is meant to. Call before the application is
+ * opened.
+ */
+export async function watchClipboardReads(page: Page): Promise<{ readonly count: number }> {
+  const record = { count: 0 };
+  await page.exposeFunction('__noteClipboardRead', () => {
+    record.count += 1;
+  });
+  await page.addInitScript(() => {
+    const clipboard = navigator.clipboard as Clipboard | undefined;
+    if (!clipboard) return;
+    const note = () => void (window as unknown as { __noteClipboardRead: () => Promise<void> }).__noteClipboardRead();
+    const readText = clipboard.readText.bind(clipboard);
+    const read = clipboard.read.bind(clipboard);
+    Object.defineProperty(clipboard, 'readText', {
+      configurable: true,
+      value: () => {
+        note();
+        return readText();
+      },
+    });
+    Object.defineProperty(clipboard, 'read', {
+      configurable: true,
+      value: (...args: Parameters<Clipboard['read']>) => {
+        note();
+        return read(...args);
+      },
+    });
+  });
+  return record;
+}
+
+/**
+ * Everything the page has put where a reload would find it, as one text:
+ * local and session storage, cookies, every record of every IndexedDB
+ * database, and the keys of every cache.
+ */
+export async function everythingStored(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const databases: Record<string, unknown> = {};
+    const listed = 'databases' in indexedDB ? await indexedDB.databases() : [];
+    for (const { name } of listed) {
+      if (!name) continue;
+      databases[name] = await new Promise<unknown>((done) => {
+        const opening = indexedDB.open(name);
+        opening.onerror = () => done('could not be opened');
+        opening.onsuccess = () => {
+          const database = opening.result;
+          const stores = [...database.objectStoreNames];
+          if (stores.length === 0) {
+            database.close();
+            done({});
+            return;
+          }
+          const records: Record<string, unknown> = {};
+          const transaction = database.transaction(stores, 'readonly');
+          for (const store of stores) {
+            const reading = transaction.objectStore(store).getAll();
+            reading.onsuccess = () => {
+              records[store] = reading.result;
+            };
+          }
+          transaction.oncomplete = () => {
+            database.close();
+            done(records);
+          };
+          transaction.onerror = () => {
+            database.close();
+            done('could not be read');
+          };
+        };
+      });
+    }
+    const cached: string[] = [];
+    if ('caches' in window) {
+      for (const name of await caches.keys()) {
+        const cache = await caches.open(name);
+        for (const request of await cache.keys()) cached.push(`${name} ${request.url}`);
+      }
+    }
+    return JSON.stringify({
+      local: { ...localStorage },
+      session: { ...sessionStorage },
+      cookies: document.cookie,
+      databases,
+      cached,
+    });
+  });
 }
 
 // ------------------------------------------------------- the desktop shell

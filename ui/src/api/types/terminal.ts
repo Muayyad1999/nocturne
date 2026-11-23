@@ -219,22 +219,58 @@ export interface SerialPortInfo {
 
 // ---------------------------------------------------------------- snippets
 
+/**
+ * A placeholder in a snippet's text: `{{name}}` or `{{name=default}}`.
+ * `default` is absent when there is none and `""` when it is empty: the two
+ * are different (a variable without one must be given a value).
+ */
+export interface SnippetVariable {
+  name: string;
+  default?: string;
+}
+
+/**
+ * A snippet as `terminal.snippets.list` and `.save` return it: what is
+ * stored, and what its text says.
+ *
+ * `text` is as it was written, placeholders and all — and for a snippet
+ * saved before today's rules it can hold anything, an escape character
+ * included. It is text a person typed for a device: show it as text.
+ */
 export interface Snippet {
   id: string;
   name: string;
-  /** The text, exactly as it will be typed. */
+  /** The text as written. What is typed is `terminal.snippets.render`'s `text`. */
   text: string;
   /** The device profile this is for; `null` means any. */
   profile?: string | null;
   tags: string[];
   created_at: number;
   updated_at: number;
+  /** The variables in the text, in the order they first appear. Empty for one with a `problem`. */
+  variables: SnippetVariable[];
+  /**
+   * Why this snippet cannot be rendered or sent as it is, in the engine's
+   * words (`line 1, column 16: …`). Only on one stored before today's rules;
+   * saving it again, corrected, clears it.
+   */
+  problem?: string;
+  /**
+   * Whether this is the one to use in the session (or for the device type)
+   * the list was asked for. Absent when it was asked for neither.
+   */
+  chosen?: boolean;
+  /** The id of the variant that is used instead of this one. Only with `chosen: false`, and not always then. */
+  chosen_instead?: string;
 }
 
+/** `session_id` or `profile`, not both. */
 export interface SnippetListParams {
-  /** Only snippets for this profile, and those for any profile. */
+  /** Only snippets for this profile, and those for any profile; adds `chosen`. */
   profile?: string | null;
-  /** Words that must all appear in the name, tags or text. */
+  /** The snippets for this session: its device type decides, and every row gets `chosen`. */
+  session_id?: string | null;
+  /** Words that must all appear in the name, tags or text. Applied after the choice among variants. */
   query?: string | null;
 }
 
@@ -247,6 +283,12 @@ export interface SnippetSaveParams {
   tags?: string[];
 }
 
+/** `details` of a `terminal.snippets.save` refused for its text: where the fault is, both from 1. */
+export interface SnippetTextFault {
+  line: number;
+  column: number;
+}
+
 /** `id`, `ids`, or both. */
 export interface SnippetDeleteParams {
   id?: string | null;
@@ -255,6 +297,130 @@ export interface SnippetDeleteParams {
 
 export interface SnippetDeleteResult {
   deleted: number;
+}
+
+export interface SnippetRenderParams {
+  id: string;
+  /** The text for each variable, by its name. Left out for a variable that has a default. */
+  values?: Record<string, string> | null;
+}
+
+export interface SnippetRendered {
+  /** What will be typed: every line ending is one `\n`, and the one that ends the snippet is dropped. */
+  text: string;
+  /** Lines in `text`; 0 for an empty one. */
+  lines: number;
+  /** SHA-256 of `text` as UTF-8, lower-case hex. What `terminal.snippets.send` is held to. */
+  sha256: string;
+  variables: SnippetVariable[];
+}
+
+/** What is wrong with one variable's value. */
+export type SnippetValueProblem =
+  | 'missing'
+  | 'unknown'
+  | 'not_text'
+  | 'line_break'
+  | 'control_character'
+  | 'too_long';
+
+/**
+ * `details` of a `terminal.snippets.render` or `.send` refused (`invalid`)
+ * for its values. The message says the same in words, one clause per entry
+ * and in this order, joined with `; `, and never repeats a value.
+ */
+export interface SnippetValuesRefused {
+  variables: { name: string; problem: SnippetValueProblem }[];
+}
+
+export interface SnippetSendParams {
+  id: string;
+  values?: Record<string, string> | null;
+  /** 1 to 64 sessions, none twice. */
+  session_ids: string[];
+  /** The `sha256` of the render the person was shown. */
+  expect_sha256: string;
+}
+
+export interface SnippetSent {
+  session_id: string;
+  lines: number;
+}
+
+/** A session a snippet did not reach, and why. */
+export interface SnippetNotSent {
+  session_id: string;
+  code: string;
+  message: string;
+}
+
+export interface SnippetSendResult {
+  /** The sessions that took the text. */
+  sent: SnippetSent[];
+  /**
+   * Sessions whose connection stalled or dropped between the check and the
+   * typing. What the others received cannot be taken back.
+   */
+  failed: SnippetNotSent[];
+}
+
+/** `details` of a send refused before anything was typed: nothing reached any session. */
+export interface SnippetSendRefused {
+  refused: SnippetNotSent[];
+}
+
+/** `details` of a send refused as `conflict`: the hash the snippet renders to now. */
+export interface SnippetSendChanged {
+  sha256: string;
+}
+
+/** A snippet as a person wrote it: no id, no timestamps. */
+export interface SnippetDocumentEntry {
+  name: string;
+  text: string;
+  profile?: string | null;
+  tags?: string[];
+}
+
+/** What `terminal.snippets.export` returns and `.import` reads. */
+export interface SnippetsDocument {
+  format: 'nocturne.snippets/1';
+  snippets: SnippetDocumentEntry[];
+}
+
+/** What happens to an entry whose name and device type a snippet here already has. */
+export type SnippetImportConflict = 'skip' | 'replace' | 'rename';
+
+export interface SnippetImportParams {
+  /** The document, or its JSON text as read from a file. */
+  document: SnippetsDocument | string;
+  /** `skip` by default: it loses nothing. */
+  on_conflict?: SnippetImportConflict;
+  /** Answer exactly what the import would, and write nothing. */
+  dry_run?: boolean;
+}
+
+export interface SnippetImportProblem {
+  /** The entry's place in the document, from 0. */
+  index: number;
+  /** Only when the entry has a name; cut to 80 characters. */
+  name?: string;
+  problem: string;
+}
+
+export interface SnippetImportResult {
+  /** Snippets added, those brought in under a new name included. */
+  created: number;
+  replaced: number;
+  /** Entries that were left out: one here already says the same, or `skip` kept the one here. */
+  skipped: number;
+  /** Of `created`, those that came in as `name (2)`. */
+  renamed: number;
+  /** While this is not empty nothing is imported and every count is 0. */
+  problems: SnippetImportProblem[];
+  /** The snippets now are as this answer says. Always false for a dry run. */
+  applied: boolean;
+  dry_run: boolean;
 }
 
 // ------------------------------------------------------------ session logs
@@ -296,6 +462,12 @@ export interface TerminalLogsReadParams {
 
 export interface TerminalLogsReadResult {
   text: string;
+  /**
+   * Where this page starts in the file. Not always the `offset` that was
+   * asked for: a page is whole lines, so it starts with the line that offset
+   * falls in, which can be earlier.
+   */
+  offset: number;
   /** Size of the whole file in bytes. */
   size: number;
   eof: boolean;
@@ -541,6 +713,10 @@ export type Empty = Record<string, never>;
  *   terminal.snippets.list     SnippetListParams         -> Snippet[]
  *   terminal.snippets.save     SnippetSaveParams         -> Snippet
  *   terminal.snippets.delete   SnippetDeleteParams       -> SnippetDeleteResult
+ *   terminal.snippets.render   SnippetRenderParams       -> SnippetRendered
+ *   terminal.snippets.send     SnippetSendParams         -> SnippetSendResult
+ *   terminal.snippets.export   void                      -> SnippetsDocument
+ *   terminal.snippets.import   SnippetImportParams       -> SnippetImportResult
  *   terminal.logs.list         TerminalLogsListParams    -> SessionLogInfo[]
  *   terminal.logs.read         TerminalLogsReadParams    -> TerminalLogsReadResult
  *   terminal.logs.delete       TerminalLogsDeleteParams  -> TerminalLogsDeleteResult
@@ -571,7 +747,7 @@ export interface TerminalMethods {
   'terminal.send_break': { params: TerminalSessionRef; result: Empty };
   /** Get the scrollback and the number of the last event it covers. */
   'terminal.attach': { params: TerminalSessionRef; result: TerminalAttached };
-  /** The last N lines as plain text, for "explain this" and copying. */
+  /** The last N lines as plain text, for "explain this", copying and saving. `redact: false` is audited. */
   'terminal.snapshot': { params: TerminalSnapshotParams; result: TerminalSnapshotResult };
   /** End the session and forget it. */
   'terminal.close': { params: TerminalSessionRef; result: Empty };
@@ -589,9 +765,17 @@ export interface TerminalMethods {
   'terminal.snippets.save': { params: SnippetSaveParams; result: Snippet };
   /** Delete snippets. */
   'terminal.snippets.delete': { params: SnippetDeleteParams; result: SnippetDeleteResult };
+  /** A snippet with its values put in: the exact text that would be typed, and its hash. Types nothing. */
+  'terminal.snippets.render': { params: SnippetRenderParams; result: SnippetRendered };
+  /** Type a snippet into sessions, held to the hash of the text the person confirmed; every session or none. Audited. */
+  'terminal.snippets.send': { params: SnippetSendParams; result: SnippetSendResult };
+  /** Every snippet as a person wrote it, by name. */
+  'terminal.snippets.export': { params: void; result: SnippetsDocument };
+  /** Bring a document of snippets in: the whole document or none of it, and `dry_run` to see first. */
+  'terminal.snippets.import': { params: SnippetImportParams; result: SnippetImportResult };
   /** Session logs on disk, newest first. */
   'terminal.logs.list': { params: TerminalLogsListParams; result: SessionLogInfo[] };
-  /** Read part of a session log; reads end on a line boundary. */
+  /** Read a page of a session log: whole lines, starting with the one `offset` falls in. `redact: false` is audited. */
   'terminal.logs.read': { params: TerminalLogsReadParams; result: TerminalLogsReadResult };
   /** Delete session logs; one that a live session is writing is refused. */
   'terminal.logs.delete': { params: TerminalLogsDeleteParams; result: TerminalLogsDeleteResult };

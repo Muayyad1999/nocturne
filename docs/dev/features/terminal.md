@@ -426,6 +426,25 @@ without it), and the shell's clipboard plugin on the desktop
 **Snippets** go the same way with one difference: the line break that ends a
 snippet is not sent. The Enter is always the person's.
 
+With an engine that has `terminal.snippets.render` and `.send`, a snippet is
+not typed from the window at all, and the road is the same one with its last
+step moved into the engine. The text is the engine's (`render`): a snippet
+with variables shows it in the drawer beside the form, with a refused value's
+sentence at the field it is about, and nothing is checked on this side. The
+funnel then asks its question about exactly that text (`PasteFunnel.confirm`:
+the same sheet, in the same queue behind any paste that is waiting, by the
+same rule — several lines, a line that is not read-only on any of the devices
+it would reach, or more than one session) and hands nothing to
+`terminal.input`. After a yes, `terminal.snippets.send` types it, held to the
+hash of the render that was asked about; a snippet that changed in between is
+refused and the drawer shows what it renders to now. One read-only line into
+one session is typed without a question, as when it is pasted. With an engine
+that lacks the two methods a snippet goes down the funnel as before.
+
+**Clips** (text copied earlier through a control that opted in; see
+`docs/dev/spec-capture.md`) typed into a session are a paste by another door:
+`terminals.paste`, asked about like any other.
+
 **Links** in the output (`http`, `https` only) open outside the application:
 a new tab from a browser, the system browser from the desktop shell.
 
@@ -458,7 +477,17 @@ the bytes it was sent): a browser paste is held until answered and sent once;
 "Cancel" sends nothing; CRLF arrives as one CR per line; a program that asked
 for bracketed paste gets brackets and runs nothing; a hole in the numbering
 stops the screen and re-attaches; editing a snippet keeps its tags and device
-type. Two of the end-to-end tests change what the browser gives the page,
+type; a snippet with variables is typed only as the text that was shown and
+confirmed, once, with no Enter of its own, into the sessions that were
+ticked, and leaves an audit entry without its text or values; the drawer
+shows the variant the engine chose; an import is checked before it is
+applied; a session log is read page by page, redacted until asked, and the
+asking comes before the audited read; the last lines and a selection are kept
+as evidence, the first read by the engine and the second labelled the
+operator's; a clip lives in memory only and is asked about before it is
+typed; and with the newer methods taken out of the engine's own
+`app.methods` answer no control for them is drawn and none of them is called.
+Two of the other end-to-end tests change what the browser gives the page,
 because the fault they guard against needs conditions a plain browser does
 not have. One loses `terminal.output` frames at the browser's door, on a
 socket that stays open, and then hands over the engine's `events.lagged`

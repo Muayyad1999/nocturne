@@ -10,6 +10,7 @@ const snippet = (over: Partial<Snippet> = {}): Snippet => ({
   tags: ['daily', 'ops'],
   created_at: 1,
   updated_at: 2,
+  variables: [],
   ...over,
 });
 

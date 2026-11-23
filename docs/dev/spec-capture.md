@@ -163,10 +163,25 @@ once per call.
 
 * **Terminal.** "Capture" on a selection, in the context menu and on the
   toolbar (the selection, or the last screen, or the last N lines). A dialog
-  shows the redacted text that will be stored before it is stored, and
-  offers the open incidents. "Save last N lines…" writes a file. The
-  snippets drawer gains a form for a snippet's variables, tags with a
-  filter, the device-type choice, import and export.
+  shows the text before it is stored, and offers the open incidents.
+  * For the last lines, and for a page of a session log, what it shows is
+    the engine's own redacted read of what it is about to read again
+    (`terminal.snapshot`, `terminal.logs.read`). The evidence store's rules
+    run on top when the item is kept, so the item can hide more than what
+    was shown and never less; and it holds the session's last lines as they
+    are at that moment.
+  * For a selection there is no redacted text to show beforehand: it is
+    text the window holds, and nothing redacts without storing
+    (`evidence.add_text` is the only method that runs the evidence redactor
+    on text a client sends). So the dialog shows the selection as it will be
+    sent, says that the item will be labelled as supplied by the operator,
+    and once it is kept shows exactly what was stored, with a way to delete
+    it there.
+
+  "Save last N lines…" writes a file of the redacted snapshot, and the file
+  is the text the dialog showed. The snippets drawer gains a form for a
+  snippet's variables, tags with a filter, the device-type choice, import
+  and export.
 * **Operations → Evidence.** The list, a viewer per kind (text preformatted;
   a drawing shown as an image so nothing in it can run; a chart re-drawn
   from the stored points with its gaps), attach and detach. An incident's
@@ -185,7 +200,10 @@ once per call.
   memory only: not written to storage, not sent anywhere, gone on reload,
   with a Clear button. From a clip: copy again, type into the focused
   session (through the paste confirmation), keep as evidence
-  (`evidence.add_text`), save as a snippet.
+  (`evidence.add_text`), save as a snippet. A copy that asked for a clip is
+  remembered whether or not the system clipboard took it (over plain HTTP a
+  browser has none); at most 30 clips, none longer than an evidence item
+  may be, and a longer copy is not remembered rather than cut.
   * Recording is opt-in per call site: `copyText(text, {clip: {label,
     source}})`. The default records nothing, so the toolbox's decoded
     secret, generated passwords and private key are excluded by

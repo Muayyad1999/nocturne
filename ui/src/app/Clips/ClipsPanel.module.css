@@ -1,0 +1,111 @@
+/* Clips: a short list in a popover. Narrow on purpose — it sits over a terminal. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  width: min(420px, 90vw);
+  max-height: min(70vh, 560px);
+  padding: var(--sp-12);
+}
+
+.header {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: baseline;
+}
+
+.title {
+  margin: 0;
+  color: var(--text-1);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-13);
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.empty,
+.foot {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.foot {
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--line);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.clip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-2) var(--sp-8);
+  align-items: center;
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.what {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  align-items: baseline;
+  min-width: 0;
+}
+
+.label {
+  overflow: hidden;
+  color: var(--text-1);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.source,
+.more {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.more {
+  grid-column: 1;
+}
+
+/* One line of it, as text: it can be something a device printed. */
+.text {
+  grid-column: 1;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  font-family: var(--font-mono);
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  grid-row: 1 / span 3;
+  grid-column: 2;
+  gap: var(--sp-2);
+}

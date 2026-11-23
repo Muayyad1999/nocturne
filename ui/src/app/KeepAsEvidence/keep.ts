@@ -2,21 +2,31 @@
  * What "keep as evidence" asks the engine for, with no React in it.
  *
  * The one rule this file exists to keep: **the client never supplies the
- * content.** A request names what to capture — series and a period, or a
- * graph — and the engine reads it again from its own store and keeps what
- * *it* read, redacted, with a source and a hash. Nothing that is on screen is
- * uploaded, so nothing here can make a record of something the engine did not
- * see.
+ * content.** A request names what to capture — series and a period, a
+ * graph, the last lines of a terminal session, a piece of a session log —
+ * and the engine reads it again from its own store and keeps what *it*
+ * read, redacted, with a source and a hash. Nothing that is on screen is
+ * uploaded, so nothing here can make a record of something the engine did
+ * not see.
+ *
+ * There is one request that cannot keep that rule, and it is a kind of its
+ * own so that it can never pass for the others: `text`, for text a person
+ * holds (a selection in a terminal, a clip). The engine did not read it, so
+ * it stores it as supplied by the operator and says so wherever the item is
+ * shown; the dialog says so before it is sent.
  */
 
 import { RpcError } from '@/api/errors';
 import type {
+  EvidenceAddTextParams,
   EvidenceCaptureChartParams,
+  EvidenceCaptureLogParams,
+  EvidenceCaptureTerminalParams,
   EvidenceCaptureTopologyParams,
   EvidenceLimitDetails,
   EvidenceSeriesRef,
 } from '@/api/types/ops';
-import { formatCount, plural } from '@/lib/format';
+import { formatBytes, formatCount, plural } from '@/lib/format';
 import { formatDateTime } from '@/lib/time';
 
 /** A chart to keep: exactly the series and the period it was drawn from. */
@@ -47,12 +57,77 @@ export interface TopologyEvidenceRequest {
   title?: string;
 }
 
-export type KeepRequest = ChartEvidenceRequest | TopologyEvidenceRequest;
+/**
+ * The last lines of a terminal session. The engine asks the session itself
+ * (`terminal.snapshot`); nothing that is on the screen is sent.
+ */
+export interface TerminalEvidenceRequest {
+  kind: 'terminal';
+  session_id: string;
+  /** Lines from the end, 1 to 10,000. Where the dialog starts; the person can change it there. */
+  lines: number;
+  /** The session's title, for the dialog. Not sent: the engine looks the session up. */
+  session?: string;
+  title?: string;
+}
+
+/**
+ * A piece of a session log: the bytes of a page that was read with
+ * `terminal.logs.read`. The engine reads them again itself, redacted.
+ */
+export interface LogEvidenceRequest {
+  kind: 'log';
+  /** The log's name, as `terminal.logs.list` gives it. */
+  name: string;
+  /** Where the page starts: the `offset` of the answer that was shown, which is a line start. */
+  offset: number;
+  /** The page's length in bytes of the file (`next_offset - offset`), at most 262,144. */
+  limit: number;
+  /** The session the log is of, for the dialog. Not sent. */
+  log?: string;
+  title?: string;
+}
+
+/**
+ * Text the person holds. It is sent as it is, redacted by the engine on
+ * arrival and stored as supplied by the operator — the engine did not read
+ * it, and the item says so.
+ */
+export interface TextEvidenceRequest {
+  kind: 'text';
+  text: string;
+  /** The engine requires one. Offered in the form, where it can be changed. */
+  title: string;
+  /** The session the text is said to be from: recorded as the person's word. */
+  session_id?: string;
+  device_id?: string;
+  /** At most 1,000 characters. */
+  note?: string;
+  /** Where the person took it from, for the dialog: "the selection in SW1". Not sent. */
+  from?: string;
+}
+
+export type KeepRequest =
+  | ChartEvidenceRequest
+  | TopologyEvidenceRequest
+  | TerminalEvidenceRequest
+  | LogEvidenceRequest
+  | TextEvidenceRequest;
 
 export const CAPTURE_METHOD: Record<KeepRequest['kind'], string> = {
   chart: 'evidence.capture_chart',
   topology: 'evidence.capture_topology',
+  terminal: 'evidence.capture_terminal',
+  log: 'evidence.capture_log',
+  text: 'evidence.add_text',
 };
+
+export type CaptureParams =
+  | EvidenceCaptureChartParams
+  | EvidenceCaptureTopologyParams
+  | EvidenceCaptureTerminalParams
+  | EvidenceCaptureLogParams
+  | EvidenceAddTextParams;
 
 /**
  * The method and the parameters for a request. A title that is empty is not
@@ -60,11 +135,35 @@ export const CAPTURE_METHOD: Record<KeepRequest['kind'], string> = {
  * is not sent either, because the recorded request is what the item says it
  * was asked for.
  */
-export function captureCall(
-  request: KeepRequest,
-  title: string,
-): { method: string; params: EvidenceCaptureChartParams | EvidenceCaptureTopologyParams } {
+export function captureCall(request: KeepRequest, title: string): { method: string; params: CaptureParams } {
   const named = title.trim() === '' ? {} : { title: title.trim() };
+  if (request.kind === 'terminal') {
+    return {
+      method: CAPTURE_METHOD.terminal,
+      params: { session_id: request.session_id, lines: request.lines, ...named },
+    };
+  }
+  if (request.kind === 'log') {
+    return {
+      method: CAPTURE_METHOD.log,
+      params: { name: request.name, offset: request.offset, limit: request.limit, ...named },
+    };
+  }
+  if (request.kind === 'text') {
+    return {
+      method: CAPTURE_METHOD.text,
+      params: {
+        // Exactly as the person holds it: what may be stored is the engine's
+        // to decide, and it decides after it has redacted.
+        text: request.text,
+        // The engine requires a title here and refuses an empty one itself.
+        title: title.trim(),
+        ...(request.session_id ? { session_id: request.session_id } : {}),
+        ...(request.device_id ? { device_id: request.device_id } : {}),
+        ...(request.note?.trim() ? { note: request.note.trim() } : {}),
+      },
+    };
+  }
   if (request.kind === 'chart') {
     return {
       method: CAPTURE_METHOD.chart,
@@ -93,6 +192,37 @@ export function captureCall(
 
 /** What will be kept, as facts a person can check before pressing the button. */
 export function describeRequest(request: KeepRequest): { label: string; value: string }[] {
+  if (request.kind === 'terminal') {
+    return [
+      { label: 'Session', value: request.session ?? request.session_id },
+      {
+        label: 'Lines',
+        value: `the last ${formatCount(request.lines)}, as the session holds them at the moment it is kept`,
+      },
+      { label: 'Read with', value: 'terminal.snapshot' },
+    ];
+  }
+  if (request.kind === 'log') {
+    return [
+      { label: 'Log', value: request.log ? `${request.log} — ${request.name}` : request.name },
+      {
+        label: 'Bytes',
+        value: `${formatCount(request.offset)} to ${formatCount(request.offset + request.limit)} of the file`,
+      },
+      { label: 'Read with', value: 'terminal.logs.read' },
+    ];
+  }
+  if (request.kind === 'text') {
+    const lines = request.text === '' ? 0 : request.text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').length;
+    return [
+      {
+        label: 'Text',
+        value: `${plural(lines, 'line')}, ${formatBytes(new TextEncoder().encode(request.text).length)}, as you hold it`,
+      },
+      { label: 'From', value: request.from ?? 'not said' },
+      { label: 'Supplied by', value: 'you — the engine did not read this itself, and the item will say so' },
+    ];
+  }
   if (request.kind === 'chart') {
     const devices = new Set(request.series.map((entry) => entry.device_id));
     const names = request.series

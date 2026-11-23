@@ -346,4 +346,98 @@ describe('PasteFunnel', () => {
     await funnel.offer('s1', 'show version');
     expect(sent).toHaveLength(1);
   });
+
+  // ------------------------------------------- a question that sends nothing
+
+  const question = (text: string): PasteQuestion => ({
+    sessionId: 's1',
+    title: 'SW1',
+    text,
+    classes: null,
+    source: 'snippet',
+    targets: 1,
+  });
+
+  it('asks about text it will not send itself, and sends nothing whatever the answer', async () => {
+    const { funnel, sent, asked, answer } = world();
+
+    const yes = funnel.confirm(question('interface Gi0/1\n shutdown'));
+    await settle();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ source: 'snippet', text: 'interface Gi0/1\n shutdown' });
+    answer(true);
+    await expect(yes).resolves.toBe(true);
+
+    const no = funnel.confirm(question('reload'));
+    await settle();
+    answer(false);
+    await expect(no).resolves.toBe(false);
+
+    // The engine types a confirmed snippet; this funnel hands over nothing.
+    expect(sent).toEqual([]);
+  });
+
+  it('keeps a snippet’s question behind a paste that is still being asked about', async () => {
+    const { funnel, sent, asked, answer } = world();
+
+    const paste = funnel.offer('s1', 'conf t\nint gi0/1\n');
+    const snippet = funnel.confirm(question('show clock\nshow version'));
+    await settle();
+
+    // One question at a time: two on one sheet would leave one unanswered.
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.source).toBe('paste');
+
+    answer(false);
+    await expect(paste).resolves.toBe('cancelled');
+    await settle();
+    expect(asked).toHaveLength(2);
+    expect(asked[1]?.source).toBe('snippet');
+
+    answer(true);
+    await expect(snippet).resolves.toBe(true);
+    expect(sent).toEqual([]);
+  });
+
+  it('holds a paste back while a snippet’s question is open, and lets keys through', async () => {
+    const { funnel, sent, asked, answer } = world();
+
+    const snippet = funnel.confirm(question('show clock\nshow version'));
+    await settle();
+    const paste = funnel.offer('s1', 'show version');
+    await settle();
+
+    // The paste waits its turn: nothing of it has gone anywhere.
+    expect(asked).toHaveLength(1);
+    expect(sent).toEqual([]);
+    // What arrives for a session while a question is open is the terminal
+    // answering its device, and is not held back behind the queue.
+    expect(funnel.typed('s1', '\u001b[1;1R')).toBe(false);
+
+    answer(true);
+    await expect(snippet).resolves.toBe(true);
+    await expect(paste).resolves.toBe('sent');
+    expect(sent).toEqual([['s1', 'show version']]);
+  });
+
+  it('carries on after a question that could not be put', async () => {
+    let fail = true;
+    const sent: [string, string][] = [];
+    const funnel = new PasteFunnel({
+      target: async () => ({ title: 'SW1', deviceId: null, targets: 1, bracketedPaste: false }),
+      classify: async (_device, text) => text.split('\n').map(readOnly),
+      ask: async () => {
+        if (fail) throw new Error('no sheet to show it on');
+        return true;
+      },
+      send: (sessionId, data) => sent.push([sessionId, data]),
+    });
+
+    await expect(funnel.confirm(question('show clock\nshow version'))).rejects.toThrow('no sheet');
+    fail = false;
+    // Neither jammed nor left believing a question is still open.
+    await expect(funnel.offer('s1', 'show version')).resolves.toBe('sent');
+    await expect(funnel.confirm(question('show clock\nshow version'))).resolves.toBe(true);
+    expect(sent).toEqual([['s1', 'show version']]);
+  });
 });

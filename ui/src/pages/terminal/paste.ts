@@ -111,13 +111,26 @@ export function hasSeveralLines(text: string): boolean {
 }
 
 /** Where pasted text came from, so the question can say it. */
-export type PasteSource = 'paste' | 'snippet' | 'drop';
+export type PasteSource = 'paste' | 'snippet' | 'drop' | 'clip';
 
 const VERB: Record<PasteSource, string> = {
   paste: 'Paste',
   snippet: 'Send this snippet',
   drop: 'Drop this text',
+  clip: 'Type this clip',
 };
+
+const YES: Record<PasteSource, string> = {
+  paste: 'Paste anyway',
+  snippet: 'Send anyway',
+  drop: 'Paste anyway',
+  clip: 'Type anyway',
+};
+
+/** What the button that says yes is called: the verb of the question it answers. */
+export function pasteConfirmLabel(source: PasteSource): string {
+  return YES[source];
+}
 
 /** The question itself: what is being done, and to what. */
 export function pasteTitle(question: { source: PasteSource; title: string; targets: number }): string {

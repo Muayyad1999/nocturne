@@ -119,6 +119,31 @@ export class PasteFunnel {
     return false;
   }
 
+  /**
+   * A question about text this funnel will not send itself: a snippet with
+   * its values filled in, which the engine types (`terminal.snippets.send`)
+   * so that what was sent where is on record. The question is the same one,
+   * on the same sheet, and takes its turn behind the pastes that are waiting
+   * — two questions at once would leave one of them unanswered, and an
+   * unanswered question holds up every paste behind it.
+   *
+   * Resolves true when the person said yes. Nothing is sent from here either
+   * way: the caller sends, and only after a yes.
+   */
+  confirm(question: PasteQuestion): Promise<boolean> {
+    const answer = this.tail.then(async () => {
+      // As for a paste's own question: the keyboard is the question's now.
+      this.asking = true;
+      try {
+        return await this.deps.ask(question);
+      } finally {
+        this.asking = false;
+      }
+    });
+    this.tail = answer.catch(() => undefined);
+    return answer;
+  }
+
   private async handle(offer: Offer): Promise<PasteOutcome> {
     const { deps } = this;
     const { sessionId, source } = offer;

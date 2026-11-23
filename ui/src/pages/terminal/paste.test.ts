@@ -8,6 +8,7 @@ import {
   hasSeveralLines,
   needsConfirmation,
   normaliseLines,
+  pasteConfirmLabel,
   pasteKeyRoute,
   pasteRisk,
   pasteSummary,
@@ -172,6 +173,23 @@ describe('droppedText', () => {
     expect(droppedText({ types: ['Files'], getData: () => '' })).toBeNull();
     expect(droppedText(transfer({ 'text/plain': '' }))).toBeNull();
     expect(droppedText(transfer({ 'text/uri-list': 'https://example.com' }))).toBeNull();
+  });
+});
+
+describe('pasteTitle', () => {
+  it('names what is being done by the door the text came through', () => {
+    expect(pasteTitle({ source: 'paste', title: 'SW1', targets: 1 })).toBe('Paste into SW1?');
+    expect(pasteTitle({ source: 'snippet', title: 'SW1', targets: 1 })).toBe('Send this snippet into SW1?');
+    expect(pasteTitle({ source: 'clip', title: 'SW1', targets: 1 })).toBe('Type this clip into SW1?');
+    // Several sessions are counted, not named after the first of them.
+    expect(pasteTitle({ source: 'snippet', title: 'SW1', targets: 3 })).toBe('Send this snippet into 3 sessions?');
+  });
+
+  it('calls the yes by the verb of the question', () => {
+    expect(pasteConfirmLabel('paste')).toBe('Paste anyway');
+    expect(pasteConfirmLabel('drop')).toBe('Paste anyway');
+    expect(pasteConfirmLabel('snippet')).toBe('Send anyway');
+    expect(pasteConfirmLabel('clip')).toBe('Type anyway');
   });
 });
 

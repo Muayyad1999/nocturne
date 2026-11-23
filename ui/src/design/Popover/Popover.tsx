@@ -1,6 +1,7 @@
 import {
   cloneElement,
   useId,
+  useLayoutEffect,
   useRef,
   type MouseEvent,
   type ReactElement,
@@ -9,7 +10,7 @@ import {
 } from 'react';
 import { cx } from '@/lib/cx';
 import { useMergedRefs } from '@/lib/refs';
-import { useFocusScope } from '../overlay/focus';
+import { focusableWithin, useFocusScope } from '../overlay/focus';
 import { useLayer } from '../overlay/layers';
 import { Portal } from '../overlay/Portal';
 import type { Placement } from '../overlay/position';
@@ -62,6 +63,20 @@ export function Popover({
   const { style, side } = useFloating(open, triggerRef, panelRef, { placement });
   useLayer(open, panelRef, { onEscape: close, onPressOutside: close, trigger: triggerRef });
   useFocusScope(open, panelRef);
+
+  // The panel mounts hidden until it has been measured, and a hidden element
+  // refuses the focus: the scope's attempt in that first moment did nothing,
+  // the focus stayed on the trigger, and Tab went on along the page instead
+  // of into the panel. So it is given again once the panel is placed, as the
+  // menu does (MenuPopup); the scope still remembers the trigger to give it
+  // back to.
+  const placed = open && style.visibility !== 'hidden';
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!placed || !panel || panel.contains(document.activeElement)) return;
+    const target = panel.querySelector<HTMLElement>('[data-autofocus]') ?? focusableWithin(panel)[0] ?? panel;
+    target.focus({ preventScroll: true });
+  }, [placed]);
 
   const ref = useMergedRefs(triggerRef, trigger.props.ref);
 

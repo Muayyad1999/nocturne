@@ -9,10 +9,14 @@
  */
 
 import {
+  Archive,
   CircleDot,
+  Clipboard,
   ClipboardPaste,
   Copy,
+  Download,
   Eraser,
+  FileCheck2,
   FileText,
   FolderTree,
   Radio,
@@ -22,10 +26,10 @@ import {
   SquareTerminal,
   TerminalSquare,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { rpc } from '@/api/client';
 import { RpcError } from '@/api/errors';
-import { useRpc, useRpcMutation } from '@/api/hooks';
+import { useHasMethod, useRpc, useRpcMutation } from '@/api/hooks';
 import { inDesktopShell, readClipboardText } from '@/api/transports/shell';
 import type {
   Adhoc,
@@ -35,30 +39,38 @@ import type {
   TerminalInputManyResult,
   TerminalOpenParams,
 } from '@/api/types/terminal';
+import { ClipsPanel, useClips } from '@/app/Clips';
 import { registerCommand } from '@/app/CommandPalette/commands';
 import { usePageHeader } from '@/app/Header';
+import { useKeepAsEvidence } from '@/app/KeepAsEvidence';
 import { Page } from '@/app/Page';
 import { useStatusItem } from '@/app/StatusBar';
 import { Button, IconButton } from '@/design/Button';
 import { Checkbox } from '@/design/Checkbox';
 import { confirm } from '@/design/Dialog';
+import { DropdownMenu, type MenuEntry } from '@/design/DropdownMenu';
 import { EmptyState } from '@/design/EmptyState';
 import { ErrorState } from '@/design/ErrorState';
+import { Popover } from '@/design/Popover';
 import { Skeleton } from '@/design/Skeleton';
 import { Splitter } from '@/design/Splitter';
 import { toast } from '@/design/Toast';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
-import { copyText } from '@/lib/clipboard';
+import { copyText, fitsAsClip } from '@/lib/clipboard';
+import { plural } from '@/lib/format';
 import { isMacPlatform } from '@/lib/keyboard';
 import { useTerminalAppearance } from './appearance';
 import { explainWithAssistant } from './assistant';
+import { DEFAULT_LINES, screenLines, selectionLines, selectionTitle } from './capture';
 import type { InventoryDevice } from './inventory';
 import { activeSessionId, broadcastTargets, MAX_PANES, useTerminalLayout } from './layout';
-import { Pane, type PaneActions } from './Pane';
+import { LogsDrawer } from './LogsDrawer';
+import { Pane, type PaneActions, type PaneCapture } from './Pane';
 import type { PasteQuestion } from './pasteFunnel';
 import { PasteSheet } from './PasteSheet';
 import { adhocFromSession } from './quickconnect';
 import { readRecents, rememberRecent, type Recent } from './recents';
+import { SaveLinesDialog } from './SaveLinesDialog';
 import styles from './Screen.module.css';
 import { SessionList } from './SessionList';
 import { terminals } from './sessions';
@@ -76,6 +88,12 @@ export default function TerminalPage() {
   const [query, setQuery] = useState('');
   const [recents, setRecents] = useState<Recent[]>(() => readRecents());
   const [snippetsOpen, setSnippetsOpen] = useState(false);
+  /** Text a new snippet is to start from: a clip being saved as one. */
+  const [snippetSeed, setSnippetSeed] = useState<{ text: string; nonce: number } | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [clipsOpen, setClipsOpen] = useState(false);
+  /** The session whose last lines are being saved as a file. */
+  const [saving, setSaving] = useState<{ id: string; title: string } | null>(null);
   const [findPanes, setFindPanes] = useState<string[]>([]);
   const [dragging, setDragging] = useState<string | null>(null);
   /** The paste question on screen, and how the funnel is told the answer. */
@@ -99,6 +117,23 @@ export default function TerminalPage() {
   const focusedSession = focusedId ? byId.get(focusedId) : undefined;
   const targets = broadcastTargets(layout);
   const targetKey = targets.join(' ');
+
+  // What this build can do beyond the sessions themselves. Each is false
+  // until `app.methods` has said otherwise, so nothing is offered on a guess
+  // and no control is drawn that the engine would answer with "unknown".
+  const keep = useKeepAsEvidence();
+  const canKeepText = keep.can('text');
+  const canKeepLines = keep.can('terminal');
+  const canSaveLines = useHasMethod('terminal.snapshot') === true;
+  // A list of logs that cannot be opened would be a row of dead buttons.
+  const canListLogs = useHasMethod('terminal.logs.list') === true;
+  const canReadLogs = useHasMethod('terminal.logs.read') === true;
+  const hasLogs = canListLogs && canReadLogs;
+  const capture: PaneCapture = { keepSelection: canKeepText, keepLines: canKeepLines, saveLines: canSaveLines };
+  const clipCount = useClips().length;
+  const focusedHasSelection = useSyncExternalStore(terminals.subscribe, () =>
+    focusedId ? terminals.view(focusedId).selection !== '' : false,
+  );
 
   const local = useMemo(() => {
     const error = serialPorts.error;
@@ -298,9 +333,49 @@ export default function TerminalPage() {
       toast.info('Nothing is selected');
       return;
     }
-    const copied = await copyText(selection);
-    if (copied) toast.success(`Copied ${selection.split('\n').length} lines`);
-    else toast.error('The clipboard refused the copy');
+    // The terminal's own copy is one of the controls that keeps a clip: a
+    // selection is what gets carried to a ticket, a change or another
+    // session. It is device output and is labelled as where it came from.
+    const copied = await copyText(selection, {
+      clip: { label: selectionTitle(byId.get(sessionId)?.title), source: 'Terminal, as the device printed it' },
+    });
+    const lines = plural(selectionLines(selection), 'line');
+    if (!copied) {
+      toast.error('The clipboard refused the copy', {
+        description: fitsAsClip(selection) ? 'The selection is under Clips, where it can still be typed or kept.' : undefined,
+      });
+    } else if (fitsAsClip(selection)) toast.success(`Copied ${lines}`);
+    else toast.success(`Copied ${lines}`, { description: 'Too long to keep as a clip.' });
+  };
+
+  /**
+   * The selection, kept as evidence. It is text this window holds, so the
+   * engine stores it as supplied by the operator — the dialog says so — with
+   * the session it is said to be from.
+   */
+  const keepSelection = (sessionId: string) => {
+    const selection = terminals.terminal(sessionId)?.getSelection() ?? '';
+    if (selection === '') {
+      toast.info('Nothing is selected');
+      return;
+    }
+    const title = byId.get(sessionId)?.title;
+    keep.keep({
+      kind: 'text',
+      text: selection,
+      title: selectionTitle(title),
+      session_id: sessionId,
+      from: `the selection in ${title ?? 'a terminal session'}`,
+    });
+  };
+
+  /** The last lines of a session, kept as evidence: the engine reads the session itself. */
+  const keepLines = (sessionId: string, lines: number = DEFAULT_LINES) => {
+    keep.keep({ kind: 'terminal', session_id: sessionId, lines, session: byId.get(sessionId)?.title });
+  };
+
+  const saveLines = (sessionId: string) => {
+    setSaving({ id: sessionId, title: byId.get(sessionId)?.title ?? 'session' });
   };
 
   const explain = (sessionId: string) => {
@@ -371,6 +446,9 @@ export default function TerminalPage() {
     closePane: (paneId) => useTerminalLayout.getState().closePane(paneId),
     pasteFromClipboard: (sessionId) => void pasteFromClipboard(sessionId),
     copySelection: (sessionId) => void copySelection(sessionId),
+    keepSelection,
+    keepLines,
+    saveLines,
     explain,
     clear: (sessionId) => terminals.clear(sessionId),
     connect: focusSearch,
@@ -496,6 +574,51 @@ export default function TerminalPage() {
     dragging && layout.panes.length < MAX_PANES && (draggingPane?.tabs.length ?? 0) > 1,
   );
 
+  // Where a clip typed into the session in front goes: that session or, while
+  // typing is broadcast from it, every target — what the question will say.
+  const clipGoesTo =
+    !focusedSession || focusedSession.state !== 'open'
+      ? null
+      : layout.broadcast && targets.length > 1 && focusedId !== null && targets.includes(focusedId)
+        ? `${targets.length} sessions`
+        : focusedSession.title;
+
+  // What "Capture" offers for the session in front. An entry whose method
+  // this build does not have is not in the menu, and with none of them there
+  // is no menu.
+  const captureItems: MenuEntry[] = focusedId
+    ? [
+        ...(canKeepText
+          ? [
+              {
+                label: 'Keep the selection as evidence…',
+                icon: FileCheck2,
+                disabled: !focusedHasSelection,
+                onSelect: () => keepSelection(focusedId),
+              },
+            ]
+          : []),
+        ...(canKeepLines
+          ? [
+              {
+                label: 'Keep the last screen as evidence…',
+                icon: FileCheck2,
+                onSelect: () => keepLines(focusedId, screenLines(terminals.terminal(focusedId)?.rows)),
+              },
+              {
+                label: `Keep the last ${DEFAULT_LINES} lines as evidence…`,
+                icon: FileCheck2,
+                onSelect: () => keepLines(focusedId),
+              },
+            ]
+          : []),
+        ...(canSaveLines && (canKeepText || canKeepLines) ? [{ type: 'separator' as const }] : []),
+        ...(canSaveLines
+          ? [{ label: 'Save the last lines as a file…', icon: Download, onSelect: () => saveLines(focusedId) }]
+          : []),
+      ]
+    : [];
+
   const content = (() => {
     // A method this build does not have is not a failure to shout about.
     if (sessions.error?.code === 'unknown_method') {
@@ -554,6 +677,7 @@ export default function TerminalPage() {
             paneCount={layout.panes.length}
             broadcasting={layout.broadcast && targets.length > 1 && !layout.excluded.includes(pane.id)}
             actions={actions}
+            capture={capture}
             dragging={dragging}
             draggingCanSplit={draggingCanSplit}
             onDragging={setDragging}
@@ -665,6 +789,36 @@ export default function TerminalPage() {
                   {focusedSession?.logging ? 'Stop logging' : 'Log session'}
                 </span>
               </Button>
+              {hasLogs && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={Archive}
+                  aria-label="Session logs"
+                  title="Read the logs of sessions that were written to disk"
+                  onClick={() => setLogsOpen(true)}
+                >
+                  <span className={styles.label}>Logs</span>
+                </Button>
+              )}
+              {captureItems.length > 0 && (
+                <DropdownMenu
+                  aria-label="Capture from this session"
+                  trigger={
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={FileCheck2}
+                      disabled={!focusedId}
+                      aria-label="Capture"
+                      title="Keep output as evidence, or save it as a file"
+                    >
+                      <span className={styles.label}>Capture</span>
+                    </Button>
+                  }
+                  items={captureItems}
+                />
+              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -691,6 +845,54 @@ export default function TerminalPage() {
               </Button>
 
               <ToolbarSpacer />
+              <Popover
+                aria-label="Clips"
+                placement="bottom-end"
+                open={clipsOpen}
+                onOpenChange={setClipsOpen}
+                trigger={
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={Clipboard}
+                    aria-label={clipCount === 0 ? 'Clips' : `Clips, ${clipCount}`}
+                    title="What was copied through a button that keeps a clip"
+                  >
+                    <span className={styles.label}>Clips</span>
+                    {clipCount > 0 && <span className={styles.badge}>{clipCount}</span>}
+                  </Button>
+                }
+              >
+                <ClipsPanel
+                  typeInto={clipGoesTo}
+                  onType={(clip) => {
+                    if (!focusedId) return;
+                    setClipsOpen(false);
+                    // A clip is text from somewhere else: it goes down the one
+                    // road pasted text takes, and is asked about like a paste.
+                    terminals.paste(focusedId, clip.text, 'clip');
+                    terminals.focus(focusedId);
+                  }}
+                  onKeep={
+                    canKeepText
+                      ? (clip) => {
+                          setClipsOpen(false);
+                          keep.keep({
+                            kind: 'text',
+                            text: clip.text,
+                            title: clip.label,
+                            from: `a clip — “${clip.label}”, copied in ${clip.source}`,
+                          });
+                        }
+                      : undefined
+                  }
+                  onSnippet={(clip) => {
+                    setClipsOpen(false);
+                    setSnippetSeed({ text: clip.text, nonce: Date.now() });
+                    setSnippetsOpen(true);
+                  }}
+                />
+              </Popover>
               <Button
                 variant="primary"
                 size="sm"
@@ -757,17 +959,32 @@ export default function TerminalPage() {
 
       <SnippetsDrawer
         open={snippetsOpen}
-        onClose={() => setSnippetsOpen(false)}
+        onClose={() => {
+          setSnippetsOpen(false);
+          setSnippetSeed(null);
+        }}
         profile={focusedSession?.device_id ? deviceProfile(devices.data, focusedSession.device_id) : null}
-        destination={focusedSession?.title ?? null}
-        onSend={(snippet: Snippet) => {
+        sessions={sessionList}
+        focusedId={focusedId}
+        broadcast={layout.broadcast && targets.length > 1 ? targets : []}
+        seed={snippetSeed}
+        onPaste={(snippet: Snippet) => {
           if (!focusedId) return;
           setSnippetsOpen(false);
           // As a snippet, so that its last newline is not sent: the Enter is
           // never ours.
           terminals.paste(focusedId, snippet.text, 'snippet');
         }}
+        onSent={(sessionId) => {
+          setSnippetsOpen(false);
+          setSnippetSeed(null);
+          terminals.focus(sessionId);
+        }}
       />
+
+      {hasLogs && <LogsDrawer open={logsOpen} onClose={() => setLogsOpen(false)} devices={devices.data} />}
+      <SaveLinesDialog session={saving} onClose={() => setSaving(null)} />
+      {keep.dialog}
     </Page>
   );
 }

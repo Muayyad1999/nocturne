@@ -44,7 +44,7 @@ import type {
 } from '@/api/types/terminal';
 import { confirm } from '@/design/Dialog';
 import { toast } from '@/design/Toast';
-import { pasteRisk, pasteSummary, pasteTitle } from './paste';
+import { pasteConfirmLabel, pasteRisk, pasteSummary, pasteTitle } from './paste';
 import { PasteFunnel, type PasteQuestion, type PasteSource } from './pasteFunnel';
 import { decodeBase64, SessionStream } from './stream';
 
@@ -119,7 +119,7 @@ function askPlainly(question: PasteQuestion): Promise<boolean> {
   return confirm({
     title: pasteTitle(question),
     description: sentences.join(' '),
-    confirmLabel: 'Paste anyway',
+    confirmLabel: pasteConfirmLabel(question.source),
     tone: risk && risk.dangerous > 0 ? 'danger' : 'default',
   });
 }
@@ -506,6 +506,16 @@ class Terminals {
     this.pastes.offer(id, text, source).catch((error: unknown) => {
       toast.error('The paste was not sent', { description: reason(error) });
     });
+  }
+
+  /**
+   * Puts a question about text that is typed by the engine, not from here —
+   * a snippet sent with `terminal.snippets.send` — to the person, on the same
+   * sheet and in the same queue as a paste's. True means yes; nothing is sent
+   * by asking.
+   */
+  confirm(question: PasteQuestion): Promise<boolean> {
+    return this.pastes.confirm(question);
   }
 
   /**

@@ -11,7 +11,9 @@ import {
   ClipboardPaste,
   Columns2,
   Copy,
+  Download,
   Eraser,
+  FileCheck2,
   RotateCw,
   Search,
   Sparkles,
@@ -62,9 +64,25 @@ export interface PaneActions {
    */
   pasteFromClipboard: (sessionId: string) => void;
   copySelection: (sessionId: string) => void;
+  /** Keeps the selection as evidence: text this window holds, labelled as supplied by the operator. */
+  keepSelection: (sessionId: string) => void;
+  /** Keeps the last lines as evidence: the engine reads the session itself. */
+  keepLines: (sessionId: string) => void;
+  /** Saves the last lines, as the engine reads them back, as a file. */
+  saveLines: (sessionId: string) => void;
   explain: (sessionId: string) => void;
   clear: (sessionId: string) => void;
   connect: () => void;
+}
+
+/**
+ * Which of the capture actions this build has. One that is false is not
+ * drawn: not in the context menu, not beside a selection.
+ */
+export interface PaneCapture {
+  keepSelection: boolean;
+  keepLines: boolean;
+  saveLines: boolean;
 }
 
 export interface PaneProps {
@@ -76,6 +94,7 @@ export interface PaneProps {
   /** Typing goes to every pane that is not held back. */
   broadcasting: boolean;
   actions: PaneActions;
+  capture: PaneCapture;
   /** The tab being dragged right now, if any. */
   dragging: string | null;
   /** Whether dropping the dragged tab in a new pane would change anything. */
@@ -108,6 +127,7 @@ export function Pane({
   paneCount,
   broadcasting,
   actions,
+  capture,
   dragging,
   draggingCanSplit,
   onDragging,
@@ -219,6 +239,7 @@ export function Pane({
             key={active}
             sessionId={active}
             actions={actions}
+            capture={capture}
             onFind={() => onFinding(true)}
             finding={finding}
             title={info?.title ?? active}
@@ -325,6 +346,7 @@ interface SurfaceProps {
   sessionId: string;
   title: string;
   actions: PaneActions;
+  capture: PaneCapture;
   onFind: () => void;
   /** While finding, the highlighted match is a match, not a selection. */
   finding: boolean;
@@ -334,7 +356,7 @@ interface SurfaceProps {
  * Where the terminal is lent to the pane. The element comes from the registry
  * and goes back to it on unmount, so the session keeps running.
  */
-function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
+function Surface({ sessionId, title, actions, capture, onFind, finding }: SurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const view = useSyncExternalStore(terminals.subscribe, () => terminals.view(sessionId));
 
@@ -416,6 +438,29 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
     },
     { label: 'Paste…', icon: ClipboardPaste, onSelect: () => actions.pasteFromClipboard(sessionId) },
     { type: 'separator' },
+    ...(capture.keepSelection
+      ? [
+          {
+            label: 'Keep the selection as evidence…',
+            icon: FileCheck2,
+            disabled: view.selection === '',
+            onSelect: () => actions.keepSelection(sessionId),
+          },
+        ]
+      : []),
+    ...(capture.keepLines
+      ? [
+          {
+            label: 'Keep the last lines as evidence…',
+            icon: FileCheck2,
+            onSelect: () => actions.keepLines(sessionId),
+          },
+        ]
+      : []),
+    ...(capture.saveLines
+      ? [{ label: 'Save the last lines as a file…', icon: Download, onSelect: () => actions.saveLines(sessionId) }]
+      : []),
+    ...(capture.keepSelection || capture.keepLines || capture.saveLines ? [{ type: 'separator' as const }] : []),
     {
       label: 'Explain the selection',
       icon: Sparkles,
@@ -477,6 +522,11 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
           <Button size="sm" variant="ai" icon={Sparkles} onClick={() => actions.explain(sessionId)}>
             Explain
           </Button>
+          {capture.keepSelection && (
+            <Button size="sm" icon={FileCheck2} onClick={() => actions.keepSelection(sessionId)}>
+              Keep
+            </Button>
+          )}
           <Button size="sm" icon={Copy} onClick={() => actions.copySelection(sessionId)}>
             Copy
           </Button>

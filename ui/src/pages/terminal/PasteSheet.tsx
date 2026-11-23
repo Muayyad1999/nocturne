@@ -2,7 +2,7 @@
  * The seat belt: what is about to be pasted, line by line, with what the
  * device's own policy thinks of each line.
  *
- * It is not a lock. *Paste anyway* has the focus the moment the sheet opens,
+ * It is not a lock. The button that says yes has the focus the moment the sheet opens,
  * so Enter sends and Escape does not — one keystroke either way.
  */
 
@@ -12,7 +12,7 @@ import { Button } from '@/design/Button';
 import { Dialog } from '@/design/Dialog';
 import { Kbd } from '@/design/Kbd';
 import styles from './PasteSheet.module.css';
-import { pasteRisk, pasteSummary, pasteTitle, shownLines } from './paste';
+import { pasteConfirmLabel, pasteRisk, pasteSummary, pasteTitle, shownLines } from './paste';
 import type { PasteQuestion } from './pasteFunnel';
 
 /** Lines shown in full; a paste longer than this is summarised at the end. */
@@ -61,7 +61,7 @@ export function PasteSheet({ request, onCancel, onConfirm }: PasteSheetProps) {
             icon={ClipboardPaste}
             onClick={() => onConfirm(request)}
           >
-            Paste anyway <Kbd shortcut="enter" />
+            {pasteConfirmLabel(request.source)} <Kbd shortcut="enter" />
           </Button>
         </>
       }
