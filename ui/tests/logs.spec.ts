@@ -269,8 +269,10 @@ test('says the receiver is off and gives the exact command for a real device', a
   await expect(page.getByRole('heading', { name: 'No line has arrived yet' })).toBeVisible();
   await expect(page.getByText(/No line matches this search/)).toHaveCount(0);
 
-  // A build without the trap receiver says so rather than offering a switch.
-  await expect(hint(page)).toContainText('SNMP traps and flow collection are not in this build');
+  // The engine has a trap receiver and a flow collector now, both off until
+  // somebody switches them on, so the screen may no longer call them absent.
+  // (Their cards and switches are the next change to this screen.)
+  await expect(hint(page).getByText(/not in this build/)).toHaveCount(0);
 
   expect(console.messages).toEqual([]);
 });
