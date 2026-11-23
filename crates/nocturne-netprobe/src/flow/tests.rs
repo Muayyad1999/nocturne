@@ -1,6 +1,9 @@
 //! Decoder tests with export datagrams written out field by field from the specifications:
 //! Cisco's NetFlow v5 format, RFC 3954 (v9) and RFC 7011 (IPFIX).
 
+mod captures;
+mod traffic;
+
 use std::net::SocketAddr;
 
 use pretty_assertions::assert_eq;
@@ -1092,6 +1095,244 @@ fn hostile_templates_cannot_hang_or_bloat_the_decoder() {
     assert_eq!(records[0].src, "10.9.9.9");
 }
 
+/// The fastest of five goes at `work`. A decode that takes a few milliseconds can be held
+/// up for much longer by whatever else the machine is doing; it is not held up five times.
+fn fastest_of_five(mut work: impl FnMut() -> std::time::Duration) -> std::time::Duration {
+    (0..5).map(|_| work()).min().unwrap_or_default()
+}
+
+/// What one hostile datagram may cost. Each of the shapes below took between half a second
+/// and three in a debug build before the decoder was made to do nothing per record that
+/// looks at the whole set or at every template; they take a few milliseconds now.
+const A_DATAGRAMS_WORTH: std::time::Duration = std::time::Duration::from_millis(150);
+
+#[test]
+fn a_datagram_of_thousands_of_templates_costs_what_its_size_is() {
+    // Seven thousand new templates in one datagram, into a table that is already full:
+    // every one of them makes the oldest go.
+    let flood = |source: u32| {
+        let mut content = Bytes::default();
+        for n in 0..7_000u16 {
+            content = content.u16(256 + n).u16(1).u16(8).u16(4);
+        }
+        v9_message(source, 1, &[set(0, content)])
+    };
+    let mut decoder = Decoder::new();
+    decoder.decode(&flood(1), exporter()).unwrap();
+    assert_eq!(decoder.stats().templates, 4096);
+    let mut source = 1;
+    let took = fastest_of_five(|| {
+        source += 1;
+        let datagram = flood(source);
+        let started = std::time::Instant::now();
+        decoder.decode(&datagram, exporter()).unwrap();
+        started.elapsed()
+    });
+    assert!(took < A_DATAGRAMS_WORTH, "{took:?}");
+    assert_eq!(decoder.stats().templates, 4096);
+    // And the ones that went were the oldest: of the last datagram's seven thousand, the
+    // first 2,904 are gone and the 4,096 after them are there.
+    let data = |template: u16| {
+        v9_message(
+            source,
+            1,
+            &[set(256 + template, Bytes::default().ip4([10, 9, 9, 9]))],
+        )
+    };
+    let before = decoder.stats().missing_template_sets;
+    assert_eq!(decoder.decode(&data(2_903), exporter()).unwrap(), vec![]);
+    assert_eq!(decoder.stats().missing_template_sets, before + 1);
+    assert_eq!(decoder.decode(&data(2_904), exporter()).unwrap().len(), 1);
+    assert_eq!(decoder.decode(&data(6_999), exporter()).unwrap().len(), 1);
+}
+
+#[test]
+fn a_template_that_is_redefined_is_no_longer_the_oldest() {
+    let define = |id: u16| {
+        v9_message(
+            1,
+            1,
+            &[set(0, Bytes::default().u16(id).u16(1).u16(8).u16(4))],
+        )
+    };
+    let known = |decoder: &mut Decoder, id: u16| {
+        let data = v9_message(1, 1, &[set(id, Bytes::default().ip4([10, 0, 0, 1]))]);
+        decoder.decode(&data, exporter()).unwrap().len() == 1
+    };
+    let mut decoder = Decoder::new();
+    // 256 is the first there is, then the table is filled to the brim.
+    for id in 256..256 + 4096u16 {
+        decoder.decode(&define(id), exporter()).unwrap();
+    }
+    assert_eq!(decoder.stats().templates, 4096);
+    // Said again, it is the newest: the one that makes room for the next is 257.
+    decoder.decode(&define(256), exporter()).unwrap();
+    decoder.decode(&define(9_000), exporter()).unwrap();
+    assert_eq!(decoder.stats().templates, 4096);
+    assert!(known(&mut decoder, 256), "the redefined template was kept");
+    assert!(!known(&mut decoder, 257), "the oldest one went");
+    assert!(known(&mut decoder, 258));
+    assert!(known(&mut decoder, 9_000));
+}
+
+#[test]
+fn a_set_of_zeros_with_something_at_its_end_is_read_once_not_once_per_record() {
+    // Sixteen thousand four-byte records of zeros, and one byte after them that is not: no
+    // record is padding until the end, and before each of them "is the rest all zeros?" was
+    // asked of the whole rest.
+    let mut content = vec![0u8; 64_000];
+    content.extend([1, 0, 0, 0]);
+    let v9 = v9_message(1, 1, &[set(0, Bytes::default().raw(&content))]);
+    let ipfix = ipfix_message(1, &[set(2, Bytes::default().raw(&content))]);
+    for datagram in [v9, ipfix] {
+        let took = fastest_of_five(|| {
+            let mut decoder = Decoder::new();
+            let started = std::time::Instant::now();
+            decoder.decode(&datagram, exporter()).unwrap();
+            started.elapsed()
+        });
+        assert!(took < A_DATAGRAMS_WORTH, "{took:?}");
+    }
+
+    // What padding is has not changed: zeros after the last record, however many, are not
+    // a template, and a template after zeros that are a (reserved) record still is one.
+    let mut decoder = Decoder::new();
+    let padded = Bytes::default().u16(300).u16(1).u16(8).u16(4).raw(&[0; 12]);
+    decoder
+        .decode(&v9_message(1, 1, &[set(0, padded)]), exporter())
+        .unwrap();
+    assert_eq!(decoder.stats().templates, 1);
+    let after_zeros = Bytes::default().raw(&[0; 8]).u16(301).u16(1).u16(8).u16(4);
+    decoder
+        .decode(&v9_message(1, 1, &[set(0, after_zeros)]), exporter())
+        .unwrap();
+    assert_eq!(decoder.stats().templates, 2);
+}
+
+#[test]
+fn withdrawing_everything_over_and_over_looks_at_the_templates_once() {
+    // A full table that belongs to somebody else, and a datagram that withdraws every
+    // template of its own sender fifteen thousand times — in one set, and in as many sets.
+    let mut decoder = Decoder::new();
+    let mut content = Bytes::default();
+    for n in 0..4_096u16 {
+        content = content.u16(256 + n).u16(1).u16(8).u16(4);
+    }
+    decoder
+        .decode(&ipfix_message(9, &[set(2, content)]), exporter())
+        .unwrap();
+    assert_eq!(decoder.stats().templates, 4096);
+    let mut in_one_set = Bytes::default();
+    for _ in 0..15_000 {
+        in_one_set = in_one_set.u16(2).u16(0);
+    }
+    let one_set = ipfix_message(7, &[set(2, in_one_set)]);
+    let sets: Vec<Bytes> = (0..7_500)
+        .map(|_| set(2, Bytes::default().u16(2).u16(0)))
+        .collect();
+    let many_sets = ipfix_message(7, &sets);
+    for datagram in [one_set, many_sets] {
+        let took = fastest_of_five(|| {
+            let started = std::time::Instant::now();
+            decoder.decode(&datagram, exporter()).unwrap();
+            started.elapsed()
+        });
+        assert!(took < A_DATAGRAMS_WORTH, "{took:?}");
+    }
+    assert_eq!(
+        decoder.stats().templates,
+        4096,
+        "another observation domain's templates are not this one's to withdraw"
+    );
+
+    // Withdrawing everything twice still withdraws what was learned in between.
+    let template = |id: u16| set(2, Bytes::default().u16(id).u16(1).u16(8).u16(4));
+    let withdraw_all = || set(2, Bytes::default().u16(2).u16(0));
+    let mut decoder = Decoder::new();
+    decoder
+        .decode(
+            &ipfix_message(7, &[withdraw_all(), template(300), withdraw_all()]),
+            exporter(),
+        )
+        .unwrap();
+    assert_eq!(decoder.stats().templates, 0);
+    decoder
+        .decode(
+            &ipfix_message(
+                7,
+                &[template(300), withdraw_all(), withdraw_all(), template(301)],
+            ),
+            exporter(),
+        )
+        .unwrap();
+    assert_eq!(decoder.stats().templates, 1);
+    // And a withdrawal in the next datagram is a new one.
+    decoder
+        .decode(&ipfix_message(7, &[withdraw_all()]), exporter())
+        .unwrap();
+    assert_eq!(decoder.stats().templates, 0);
+}
+
+#[test]
+fn a_field_of_no_bytes_is_no_field() {
+    // A thousand fields of length zero and one byte of address: sixty thousand "records"
+    // in a datagram, each of which used to be a thousand steps.
+    let mut fields = Bytes::default().u16(300).u16(1_024);
+    for _ in 0..1_023 {
+        fields = fields.u16(8).u16(0);
+    }
+    fields = fields.u16(8).u16(1);
+    let mut decoder = Decoder::new();
+    decoder
+        .decode(&v9_message(1, 1, &[set(0, fields)]), exporter())
+        .unwrap();
+    let data = v9_message(1, 1, &[set(300, Bytes::default().raw(&vec![7u8; 60_000]))]);
+    let took = fastest_of_five(|| {
+        let started = std::time::Instant::now();
+        let records = decoder.decode(&data, exporter()).unwrap();
+        let took = started.elapsed();
+        assert_eq!(records.len(), 60_000);
+        took
+    });
+    // Sixty thousand records are sixty thousand records; they are not sixty million steps.
+    assert!(took < A_DATAGRAMS_WORTH * 4, "{took:?}");
+
+    // An empty field between real ones changes nothing about what the real ones say.
+    let with_empty = set(
+        0,
+        Bytes::default()
+            .u16(301)
+            .u16(4)
+            .u16(8)
+            .u16(4)
+            .u16(1)
+            .u16(0)
+            .u16(12)
+            .u16(4)
+            .u16(1)
+            .u16(4),
+    );
+    let record = set(
+        301,
+        Bytes::default()
+            .ip4([10, 0, 0, 1])
+            .ip4([10, 0, 0, 2])
+            .u32(1_500),
+    );
+    let records = decoder
+        .decode(&v9_message(1, 2, &[with_empty, record]), exporter())
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        (
+            records[0].src.as_str(),
+            records[0].dst.as_str(),
+            records[0].bytes
+        ),
+        ("10.0.0.1", "10.0.0.2", 1_500)
+    );
+}
+
 #[test]
 fn truncated_and_random_datagrams_never_panic() {
     let valid: Vec<Vec<u8>> = vec![
@@ -1277,19 +1518,30 @@ fn top_talkers_edge_cases() {
 
 // --------------------------------------------------------------------- collector
 
+/// The next batch of a collector, which a test never waits for longer than five seconds.
+async fn next(queue: &mut FlowQueue) -> FlowBatch {
+    tokio::time::timeout(Duration::from_secs(5), queue.recv())
+        .await
+        .expect("a batch arrives")
+        .expect("the collector is running")
+}
+
 #[tokio::test]
 async fn collector_decodes_what_exporters_send() {
-    let (collector, mut batches) = FlowCollector::start("127.0.0.1:0".parse().unwrap())
+    let (collector, mut batches) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 1_000)
         .await
         .unwrap();
     let address = collector.local_addr();
     let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
     exporter.send_to(&v5_datagram(), address).await.unwrap();
-    let batch = tokio::time::timeout(Duration::from_secs(5), batches.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let batch = next(&mut batches).await;
+    assert_eq!(
+        (batch.exporter.to_string().as_str(), batch.version),
+        ("127.0.0.1", 5)
+    );
+    assert_eq!((batch.sets_without_template, batch.templates), (0, 0));
+    let batch = batch.records;
     assert_eq!(batch.len(), 2);
     assert_eq!(
         (batch[0].exporter.as_str(), batch[0].version, batch[0].bytes),
@@ -1314,10 +1566,31 @@ async fn collector_decodes_what_exporters_send() {
         .send_to(&v9_message(1, 2, &[v9_data()]), address)
         .await
         .unwrap();
-    let batch = tokio::time::timeout(Duration::from_secs(5), batches.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    // A datagram that held no flow is still reported: it says an exporter is there, that its
+    // data could not be read yet, and then that its template has arrived.
+    let batch = next(&mut batches).await;
+    assert_eq!(
+        (
+            batch.version,
+            batch.records.len(),
+            batch.sets_without_template,
+            batch.templates
+        ),
+        (9, 0, 1, 0),
+        "data before its template is counted against the exporter, not guessed at"
+    );
+    let batch = next(&mut batches).await;
+    assert_eq!(
+        (
+            batch.records.len(),
+            batch.sets_without_template,
+            batch.templates
+        ),
+        (0, 0, 1)
+    );
+    let batch = next(&mut batches).await;
+    assert_eq!((batch.sets_without_template, batch.templates), (0, 1));
+    let batch = batch.records;
     assert_eq!(batch.len(), 2);
     assert_eq!((batch[0].version, batch[0].dst.as_str()), (9, "192.0.2.80"));
 
@@ -1328,11 +1601,12 @@ async fn collector_decodes_what_exporters_send() {
         )
         .await
         .unwrap();
-    let batch = tokio::time::timeout(Duration::from_secs(5), batches.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let batch = next(&mut batches).await;
+    assert_eq!((batch.version, batch.templates), (10, 2));
+    let batch = batch.records;
     assert_eq!(batch[1].start_ms, 1_699_999_999_000);
+    assert_eq!(collector.waiting(), 0, "everything decoded has been taken");
+    assert_eq!(collector.dropped(), Dropped::default());
 
     assert_eq!(
         collector.stats(),
@@ -1348,8 +1622,8 @@ async fn collector_decodes_what_exporters_send() {
     // Stopping releases the port; so does dropping.
     collector.stop().await;
     assert!(UdpSocket::bind(address).await.is_ok());
-    let (collector, _batches) = FlowCollector::start(address).await.unwrap();
-    let error = FlowCollector::start(address).await.unwrap_err();
+    let (collector, _batches) = FlowCollector::start(address, 1_000).await.unwrap();
+    let error = FlowCollector::start(address, 1_000).await.unwrap_err();
     assert!(error.to_string().contains("already using it"), "{error}");
     drop(collector);
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1367,4 +1641,450 @@ fn records_and_stats_are_json() {
     assert_eq!(back, records[0]);
     let stats = serde_json::to_value(DecoderStats::default()).unwrap();
     assert_eq!(stats["missing_template_sets"], 0);
+}
+
+// ------------------------------------------------------------------ the queue
+
+#[tokio::test]
+async fn a_collector_nobody_empties_drops_and_counts_instead_of_growing() {
+    // Room for five records, and every datagram holds two.
+    let (collector, mut queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 5)
+        .await
+        .unwrap();
+    let address = collector.local_addr();
+    let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+    // Nobody takes anything. Two datagrams of two records fit under five; the rest do not.
+    for _ in 0..40 {
+        exporter.send_to(&v5_datagram(), address).await.unwrap();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while collector.stats().packets < 40 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the collector decoded {:?}",
+            collector.stats()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(collector.waiting(), 4, "never more than the limit");
+    assert_eq!(
+        collector.dropped(),
+        Dropped {
+            datagrams: 38,
+            records: 76
+        },
+        "what did not fit is counted, record for record"
+    );
+    assert_eq!(collector.stats().records, 80, "all of it was decoded");
+
+    // Taking what waits makes room again, and the collector is still listening.
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+    assert_eq!(collector.waiting(), 0);
+    exporter.send_to(&v5_datagram(), address).await.unwrap();
+    assert_eq!(next(&mut queue).await.records.len(), 2);
+    assert_eq!(collector.dropped().datagrams, 38);
+}
+
+#[tokio::test]
+async fn a_datagram_bigger_than_the_queue_is_let_through_when_nothing_waits() {
+    let (collector, mut queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 1)
+        .await
+        .unwrap();
+    let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    exporter
+        .send_to(&v5_datagram(), collector.local_addr())
+        .await
+        .unwrap();
+    assert_eq!(
+        next(&mut queue).await.records.len(),
+        2,
+        "a limit smaller than one datagram must not mean that nothing ever arrives"
+    );
+    assert_eq!(collector.dropped(), Dropped::default());
+}
+
+#[test]
+fn an_ipv4_sender_reported_the_ipv6_way_is_still_its_ipv4_address() {
+    assert_eq!(
+        canonical("[::ffff:192.0.2.1]:2055".parse().unwrap()),
+        "192.0.2.1:2055".parse().unwrap()
+    );
+    // What is not an IPv4 address in disguise stays what it is.
+    for peer in ["192.0.2.1:2055", "[2001:db8::1]:2055", "[::1]:9"] {
+        let peer: SocketAddr = peer.parse().unwrap();
+        assert_eq!(canonical(peer), peer);
+    }
+}
+
+#[tokio::test]
+async fn an_ipv4_exporter_is_an_ipv4_address_on_a_socket_bound_to_every_family() {
+    let Ok((collector, mut queue)) = FlowCollector::start("[::]:0".parse().unwrap(), 100).await
+    else {
+        eprintln!("skipped: this machine has no IPv6 socket to bind");
+        return;
+    };
+    let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = collector.local_addr().port();
+    if exporter
+        .send_to(&v5_datagram(), ("127.0.0.1", port))
+        .await
+        .is_err()
+    {
+        eprintln!("skipped: the IPv6 socket does not take IPv4 here");
+        return;
+    }
+    let Ok(Some(batch)) = tokio::time::timeout(Duration::from_secs(2), queue.recv()).await else {
+        eprintln!("skipped: the IPv6 socket does not take IPv4 here (IPV6_V6ONLY)");
+        return;
+    };
+    // The system reports the sender as ::ffff:127.0.0.1; an inventory knows it as 127.0.0.1.
+    assert_eq!(batch.exporter.to_string(), "127.0.0.1");
+    assert_eq!(batch.records[0].exporter, "127.0.0.1");
+}
+
+#[tokio::test]
+async fn datagrams_without_flows_cannot_pile_up_either() {
+    let (collector, _queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 5)
+        .await
+        .unwrap();
+    let exporter = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    // Templates only: no record, so the record count never moves. The queue still holds
+    // at most as many datagrams as its limit.
+    for _ in 0..30 {
+        exporter
+            .send_to(&v9_message(1, 1, &[v9_template()]), collector.local_addr())
+            .await
+            .unwrap();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while collector.stats().packets < 30 {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        collector.dropped(),
+        Dropped {
+            datagrams: 25,
+            records: 0
+        }
+    );
+}
+
+// ------------------------------------------------------------------ decoder memory
+
+#[test]
+fn templates_are_counted_per_exporter_address() {
+    let mut decoder = Decoder::new();
+    let first: SocketAddr = "192.0.2.1:2055".parse().unwrap();
+    let again: SocketAddr = "192.0.2.1:40000".parse().unwrap();
+    let other: SocketAddr = "192.0.2.2:2055".parse().unwrap();
+    decoder
+        .decode(&v9_message(1, 1, &[v9_template()]), first)
+        .unwrap();
+    decoder
+        .decode(&v9_message(2, 1, &[v9_template()]), first)
+        .unwrap();
+    // The same exporter after a restart, from another source port.
+    decoder
+        .decode(&v9_message(1, 1, &[v9_template()]), again)
+        .unwrap();
+    decoder
+        .decode(&ipfix_message(7, &[ipfix_template()]), other)
+        .unwrap();
+    assert_eq!(decoder.templates_of(first.ip()), 3);
+    assert_eq!(decoder.templates_of(other.ip()), 1);
+    assert_eq!(decoder.templates_of("192.0.2.3".parse().unwrap()), 0);
+
+    // Redefining a template is not one more, and a withdrawal is one less.
+    decoder
+        .decode(&v9_message(1, 1, &[v9_template()]), first)
+        .unwrap();
+    assert_eq!(decoder.templates_of(first.ip()), 3);
+    let withdraw_all = set(2, Bytes::default().u16(2).u16(0));
+    decoder
+        .decode(&ipfix_message(7, &[withdraw_all]), other)
+        .unwrap();
+    assert_eq!(decoder.templates_of(other.ip()), 0);
+    assert_eq!(decoder.stats().templates, 3);
+}
+
+/// A v9 options template (id 300) that announces a sampling interval, and its data.
+fn v9_sampling_options(rate: u32) -> [Bytes; 2] {
+    [
+        set(
+            1,
+            Bytes::default()
+                .u16(300)
+                .u16(4) // scope length
+                .u16(4) // option length
+                .u16(1) // scope: system
+                .u16(4)
+                .u16(34) // SAMPLING_INTERVAL
+                .u16(4),
+        ),
+        set(300, Bytes::default().u32(0).u32(rate)),
+    ]
+}
+
+#[test]
+fn sampling_rates_announced_from_made_up_sources_do_not_pile_up() {
+    let mut decoder = Decoder::new();
+    // Five times as many (exporter, source id) pairs as templates are kept (4,096), each
+    // announcing a rate. The templates are bounded; the rates have to be as well.
+    const SOURCES: u32 = 5 * 4096;
+    for source_id in 0..SOURCES {
+        let [template, data] = v9_sampling_options(100);
+        decoder
+            .decode(&v9_message(source_id, 2, &[template, data]), exporter())
+            .unwrap();
+        assert!(
+            decoder.rates_remembered() <= 2 * 4096,
+            "{} rates are remembered after {source_id} sources",
+            decoder.rates_remembered()
+        );
+    }
+    // The newest source is among those still known: its flows carry its rate.
+    let newest = SOURCES - 1;
+    let records = decoder
+        .decode(
+            &v9_message(newest, 3, &[v9_template(), v9_data()]),
+            exporter(),
+        )
+        .unwrap();
+    assert_eq!(records[0].sampling, 100);
+}
+
+#[test]
+fn ipfix_says_a_sampling_rate_as_size_out_of_population_too() {
+    // RFC 5477: samplingSize (309) packets are taken out of every samplingPopulation (310).
+    // Written from the RFC; no exporter at hand announces its rate this way.
+    let options = set(
+        3,
+        Bytes::default()
+            .u16(400)
+            .u16(3) // fields
+            .u16(1) // of which scope
+            .u16(149) // observationDomainId
+            .u16(4)
+            .u16(309)
+            .u16(4)
+            .u16(310)
+            .u16(4),
+    );
+    let data = set(400, Bytes::default().u32(7).u32(2).u32(1000));
+    let mut decoder = Decoder::new();
+    let records = decoder
+        .decode(
+            &ipfix_message(7, &[options, data, ipfix_template(), ipfix_data()]),
+            exporter(),
+        )
+        .unwrap();
+    assert_eq!(records[0].sampling, 500, "2 out of every 1000 is 1 in 500");
+}
+
+// ------------------------------------------------------------------ real exporters
+
+/// Bytes from the hex a capture was written down in (whitespace ignored).
+fn hex(text: &str) -> Vec<u8> {
+    let digits: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    digits
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
+/// What an exporter reported, in the terms the traffic is described in.
+fn reported(records: &[FlowRecord]) -> Vec<traffic::Flow> {
+    let mut flows: Vec<traffic::Flow> = records
+        .iter()
+        .map(|record| traffic::Flow {
+            src: record.src.clone(),
+            dst: record.dst.clone(),
+            src_port: record.src_port,
+            dst_port: record.dst_port,
+            protocol: record.protocol,
+            packets: record.packets,
+            bytes: record.bytes,
+            tos: record.tos,
+        })
+        .collect();
+    flows.sort();
+    flows
+}
+
+/// The traffic without its IPv6 conversation, which NetFlow v5 cannot carry.
+fn ipv4_only() -> Vec<traffic::Flow> {
+    traffic::flows()
+        .into_iter()
+        .filter(|flow| !flow.src.contains(':'))
+        .collect()
+}
+
+#[test]
+fn the_traffic_is_what_its_table_says() {
+    let flows = traffic::flows();
+    assert_eq!(flows.len(), 7);
+    assert_eq!(flows.iter().map(|flow| flow.packets).sum::<u64>(), 105);
+    assert_eq!(
+        flows.iter().map(|flow| flow.bytes).sum::<u64>(),
+        36_376,
+        "what nfdump added the same export up to"
+    );
+}
+
+#[test]
+fn what_softflowd_sent_is_decoded_in_every_version() {
+    for (name, capture, version, expected) in [
+        ("v5", captures::SOFTFLOWD_V5, 5, ipv4_only()),
+        ("v9", captures::SOFTFLOWD_V9, 9, traffic::flows()),
+        ("IPFIX", captures::SOFTFLOWD_IPFIX, 10, traffic::flows()),
+    ] {
+        let mut decoder = Decoder::new();
+        let records = decoder.decode(&hex(capture), exporter()).unwrap();
+        assert_eq!(reported(&records), expected, "softflowd {name}");
+        assert!(
+            records.iter().all(|record| record.version == version),
+            "{name}"
+        );
+        assert!(
+            records.iter().all(|record| record.sampling <= 1),
+            "softflowd {name} did not sample, and says 1 or nothing: {records:?}"
+        );
+        assert_eq!(decoder.stats().missing_template_sets, 0, "{name}");
+        assert_eq!(decoder.stats().errors, 0, "{name}");
+    }
+}
+
+#[test]
+fn what_softflowd_sent_carries_the_tcp_flags_and_the_marking_it_saw() {
+    let records = Decoder::new()
+        .decode(&hex(captures::SOFTFLOWD_V9), exporter())
+        .unwrap();
+    let voice = records
+        .iter()
+        .find(|record| record.src == "10.0.0.7")
+        .unwrap();
+    assert_eq!(voice.tos, 0xb8, "EF, as the packets were marked");
+    let download = records
+        .iter()
+        .find(|record| record.src == "192.0.2.80")
+        .unwrap();
+    assert_eq!(download.tcp_flags, 0x1b, "SYN, ACK, PSH and FIN were seen");
+    let ping = records.iter().find(|record| record.protocol == 1).unwrap();
+    assert_eq!(
+        (ping.src_port, ping.dst_port),
+        (0, 0x0800),
+        "an echo request: type 8, code 0, where NetFlow v5 puts it"
+    );
+}
+
+#[test]
+fn a_sampling_exporter_is_heard_saying_so_in_every_version() {
+    for (name, capture) in [
+        ("v5", captures::SOFTFLOWD_V5_SAMPLED),
+        ("v9", captures::SOFTFLOWD_V9_SAMPLED),
+        ("IPFIX", captures::SOFTFLOWD_IPFIX_SAMPLED),
+    ] {
+        let records = Decoder::new().decode(&hex(capture), exporter()).unwrap();
+        assert!(!records.is_empty(), "softflowd {name} -s 100");
+        for record in &records {
+            assert_eq!(record.sampling, 100, "softflowd {name} -s 100: {record:?}");
+            // What it counted is what it reports: one packet of the hundred, not a hundred.
+            assert_eq!(record.packets, 1, "{name}");
+        }
+    }
+}
+
+#[test]
+fn what_nfreplay_sent_is_the_same_traffic_under_another_template() {
+    let mut decoder = Decoder::new();
+    let records = decoder
+        .decode(&hex(captures::NFREPLAY_V9), exporter())
+        .unwrap();
+    assert_eq!(reported(&records), traffic::flows());
+    assert_eq!(decoder.stats().missing_template_sets, 0);
+    // nfreplay sends absolute times, in milliseconds.
+    assert!(
+        records
+            .iter()
+            .all(|record| record.start_ms > 1_700_000_000_000 && record.end_ms >= record.start_ms),
+        "{records:?}"
+    );
+
+    let records = Decoder::new()
+        .decode(&hex(captures::NFREPLAY_V5), exporter())
+        .unwrap();
+    assert_eq!(reported(&records), ipv4_only());
+}
+
+/// An exporter's program, when it is installed.
+fn installed(tool: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(["/usr/sbin", "/usr/local/sbin", "/usr/bin"].map(std::path::PathBuf::from))
+        .map(|directory| directory.join(tool))
+        .find(|candidate| candidate.is_file())
+}
+
+#[tokio::test]
+async fn softflowd_itself_is_collected_from_in_every_version() {
+    let Some(softflowd) = installed("softflowd") else {
+        eprintln!(
+            "skipped: softflowd is not installed (apt-get install softflowd), so no exporter \
+             was run; the datagrams one sent are still decoded by the tests above"
+        );
+        return;
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    std::fs::write(scratch.path().join("traffic.pcap"), traffic::pcap()).unwrap();
+
+    for (version, expected) in [
+        ("5", ipv4_only()),
+        ("9", traffic::flows()),
+        ("10", traffic::flows()),
+    ] {
+        let (collector, mut queue) = FlowCollector::start("127.0.0.1:0".parse().unwrap(), 10_000)
+            .await
+            .unwrap();
+        let target = format!("127.0.0.1:{}", collector.local_addr().port());
+        // It reads the capture file, exports every flow in it and exits. The pid file and
+        // the control socket go where the capture is, not into /var/run.
+        let output = tokio::process::Command::new(&softflowd)
+            .current_dir(scratch.path())
+            .args([
+                "-r",
+                "traffic.pcap",
+                "-n",
+                &target,
+                "-v",
+                version,
+                "-6",
+                "-d",
+            ])
+            .args(["-p", "softflowd.pid", "-c", "softflowd.ctl"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .expect("softflowd can be run");
+        assert!(
+            output.status.success(),
+            "softflowd -v {version} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let mut records = Vec::new();
+        while records.len() < expected.len() {
+            let batch = next(&mut queue).await;
+            assert_eq!(batch.exporter.to_string(), "127.0.0.1");
+            assert_eq!(batch.sets_without_template, 0, "softflowd -v {version}");
+            records.extend(batch.records);
+        }
+        assert_eq!(reported(&records), expected, "softflowd -v {version}");
+        assert_eq!(collector.stats().errors, 0, "softflowd -v {version}");
+        collector.stop().await;
+    }
 }

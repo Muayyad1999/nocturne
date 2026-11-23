@@ -1,155 +1,48 @@
-//! The syslog receiver and the supervisor that follows the settings.
+//! The supervisor: every receiver follows the `logs` settings section.
 //!
-//! Binding a socket is the one thing here that can fail for a reason the
-//! user has to act on — the port needs privileges, something else already
-//! has it, the address is not on this machine — so a failure is kept and
-//! reported through `logs.status` rather than logged and forgotten. The
-//! receiver is not retried in a loop: it is restarted when the settings
-//! change, because nothing else about the machine is going to change on its
-//! own.
+//! A receiver is something that listens on a socket — syslog
+//! ([`crate::syslog`]) and SNMP traps ([`crate::traps`]), which turn what
+//! arrives into log rows, and the flow collector ([`crate::flows`]), which
+//! only counts. The supervisor knows nothing about any of them
+//! beyond "apply the settings": each receiver's `apply` compares the
+//! settings with what it is running, does nothing when they are the same,
+//! and otherwise stops and starts itself, keeping a bind failure where
+//! `logs.status` can show it rather than returning it.
+//!
+//! **Where a new receiver plugs in** (the trap receiver is the worked
+//! example of one that stores; the flow collector does steps 1, 2, 3 and
+//! 5, and step 4 not at all — it stores nothing, so nothing of it is
+//! tailed, forwarded or shown to a rule):
+//!
+//! 1. its settings are a `#[serde(default)]` block in `settings::LogsSettings`,
+//!    off by default, on an unprivileged port;
+//! 2. its state is a block beside `state::SyslogState` in `state::LogsState`:
+//!    what holds its socket, a `ReceiverCounters`, a bounded queue;
+//! 3. its module has an `apply(&App)` like `syslog::apply`, and [`apply`]
+//!    below calls it — that one line is what makes it follow the settings
+//!    and `logs.restart`;
+//! 4. what it receives becomes `db::Prepared` rows (attributed with the
+//!    index, every stored string through `guard::clean`) and goes to
+//!    `ingest::commit` with its own counters; that is where the row is
+//!    written, tailed and shown to the rules, and where anything that taps
+//!    stored batches belongs;
+//! 5. its numbers are a field of `model::LogsStatus`, filled in by
+//!    `status::snapshot`.
 
-use std::net::{IpAddr, SocketAddr};
+use nocturne_app::{App, AppResult};
 
-use nocturne_app::util::now_ms;
-use nocturne_app::{App, AppError, AppResult};
-use nocturne_netprobe::syslog::SyslogServer;
-use tokio::sync::mpsc::{Sender, channel, error::TrySendError};
-
-use crate::settings::LogsSettings;
-use crate::state::LogsState;
-use crate::{ingest, status};
-
-/// Stop whatever is running, then start what the settings ask for.
+/// Bring every receiver in line with the settings.
 ///
 /// Never returns an error for a port that cannot be bound: that is a state
 /// of the receiver, not a failure of the call that tried to start it.
 pub async fn apply(app: &App) -> AppResult<()> {
-    let settings = LogsSettings::load(app);
-    let state = app.state::<LogsState>();
-    let generation = {
-        let mut receiver = state.receiver.lock();
-        // Nothing to do when the receiver is already running exactly this:
-        // rebinding would change the ports under whoever is sending.
-        if receiver.applied.as_ref() == Some(&settings.syslog)
-            && (receiver.server.is_some() || receiver.error.is_some() || !settings.syslog.enabled)
-        {
-            return Ok(());
-        }
-        receiver.applied = Some(settings.syslog.clone());
-        receiver.generation += 1;
-        receiver.enabled = settings.syslog.enabled;
-        receiver.listening.clear();
-        receiver.error = None;
-        // Dropping the old server closes its sockets and ends its tasks.
-        receiver.server = None;
-        receiver.generation
-    };
-    *state.queue.lock() = None;
-
-    if !settings.syslog.enabled {
-        status::publish(app);
-        return Ok(());
-    }
-
-    let bind: IpAddr = match settings.syslog.bind.trim().parse() {
-        Ok(bind) => bind,
-        Err(_) => {
-            fail(
-                app,
-                format!(
-                    "`{}` is not an address this machine can listen on (try 0.0.0.0 for every interface)",
-                    settings.syslog.bind
-                ),
-            );
-            return Ok(());
-        }
-    };
-    let udp = SocketAddr::new(bind, settings.syslog.udp_port);
-    let tcp =
-        (settings.syslog.tcp_port != 0).then(|| SocketAddr::new(bind, settings.syslog.tcp_port));
-
-    let (server, messages) = match SyslogServer::start(udp, tcp).await {
-        Ok(started) => started,
-        Err(err) => {
-            fail(app, err.to_string());
-            return Ok(());
-        }
-    };
-    let listening = std::iter::once(format!("udp {}", server.udp_addr()))
-        .chain(server.tcp_addr().map(|addr| format!("tcp {addr}")))
-        .collect::<Vec<_>>();
-
-    let limit = settings.queue_limit as usize;
-    let (queue, writer_queue) = channel(limit);
-    {
-        let mut receiver = state.receiver.lock();
-        if receiver.generation != generation {
-            // Another call overtook this one; its receiver wins and ours is
-            // dropped here, closing the sockets it just opened.
-            return Ok(());
-        }
-        receiver.listening = listening.clone();
-        receiver.server = Some(server);
-        receiver.queue_limit = limit;
-    }
-    *state.queue.lock() = Some(queue.clone());
-
-    app.spawn("logs.syslog.relay", relay(app.clone(), messages, queue));
-    app.spawn(
-        "logs.syslog.writer",
-        ingest::writer(app.clone(), writer_queue, generation),
-    );
-    app.audit(
-        "logs.receiver.start",
-        None,
-        format!("Syslog receiver listening on {}", listening.join(", ")),
-        serde_json::json!({"listening": listening}),
-    );
-    status::publish(app);
-    Ok(())
+    crate::syslog::apply(app).await?;
+    crate::traps::apply(app).await?;
+    crate::flows::apply(app).await
 }
 
-fn fail(app: &App, error: String) {
-    tracing::warn!(%error, "the syslog receiver could not start");
-    app.state::<LogsState>().receiver.lock().error = Some(error);
-    status::publish(app);
-}
-
-/// Everything the sockets parse, handed to the writer — or dropped and
-/// counted when the writer is more than [`QUEUE_LIMIT`] behind.
-async fn relay(
-    app: App,
-    mut messages: tokio::sync::mpsc::UnboundedReceiver<nocturne_netprobe::syslog::SyslogMessage>,
-    queue: Sender<nocturne_netprobe::syslog::SyslogMessage>,
-) {
-    let state = app.state::<LogsState>();
-    let mut batch = Vec::with_capacity(256);
-    // This loop does nothing but count and hand over, so the engine's own
-    // unbounded channel never builds up: the bound that matters is the
-    // writer's queue, which is the one the drop counter is about.
-    loop {
-        let received = messages.recv_many(&mut batch, 256).await;
-        if received == 0 {
-            return;
-        }
-        let now = now_ms();
-        let mut dropped = 0u64;
-        for message in batch.drain(..) {
-            state.counters.received(now);
-            match queue.try_send(message) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => dropped += 1,
-                Err(TrySendError::Closed(_)) => return,
-            }
-        }
-        state.rate.lock().record(now, received as u64);
-        if dropped > 0 {
-            state.counters.dropped(dropped);
-        }
-    }
-}
-
-/// Follow the settings: a change to the `logs` section restarts the receiver.
+/// Follow the settings: a change to the `logs` section is applied to every
+/// receiver, and each restarts only if its own part changed.
 pub fn spawn(app: &App) {
     let app = app.clone();
     tokio::spawn(async move {
@@ -158,7 +51,7 @@ pub fn spawn(app: &App) {
         // the receiver following settings nobody asked for any more.
         let mut events = app.subscribe();
         if let Err(err) = apply(&app).await {
-            tracing::error!(%err, "the syslog receiver could not be started");
+            tracing::error!(%err, "the receivers could not be started");
         }
         let shutdown = app.shutdown_token();
         loop {
@@ -172,42 +65,35 @@ pub fn spawn(app: &App) {
                         && event.payload["section"] == crate::settings::SECTION =>
                 {
                     if let Err(err) = apply(&app).await {
-                        tracing::error!(%err, "the syslog receiver could not be restarted");
+                        tracing::error!(%err, "the receivers could not be restarted");
                     }
                 }
                 Ok(event)
                     if event.topic == "devices.changed" || event.topic == "collect.updated" =>
                 {
                     crate::attribute::invalidate(&app);
+                    // A device may have been given another credential.
+                    crate::traps::forget(&app);
+                }
+                // What the trap receiver compares a community with is read
+                // from the vault and kept for a few seconds; a changed
+                // credential, or a vault that was locked, must count at once.
+                Ok(event)
+                    if event.topic == "credentials.changed" || event.topic == "vault.changed" =>
+                {
+                    crate::traps::forget(&app);
                 }
                 Ok(_) => {}
                 // Falling behind the bus loses events, not correctness: the
-                // next one still restarts the receiver.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                // next one still restarts the receivers. What was missed may
+                // have been a changed device or credential, so what is
+                // remembered of those is let go.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    crate::attribute::invalidate(&app);
+                    crate::traps::forget(&app);
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
-}
-
-/// The addresses the receiver is listening on, for tests and for the UI's
-/// "point your devices here" hint.
-pub fn listening(app: &App) -> Vec<String> {
-    app.state::<LogsState>().receiver.lock().listening.clone()
-}
-
-/// The UDP port actually bound, which is not the configured one when the
-/// configured one was 0.
-pub fn bound_port(app: &App, protocol: &str) -> AppResult<u16> {
-    listening(app)
-        .iter()
-        .find_map(|entry| {
-            let rest = entry.strip_prefix(protocol)?.trim();
-            rest.parse::<SocketAddr>().ok().map(|addr| addr.port())
-        })
-        .ok_or_else(|| {
-            AppError::unavailable(format!(
-                "the syslog receiver is not listening on {protocol}"
-            ))
-        })
 }

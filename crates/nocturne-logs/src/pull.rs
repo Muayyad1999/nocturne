@@ -323,8 +323,11 @@ pub fn store(app: &App, device_id: &str, command: &str, output: &str) -> AppResu
     // Oldest first, so the ids of a buffer keep the order it was written in.
     batch.sort_by_key(|item| item.entry.ts);
     let stored = db::insert_batch(app.store(), &mut batch)?.stored;
-    state.counters.stored(stored as u64);
+    state.syslog.counters.stored(stored as u64);
     crate::tail::offer(app, &batch);
+    // Lines a device kept and never sent are lines a log platform has not
+    // seen either. They say `via: pull` and carry the device's own time.
+    crate::forward::offer(app, &index, batch.iter().map(|item| &item.entry));
     let note = if lines.is_empty() {
         format!(
             "`{command}` returned no log lines: the device's buffer is empty or logging to it is off"

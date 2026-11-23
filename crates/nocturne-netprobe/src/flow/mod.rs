@@ -1,15 +1,22 @@
 //! Flow export collection: NetFlow v5, NetFlow v9 and IPFIX.
+//!
+//! The collector decodes what arrives and hands it on through a queue with a limit. An
+//! exporter sends as fast as its flow cache empties, and anybody who can reach the port can
+//! send more than that, so what waits to be taken is bounded by the number of flow records
+//! and whatever does not fit is dropped and counted ([`FlowCollector::dropped`]) rather than
+//! kept until the machine has no memory left.
 
 mod decode;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 use tokio::task::JoinHandle;
 
 pub use self::decode::{Decoder, DecoderStats};
@@ -138,37 +145,130 @@ fn application(record: &FlowRecord) -> String {
     format!("{protocol}/{port}")
 }
 
+/// What one export datagram held, as the collector hands it on.
+///
+/// A datagram that decoded is always reported, also when it carried no flow: one with only
+/// templates, or only data whose template has not arrived, still says that an exporter is
+/// there and what it speaks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowBatch {
+    /// The address the datagram came from. An IPv4 sender is an IPv4 address also when the
+    /// socket is bound to `::` (where the system reports it as `::ffff:a.b.c.d`).
+    pub exporter: IpAddr,
+    /// 5, 9, or 10 (IPFIX).
+    pub version: u8,
+    pub records: Vec<FlowRecord>,
+    /// Data sets in this datagram that were dropped because their template is not known.
+    pub sets_without_template: u32,
+    /// How many templates the decoder holds for this exporter's address after this datagram.
+    pub templates: u32,
+}
+
+/// What a collector threw away because nobody took it in time.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    /// Datagrams that decoded and were not handed on.
+    pub datagrams: u64,
+    /// The flow records in them.
+    pub records: u64,
+}
+
+/// The receiving end of a collector: one [`FlowBatch`] per datagram, oldest first.
+#[derive(Debug)]
+pub struct FlowQueue {
+    batches: Receiver<FlowBatch>,
+    waiting: Arc<AtomicUsize>,
+}
+
+impl FlowQueue {
+    /// The next datagram's worth. `None` once the collector has stopped and everything it had
+    /// decoded has been taken.
+    pub async fn recv(&mut self) -> Option<FlowBatch> {
+        let batch = self.batches.recv().await?;
+        self.waiting
+            .fetch_sub(batch.records.len(), Ordering::Relaxed);
+        Some(batch)
+    }
+}
+
+/// What the socket task and the collector's handle both see.
+#[derive(Debug, Default)]
+struct Shared {
+    stats: Mutex<DecoderStats>,
+    /// Flow records decoded and not yet taken from the queue.
+    waiting: Arc<AtomicUsize>,
+    dropped_datagrams: AtomicU64,
+    dropped_records: AtomicU64,
+}
+
+/// What a collector has counted. It can be read after the collector has stopped, which is
+/// when its numbers are final.
+#[derive(Clone, Debug)]
+pub struct FlowCounters(Arc<Shared>);
+
+impl FlowCounters {
+    /// What the collector's decoder has seen so far.
+    pub fn stats(&self) -> DecoderStats {
+        *self.0.stats.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What was decoded and then thrown away because the queue was full.
+    pub fn dropped(&self) -> Dropped {
+        Dropped {
+            datagrams: self.0.dropped_datagrams.load(Ordering::Relaxed),
+            records: self.0.dropped_records.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Flow records decoded and waiting to be taken from the queue right now.
+    pub fn waiting(&self) -> usize {
+        self.0.waiting.load(Ordering::Relaxed)
+    }
+}
+
 /// A running flow collector. It stops when [`stop`](FlowCollector::stop) is called or it is
 /// dropped.
 #[derive(Debug)]
 pub struct FlowCollector {
     local_addr: SocketAddr,
-    stats: Arc<Mutex<DecoderStats>>,
+    counters: FlowCounters,
     task: Option<JoinHandle<()>>,
 }
 
 impl FlowCollector {
-    /// Listens for NetFlow v5 / v9 and IPFIX export datagrams. The records of each datagram
-    /// arrive on the channel as one batch.
+    /// Listens for NetFlow v5 / v9 and IPFIX export datagrams. What each datagram held
+    /// arrives on the queue as one [`FlowBatch`].
+    ///
+    /// At most `queue_records` flow records wait to be taken (and at most that many
+    /// datagrams, for the ones that carry none); a datagram that would take the queue past
+    /// that is decoded — its templates are still learned — and then dropped and counted.
+    /// One datagram is always let onto an empty queue, however many records it holds, or a
+    /// limit smaller than a datagram would drop everything. A limit of zero is taken as one.
     pub async fn start(
         bind: SocketAddr,
-    ) -> Result<(FlowCollector, UnboundedReceiver<Vec<FlowRecord>>), ProbeError> {
+        queue_records: usize,
+    ) -> Result<(FlowCollector, FlowQueue), ProbeError> {
         let socket = UdpSocket::bind(bind)
             .await
             .map_err(|error| ProbeError::from_bind(error, "UDP", bind))?;
         // Exporters send in bursts when their flow cache expires; ask for room to queue them.
         let _ = socket2::SockRef::from(&socket).set_recv_buffer_size(4 * 1024 * 1024);
         let local_addr = socket.local_addr()?;
-        let (batches, receiver) = unbounded_channel();
-        let stats = Arc::new(Mutex::new(DecoderStats::default()));
-        let task = tokio::spawn(collect(socket, batches, stats.clone()));
+        let limit = queue_records.max(1);
+        let (batches, receiver) = channel(limit);
+        let shared = Arc::new(Shared::default());
+        let task = tokio::spawn(collect(socket, batches, shared.clone(), limit));
+        let waiting = shared.waiting.clone();
         Ok((
             FlowCollector {
                 local_addr,
-                stats,
+                counters: FlowCounters(shared),
                 task: Some(task),
             },
-            receiver,
+            FlowQueue {
+                batches: receiver,
+                waiting,
+            },
         ))
     }
 
@@ -177,9 +277,24 @@ impl FlowCollector {
         self.local_addr
     }
 
+    /// The collector's counters, as a handle that outlives it.
+    pub fn counters(&self) -> FlowCounters {
+        self.counters.clone()
+    }
+
     /// What the collector's decoder has seen so far.
     pub fn stats(&self) -> DecoderStats {
-        *self.stats.lock().unwrap_or_else(PoisonError::into_inner)
+        self.counters.stats()
+    }
+
+    /// What was decoded and then thrown away because the queue was full.
+    pub fn dropped(&self) -> Dropped {
+        self.counters.dropped()
+    }
+
+    /// Flow records decoded and waiting to be taken from the queue right now.
+    pub fn waiting(&self) -> usize {
+        self.counters.waiting()
     }
 
     /// Stops collecting; returns when the socket is closed.
@@ -199,16 +314,19 @@ impl Drop for FlowCollector {
     }
 }
 
+/// One exporter is one address, whichever family the socket reports it in: a socket bound to
+/// `::` reports an IPv4 sender as `::ffff:a.b.c.d`, and everything that knows the exporter —
+/// an inventory, its templates from before the collector was rebound — knows it as `a.b.c.d`.
+fn canonical(peer: SocketAddr) -> SocketAddr {
+    SocketAddr::new(peer.ip().to_canonical(), peer.port())
+}
+
 /// Receives and decodes datagrams until aborted, or until nobody listens to the records.
-async fn collect(
-    socket: UdpSocket,
-    batches: UnboundedSender<Vec<FlowRecord>>,
-    stats: Arc<Mutex<DecoderStats>>,
-) {
+async fn collect(socket: UdpSocket, batches: Sender<FlowBatch>, shared: Arc<Shared>, limit: usize) {
     let mut decoder = Decoder::new();
     let mut datagram = vec![0u8; 65_536];
     loop {
-        let (length, exporter) = match socket.recv_from(&mut datagram).await {
+        let (length, peer) = match socket.recv_from(&mut datagram).await {
             Ok(received) => received,
             Err(error) => {
                 tracing::debug!(%error, "flow receive failed");
@@ -216,16 +334,46 @@ async fn collect(
                 continue;
             }
         };
+        let exporter = canonical(peer);
+        let before = decoder.stats().missing_template_sets;
         let decoded = decoder.decode(&datagram[..length], exporter);
-        *stats.lock().unwrap_or_else(PoisonError::into_inner) = decoder.stats();
-        match decoded {
-            Ok(records) if records.is_empty() => {}
-            Ok(records) => {
-                if batches.send(records).is_err() {
-                    return;
-                }
+        let stats = decoder.stats();
+        *shared.stats.lock().unwrap_or_else(PoisonError::into_inner) = stats;
+        let records = match decoded {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::debug!(%exporter, %error, "flow datagram rejected");
+                continue;
             }
-            Err(error) => tracing::debug!(%exporter, %error, "flow datagram rejected"),
+        };
+        let count = records.len();
+        // Counted before it is offered, so the bound holds even while the other side is
+        // in the middle of taking a batch.
+        let waiting = shared.waiting.fetch_add(count, Ordering::Relaxed);
+        let refused = if waiting > 0 && waiting + count > limit {
+            true
+        } else {
+            let batch = FlowBatch {
+                exporter: exporter.ip(),
+                // The decoder accepted it, so the first two bytes are 5, 9 or 10.
+                version: datagram[1],
+                records,
+                sets_without_template: (stats.missing_template_sets - before)
+                    .min(u64::from(u32::MAX)) as u32,
+                templates: decoder.templates_of(exporter.ip()),
+            };
+            match batches.try_send(batch) {
+                Ok(()) => false,
+                Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Closed(_)) => return,
+            }
+        };
+        if refused {
+            shared.waiting.fetch_sub(count, Ordering::Relaxed);
+            shared.dropped_datagrams.fetch_add(1, Ordering::Relaxed);
+            shared
+                .dropped_records
+                .fetch_add(count as u64, Ordering::Relaxed);
         }
     }
 }

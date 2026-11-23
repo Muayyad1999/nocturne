@@ -406,3 +406,86 @@ async fn clearing_a_stream_takes_its_index_rows_with_it() {
     let audit = query(app, json!({"stream": "audit", "text": "log entries"})).await;
     assert_eq!(audit.len(), 1, "{audit:#?}");
 }
+
+#[tokio::test]
+async fn the_audit_trail_cannot_be_cleared_through_the_api_it_records() {
+    let lab = seeded().await;
+    let app = &lab.app;
+    // Something to lose: clearing a stream is itself audited.
+    app.rpc("logs.clear", json!({"stream": "syslog"}))
+        .await
+        .unwrap();
+    let before = query(app, json!({"stream": "audit", "limit": 500})).await;
+    assert!(!before.is_empty());
+
+    for stream in ["audit", "AUDIT"] {
+        let refused = app
+            .rpc("logs.clear", json!({"stream": stream}))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "forbidden", "{refused}");
+        assert!(refused.message.contains("audit trail"), "{refused}");
+    }
+    let refused = app
+        .rpc("logs.clear", json!({"stream": "audit", "before": 1}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.code, "forbidden",
+        "not even the part before some moment"
+    );
+
+    let after = query(app, json!({"stream": "audit", "limit": 500})).await;
+    assert_eq!(
+        after, before,
+        "nothing went, and the refusals left no trace"
+    );
+}
+
+#[tokio::test]
+async fn an_audit_entry_goes_when_it_is_older_than_the_retention_and_not_before() {
+    let lab = lab(&["SW1"]).await;
+    let app = &lab.app;
+    let now = nocturne_app::util::now_ms();
+    let day = 86_400_000;
+    let audit = |ts: i64, message: &str| nocturne_app::store::LogEntry {
+        id: 0,
+        ts,
+        stream: "audit".into(),
+        device_id: None,
+        severity: Some(6),
+        source: "test.action".into(),
+        message: message.into(),
+        body: None,
+    };
+    app.store()
+        .log_append(&audit(now - 40 * day, "forty days ago"))
+        .unwrap();
+    app.store()
+        .log_append(&audit(now - 5 * day, "five days ago"))
+        .unwrap();
+    // A flood of device lines must not be able to push the audit trail
+    // out: the row cap counts syslog rows only.
+    let many: Vec<(&str, &str, i64)> = (0..1_005)
+        .map(|index| {
+            (
+                "<189>1: *Nov 13 09:00:00.000: %SYS-6-LOGGINGHOST_STARTSTOP: Logging to host 10.0.0.1 started",
+                "127.0.0.1",
+                now - index,
+            )
+        })
+        .collect();
+    seed(app, &many);
+
+    app.rpc(
+        "settings.set",
+        json!({"section": "logs", "value": {"retention_days": 30, "max_rows": 1_000}}),
+    )
+    .await
+    .unwrap();
+    let pruned = nocturne_logs::ingest::prune_once(app).unwrap();
+    assert_eq!((pruned.by_age, pruned.by_rows), (1, 5));
+
+    let kept: Vec<String> = messages(app, json!({"stream": "audit", "text": "days ago"})).await;
+    assert_eq!(kept, ["five days ago"]);
+}

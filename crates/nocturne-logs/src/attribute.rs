@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use nocturne_app::model::Device;
+use nocturne_app::model::{Device, Transport};
 use nocturne_app::{App, AppResult, collect};
 use nocturne_drivers::ifname;
 use nocturne_drivers::model::{Interface, Kind};
@@ -30,6 +30,9 @@ pub struct DeviceInfo {
     pub role: String,
     pub tags: Vec<String>,
     pub profile: String,
+    /// A simulated device: its lines arrive through `logs.ingest`, and an
+    /// alert about it notifies nobody.
+    pub lab: bool,
     /// Interface names as last collected, lowercased, in both the long and
     /// the short spelling, mapped to the canonical name.
     pub interfaces: HashMap<String, String>,
@@ -56,6 +59,22 @@ pub struct Index {
     /// Device address written as a name rather than an address.
     names: HashMap<String, Vec<String>>,
     devices: HashMap<String, DeviceInfo>,
+}
+
+/// Whether a device is a lab's simulated one, which decides two things
+/// here: whether `logs.ingest` may write its lines, and whether an alert
+/// about it notifies anybody.
+///
+/// Simulated means both that it belongs to a lab and that it is reached
+/// through the simulator. A record that names a lab and is still reached
+/// over SSH is a real device with a label on it: its lines come off the
+/// wire and its alerts go where alerts go.
+pub fn is_simulated(device: &Device) -> bool {
+    device.transport == Transport::Sim
+        && device
+            .lab
+            .as_ref()
+            .is_some_and(|lab| !lab.lab_id.is_empty())
 }
 
 fn host_of(address: &str) -> Option<IpAddr> {
@@ -100,6 +119,7 @@ impl Index {
                     role: device.role.clone(),
                     tags: device.tags.clone(),
                     profile: device.profile.clone(),
+                    lab: is_simulated(device),
                     interfaces: HashMap::new(),
                 },
             );

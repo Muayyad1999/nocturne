@@ -230,23 +230,49 @@ pub mod flow {
         pub next_hop: Option<String>, pub start_ms: u64, pub end_ms: u64,     // exporter sysUptime-relative for v5/v9, epoch for IPFIX when given
         pub sampling: u32,
     }
-    /// Stateful decoder: keeps v9 / IPFIX templates per (exporter, source id, template id).
+    /// Stateful decoder: keeps v9 / IPFIX templates per (exporter, source id, template id) — at most 4,096,
+    /// the oldest making room — and the sampling rate each (exporter, source id) announced, at most 8,192.
     pub struct Decoder { /* … */ }
     impl Decoder {
         pub fn new() -> Decoder;
-        /// Decode one export datagram: NetFlow v5, v9 (templates, options templates skipped) and IPFIX
-        /// (enterprise fields skipped, variable-length fields handled). Data sets for unknown templates are
-        /// counted and dropped until the template arrives.
+        /// Decode one export datagram: NetFlow v5, v9 (templates; options templates read for the sampling
+        /// rate only) and IPFIX (enterprise fields skipped, variable-length fields handled). Data sets for
+        /// unknown templates are counted and dropped until the template arrives. `sampling` is read from the
+        /// v5 header, from v9 options (fields 34, 50) and from IPFIX options the PSAMP way (305 + 306:
+        /// take `interval`, skip `space`; 309 + 310: `size` out of `population`).
         pub fn decode(&mut self, datagram: &[u8], exporter: std::net::SocketAddr) -> Result<Vec<FlowRecord>, ProbeError>;
         pub fn stats(&self) -> DecoderStats;        // packets, records, templates, missing-template sets, errors
+        /// Templates known for one exporter address, over all its source ports and source ids.
+        pub fn templates_of(&self, exporter: std::net::IpAddr) -> u32;
     }
     pub struct Talker { pub key: String, pub bytes: u64, pub packets: u64, pub flows: u64 }
     /// Aggregate records by "src" | "dst" | "conversation" | "application" (protocol/port) | "interface" and return the top N by bytes.
     pub fn top(records: &[FlowRecord], by: &str, n: usize) -> Vec<Talker>;
+    /// What one export datagram held. Every datagram that decodes is reported, also one without a flow
+    /// (templates only, or data whose template has not arrived): it still says an exporter is there.
+    pub struct FlowBatch {
+        pub exporter: std::net::IpAddr,             // canonical: an IPv4 sender is IPv4 also on a socket bound to ::
+        pub version: u8, pub records: Vec<FlowRecord>,
+        pub sets_without_template: u32,             // in this datagram
+        pub templates: u32,                         // known for this exporter address after it
+    }
+    pub struct Dropped { pub datagrams: u64, pub records: u64 }
+    /// The receiving end: `recv().await` → the next datagram's batch, `None` once the collector has
+    /// stopped and everything it had decoded has been taken.
+    pub struct FlowQueue { /* … */ }
+    /// A collector's counters, readable after it has stopped: `stats()`, `dropped()`, `waiting()`.
+    pub struct FlowCounters { /* … */ }
     pub struct FlowCollector { /* … */ }
     impl FlowCollector {
-        pub async fn start(bind: std::net::SocketAddr) -> Result<(FlowCollector, tokio::sync::mpsc::UnboundedReceiver<Vec<FlowRecord>>), ProbeError>;
+        /// At most `queue_records` flow records (and that many datagrams) wait to be taken. A datagram
+        /// that would take the queue past that is decoded — its templates are still learned — then
+        /// dropped and counted. One datagram is always let onto an empty queue.
+        pub async fn start(bind: std::net::SocketAddr, queue_records: usize) -> Result<(FlowCollector, FlowQueue), ProbeError>;
         pub fn local_addr(&self) -> std::net::SocketAddr;
+        pub fn stats(&self) -> DecoderStats;
+        pub fn dropped(&self) -> Dropped;           // decoded, then thrown away because the queue was full
+        pub fn waiting(&self) -> usize;             // flow records decoded and not yet taken
+        pub fn counters(&self) -> FlowCounters;
         pub async fn stop(self);
     }
 }
@@ -274,7 +300,8 @@ Every options struct implements `Default` with the defaults noted and is `#[serd
   `rustls-platform-verifier`. The process-wide rustls crypto provider is `ring`
   (`rustls::crypto::ring::default_provider().install_default()` once, ignoring "already installed").
 * **Servers** (`tftp`, `syslog`, `flow`) run until `stop()` or drop, never block the runtime, and survive
-  malformed or hostile datagrams. Binding to a privileged port without rights must produce
+  malformed or hostile datagrams. The flow collector's queue has a limit (in flow records) and counts
+  what it drops; nothing the decoder remembers per exporter grows without bound. Binding to a privileged port without rights must produce
   `ProbeError::Permission` with a message that tells the user what to do (choose a port ≥ 1024, or on Linux
   grant `CAP_NET_BIND_SERVICE`).
 
@@ -294,8 +321,10 @@ Every options struct implements `Default` with the defaults noted and is `#[serd
 3. **Interoperability with real tools on this machine** (skip, do not fail, when missing; you are root and may
    `apt-get install` test-only packages): TFTP against `curl tftp://…` (get and `-T` put) and, if installable,
    `tftp-hpa`; syslog with `logger -n 127.0.0.1 -P <port>` in `--rfc3164` and `--rfc5424` modes, UDP and TCP;
-   NetFlow with `softflowd` or `fprobe` exporting v5 / v9 / IPFIX from traffic on `lo` (or `nfgen`/`nflow-generator`
-   if easier); DNS against the machine's resolver and a public one if reachable; ping/traceroute against 127.0.0.1.
+   NetFlow with `softflowd` exporting v5 / v9 / IPFIX — from a capture file the test writes
+   (`softflowd -r`), which needs no capture rights and makes the right answer known, rather than from
+   traffic on `lo` — and the datagrams softflowd and nfdump's `nfreplay` sent, written down and decoded
+   where neither is installed (`flow/tests/captures.rs` says how they were made); DNS against the machine's resolver and a public one if reachable; ping/traceroute against 127.0.0.1.
    Outbound internet may be filtered by a proxy: tests that need the internet must detect that and skip.
 4. Robustness: random and truncated datagrams into `syslog::parse`, `flow::Decoder::decode`, the TFTP server
    socket and the SNTP reply parser — no panics, no unbounded memory.

@@ -1,10 +1,11 @@
-//! `logs.status`: what is listening, what has arrived, what was dropped and
-//! what is stored.
+//! `logs.status`: what is listening, what has arrived, what was dropped,
+//! what the rules are holding, what the forwarders have sent on and what is
+//! stored.
 //!
-//! Three of the four receivers the specification describes are not in this
-//! build. They are reported as `implemented: false` rather than left out or
-//! shown as "disabled": a screen that offers a switch for a trap receiver
-//! that does not exist would be the application lying about itself.
+//! Each receiver reports its own numbers, in its own units: lines for
+//! syslog, notifications for traps, datagrams and flow records for the flow
+//! collector. A receiver that is off says so with `enabled: false`; one
+//! that is on and could not bind says why in `error`.
 
 use std::sync::atomic::Ordering;
 
@@ -12,7 +13,7 @@ use nocturne_app::util::now_ms;
 use nocturne_app::{App, AppResult};
 
 use crate::db;
-use crate::model::{LogsStatus, NotBuilt, StoreStatus};
+use crate::model::{LogsStatus, StoreStatus};
 use crate::settings::LogsSettings;
 use crate::state::LogsState;
 
@@ -25,17 +26,19 @@ pub fn snapshot(app: &App) -> AppResult<LogsStatus> {
         .filter(|row| row.device_id.is_none())
         .count();
     Ok(LogsStatus {
-        syslog: state.status(now_ms()),
-        traps: NotBuilt::new("the SNMP trap receiver"),
-        flows: NotBuilt::new("the flow collector"),
+        syslog: state.syslog.status(now_ms()),
+        traps: state.traps.status(now_ms()),
+        flows: state.flows.status(now_ms()),
+        rules: crate::rules::status(app),
+        forwarders: crate::forward::status(app)?,
         store: StoreStatus {
             rows,
             oldest_at,
             retention_days: settings.retention_days,
             max_rows: settings.max_rows,
-            last_prune_at: state.counters.last_prune_at(),
-            pruned_by_age: state.counters.pruned_by_age.load(Ordering::Relaxed),
-            pruned_by_rows: state.counters.pruned_by_rows.load(Ordering::Relaxed),
+            last_prune_at: state.retention.last_prune_at(),
+            pruned_by_age: state.retention.pruned_by_age.load(Ordering::Relaxed),
+            pruned_by_rows: state.retention.pruned_by_rows.load(Ordering::Relaxed),
         },
         unattributed_sources: unattributed,
     })

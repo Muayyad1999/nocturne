@@ -1,6 +1,6 @@
 [package]
 name = "nocturne-logs"
-description = "Syslog reception, log search, live tail, pattern rules and device log buffers."
+description = "Syslog and trap reception, flow collection, log search, live tail, pattern rules and device log buffers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -29,9 +29,22 @@ rusqlite.workspace = true
 # a device wrote about its own configuration), so everything kept goes
 # through the same redactor the assistant's context does.
 nocturne-ai.workspace = true
+# What a port and a DSCP value are called in `flows.top`: the reference
+# tables the toolbox shows, so that one port has one name everywhere.
+nocturne-tools.workspace = true
+# Forwarding to a log platform: JSON over HTTPS on reqwest (syslog over TLS is
+# the engine's own sender). rustls is named only to install the ring provider
+# reqwest is built without.
+reqwest.workspace = true
+rustls.workspace = true
 
 [dev-dependencies]
 nocturne-app = { workspace = true, features = ["testing"] }
+# The collectors the forwarder tests send to: a TLS syslog listener and an
+# HTTPS endpoint, each with a certificate made in the test. The same rcgen
+# `nocturne-netprobe` and `nocturne-monitor` use for theirs.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+tokio-rustls.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -104,7 +104,15 @@ async fn a_flapping_port_raises_one_signal_a_window_and_counts_the_rest() {
         .map(|index| (LINK_DOWN, "127.0.0.1", T0 + index * 1_000))
         .collect();
     receive(app, &burst);
-    let signals = drained(&mut events, "logs.signal");
+    // (The same lines are also counted by the rule that watches for a port
+    // that keeps going down; that one has its own test.)
+    let link_down = |signals: Vec<Value>| -> Vec<Value> {
+        signals
+            .into_iter()
+            .filter(|signal| signal["rule_id"] == json!("builtin.ios.link_down"))
+            .collect()
+    };
+    let signals = link_down(drained(&mut events, "logs.signal"));
     assert_eq!(
         signals.len(),
         1,
@@ -115,7 +123,7 @@ async fn a_flapping_port_raises_one_signal_a_window_and_counts_the_rest() {
 
     // The next window reports how many were swallowed by the last one.
     receive(app, &[(LINK_DOWN, "127.0.0.1", T0 + 61_000)]);
-    let signals = drained(&mut events, "logs.signal");
+    let signals = link_down(drained(&mut events, "logs.signal"));
     assert_eq!(signals.len(), 1);
     assert_eq!(
         signals[0]["count"],
@@ -142,8 +150,78 @@ async fn an_alert_signal_is_handed_to_the_monitoring_feature_when_it_is_there() 
     assert_eq!(raised["title"], json!("Gi1/0/7 error-disabled (bpduguard)"));
     assert_eq!(
         raised["dedup_key"],
-        json!(format!("logs:builtin.ios.err_disable:{id}:")),
-        "the same port error-disabling twice is one alert"
+        json!(format!("logs:builtin.ios.err_disable:{id}:Gi1/0/7")),
+        "the same port error-disabling twice is one alert, and another port is another"
+    );
+    assert_eq!(raised["instance"], json!("Gi1/0/7"));
+}
+
+#[tokio::test]
+async fn a_second_port_inside_the_window_is_a_second_signal_not_a_swallowed_one() {
+    let lab = lab_with_alerts(&["SW1"]).await;
+    let app = &lab.app;
+    let id = lab.id("SW1");
+    set_address(app, &id, "127.0.0.1").await;
+    let mut events = app.subscribe();
+
+    let other_port = ERR_DISABLE.replace("Gi1/0/7", "Gi1/0/8");
+    receive(
+        app,
+        &[
+            (ERR_DISABLE, "127.0.0.1", T0),
+            (other_port.as_str(), "127.0.0.1", T0 + 2_000),
+            // The first port again, still inside its window: counted.
+            (ERR_DISABLE, "127.0.0.1", T0 + 3_000),
+        ],
+    );
+    let signals = drained(&mut events, "logs.signal");
+    let ports: Vec<&str> = signals
+        .iter()
+        .map(|signal| signal["instance"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ports,
+        ["Gi1/0/7", "Gi1/0/8"],
+        "two ports two seconds apart are two signals; the repeat is not a third"
+    );
+
+    let first = next_event(&mut events, "test.alert_raised").await;
+    let second = next_event(&mut events, "test.alert_raised").await;
+    assert_ne!(
+        first["dedup_key"], second["dedup_key"],
+        "and two alerts, each with its own key"
+    );
+}
+
+#[tokio::test]
+async fn an_alert_for_a_lab_device_is_raised_and_notifies_nobody() {
+    let lab = lab_with_alerts(&["SW1"]).await;
+    let app = &lab.app;
+    set_address(app, &lab.id("SW1"), "127.0.0.1").await;
+    // A device that is not simulated, beside the lab's.
+    let hardware = app
+        .rpc(
+            "devices.create",
+            json!({"name": "CORE1", "address": "127.0.0.9", "profile": "test_ios"}),
+        )
+        .await
+        .unwrap();
+    let mut events = app.subscribe();
+
+    receive(app, &[(ERR_DISABLE, "127.0.0.1", T0)]);
+    let raised = next_event(&mut events, "test.alert_raised").await;
+    assert_eq!(
+        raised["notify"],
+        json!([]),
+        "an empty list is `no channel`: a lab wakes nobody"
+    );
+
+    receive(app, &[(ERR_DISABLE, "127.0.0.9", T0)]);
+    let raised = next_event(&mut events, "test.alert_raised").await;
+    assert_eq!(raised["device_id"], hardware["id"]);
+    assert!(
+        raised.get("notify").is_none(),
+        "for hardware the field is left out, which is the usual routing: {raised:#}"
     );
 }
 
@@ -462,8 +540,9 @@ async fn around_a_line_is_what_else_was_known_at_that_moment() {
     assert_eq!(bursts[0]["interface"], json!("GigabitEthernet1/0/3"));
     assert_eq!(
         around["signals"].as_array().unwrap().len(),
-        2,
-        "the link-down and the configuration change this crate's own rules raised"
+        3,
+        "the link-down, the fifth link-down in a row (a flapping port) and \
+         the configuration change, all raised by this crate's own rules"
     );
 
     // Neither monitoring nor the change pipeline is in this build, and the

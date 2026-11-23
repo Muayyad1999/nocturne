@@ -1,6 +1,10 @@
-//! Syslog: a parser for what network devices actually send, and a UDP / TCP listener.
+//! Syslog: a parser for what network devices actually send, a UDP / TCP listener, and the
+//! other direction — an RFC 5424 formatter ([`format`]) and a sender over UDP, TCP and TLS
+//! ([`send`]) for handing messages on to a collector.
 
+pub mod format;
 mod parse;
+pub mod send;
 
 use std::net::SocketAddr;
 use std::time::Duration;

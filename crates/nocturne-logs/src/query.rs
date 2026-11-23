@@ -612,7 +612,7 @@ pub fn sources(app: &App) -> AppResult<Vec<Source>> {
 pub fn clear(app: &App, stream: &str, before: Option<i64>) -> AppResult<usize> {
     let before = before.unwrap_or_else(now_ms);
     let removed = app.store().log_prune(stream, before)?;
-    if stream == db::STREAM {
+    if db::DEVICE_STREAMS.contains(&stream) {
         app.store().with(|conn| {
             conn.execute(
                 "DELETE FROM logs_syslog WHERE log_id NOT IN (SELECT id FROM logs)",

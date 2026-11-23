@@ -1,6 +1,6 @@
 //! Decoder for NetFlow v5, NetFlow v9 (RFC 3954) and IPFIX (RFC 7011) export datagrams.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,12 @@ pub struct DecoderStats {
 #[derive(Debug, Default)]
 pub struct Decoder {
     templates: HashMap<TemplateKey, Template>,
+    /// The same templates by the tick they were (re)defined at, oldest first. A full table
+    /// makes room from the front of this; without it every new template of a flood would
+    /// look at all the others to find the oldest.
+    by_age: BTreeMap<u64, TemplateKey>,
+    /// How many of them each exporter address has, kept in step with `templates`.
+    per_exporter: HashMap<IpAddr, u32>,
     /// The sampling rate each exporter announced in its options data.
     sampling: HashMap<(SocketAddr, u32), u32>,
     /// Counts template (re)definitions; orders templates by age for eviction.
@@ -37,6 +43,8 @@ pub struct Decoder {
 /// The most templates kept at once. An exporter has a handful; this bound only matters when
 /// someone sends junk, and then the oldest templates make room.
 const MAX_TEMPLATES: usize = 4096;
+/// The most announced sampling rates remembered at once; see `Decoder::announce`.
+const MAX_RATES: usize = 2 * MAX_TEMPLATES;
 /// More fields than any real template has.
 const MAX_FIELDS: usize = 1024;
 
@@ -118,6 +126,64 @@ impl Decoder {
         self.stats
     }
 
+    /// How many templates are known for an exporter's address, over all its source ports and
+    /// source ids (observation domains).
+    pub fn templates_of(&self, exporter: IpAddr) -> u32 {
+        self.per_exporter.get(&exporter).copied().unwrap_or(0)
+    }
+
+    /// How many announced sampling rates are remembered.
+    #[cfg(test)]
+    pub(super) fn rates_remembered(&self) -> usize {
+        self.sampling.len()
+    }
+
+    fn keep(&mut self, key: TemplateKey, template: Template) {
+        self.by_age.insert(template.stamp, key);
+        match self.templates.insert(key, template) {
+            // Redefined: the definition it replaces is no longer anybody's age.
+            Some(replaced) => {
+                self.by_age.remove(&replaced.stamp);
+            }
+            None => *self.per_exporter.entry(key.exporter.ip()).or_default() += 1,
+        }
+    }
+
+    fn forget(&mut self, key: &TemplateKey) {
+        let Some(template) = self.templates.remove(key) else {
+            return;
+        };
+        self.by_age.remove(&template.stamp);
+        let address = key.exporter.ip();
+        if let Some(count) = self.per_exporter.get_mut(&address) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.per_exporter.remove(&address);
+            }
+        }
+    }
+
+    /// Remembers the sampling rate an exporter announced.
+    ///
+    /// The rates are kept per (exporter, source id), and an exporter is whoever sent a
+    /// datagram: without a bound, someone sending options from made-up source ids would grow
+    /// this for ever. A rate can only be announced through an options template, and templates
+    /// are bounded, so when the map is full the rates of sources that have no template left
+    /// are let go — which always makes room for the one being announced. Full is twice the
+    /// number of templates, so that the clear-out happens once in thousands of announcements
+    /// and not on every datagram of a flood.
+    fn announce(&mut self, source: (SocketAddr, u32), rate: u32) {
+        if self.sampling.len() >= MAX_RATES && !self.sampling.contains_key(&source) {
+            let alive: HashSet<(SocketAddr, u32)> = self
+                .templates
+                .keys()
+                .map(|key| (key.exporter, key.source_id))
+                .collect();
+            self.sampling.retain(|known, _| alive.contains(known));
+        }
+        self.sampling.insert(source, rate);
+    }
+
     fn decode_v9(
         &mut self,
         datagram: &[u8],
@@ -170,6 +236,9 @@ impl Decoder {
         options_set: u16,
     ) -> Result<Vec<FlowRecord>, ProbeError> {
         let mut records = Vec::new();
+        // Whether every template (`[0]`) or every options template (`[1]`) of this exporter
+        // has been withdrawn by this datagram and none learned since. See `learn_templates`.
+        let mut withdrawn = [false; 2];
         // Fewer than four bytes at the end are padding.
         while body.len() >= 4 {
             let set_id = be16(&body[..2]);
@@ -184,9 +253,9 @@ impl Decoder {
             let content = &set[4..];
             body = rest;
             if set_id == template_set {
-                self.learn_templates(content, context, false)?;
+                self.learn_templates(content, context, false, &mut withdrawn[0])?;
             } else if set_id == options_set {
-                self.learn_templates(content, context, true)?;
+                self.learn_templates(content, context, true, &mut withdrawn[1])?;
             } else if set_id >= 256 {
                 self.decode_data(content, set_id, context, &mut records);
             }
@@ -196,15 +265,31 @@ impl Decoder {
     }
 
     /// Reads the template records of a template set.
+    ///
+    /// `all_withdrawn` is the datagram's memory of an IPFIX "withdraw all": true once this
+    /// datagram has withdrawn every template of this kind and has learned none since.
+    ///
+    /// What a set costs to read is kept in proportion to its size, because anybody who can
+    /// reach the port writes it: sixteen thousand four-byte records fit in one datagram, and
+    /// anything done once per record that looks at the whole set, or at every template
+    /// there is, turns one datagram into a second of work.
     fn learn_templates(
         &mut self,
         mut content: &[u8],
         context: &Context,
         options: bool,
+        all_withdrawn: &mut bool,
     ) -> Result<(), ProbeError> {
         let ipfix = context.version == 10;
-        // What is left after the last record is padding (up to three bytes, zero).
-        while content.len() >= 4 && content.iter().any(|byte| *byte != 0) {
+        // What is left after the last record is padding: zeros to the end of the set. Where
+        // it starts is found once, from the end, not by reading the rest of the set again
+        // before every record.
+        let length = content.len();
+        let padding_from = content
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last + 1);
+        while content.len() >= 4 && length - content.len() < padding_from {
             let template_id = be16(&content[..2]);
             let truncated = || malformed(format!("template {template_id} is cut off"));
             let (field_count, mut cursor) = match (options, ipfix) {
@@ -231,15 +316,27 @@ impl Decoder {
             };
             if ipfix && field_count == 0 {
                 // Template withdrawal; ids 2 and 3 withdraw every (options) template.
-                if template_id < 256 {
-                    self.templates.retain(|known, template| {
-                        !(known.exporter == key.exporter
-                            && known.version == 10
-                            && known.source_id == key.source_id
-                            && template.options == options)
-                    });
-                } else {
-                    self.templates.remove(&key);
+                if template_id >= 256 {
+                    self.forget(&key);
+                } else if !*all_withdrawn {
+                    // Once per datagram unless a template was learned in between: after the
+                    // first time there is nothing left for a second to find, and finding
+                    // that out looks at every template of every exporter.
+                    *all_withdrawn = true;
+                    let withdrawn: Vec<TemplateKey> = self
+                        .templates
+                        .iter()
+                        .filter(|(known, template)| {
+                            known.exporter == key.exporter
+                                && known.version == 10
+                                && known.source_id == key.source_id
+                                && template.options == options
+                        })
+                        .map(|(known, _)| *known)
+                        .collect();
+                    for known in &withdrawn {
+                        self.forget(known);
+                    }
                 }
                 content = content.get(cursor..).ok_or_else(truncated)?;
                 continue;
@@ -262,6 +359,12 @@ impl Decoder {
                     content.get(cursor..cursor + 4).ok_or_else(truncated)?;
                     cursor += 4;
                 }
+                if length == 0 {
+                    // A field of no bytes holds no value. Left out, a record is never more
+                    // fields than it is bytes — a thousand empty fields and one byte would
+                    // otherwise be a thousand steps for every byte of a data set.
+                    continue;
+                }
                 let variable = ipfix && length == VARIABLE;
                 min_record += if variable { 1 } else { usize::from(length) };
                 fields.push(Field {
@@ -276,17 +379,14 @@ impl Decoder {
                 continue;
             }
             self.clock += 1;
+            *all_withdrawn = false;
             if !self.templates.contains_key(&key) && self.templates.len() >= MAX_TEMPLATES {
-                let oldest = self
-                    .templates
-                    .iter()
-                    .min_by_key(|(_, template)| template.stamp)
-                    .map(|(key, _)| *key);
+                let oldest = self.by_age.first_key_value().map(|(_, oldest)| *oldest);
                 if let Some(oldest) = oldest {
-                    self.templates.remove(&oldest);
+                    self.forget(&oldest);
                 }
             }
-            self.templates.insert(
+            self.keep(
                 key,
                 Template {
                     fields,
@@ -326,6 +426,7 @@ impl Decoder {
             .fields
             .iter()
             .any(|field| !field.enterprise && matches!(field.id, 8 | 12 | 27 | 28));
+        let mut announced_here = None;
         // What remains when no further record fits is padding.
         while content.len() >= template.min_record {
             let mut draft = Draft::default();
@@ -345,13 +446,15 @@ impl Decoder {
                 break;
             }
             if template.options {
-                if let Some(rate) = draft.sampling.filter(|rate| *rate > 0) {
-                    self.sampling.insert(source, rate);
-                }
+                announced_here = draft.rate().or(announced_here);
             } else if has_addresses {
                 let announced = self.sampling.get(&source).copied().unwrap_or(0);
                 records.push(draft.into_record(context, announced));
             }
+        }
+        // Options and flows never share a set, so nothing in this one was waiting for it.
+        if let Some(rate) = announced_here {
+            self.announce(source, rate);
         }
     }
 }
@@ -400,6 +503,13 @@ struct Draft {
     src_as: u32,
     dst_as: u32,
     sampling: Option<u32>,
+    /// PSAMP's way of saying a rate (RFC 5477): `interval` packets are taken, then `space`
+    /// packets are let pass.
+    sample_interval: Option<u64>,
+    sample_space: Option<u64>,
+    /// Or: `size` packets are taken out of every `population`.
+    sample_size: Option<u64>,
+    sample_population: Option<u64>,
     /// Flow start / end relative to the exporter's boot (milliseconds).
     start_uptime: Option<u64>,
     end_uptime: Option<u64>,
@@ -455,8 +565,33 @@ impl Draft {
             159 => self.end_delta_micros = Some(number),
             160 => self.boot_epoch = Some(number),
             161 => self.duration = Some(number),
+            305 => self.sample_interval = Some(number),
+            306 => self.sample_space = Some(number),
+            309 => self.sample_size = Some(number),
+            310 => self.sample_population = Some(number),
             _ => {}
         }
+    }
+
+    /// The "one packet in this many" a record states, in whichever of the three ways an
+    /// exporter says it. `None` when it says nothing, or nothing that is a rate.
+    fn rate(&self) -> Option<u32> {
+        let one_in = |taken: Option<u64>, out_of: Option<u64>| {
+            let (taken, out_of) = (taken.filter(|taken| *taken > 0)?, out_of?);
+            Some((out_of / taken).clamp(1, u64::from(u32::MAX)) as u32)
+        };
+        self.sampling
+            .filter(|rate| *rate > 0)
+            // IPFIX exporters (softflowd among them) announce 1-in-100 as "take 1, skip 99".
+            .or_else(|| {
+                one_in(
+                    self.sample_interval,
+                    self.sample_interval
+                        .zip(self.sample_space)
+                        .map(|(taken, skipped)| taken.saturating_add(skipped)),
+                )
+            })
+            .or_else(|| one_in(self.sample_size, self.sample_population))
     }
 
     fn into_record(self, context: &Context, announced_sampling: u32) -> FlowRecord {
@@ -498,7 +633,7 @@ impl Draft {
             next_hop: self.next_hop.map(|hop| hop.to_string()),
             start_ms: start_ms.unwrap_or(0),
             end_ms: end_ms.unwrap_or(0),
-            sampling: self.sampling.unwrap_or(announced_sampling),
+            sampling: self.rate().unwrap_or(announced_sampling),
         }
     }
 }

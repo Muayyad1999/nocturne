@@ -8,26 +8,40 @@
 //! queue is full the line is dropped and counted — `logs.status` says how
 //! many — because the alternative is a receiver that eats memory until the
 //! machine dies, by which time the logs are gone anyway.
+//!
+//! The path has two halves. The first is a receiver's own: turning what it
+//! took off the wire into rows ([`prepare`] for a syslog message), which is
+//! where attribution and redaction happen. The second, [`commit`], is the
+//! same for every receiver and for a lab's lines: the unknown-source
+//! policy, one transaction, the live tail, the forwarders, the rules. A row
+//! that did not go through `commit` is in no index, on no tail and seen by
+//! no rule.
 
 use std::collections::HashMap;
 
+use std::sync::atomic::Ordering;
+
 use nocturne_app::store::LogEntry;
 use nocturne_app::util::now_ms;
-use nocturne_app::{App, AppResult};
+use nocturne_app::{App, AppError, AppResult, inventory};
 use nocturne_netprobe::syslog::{SyslogMessage, facility_name, severity_name};
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc::Receiver;
 
 use crate::attribute::Index;
 use crate::db::{self, Prepared};
 use crate::settings::LogsSettings;
-use crate::state::LogsState;
+use crate::state::{BATCH_ROWS, LogsState, ReceiverCounters};
 use crate::{guard, rules, tail};
 
 /// How long an attribution index is used before it is read afresh. The index
 /// is also thrown away the moment the inventory or the collected interfaces
 /// change, so this is only the ceiling for changes made behind the app's back.
-const INDEX_MAX_AGE_MS: i64 = 30_000;
+pub(crate) const INDEX_MAX_AGE_MS: i64 = 30_000;
+/// The longest line `logs.ingest` takes; a longer one is cut there, as the
+/// receiver cuts a message that arrives over TCP.
+const MAX_LAB_LINE: usize = 64 * 1024;
+/// The most lines one `logs.ingest` call may hand over.
+const MAX_LAB_LINES: usize = 10_000;
 /// How often retention runs.
 pub const PRUNE_INTERVAL_MS: u64 = 60_000;
 /// Rows one retention pass deletes per transaction.
@@ -36,7 +50,8 @@ const PRUNE_BATCH: usize = 2_000;
 /// Turn a parsed message into the row that will be stored.
 ///
 /// `via` says how the line reached Nocturne: `syslog` for one the device
-/// sent, `pull` for one read back out of its own buffer.
+/// sent, `pull` for one read back out of its own buffer, `lab` for one a
+/// simulated device wrote.
 pub fn prepare(
     state: &LogsState,
     index: &Index,
@@ -45,8 +60,9 @@ pub fn prepare(
     via: &str,
     known_device: Option<&str>,
 ) -> Prepared {
-    // A line read back out of a device's own buffer needs no attribution:
-    // the session it was read over says which device it is.
+    // A line read back out of a device's own buffer, or handed over by the
+    // lab that simulates the device, needs no attribution: how it got here
+    // says which device it is.
     let attribution = match known_device {
         Some(device_id) => crate::attribute::Attribution {
             device_id: Some(device_id.to_string()),
@@ -133,66 +149,174 @@ pub fn prepare(
     }
 }
 
-/// Write one batch: attribute, redact, store, tail, rules.
+/// Write one batch of syslog messages: attribute, redact, then [`commit`].
 pub fn write_batch(app: &App, messages: &[SyslogMessage], via: &str) -> AppResult<usize> {
     if messages.is_empty() {
         return Ok(0);
     }
     let state = app.state::<LogsState>();
-    let settings = LogsSettings::load(app);
     let now = now_ms();
     let index = crate::attribute::refresh(app, now, INDEX_MAX_AGE_MS)?;
+    let batch = messages
+        .iter()
+        .map(|message| prepare(&state, &index, message, now, via, None))
+        .collect();
+    Ok(commit(app, &index, &state.syslog.counters, batch)?.len())
+}
 
-    let mut batch = Vec::with_capacity(messages.len());
+/// The unknown-source policy: whether a row is kept at all. A row no device
+/// claims is kept unless the settings say to drop those.
+///
+/// It is its own function because a receiver that owes its sender an
+/// answer — an inform's acknowledgement — must know whether [`commit`]
+/// kept the row, and must not decide that by a rule of its own.
+pub fn keeps(settings: &LogsSettings, prepared: &Prepared) -> bool {
+    prepared.entry.device_id.is_some() || !settings.drop_unknown()
+}
+
+/// The half of the path every receiver shares: the unknown-source policy,
+/// one transaction, the live tail, the rules. Returns the rows that were
+/// kept, each with the id it was given.
+///
+/// `counters` are those of the receiver the rows came from, so that
+/// `logs.status` attributes what was stored and what was refused to it.
+pub fn commit(
+    app: &App,
+    index: &Index,
+    counters: &ReceiverCounters,
+    batch: Vec<Prepared>,
+) -> AppResult<Vec<Prepared>> {
+    let settings = LogsSettings::load(app);
+    let now = now_ms();
+    let mut kept = Vec::with_capacity(batch.len());
     let mut refused: HashMap<String, (u64, String)> = HashMap::new();
-    for message in messages {
-        let prepared = prepare(&state, &index, message, now, via, None);
-        if prepared.entry.device_id.is_none() && settings.drop_unknown() {
+    for prepared in batch {
+        if !keeps(&settings, &prepared) {
             let entry = refused
-                .entry(message.source.clone())
+                .entry(prepared.entry.source.clone())
                 .or_insert((0, prepared.reason.clone()));
             entry.0 += 1;
             continue;
         }
-        batch.push(prepared);
+        kept.push(prepared);
     }
     // An address whose lines are all discarded is still listed, with a count:
     // "nothing from this address is being kept" is something the user has to
     // be able to see, or the setting silently makes a device invisible.
     for (address, (count, reason)) in &refused {
         db::count_dropped(app.store(), address, now, reason, *count)?;
-        state.counters.dropped(*count);
+        counters.dropped(*count);
     }
-    if batch.is_empty() {
-        return Ok(0);
+    if kept.is_empty() {
+        return Ok(kept);
     }
-    let written = db::insert_batch(app.store(), &mut batch)?;
-    state.counters.stored(written.stored as u64);
-    tail::offer(app, &batch);
-    rules::evaluate(app, &index, &batch);
-    Ok(written.stored)
+    let written = db::insert_batch(app.store(), &mut kept)?;
+    counters.stored(written.stored as u64);
+    tail::offer(app, &kept);
+    // After the write, never before: what a forwarder sends on is the row
+    // that was kept, redacted. This puts entries on queues and returns; a
+    // collector that is slow or gone costs a counter, not a wait.
+    crate::forward::offer(app, index, kept.iter().map(|item| &item.entry));
+    rules::evaluate(app, index, &kept);
+    Ok(kept)
 }
 
-/// The writer task: everything the sockets hand over, in batches.
-pub async fn writer(app: App, mut queue: Receiver<SyslogMessage>, generation: u64) {
-    let state = app.state::<LogsState>();
-    let mut messages = Vec::with_capacity(crate::state::BATCH_ROWS);
-    // `recv_many` returns as soon as there is anything at all, so a quiet
-    // network's single line is written straight away and a storm arrives in
-    // batches of up to `BATCH_ROWS` without a timer.
-    while queue
-        .recv_many(&mut messages, crate::state::BATCH_ROWS)
-        .await
-        > 0
-    {
-        if state.receiver.lock().generation != generation {
-            return;
-        }
-        if let Err(err) = write_batch(&app, &messages, "syslog") {
-            tracing::error!(%err, count = messages.len(), "a batch of syslog lines could not be stored");
-        }
-        messages.clear();
+/// `logs.ingest`: the lines a lab's simulated device wrote.
+///
+/// A simulated device has no socket to send from, so the lab hands its
+/// lines over by name. From here on they are a datagram's equal — parsed,
+/// redacted, indexed, tailed, run through the rules — and say `via: lab`.
+///
+/// It is refused for anything but a lab device. Otherwise this would be a
+/// way to write a log line for a real switch through the API, and a log
+/// line is what an alert, a backup and a detection are decided from.
+pub fn from_lab(app: &App, device_reference: &str, lines: &[String]) -> AppResult<usize> {
+    // The inventory finds a device by id, name or address, and a simulated
+    // device has no address: an empty reference would "find" one of them.
+    if device_reference.trim().is_empty() {
+        return Err(AppError::invalid(
+            "`logs.ingest` needs the device the lines are from (`device_id`)",
+        ));
     }
+    // However the device is referred to, it is the device that was found
+    // that is checked, and the same one the lines are stored for: nothing
+    // in the parameters can say "lab" on its behalf.
+    let device = inventory::find(app, device_reference)?;
+    let lab = device
+        .lab
+        .as_ref()
+        .filter(|_| crate::attribute::is_simulated(&device));
+    let Some(lab) = lab else {
+        return Err(AppError::forbidden(format!(
+            "`{}` is not a lab device: `logs.ingest` only takes the lines of simulated devices. \
+             A real device's lines arrive at the syslog receiver or are read with `logs.pull`",
+            device.name
+        )));
+    };
+    if lines.len() > MAX_LAB_LINES {
+        return Err(AppError::invalid(format!(
+            "`logs.ingest` takes at most {MAX_LAB_LINES} lines in one call, not {}",
+            lines.len()
+        )));
+    }
+    let state = app.state::<LogsState>();
+    let now = now_ms();
+    let mut index = crate::attribute::refresh(app, now, INDEX_MAX_AGE_MS)?;
+    if index.device(&device.id).is_none() {
+        // A lab adds its devices and they start talking in the same
+        // breath, before the index has heard of them; without the device
+        // the rules could not tell that this is a lab.
+        index = crate::attribute::refresh(app, now, 0)?;
+    }
+    // No socket, so no address the line was sent from: the source stays
+    // empty rather than naming one the device never used.
+    let nowhere = "0.0.0.0:0".parse().expect("a valid socket address");
+    let mut batch = Vec::with_capacity(lines.len());
+    for line in lines {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut cut = line.len().min(MAX_LAB_LINE);
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let mut message = nocturne_netprobe::syslog::parse(&line.as_bytes()[..cut], nowhere);
+        message.source = String::new();
+        batch.push(prepare(
+            &state,
+            &index,
+            &message,
+            now,
+            "lab",
+            Some(&device.id),
+        ));
+    }
+    let mut stored = 0;
+    while !batch.is_empty() {
+        let rest = batch.split_off(batch.len().min(BATCH_ROWS));
+        stored += commit(app, &index, &state.syslog.counters, batch)?.len();
+        batch = rest;
+    }
+    state
+        .syslog
+        .from_lab
+        .fetch_add(stored as u64, Ordering::Relaxed);
+    // Once per device, not once per call: a lab hands lines over many times
+    // a second, and the audit trail is for "this device's log is being
+    // written through the API", not for every line of it.
+    if stored > 0 && state.syslog.lab_devices.lock().insert(device.id.clone()) {
+        app.audit(
+            "logs.ingest",
+            Some(&device.id),
+            format!(
+                "Lab device `{}` started handing over its log lines",
+                device.name
+            ),
+            json!({"lab_id": lab.lab_id, "node": lab.node}),
+        );
+    }
+    Ok(stored)
 }
 
 /// The retention task: age first, then the row cap.
@@ -213,15 +337,14 @@ pub fn prune_once(app: &App) -> AppResult<db::Pruned> {
     let before = (settings.retention_days > 0)
         .then(|| now - i64::from(settings.retention_days) * 86_400_000);
     let pruned = db::prune(app.store(), before, settings.max_rows, PRUNE_BATCH)?;
-    use std::sync::atomic::Ordering;
-    state.counters.last_prune_at.store(now, Ordering::Relaxed);
+    state.retention.last_prune_at.store(now, Ordering::Relaxed);
     if pruned.by_age + pruned.by_rows > 0 {
         state
-            .counters
+            .retention
             .pruned_by_age
             .fetch_add(pruned.by_age as u64, Ordering::Relaxed);
         state
-            .counters
+            .retention
             .pruned_by_rows
             .fetch_add(pruned.by_rows as u64, Ordering::Relaxed);
         crate::status::publish(app);

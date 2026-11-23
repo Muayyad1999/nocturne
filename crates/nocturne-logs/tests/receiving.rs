@@ -220,10 +220,24 @@ async fn the_receiver_stays_off_until_asked_and_says_why_it_cannot_bind() {
     assert_eq!(status["syslog"]["listening"], json!([]));
     assert_eq!(status["syslog"]["error"], Value::Null);
     assert_eq!(
-        status["traps"],
-        json!({"enabled": false, "implemented": false,
-               "error": "the SNMP trap receiver is not implemented in this build"}),
-        "a receiver this build does not have says so instead of looking switched off"
+        (
+            &status["traps"]["implemented"],
+            &status["traps"]["enabled"],
+            &status["traps"]["listening"],
+            &status["traps"]["error"],
+        ),
+        (&json!(true), &json!(false), &json!([]), &Value::Null),
+        "the trap receiver exists and is off until asked, like this one"
+    );
+    assert_eq!(
+        (
+            &status["flows"]["implemented"],
+            &status["flows"]["enabled"],
+            &status["flows"]["listening"],
+            &status["flows"]["error"],
+        ),
+        (&json!(true), &json!(false), &json!([]), &Value::Null),
+        "and so does the flow collector"
     );
 
     // Hold a port, then ask the receiver for it.

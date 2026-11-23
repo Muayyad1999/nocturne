@@ -69,14 +69,24 @@ pub fn offer(app: &App, batch: &[Prepared]) {
 
 /// Roughly what one entry costs in an event.
 fn weight(entry: &LogEntry) -> usize {
-    let raw = entry
-        .body
-        .as_ref()
+    let body = entry.body.as_ref();
+    let raw = body
         .and_then(|body| body.get("raw"))
         .and_then(serde_json::Value::as_str)
         .map(str::len)
         .unwrap_or_default();
-    entry.message.len() + raw + entry.source.len() + 128
+    // A trap's weight is in its bindings rather than in a raw line.
+    let varbinds: usize = body
+        .and_then(|body| body.get("varbinds"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|bind| {
+            let text = |key: &str| bind[key].as_str().map(str::len).unwrap_or_default();
+            text("oid") + text("name") + text("value") + 48
+        })
+        .sum();
+    entry.message.len() + raw + varbinds + entry.source.len() + 128
 }
 
 /// The newest entries that fit in `budget`, in order, and how many were left
@@ -276,6 +286,29 @@ mod tests {
             TAIL_MAX_BYTES,
         );
         assert_eq!((kept.len(), dropped), (1, 0));
+    }
+
+    #[test]
+    fn a_trap_weighs_what_its_bindings_weigh() {
+        // A trap's message is short; what it carries is in its body. Fifty
+        // traps of sixteen kilobytes each are not fifty short lines.
+        let heavy: Vec<LogEntry> = (1..=50)
+            .map(|id| LogEntry {
+                stream: "trap".into(),
+                message: "linkDown ifIndex=3".into(),
+                body: Some(serde_json::json!({"varbinds": (0..16)
+                    .map(|index| serde_json::json!({
+                        "oid": format!("1.3.6.1.4.1.99999.1.{index}.0"),
+                        "name": serde_json::Value::Null,
+                        "value": "x".repeat(1_000),
+                    }))
+                    .collect::<Vec<_>>()})),
+                ..entry(id)
+            })
+            .collect();
+        assert!(weight(&heavy[0]) > 16_000, "{}", weight(&heavy[0]));
+        let (kept, dropped) = fit(heavy, TAIL_MAX_BYTES);
+        assert_eq!((kept.len(), dropped), (3, 47));
     }
 
     #[test]

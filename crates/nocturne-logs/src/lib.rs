@@ -1,13 +1,13 @@
-//! Syslog reception, log search, live tail, pattern rules and device log
-//! buffers.
+//! Syslog and SNMP trap reception, flow collection, log search, live tail,
+//! pattern rules, device log buffers and forwarding to a log platform.
 //!
 //! Specification: `docs/dev/features/logs.md` (conventions:
 //! `docs/dev/features/README.md`).
 //!
-//! What the network says about itself, received over UDP and TCP, attributed
-//! to the device that sent it, stored with retention, searchable over a time
-//! range, followed live, and turned into signals the rest of the application
-//! reacts to.
+//! What the network says about itself — syslog over UDP and TCP, SNMP
+//! notifications over UDP — attributed to the device that sent it, stored
+//! with retention, searchable over a time range, followed live, and turned
+//! into signals the rest of the application reacts to.
 //!
 //! Three things run through the whole crate:
 //!
@@ -18,19 +18,26 @@
 //!   see it rather than quietly forgotten.
 //! * **Rate is the risk.** A chattery campus sends tens of thousands of
 //!   lines a minute. The sockets never block, the queue between them and the
-//!   database is bounded, writes are batched, and the live tail samples
-//!   rather than flooding the event bus — and says that it sampled.
+//!   database is bounded, writes are batched, the live tail samples rather
+//!   than flooding the event bus — and says that it sampled — and what the
+//!   rules remember per device and instance is capped and counted.
 //! * **Secrets are not stored.** Device output can carry a credential, so
 //!   everything kept goes through `nocturne_ai`'s redactor first
-//!   ([`guard`]).
+//!   ([`guard`]). And a trap's community *is* a credential: it is compared
+//!   with the one in the vault and dropped where the datagram is decoded
+//!   ([`traps::admit`]), so that no row, event, status, audit entry, error
+//!   or log line can contain one.
 //!
-//! The specification also describes an SNMP trap receiver and a flow
-//! collector. They are **not in this build**; `logs.status` reports them as
-//! `implemented: false` rather than pretending they are merely switched off.
+//! The flow collector ([`flows`]) is the odd one out: it keeps counts, not
+//! rows. NetFlow and IPFIX are added up in memory into one-minute buckets
+//! of the biggest talkers, kept a day, and nothing of a flow is written to
+//! the database, the tail, a forwarder or a rule.
 
 pub mod attribute;
 pub mod correlate;
 pub mod db;
+pub mod flows;
+pub mod forward;
 pub mod guard;
 pub mod ingest;
 pub mod model;
@@ -42,7 +49,9 @@ pub mod settings;
 pub mod setup;
 pub mod state;
 pub mod status;
+pub mod syslog;
 pub mod tail;
+pub mod traps;
 
 use nocturne_app::{App, AppError, NoParams, Router};
 use serde::Deserialize;
@@ -51,6 +60,9 @@ use serde_json::{Value, json};
 use crate::model::LogRule;
 use crate::query::Filter;
 use crate::state::LogsState;
+
+/// The stream `App::audit` writes. `logs.clear` refuses it.
+pub const AUDIT_STREAM: &str = "audit";
 
 /// Register this feature's settings, state, RPC methods and background tasks.
 pub fn init(builder: &mut nocturne_app::AppBuilder) {
@@ -71,6 +83,9 @@ pub fn init(builder: &mut nocturne_app::AppBuilder) {
         receiver::spawn(app);
         app.spawn("logs.tail", tail::publisher(app.clone()));
         app.spawn("logs.retention", ingest::retention(app.clone()));
+        app.spawn("logs.rules.sweep", rules::sweeper(app.clone()));
+        app.spawn("logs.rules.courier", rules::courier(app.clone()));
+        forward::start(app);
     });
 }
 
@@ -130,6 +145,12 @@ struct IdParams {
 #[derive(Debug, Deserialize)]
 struct DeviceParams {
     device_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestParams {
+    device_id: String,
+    lines: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -222,6 +243,10 @@ pub fn register(router: &mut Router) {
     router.add("logs.pull", |app: App, params: DeviceParams| async move {
         pull::pull(&app, &params.device_id).await
     });
+    router.add("logs.ingest", |app: App, params: IngestParams| async move {
+        let stored = ingest::from_lab(&app, &params.device_id, &params.lines)?;
+        Ok(json!({"stored": stored}))
+    });
     router.add(
         "logs.device_setup",
         |app: App, params: DeviceParams| async move { setup::device_setup(&app, &params.device_id) },
@@ -249,7 +274,16 @@ pub fn register(router: &mut Router) {
         let stream = params.stream.unwrap_or_else(|| db::STREAM.to_string());
         if stream.is_empty() || stream == "*" {
             return Err(AppError::invalid(
-                "`logs.clear` needs the name of one stream (syslog, event, audit)",
+                "`logs.clear` needs the name of one stream (syslog, trap, event)",
+            ));
+        }
+        if stream.eq_ignore_ascii_case(AUDIT_STREAM) {
+            // The audit trail is evidence, and this call is one of the
+            // things it records: the API that is audited does not get to
+            // erase the audit.
+            return Err(AppError::forbidden(
+                "the audit trail cannot be cleared: it is the record of what was done here, \
+                 this call included. It ages out with the log retention setting and no sooner",
             ));
         }
         let removed = query::clear(&app, &stream, params.before)?;
@@ -260,4 +294,6 @@ pub fn register(router: &mut Router) {
         receiver::apply(&app).await?;
         status::snapshot(&app)
     });
+    flows::register(router);
+    forward::register(router);
 }

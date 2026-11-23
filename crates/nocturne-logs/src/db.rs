@@ -21,6 +21,12 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 pub const STREAM: &str = "syslog";
+/// SNMP notifications, as the trap receiver stores them.
+pub const TRAP_STREAM: &str = "trap";
+/// What devices send — as opposed to what the application records about
+/// itself (`audit`, `event`). These are the streams a flood can fill, so
+/// they are the ones the row cap counts and trims.
+pub const DEVICE_STREAMS: &[&str] = &[STREAM, TRAP_STREAM];
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS logs_syslog (
@@ -77,10 +83,15 @@ pub struct Prepared {
 /// read twice must not be stored twice, and the device's own timestamp is
 /// part of the text, so two genuinely separate events differ.
 pub fn fingerprint(raw: &str) -> i64 {
+    fingerprint_bytes(raw.as_bytes())
+}
+
+/// The same for bytes that are not text: a datagram.
+pub fn fingerprint_bytes(raw: &[u8]) -> i64 {
     // FNV-1a: short, stable across runs and platforms, and good enough to
     // tell log lines apart (a collision costs one skipped duplicate line).
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in raw.as_bytes() {
+    for byte in raw {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
@@ -252,12 +263,13 @@ pub fn reattribute_sources(
     })
 }
 
-/// How many rows of this feature's stream are stored, and the oldest one's time.
+/// How many rows devices sent are stored (syslog lines and traps), and the
+/// oldest one's time.
 pub fn extent(store: &Store) -> AppResult<(i64, Option<i64>)> {
     store.with(|conn| {
         conn.query_row(
-            "SELECT COUNT(*), MIN(ts) FROM logs WHERE stream = ?1",
-            params![STREAM],
+            "SELECT COUNT(*), MIN(ts) FROM logs WHERE stream IN (?1, ?2)",
+            params![STREAM, TRAP_STREAM],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
     })
@@ -270,17 +282,28 @@ pub struct Pruned {
     pub by_rows: usize,
 }
 
-/// Delete entries older than `before`, then the oldest of whatever is left
-/// over `max_rows`, in batches so that a first run against a huge table does
-/// not hold the database lock for a minute.
+/// The streams retention ages out: what this feature receives (syslog lines
+/// and traps), and the audit trail. `logs.clear` refuses the audit trail, so
+/// age is the only way an audit entry ever goes — and without it the trail
+/// would only grow.
+pub const AGED_STREAMS: &[&str] = &[STREAM, TRAP_STREAM, crate::AUDIT_STREAM];
+
+/// Delete entries older than `before`, then the oldest of what devices sent
+/// that is left over `max_rows`, in batches so that a first run against a
+/// huge table does not hold the database lock for a minute.
+///
+/// The row cap counts and trims [`DEVICE_STREAMS`] only: a flood of device
+/// lines or of traps must not be able to push the audit trail out.
 pub fn prune(store: &Store, before: Option<i64>, max_rows: u64, batch: usize) -> AppResult<Pruned> {
     let mut pruned = Pruned::default();
     if let Some(before) = before {
-        loop {
-            let removed = delete_oldest(store, Some(before), batch)?;
-            pruned.by_age += removed;
-            if removed < batch {
-                break;
+        for stream in AGED_STREAMS {
+            loop {
+                let removed = delete_oldest(store, &[stream], Some(before), batch)?;
+                pruned.by_age += removed;
+                if removed < batch {
+                    break;
+                }
             }
         }
     }
@@ -290,7 +313,7 @@ pub fn prune(store: &Store, before: Option<i64>, max_rows: u64, batch: usize) ->
         if excess == 0 {
             break;
         }
-        let removed = delete_oldest(store, None, batch.min(excess as usize))?;
+        let removed = delete_oldest(store, DEVICE_STREAMS, None, batch.min(excess as usize))?;
         pruned.by_rows += removed;
         if removed == 0 {
             break;
@@ -299,20 +322,33 @@ pub fn prune(store: &Store, before: Option<i64>, max_rows: u64, batch: usize) ->
     Ok(pruned)
 }
 
-/// Delete at most `limit` of the oldest entries (optionally only those before
-/// a time), and the rows this feature keeps beside them.
-fn delete_oldest(store: &Store, before: Option<i64>, limit: usize) -> AppResult<usize> {
+/// Delete at most `limit` of the oldest entries of one or two streams
+/// (optionally only those before a time), and the rows this feature keeps
+/// beside them.
+fn delete_oldest(
+    store: &Store,
+    streams: &[&str],
+    before: Option<i64>,
+    limit: usize,
+) -> AppResult<usize> {
+    let Some(first) = streams.first() else {
+        return Ok(0);
+    };
     if limit == 0 {
         return Ok(0);
     }
+    // One statement for one stream or two: a single stream is named twice.
+    let second = streams.get(1).unwrap_or(first);
     store.transaction(|tx| {
         let ids: Vec<i64> = {
             let mut statement = tx.prepare_cached(
-                "SELECT id FROM logs WHERE stream = ?1 AND (?2 IS NULL OR ts < ?2)
-                 ORDER BY id LIMIT ?3",
+                "SELECT id FROM logs WHERE stream IN (?1, ?2) AND (?3 IS NULL OR ts < ?3)
+                 ORDER BY id LIMIT ?4",
             )?;
-            let rows =
-                statement.query_map(params![STREAM, before, limit as i64], |row| row.get(0))?;
+            let rows = statement
+                .query_map(params![first, second, before, limit as i64], |row| {
+                    row.get(0)
+                })?;
             rows.collect::<rusqlite::Result<Vec<i64>>>()?
         };
         if ids.is_empty() {
@@ -456,6 +492,70 @@ mod tests {
             })
             .unwrap();
         assert_eq!(orphans, 0, "the index rows go with the entries");
+    }
+
+    #[test]
+    fn traps_count_towards_the_row_cap_and_the_audit_trail_does_not() {
+        let store = Store::in_memory().unwrap();
+        init(&store).unwrap();
+        // Oldest first: an audit entry, then lines and traps alternating.
+        store
+            .log_append(&LogEntry {
+                id: 0,
+                ts: 1,
+                stream: crate::AUDIT_STREAM.into(),
+                device_id: None,
+                severity: Some(6),
+                source: "device.create".into(),
+                message: "Created device".into(),
+                body: None,
+            })
+            .unwrap();
+        let mut batch: Vec<Prepared> = (0..20)
+            .map(|index| {
+                let mut row = prepared(&format!("row {index}"), 1_000 + index, "10.0.0.1");
+                if index % 2 == 1 {
+                    row.entry.stream = TRAP_STREAM.into();
+                }
+                row
+            })
+            .collect();
+        insert_batch(&store, &mut batch).unwrap();
+        assert_eq!(
+            extent(&store).unwrap().0,
+            20,
+            "what devices sent is counted together; the audit entry is not in it"
+        );
+
+        // A flood of traps is trimmed like a flood of lines: the oldest of
+        // either go, whichever stream they are in.
+        let pruned = prune(&store, None, 5, 7).unwrap();
+        assert_eq!((pruned.by_age, pruned.by_rows), (0, 15));
+        let left = |stream: &str| {
+            store
+                .log_query(&LogQuery {
+                    stream: Some(stream.into()),
+                    limit: Some(100),
+                    ..Default::default()
+                })
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.message)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(left(TRAP_STREAM), ["row 19", "row 17", "row 15"]);
+        assert_eq!(left(STREAM), ["row 18", "row 16"]);
+        assert_eq!(
+            left(crate::AUDIT_STREAM).len(),
+            1,
+            "the row cap never reaches the audit trail, however old it is"
+        );
+
+        // By age, a trap goes like a line does.
+        let pruned = prune(&store, Some(1_018), 1_000, 7).unwrap();
+        assert_eq!((pruned.by_age, pruned.by_rows), (4, 0));
+        assert_eq!(left(TRAP_STREAM), ["row 19"]);
+        assert_eq!(left(STREAM), ["row 18"]);
     }
 
     #[test]
