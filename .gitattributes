@@ -1,0 +1,17 @@
+# What a device printed is data, not text.
+#
+# Git on Windows rewrites the line endings of files it takes for text when it
+# checks them out. For source code that is harmless. For a recorded capture it
+# changes the bytes a parser is tested against, and a test that cuts a capture
+# at "          drop\n" finds no such place in a file that now says
+# "          drop\r\n": two tests of the QoS read failed on Windows only,
+# for exactly that reason, while passing everywhere else.
+#
+# These paths are checked out byte for byte as they were committed, on every
+# platform. Some captures and some of the bundled TextFSM templates really do
+# contain carriage returns, because that is what the device or the upstream
+# file holds; this keeps those too.
+crates/nocturne-drivers/tests/profiles/** -text
+crates/nocturne-textfsm/tests/** -text
+crates/nocturne-textfsm/templates/** -text
+crates/nocturne-tools/tests/data/** -text
