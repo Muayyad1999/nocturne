@@ -4,7 +4,7 @@ Spec: `docs/dev/features/toolbox.md`. Conventions: `docs/dev/features/README.md`
 
 ## State: complete
 
-77 tests, `cargo clippy -p nocturne-toolbox --all-targets -- -D warnings` clean,
+86 tests, `cargo clippy -p nocturne-toolbox --all-targets -- -D warnings` clean,
 `cargo fmt -p nocturne-toolbox --check` clean, no `unsafe`, no new third-party
 dependency (`nocturne-snmp` was added to this crate for the OID dictionary
 behind `tools.oid`; everything else was already declared).
@@ -22,6 +22,8 @@ src/
     secrets     decode/encode/identify, passwords, key pair
     units       convert (sizes, rates, durations, dBm), transfer_time, mtu
     reference   the tables, with the engine's own search where it has one
+    qos         tools.qos.marking and tools.qos.voice: nocturne_tools::qos, plus the two refusals only
+                the facade can make (no `as`, no `calls`)
     text        regex, diff, hashes, base64
   probe/        the half that touches the network
     known       Known (address -> device), Target, and the host-name allow-list
@@ -128,6 +130,15 @@ src/
   list of possible tables but no engine has one, so it is not offered;
   `tools.reference.tables` says what there is and an unknown table is
   `not_found` naming them.
+
+* **The QoS calculators refuse rather than default.** `tools.qos.marking` without `as` and
+  `tools.qos.voice` without `calls` are `invalid`: 46 is EF as a DSCP and another marking as a ToS byte, and
+  "one call" for a link sized for sixty is a wrong answer that looks right. Their codec and link tables are
+  served as the reference tables `voice_codecs` and `voice_links` so that a picker is built from the same rows
+  the calculator reads. `tests/qos.rs` shares one app per test: these methods keep no state, and the ninety
+  calls of the table test took four minutes with an app each. The same tests send megabyte-long values, an
+  escape sequence and numbers a form cannot hold (a negative `packet_ms`, 2^32 calls): each is `invalid`, and
+  the refusal quotes at most 80 characters with control characters replaced.
 
 ## Needed from the engines (worked around for now)
 

@@ -41,6 +41,7 @@ export type ToolGroup =
   | 'identity'
   | 'secrets'
   | 'converters'
+  | 'qos'
   | 'reference'
   | 'text'
   | 'probes'
@@ -499,6 +500,165 @@ export interface MtuResult {
   breakdown: [string, number][];
 }
 
+// ---------------------------------------------------------------------- qos
+
+/**
+ * What the value handed to `tools.qos.marking` is. Required, and never
+ * guessed: `46` is EF as a DSCP and an unrelated marking as a ToS byte.
+ */
+export type MarkingForm = 'dscp' | 'tos' | 'precedence' | 'name';
+
+/** `tools.qos.marking` — params `MarkingParams`, result `Marking`. */
+export interface MarkingParams {
+  /** `46`, `"0x2e"`, `"0b101110"`, `"ef"`: a JSON number or text. */
+  value: string | number;
+  as: MarkingForm;
+}
+
+/** One marking in every form it is written in. */
+export interface Marking {
+  /** The six-bit DSCP, 0–63. */
+  dscp: number;
+  /** `EF`, `AF41`, `CS3`, `DF`; `null` for a value the registry has not named. */
+  name: string | null;
+  /** Six binary digits: `101110`. */
+  dscp_binary: string;
+  /** `0x2E`. */
+  dscp_hex: string;
+  /** The whole ToS / Traffic Class byte; its ECN bits are clear unless a byte was given. */
+  tos: number;
+  /** `0xB8`. */
+  tos_hex: string;
+  /** Eight binary digits: `10111000`. */
+  tos_binary: string;
+  /** The top three bits, 0–7. */
+  precedence: number;
+  /** The precedence's name in RFC 791: `Routine` … `CRITIC/ECP` … `Network Control`. */
+  precedence_name: string;
+  /** The bottom two bits of the byte, 0–3. */
+  ecn: number;
+  /** Two binary digits: `01`. */
+  ecn_binary: string;
+  ecn_name: 'Not-ECT' | 'ECT(1)' | 'ECT(0)' | 'CE';
+  /** What that codepoint tells a router and a receiver, with its RFC. */
+  ecn_meaning: string;
+  /**
+   * The per-hop behaviour, its drop precedence where it has one, and where it
+   * is defined, in one sentence: `Assured Forwarding class 4, low drop
+   * precedence (RFC 2597)`. For an unassigned value, the registry pool.
+   */
+  phb: string;
+  /** `null` when the value has no standard use. */
+  typical_use: string | null;
+  notes: string[];
+}
+
+/**
+ * A row of the `voice_codecs` reference table, and the `codec` of a
+ * `VoiceBandwidth`.
+ */
+export interface VoiceCodec extends ReferenceRow {
+  /** What `tools.qos.voice` takes as `codec`: `g711`, `g729`, `g723.1-6.3`. */
+  id: string;
+  /** As it is written: `G.729`, `G.723.1 (6.3 kbps)`. */
+  name: string;
+  bit_rate_bps: number;
+  /** Bytes the codec produces per sample interval. */
+  sample_bytes: number;
+  sample_ms: number;
+  /** Voice per packet by default, in milliseconds. */
+  packet_ms: number;
+  /** Voice payload per packet at that default. */
+  payload_bytes: number;
+  /** The mean opinion score the source gives; `null` where it gives none. */
+  mos: number | null;
+}
+
+/**
+ * A row of the `voice_links` reference table, and the `link` of a
+ * `VoiceBandwidth`. `custom` is not a row: it has no figure of its own.
+ */
+export interface VoiceLink extends ReferenceRow {
+  /** What `tools.qos.voice` takes as `link`: `ethernet`, `ppp`, `mlppp`. */
+  id: string;
+  name: string;
+  /** Layer-2 bytes added to every packet. */
+  overhead_bytes: number;
+  /** What those bytes are: `MP header 6 + End-of-frame flag 1`. */
+  parts: string;
+  /** Whether compressed RTP is counted on this kind of link. */
+  crtp: boolean;
+  /** Which document the figure is from. */
+  source: string;
+  /** What the figure leaves out or disagrees with; `""` when there is nothing to say. */
+  note: string;
+}
+
+/** `tools.qos.voice` — params `VoiceParams`, result `VoiceBandwidth`. */
+export interface VoiceParams {
+  /** An id of the `voice_codecs` table, in any common spelling. */
+  codec: string;
+  /** Simultaneous calls, 1 to 1 000 000. Required: there is no default. */
+  calls: number;
+  /** An id of the `voice_links` table, or `custom` with `l2_bytes`. */
+  link: string;
+  /** Compressed RTP. Refused on a link whose row says `crtp: false`. */
+  crtp?: boolean;
+  /** Adds the `vad` estimate beside the full figure, never instead of it. */
+  vad?: boolean;
+  /** Voice per packet when not the codec's default: whole samples, at most 240 ms. */
+  packet_ms?: number;
+  /** Layer-2 bytes per packet, 0 to 256. With `link: "custom"` and with nothing else. */
+  l2_bytes?: number;
+}
+
+/** One part of a voice packet, in the order the arithmetic adds them. */
+export interface PacketPart {
+  name: string;
+  bytes: number;
+}
+
+/** What voice-activity detection might save: an estimate, with its warning. */
+export interface VadEstimate {
+  saving_pct: number;
+  /** 65 % of the result's `per_call_bps`, to the nearest bit. */
+  per_call_bps: number;
+  total_bps: number;
+  per_call: string;
+  total: string;
+  /** More than 24 calls: fewer, and the average means nothing. */
+  enough_calls: boolean;
+  caveat: string;
+}
+
+export interface VoiceBandwidth {
+  codec: VoiceCodec;
+  /** The link's row; for `custom`, the bytes that were given. */
+  link: VoiceLink;
+  calls: number;
+  crtp: boolean;
+  packet_ms: number;
+  /** To three decimals: `50`, `33.333`. */
+  packets_per_second: number;
+  payload_bytes: number;
+  packet: PacketPart[];
+  /** The sum of `packet`. */
+  packet_bytes: number;
+  /** One call, one direction, voice packets only. Always the full figure. */
+  per_call_bps: number;
+  total_bps: number;
+  /** `per_call_bps` for reading: `11.6 kbps`. */
+  per_call: string;
+  total: string;
+  /** `null` unless `vad: true` was asked for. */
+  vad: VadEstimate | null;
+  /** The working, one line per step, in the engine's own words. */
+  arithmetic: string[];
+  notes: string[];
+  /** The published tables every figure was copied from. */
+  sources: string[];
+}
+
 // ---------------------------------------------------------------- reference
 
 /**
@@ -513,7 +673,8 @@ export interface ReferenceParams {
   /**
    * `ports`, `dscp`, `protocols`, `ethertypes`, `icmp_types`,
    * `icmpv6_types`, `admin_distance`, `ethernet`, `syslog_levels`,
-   * `encapsulations`. Common aliases work too (`qos`, `optics`, `mtu`).
+   * `encapsulations`, `voice_codecs`, `voice_links`. Common aliases work too
+   * (`qos`, `optics`, `mtu`, `codecs`, `links`).
    */
   table: string;
   /** Free text, a number or a name; `ports` and `dscp` search cleverly. */

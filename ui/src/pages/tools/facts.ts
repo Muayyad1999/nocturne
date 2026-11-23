@@ -22,6 +22,11 @@
  * * **A truncated list says so.** A capped set of subnets, reference rows or
  *   OUI assignments carries the note, and the number shown is never presented
  *   as the total.
+ * * **A figure is the engine's.** The two QoS calculators come back with
+ *   their arithmetic, their notes and their sources already written; what is
+ *   done here is layout — which line goes where, digits grouped — and never a
+ *   sum. A bandwidth worked out a second time in TypeScript would be a second
+ *   answer, and the day the two differ nobody could say which is shown.
  */
 
 import type {
@@ -40,6 +45,7 @@ import type {
   InterfaceResult,
   LocalReport,
   MacInfo,
+  Marking,
   MaskInfo,
   MtuResult,
   NtpResult,
@@ -58,6 +64,7 @@ import type {
   TraceResult,
   TransferEstimate,
   VlsmPlan,
+  VoiceBandwidth,
   WhoisResult,
   WolResult,
 } from '@/api/types/toolbox';
@@ -95,6 +102,8 @@ export type Section =
   | { kind: 'facts'; title?: string; facts: Fact[] }
   | { kind: 'table'; title?: string; columns: Column[]; rows: Row[]; empty: string; note?: string }
   | { kind: 'code'; title: string; text: string; wrap?: boolean }
+  /** Sentences the engine wrote, one per line: the steps of a sum, the sources of a figure. */
+  | { kind: 'lines'; title: string; lines: string[]; numbered?: boolean; mono?: boolean }
   | { kind: 'note'; text: string; tone?: FactTone };
 
 // ----------------------------------------------------------------- helpers
@@ -583,6 +592,160 @@ export function mtuSections(result: MtuResult): Section[] {
       'Where the bytes go',
     ),
   ];
+}
+
+// --------------------------------------------------------------------- qos
+
+/**
+ * The engine's per-hop-behaviour sentence, laid out for reading.
+ *
+ * The engine says three things in one sentence — `Assured Forwarding class 4,
+ * low drop precedence (RFC 2597)` — and a reader looking for the drop
+ * precedence should not have to parse it. This only cuts the sentence where
+ * the engine itself put the comma and the bracket; every word shown is still
+ * the engine's. A sentence that is not in that shape (an unassigned value:
+ * `No standard per-hop behaviour: pool 2, …`) is kept whole, with no drop
+ * precedence and no source invented for it.
+ */
+export function phbParts(phb: string): { behaviour: string; drop?: string; source?: string } {
+  // Only a bare RFC in the closing bracket is a citation: `(standards action)`
+  // at the end of a pool's description is part of what it says.
+  const cited = /^(.*\S)\s+\((RFC \d+)\)$/.exec(phb.trim());
+  const sentence = cited?.[1] ?? phb.trim();
+  const dropped = /^(.*\S), (\w+) drop precedence$/.exec(sentence);
+  return {
+    behaviour: dropped?.[1] ?? sentence,
+    drop: dropped?.[2],
+    source: cited?.[2],
+  };
+}
+
+export function markingSections(marking: Marking): Section[] {
+  const phb = phbParts(marking.phb);
+  return [
+    facts([
+      marking.name === null
+        ? {
+            label: 'Name',
+            value: 'none — the registry has not named this value',
+            tone: 'idle',
+          }
+        : { label: 'Name', value: marking.name, mono: true, copy: true, tone: 'info' },
+      { label: 'DSCP', value: String(marking.dscp), mono: true, copy: true },
+      { label: 'DSCP, binary', value: marking.dscp_binary, mono: true, copy: true },
+      { label: 'DSCP, hex', value: marking.dscp_hex, mono: true, copy: true },
+    ]),
+    facts(
+      [
+        { label: 'ToS byte', value: String(marking.tos), mono: true, copy: true },
+        { label: 'ToS byte, binary', value: marking.tos_binary, mono: true, copy: true },
+        { label: 'ToS byte, hex', value: marking.tos_hex, mono: true, copy: true },
+        {
+          label: 'IP precedence',
+          value: `${marking.precedence} — ${marking.precedence_name}`,
+          mono: true,
+        },
+        // The number as well as the bits: ECT(1) is 1 and ECT(0) is 2, so the
+        // name alone invites reading the field the wrong way round.
+        {
+          label: 'ECN bits',
+          value: `${marking.ecn_binary} (${marking.ecn}) — ${marking.ecn_name}`,
+          mono: true,
+        },
+        ...fact('What ECN says', marking.ecn_meaning),
+      ],
+      'The whole byte',
+    ),
+    facts(
+      [
+        { label: 'Per-hop behaviour', value: phb.behaviour },
+        ...fact('Drop precedence', phb.drop),
+        ...fact('Defined in', phb.source),
+        marking.typical_use === null
+          ? { label: 'Typically for', value: 'nothing: this value has no standard use', tone: 'idle' }
+          : { label: 'Typically for', value: marking.typical_use },
+      ],
+      'How a router treats it',
+    ),
+    ...marking.notes.map((text): Section => ({ kind: 'note', tone: 'idle', text })),
+  ];
+}
+
+/** A rate the engine wrote for reading, with its exact figure beside it. */
+const bps = (written: string, exact: number): string => `${written} (${formatCount(exact)} bps)`;
+
+export function voiceSections(result: VoiceBandwidth): Section[] {
+  const { codec, link, vad } = result;
+  const sections: Section[] = [
+    facts([
+      {
+        label: 'Per call',
+        value: bps(result.per_call, result.per_call_bps),
+        mono: true,
+        tone: 'info',
+      },
+      {
+        label: 'Total',
+        value: `${bps(result.total, result.total_bps)} for ${formatCount(result.calls)} ${
+          result.calls === 1 ? 'call' : 'calls'
+        }`,
+        mono: true,
+        tone: 'info',
+      },
+      {
+        label: 'Each packet',
+        value: `${result.packet_bytes} bytes, ${result.packets_per_second} of them a second`,
+        mono: true,
+      },
+      { label: 'Compressed RTP', value: yesNo(result.crtp, 'Counted', 'Not counted') },
+      {
+        label: 'Codec',
+        value: `${codec.name}: ${result.packet_ms} ms of voice, ${result.payload_bytes} bytes, in a packet`,
+      },
+      {
+        label: 'Codec MOS',
+        value: codec.mos === null ? 'none given in the source' : String(codec.mos),
+        tone: codec.mos === null ? 'idle' : undefined,
+      },
+      { label: 'Link', value: `${link.name}: ${link.overhead_bytes} bytes (${link.parts})` },
+      ...fact('Link figure from', link.source),
+    ]),
+  ];
+
+  if (vad) {
+    sections.push(
+      facts(
+        [
+          { label: 'Per call', value: bps(vad.per_call, vad.per_call_bps), mono: true },
+          { label: 'Total', value: bps(vad.total, vad.total_bps), mono: true },
+          { label: 'Saving assumed', value: `at best ${vad.saving_pct} %` },
+        ],
+        // Beside the full figure, never in its place: the heading says which
+        // of the two is the estimate.
+        'With voice-activity detection — an estimate, not the figure to provision',
+      ),
+      { kind: 'note', tone: vad.enough_calls ? 'info' : 'warn', text: vad.caveat },
+    );
+  }
+
+  sections.push(
+    table(
+      [
+        { id: 'name', header: 'Part of the packet' },
+        { id: 'bytes', header: 'Bytes', align: 'right', mono: true, width: 90 },
+      ],
+      result.packet.map((part) => ({ ...part })),
+      'The engine listed no parts for this packet.',
+      'Where the bytes go',
+      `${result.packet_bytes} bytes in all.`,
+    ),
+    { kind: 'lines', title: 'The arithmetic', lines: result.arithmetic, numbered: true, mono: true },
+    ...result.notes.map((text): Section => ({ kind: 'note', tone: 'idle', text })),
+  );
+  if (result.sources.length > 0) {
+    sections.push({ kind: 'lines', title: 'Where the figures come from', lines: result.sources });
+  }
+  return sections;
 }
 
 // -------------------------------------------------------------------- text
@@ -1189,6 +1352,10 @@ export function sectionsFor(id: string, result: unknown): Section[] {
       return transferSections(result as TransferEstimate);
     case 'tools.mtu':
       return mtuSections(result as MtuResult);
+    case 'tools.qos.marking':
+      return markingSections(result as Marking);
+    case 'tools.qos.voice':
+      return voiceSections(result as VoiceBandwidth);
     case 'tools.hash':
       return digestSections(result as Digests);
     case 'tools.base64':

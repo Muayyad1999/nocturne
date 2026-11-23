@@ -5,33 +5,38 @@ Screen: `docs/dev/spec-ui-pages.md` → "Tools". Backend: `docs/dev/features/too
 
 ## State
 
-43 panels, every tool in the engine's catalogue covered. `pnpm --dir ui test`
-(111 tests in this folder), `pnpm --dir ui build` (whole-repo typecheck) and
-`ui/tests/tools.spec.ts` (14 tests against a real `nocturne-server`) are green;
-`ui/tests/tools.shots.ts` writes 13 pictures per theme.
+45 panels, every tool in the engine's catalogue covered. `pnpm --dir ui test`
+(193 tests in this folder), `pnpm --dir ui build` (whole-repo typecheck) and
+`ui/tests/tools.spec.ts` (18 tests against a real `nocturne-server`) are green;
+`ui/tests/tools.shots.ts` writes 31 pictures per theme, 18 of them the two QoS
+calculators and the reference tables that lead to them (`-g QoS` takes those
+alone).
 
 ```
 index.tsx        the screen: gating, routing, the drawer and the panel
 catalogue.ts     tools.list → kinds, panels, folding, grouping, the filter
-specs.ts         what each tool asks for, and the parameters that come of it
-fields.ts        the field vocabulary (types only, so specs.ts stays pure)
-facts.ts         every result shape → sections of facts, tables, text, notes
+specs.ts         what each tool asks for, and the parameters that come of it;
+                 which field a refusal is about; where a reference row leads;
+                 what a picker says in each state of its table
+field-kinds.ts   the field vocabulary (types only, so specs.ts stays pure)
+facts.ts         every result shape → sections of facts, tables, lines, text, notes
 probes.ts        what a run did: outcome, failure words, ping arithmetic, merging
-secrets.ts       reversible vs decodable, in two statements
-data.ts          the reads, the writes, the debounce and the remembered form
+secret-answers.ts  reversible vs decodable, in two statements
+data.ts          the reads, the writes, the debounce, the remembered form, and
+                 the engine's tables behind a form's pickers
 Answer.tsx       a form and one answer (calculators, generators, reply probes)
 JobProbe.tsx     the four streamed probes, with re-attachment
 Secrets.tsx  Reference.tsx  Servers.tsx  History.tsx   the panels with a shape of their own
 Sections.tsx  Fields.tsx  ToolList.tsx  ToolPanel.tsx  Unavailable.tsx
 ```
 
-The reasoning is in the four `.ts` files and has unit tests
-(`catalogue.test.ts`, `specs.test.ts`, `facts.test.ts`, `probes.test.ts`,
-`secrets.test.ts`); the `.tsx` files render what those decide.
+The reasoning is in the `.ts` files and has unit tests (`catalogue.test.ts`,
+`specs.test.ts`, `facts.test.ts`, `probes.test.ts`, `secret-answers.test.ts`,
+`data.test.ts`); the `.tsx` files render what those decide.
 
 ## The two things this screen exists to get right
 
-**`reversible` and `decodable` are different questions.** `secrets.ts` turns
+**`reversible` and `decodable` are different questions.** `secret-answers.ts` turns
 one `tools.secret.identify` answer into two statements that are always both on
 screen: what the *format* is ("Reversible by design" for a Cisco type 6, "One
 way: a hash" for a type 5) and what *Nocturne* can do with it ("Nocturne cannot
@@ -50,6 +55,78 @@ prints the code. 100 % loss only ever comes from a report that exists. The
 ping test asserts both branches — a real report, or the real refusal with no
 `… ms` anywhere on screen — because whether this machine may send ICMP is not
 something a test can decide.
+
+## The two QoS calculators
+
+`tools.qos.marking` and `tools.qos.voice` (`docs/dev/features/toolbox.md`,
+"QoS calculators") are ordinary calculators here: a spec, a `sectionsFor`
+case, `LiveAnswer`. What they needed was added to the shared machinery rather
+than built beside it, so the next tool that needs it has it:
+
+* **A picker can be the engine's table** (`Field.source`). The codec and link
+  choices are the rows of `voice_codecs` and `voice_links`, read through
+  `tools.reference` by `Fields` itself (`useTables`), so every form gets it
+  without being told. Not read yet is a disabled "Reading the engine's
+  table…", not an empty list; a table that could not be read says so in the
+  engine's words under the field, and the list then reads "Nothing to choose
+  from" rather than going on saying it is being read. In every state the
+  list shows what the form holds — a codec remembered from last time is asked
+  about at once, table or no table, and a list reading "Nothing to choose
+  from" above an answer for G.729 was the picture that showed it (a held
+  value with no row is listed by its id). The states are one pure function
+  (`pickerOf`), and the failed read is seen in a browser by cutting that one
+  request on the wire (`tools.spec.ts`). `custom` is the one choice written in the
+  spec, because the engine's table has no row for it. A chosen option's own
+  figures replace the field's hint (`FieldOption.hint`).
+* **Nothing is chosen for the reader where the engine refuses to choose.**
+  `as` has no default at the engine ("the same number is a different marking
+  as each") and `calls` has none ("one call for a link sized for sixty"), so
+  both fields start empty and the form asks nothing until they are filled. A
+  preselected "DSCP" would have been the interface doing the guessing the
+  engine was written not to do. The form is remembered, so this costs one
+  click, once.
+* **A refusal goes beside the field it is about** (`Spec.blame`, `blamed`).
+  The engine's refusal carries no field — `details` is `{reason}` — but its
+  sentence opens with what the input was supposed to be (``invalid link type
+  `ethernet`: …``), and that opening phrase is all that is matched, never the
+  reason. The sentence takes the hint's place through the design system's
+  `Field error`, and where the answer would be the box only points at it, so
+  the sentence is on screen once. A refusal that names no input (a negative
+  number of calls is refused by the router: "expected u32") is shown whole
+  where the answer would be, as for every other tool. The refusals for a
+  parameter that is missing altogether (``give the number of simultaneous
+  calls in `calls` ``) are worded by the RPC method and name the parameter
+  instead; they are matched too, although no form here sends such a request.
+  `specs.test.ts` holds one sentence of every reason either method refused
+  with on a running server, each with the field it belongs beside.
+* **Compressed RTP on Ethernet is refused beside "Link type", not beside the
+  switch.** The engine calls the *link* wrong, and the way out it names
+  (`custom`) is in that field. The link's hint says "Compressed RTP is not
+  counted on it" before the switch is tried; the switch is not disabled,
+  because the engine's sentence is the one that explains why.
+* **The figures are the engine's.** `voiceSections` lays out `per_call`,
+  `total`, `packet`, `arithmetic`, `notes` and `sources` and works nothing
+  out; a unit test feeds it a result whose total is *not* calls × per call
+  and asserts the engine's total is what is shown. `phbParts` cuts the
+  engine's per-hop-behaviour sentence where the engine put its comma and its
+  bracket ("Assured Forwarding class 4" · "low" · "RFC 2597") and keeps any
+  sentence that is not in that shape whole.
+* **Every field of the answer is on screen.** A marking shows all sixteen
+  the engine returns, the ECN field as its bits *and* its number (`01 (1) —
+  ECT(1)`: ECT(1) is 1 and ECT(0) is 2, so the name alone invites reading it
+  the wrong way round). A voice answer shows the packet that was worked out
+  (`packet_ms`, `payload_bytes` of the result), not the codec's default one;
+  the codec's own row — bit rate, sample, default packet — is under its
+  picker, where it was chosen.
+* **The arithmetic and the sources are a new section kind, `lines`**: the
+  engine's sentences, one per row, numbered when their order is the argument.
+* **A reference table leads to the calculator that takes its rows**
+  (`leadOf`, `leadValues`, `prefill`). Enter on a DSCP row, or its menu, opens
+  the marking calculator on that value — by number, because a searched-for
+  unnamed value has a row whose "name" is `DSCP 47`. The two voice tables
+  lead to the voice calculator the same way, keeping what its form already
+  remembered. The row action exists only when `tools.list` has the
+  calculator. The DSCP table did not grow hexadecimal or ECN columns.
 
 ## Decisions worth remembering
 
@@ -129,7 +206,22 @@ something a test can decide.
 * **No "ask the assistant" button.** The shared `--ai` affordance belongs to
   the screens that have something to hand over; a subnet calculation is not it.
 
+* **Nothing leads back from the marking calculator to the DSCP table**, and
+  there is no command-palette entry for either QoS tool: the drawer's filter
+  finds both by `dscp`, `tos`, `codec` or `voice`.
+* **A voice refusal by the router** (`calls: -3`, `calls: 1.5`) is passed on
+  as the router wrote it. The form could keep such a number from being sent,
+  but then the interface would be deciding what a valid number of calls is.
+
 ## What the backend or the design system made awkward
+
+* **A calculator's refusal does not say which parameter it is about.**
+  `errors::tool` puts only `{reason}` in `details`, although `ToolError::
+  Invalid` knows its `what`. `Spec.blame` therefore reads the opening phrase
+  of the message. One more key in `details` (`what`, or better the parameter
+  name) would let the interface stop reading prose; until then a reworded
+  `what` ("link type") moves that refusal back to where the answer would be,
+  which is the old behaviour and not a wrong one.
 
 * **A running probe's history record has no `job_id`** — a defect, and the
   reason this screen re-attaches through `jobs.list` instead. `Run::new` leaves
@@ -193,3 +285,31 @@ something a test can decide.
     panel, leaving 416 px for the tool (see the container-query note above).
     It stacks now, and the stacked drawer is 220 px so the tool is on screen
     under it.
+11. Choosing a codec pushed "Simultaneous calls" down the screen, and a
+    refusal under "Link type" pushed "Voice per packet" down by four lines:
+    the form grid was bottom-aligned, so a hint that grew moved the control
+    beside it. The grid is top-aligned now, for every tool; the Reference
+    panel's "Search" used to sit a line below its "Table" for the same reason.
+12. The DSCP table's headings read "DS…" and "Preced…", and its PHB column
+    was nine characters of monospace. Columns are as wide as their headings
+    need, and the PHB is prose.
+13. The codec table ran off the panel's right edge and lost its MOS column
+    (the VLSM table's mistake again): eight columns at the widths their long
+    headings needed. The headings are the units now (`B/sample`,
+    `ms/packet`).
+14. The "what the value is" hints wrapped to two lines beside a one-line hint.
+    Each is one line.
+15. The link table cut `frame-relay` to `frame-re…`: an id that cannot be
+    read off cannot be typed. The id column is as wide as the longest id.
+16. A reference table's cell is one line, so the parts, source and note of a
+    link, a PHB and a "typically for" are cut at the column's edge. The whole
+    text is on the cell (`title`) for whoever points at it, and the row's
+    calculator shows it in full; the table itself still does not wrap,
+    because the design system's table does not.
+17. At 500 px the form is one column and the drawer is on top; the refusal
+    stays under its own field there (`qos-voice-narrow-refused`). The focus
+    ring on a switch, which no `Field` frames, is in `qos-voice-focus`.
+18. With the codec table unreadable and G.729 remembered, the list read
+    "Nothing to choose from" while the engine was being asked about G.729
+    underneath it. The list shows the codec the form holds
+    (`qos-voice-unread`).

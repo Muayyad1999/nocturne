@@ -10,7 +10,9 @@
  *   stands between a subnet and its mask. A refusal from the engine
  *   (`10.0.300.1`) replaces the answer with the engine's own sentence rather
  *   than leaving the previous answer on screen pretending to describe the new
- *   input.
+ *   input. Where the form has several inputs and the engine's sentence says
+ *   which one it is about (`Spec.blame`), the sentence goes beside that input
+ *   and the place of the answer points to it.
  * * **A generator or a probe is a mutation.** Each press is a new call: a new
  *   password, a new key pair, a new probe recorded in the history. A query
  *   would hand back the cached previous answer, which for a password generator
@@ -32,7 +34,7 @@ import { useDebounced, useToolResult, type Form } from './data';
 import { sectionsFor } from './facts';
 import { Fields } from './Fields';
 import { Sections } from './Sections';
-import type { Spec } from './specs';
+import { blamed, type Spec } from './specs';
 import styles from './Tools.module.css';
 import { Absence, ProbeFailure } from './Unavailable';
 
@@ -58,11 +60,20 @@ export function LiveAnswer({ id, spec, form, footer }: AnswerProps) {
   // it describes the previous input, so it is dimmed rather than left to look
   // like the answer to what is being typed now.
   const stale = answer.isFetching && !answer.isPending;
+  // Which input the refusal is about, if the engine's sentence says so and
+  // that input is on screen now (the form may have moved on since the call).
+  const about =
+    params !== null && answer.error ? blamed(spec, answer.error.message, form.values) : undefined;
 
   return (
     <>
       <div className={styles.formRow}>
-        <Fields fields={spec.fields} values={form.values} onChange={form.set} />
+        <Fields
+          fields={spec.fields}
+          values={form.values}
+          onChange={form.set}
+          errors={about && answer.error ? { [about]: answer.error.message } : undefined}
+        />
       </div>
       {params === null ? (
         <Absence
@@ -72,7 +83,10 @@ export function LiveAnswer({ id, spec, form, footer }: AnswerProps) {
       ) : answer.isPending ? (
         <AnswerSkeleton />
       ) : answer.error ? (
-        <Refusal error={answer.error} />
+        <Refusal
+          error={answer.error}
+          beside={spec.fields.find((field) => field.name === about)?.label}
+        />
       ) : (
         <div className={styles.answer} data-stale={stale || undefined}>
           <Sections sections={sectionsFor(id, answer.data)} />
@@ -141,12 +155,22 @@ export function AskedAnswer({ id, spec, form, devices, probe, what, footer }: An
   );
 }
 
-/** The engine's refusal, in its own words, where the answer would have been. */
-export function Refusal({ error }: { error: RpcError }) {
+/**
+ * The engine's refusal, in its own words, where the answer would have been.
+ *
+ * With `beside`, the sentence is already next to the input it is about, so
+ * this says only that there is no answer and where to look: the same sentence
+ * twice on one screen reads as two problems.
+ */
+export function Refusal({ error, beside }: { error: RpcError; beside?: string }) {
   return (
     <div className={styles.refusal} role="status">
       <strong className={styles.refusalHead}>That input will not do</strong>
-      <p className={styles.refusalWhy}>{error.message}</p>
+      <p className={styles.refusalWhy}>
+        {beside === undefined
+          ? error.message
+          : `Nothing was worked out. The engine refused what is in “${beside}”, and says why beside it.`}
+      </p>
     </div>
   );
 }

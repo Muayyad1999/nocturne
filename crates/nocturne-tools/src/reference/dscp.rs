@@ -79,18 +79,8 @@ pub fn dscp_table() -> Vec<DscpEntry> {
 /// registry pool they fall in. `None` if the query is none of the above.
 pub fn dscp(query: &str) -> Option<DscpEntry> {
     let query = query.trim().to_ascii_lowercase();
-    let named = CODE_POINTS
-        .iter()
-        .find(|(name, ..)| name.eq_ignore_ascii_case(&query))
-        .map(|(_, value, ..)| *value)
-        .or_else(|| {
-            ALIASES
-                .iter()
-                .find(|(alias, _)| *alias == query)
-                .map(|(_, value)| *value)
-        });
     let is_binary = |digits: &str| digits.bytes().all(|b| matches!(b, b'0' | b'1'));
-    let value = if let Some(value) = named {
+    let value = if let Some(value) = named(&query) {
         value
     } else if let Some(hex) = query.strip_prefix("0x") {
         u8::from_str_radix(hex, 16)
@@ -118,30 +108,50 @@ pub fn dscp(query: &str) -> Option<DscpEntry> {
     Some(entry(value))
 }
 
+/// The value a code point's name stands for: `ef`, `af41`, `cs6`, `le`,
+/// `be`, `default` (case-insensitive). Numbers are not names.
+pub(crate) fn named(name: &str) -> Option<u8> {
+    let name = name.trim();
+    CODE_POINTS
+        .iter()
+        .find(|(candidate, ..)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value, ..)| *value)
+        .or_else(|| {
+            ALIASES
+                .iter()
+                .find(|(alias, _)| alias.eq_ignore_ascii_case(name))
+                .map(|(_, value)| *value)
+        })
+}
+
+/// The registered `(name, per-hop behaviour, typical use)` of a six-bit
+/// value, or `None` for a value the registry has not assigned.
+pub(crate) fn registered(value: u8) -> Option<(&'static str, &'static str, &'static str)> {
+    CODE_POINTS
+        .iter()
+        .find(|(_, candidate, ..)| *candidate == value & 0x3f)
+        .map(|(name, _, phb, typical_use)| (*name, *phb, *typical_use))
+}
+
+/// What the registry says about a value it has not assigned: the pool the
+/// value falls in (RFC 2474 as amended by RFC 8436).
+pub(crate) fn pool(value: u8) -> &'static str {
+    match value & 0b11 {
+        0b11 => "No standard per-hop behaviour: pool 2, reserved for experimental or local use",
+        0b01 => "No standard per-hop behaviour: pool 3, unassigned (standards action, RFC 8436)",
+        _ => "No standard per-hop behaviour: pool 1, unassigned (standards action)",
+    }
+}
+
 fn entry(value: u8) -> DscpEntry {
     let value = value & 0x3f;
-    let (name, phb, typical_use) = match CODE_POINTS
-        .iter()
-        .find(|(_, candidate, ..)| *candidate == value)
-    {
-        Some((name, _, phb, typical_use)) => (
-            (*name).to_owned(),
-            (*phb).to_owned(),
-            (*typical_use).to_owned(),
+    let (name, phb, typical_use) = match registered(value) {
+        Some((name, phb, typical_use)) => (name.to_owned(), phb.to_owned(), typical_use.to_owned()),
+        None => (
+            format!("DSCP {value}"),
+            pool(value).to_owned(),
+            String::new(),
         ),
-        None => {
-            // The three pools of RFC 2474 as amended by RFC 8436.
-            let pool = match value & 0b11 {
-                0b11 => {
-                    "No standard per-hop behaviour: pool 2, reserved for experimental or local use"
-                }
-                0b01 => {
-                    "No standard per-hop behaviour: pool 3, unassigned (standards action, RFC 8436)"
-                }
-                _ => "No standard per-hop behaviour: pool 1, unassigned (standards action)",
-            };
-            (format!("DSCP {value}"), pool.to_owned(), String::new())
-        }
     };
     DscpEntry {
         name,

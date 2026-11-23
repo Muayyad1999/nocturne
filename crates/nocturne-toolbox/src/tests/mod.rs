@@ -11,5 +11,6 @@ mod catalogue;
 mod device;
 mod history;
 mod probes;
+mod qos;
 mod servers;
 mod support;

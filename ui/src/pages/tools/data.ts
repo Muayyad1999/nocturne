@@ -22,21 +22,35 @@
  * anywhere ({@link useRemembered}).
  */
 
+import { useQueries } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { useRpc, type UseRpcOptions } from '@/api/hooks';
+import { rpc } from '@/api/client';
+import { rpcQueryKey, useRpc, type UseRpcOptions } from '@/api/hooks';
 import type { DeviceRow, Job } from '@/api/types/core';
 import type {
   History,
   HistoryParams,
   Messages,
   ProbeRun,
+  ReferenceTable,
   SyslogStatus,
   TableInfo,
   TftpStatus,
   Tool,
 } from '@/api/types/toolbox';
+import { formatCount } from '@/lib/format';
 import { readStored, storageKey, writeStored } from '@/lib/storage';
-import { initialValues, SPECS, type Spec, type Values } from './specs';
+import {
+  initialValues,
+  sourcesOf,
+  SPECS,
+  type Field,
+  type Spec,
+  type TableRead,
+  type Values,
+} from './specs';
+
+export type { TableRead } from './specs';
 
 /** The catalogue. One read, cached for the session: it cannot change at runtime. */
 export function useCatalogue() {
@@ -83,6 +97,51 @@ export function useDevices(enabled: boolean) {
 /** The reference tables there are, for the Reference tool's chooser. */
 export function useReferenceTables(enabled: boolean) {
   return useRpc<TableInfo[]>('tools.reference.tables', undefined, { enabled });
+}
+
+/**
+ * How many rows of a reference table are asked for at once: by the Reference
+ * panel, and by a form whose choices are a table's rows. The same number in
+ * both places, so the two share one cached read.
+ */
+export const TABLE_ROWS = 2000;
+
+/**
+ * The reference tables a form's choices are read from, by table id.
+ *
+ * A codec picker is the engine's `voice_codecs` table and not a list kept
+ * here, for the reason the drawer is `tools.list`: the calculator and the
+ * picker then cannot disagree about what there is. A form with no such field
+ * asks for nothing.
+ */
+export function useTables(fields: readonly Field[]): Record<string, TableRead> {
+  const tables = sourcesOf(fields);
+  const reads = useQueries({
+    queries: tables.map((table) => {
+      const params = { table, limit: TABLE_ROWS };
+      return {
+        queryKey: rpcQueryKey('tools.reference', params),
+        queryFn: () => rpc<ReferenceTable>('tools.reference', params),
+      };
+    }),
+  });
+  return Object.fromEntries(
+    tables.map((table, index) => {
+      const read = reads[index];
+      const data = read?.data;
+      return [
+        table,
+        {
+          rows: data?.rows,
+          error: read?.error ? read.error.message : undefined,
+          partial:
+            data?.truncated === true
+              ? `The engine has ${formatCount(data.total)} of these; the first ${formatCount(data.rows.length)} are offered here.`
+              : undefined,
+        },
+      ];
+    }),
+  );
 }
 
 /** A job, while it runs and once it has stopped. */
@@ -192,6 +251,23 @@ export function useForm(id: string, spec: Spec | undefined): Form {
     clear: () => write(defaults),
     untouched: Object.entries(defaults).every(([name, value]) => (values[name] ?? '') === value),
   };
+}
+
+/**
+ * Hands a tool's form these values before it is opened, as if they had been
+ * typed there: how a row of a reference table leads to the calculator that
+ * takes it. What the form already remembers is kept, so opening the voice
+ * calculator from a codec row does not forget the number of calls.
+ *
+ * `false` when nothing was handed over: no such form, or a form whose inputs
+ * are secrets — those are never written anywhere, from here either.
+ */
+export function prefill(id: string, values: Values): boolean {
+  const spec = SPECS[id];
+  if (spec === undefined || spec.secret === true) return false;
+  const remembered = readStored(REMEMBERED(id), isValues) ?? {};
+  writeStored(REMEMBERED(id), { ...initialValues(spec), ...remembered, ...values });
+  return true;
 }
 
 /** The spec of a tool, when this screen has one. */

@@ -1,20 +1,22 @@
 //! The reference tables: the things an engineer looks up rather than works
 //! out. Ports, DSCP, protocol and EtherType numbers, ICMP types,
-//! administrative distances, Ethernet standards, syslog levels and
-//! encapsulation overheads.
+//! administrative distances, Ethernet standards, syslog levels,
+//! encapsulation overheads, and the codecs and links of the voice calculator.
 //!
 //! Every row comes from `nocturne_tools::reference` (and, for the
-//! encapsulations, `nocturne_tools::convert`), which took them from the RFCs
-//! and the IEEE standards. Nothing is written down a second time here: a
-//! wrong administrative distance in a reference tool is worse than a missing
-//! one, and two copies of a table is how one of them becomes wrong.
+//! encapsulations, `nocturne_tools::convert`; for the voice tables,
+//! `nocturne_tools::qos`), which took them from the RFCs, the IEEE standards
+//! and, for voice, the Cisco documents each row names. Nothing is written
+//! down a second time here: a wrong administrative distance in a reference
+//! tool is worse than a missing one, and two copies of a table is how one of
+//! them becomes wrong.
 //!
 //! One table named in the specification has no engine behind it — cable
 //! pinouts — so it is not offered rather than invented; `ethernet` is the
 //! media table the engine does have. It is in the report.
 
 use nocturne_app::{App, AppError, AppResult, Router, util};
-use nocturne_tools::{convert, reference};
+use nocturne_tools::{convert, qos, reference};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -135,6 +137,20 @@ const TABLES: &[Descriptor] = &[
         description: "What each tunnel or tag costs a packet; the input of tools.mtu.",
         aliases: &["overheads", "mtu"],
         rows: || rows_of(convert::encapsulations()),
+    },
+    Descriptor {
+        id: "voice_codecs",
+        title: "Voice codecs",
+        description: "Bit rate, sample size, default packet and payload of each codec; the input of tools.qos.voice.",
+        aliases: &["codecs", "voice"],
+        rows: || rows_of(qos::voice_codecs()),
+    },
+    Descriptor {
+        id: "voice_links",
+        title: "Layer-2 overhead of a voice packet",
+        description: "What each link type adds to a voice packet and whether compressed RTP is counted on it; the input of tools.qos.voice.",
+        aliases: &["links", "voice_overheads"],
+        rows: || rows_of(qos::voice_links()),
     },
 ];
 

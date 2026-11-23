@@ -16,6 +16,7 @@ use nocturne_app::Router;
 
 pub mod addressing;
 pub mod identity;
+pub mod qos;
 pub mod reference;
 pub mod secrets;
 pub mod text;
@@ -26,6 +27,7 @@ pub fn register(router: &mut Router) {
     identity::register(router);
     secrets::register(router);
     units::register(router);
+    qos::register(router);
     reference::register(router);
     text::register(router);
 }

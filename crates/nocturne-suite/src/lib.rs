@@ -150,6 +150,8 @@ mod tests {
             "probe.traceroute",
             "probe.history",
             "tftp.start",
+            "tools.qos.marking",
+            "tools.qos.voice",
             // addressing
             "ipam.prefixes",
             "ipam.next_prefix",

@@ -64,6 +64,14 @@ describe('what kind of thing a tool is', () => {
   it('marks a tool the engine has and this screen has no form for, rather than hiding it', () => {
     expect(kindOf(tool('tools.something.new', 'addressing'))).toBe('unformed');
   });
+
+  it('has a form for both QoS calculators, and answers them as they are typed into', () => {
+    // Arithmetic like a subnet: no button, nothing leaves the machine.
+    for (const id of ['tools.qos.marking', 'tools.qos.voice']) {
+      expect(kindOf(tool(id, 'qos')), id).toBe('calculator');
+      expect(FAMILY[kindOf(tool(id, 'qos'))], id).toBe('offline');
+    }
+  });
 });
 
 describe('folding the methods that are one panel', () => {
@@ -146,6 +154,24 @@ describe('the filter', () => {
     const [first] = groupPanels(panels(CATALOGUE), 'subnet').flatMap((group) => group.entries);
     expect(first?.indices.length).toBeGreaterThan(0);
   });
+
+  it('gives the QoS calculators a shelf of their own, in words, where the engine lists them', () => {
+    const drawer = groupPanels(
+      panels([
+        tool('tools.reference', 'reference'),
+        tool('tools.qos.voice', 'qos', { title: 'Voice bandwidth' }),
+        tool('tools.mtu', 'converters'),
+      ]),
+      '',
+    );
+    // The engine's group id is `qos`; a heading that said so would be the
+    // one shelf of the drawer labelled with an identifier.
+    expect(drawer.map((group) => group.label)).toEqual([
+      'Converters',
+      'Quality of service',
+      'Reference',
+    ]);
+  });
 });
 
 const DRAWER = [
@@ -153,6 +179,7 @@ const DRAWER = [
   'identity',
   'secrets',
   'converters',
+  'qos',
   'reference',
   'text',
   'probes',
@@ -212,6 +239,8 @@ describe('the screen covers the whole drawer', () => {
       'tools.convert',
       'tools.transfer_time',
       'tools.mtu',
+      'tools.qos.marking',
+      'tools.qos.voice',
       'tools.reference',
       'tools.reference.tables',
       'tools.regex',

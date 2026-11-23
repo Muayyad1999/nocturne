@@ -9,6 +9,14 @@
  * A field with a `when` is shown only while the field it depends on has that
  * value, which is how "aim at a host or at a device" stays one choice instead
  * of two boxes that contradict each other.
+ *
+ * A choice whose options are the engine's own table (`Field.source`) is read
+ * here, so every form gets it without being told: the options are whatever
+ * the table holds, "still reading" is not shown as "nothing to choose", and a
+ * table that could not be read says so in the engine's words.
+ *
+ * A refusal the engine aimed at one input (`errors`) is shown beside that
+ * input, in the place its hint was, and marks the control invalid.
  */
 
 import { Combobox } from '@/design/Combobox';
@@ -18,7 +26,8 @@ import { Select } from '@/design/Select';
 import { Switch } from '@/design/Switch';
 import { Textarea } from '@/design/Textarea';
 import type { DeviceRow } from '@/api/types/core';
-import { fieldShown, type Field as FieldSpec, type Values } from './specs';
+import { useTables, type TableRead } from './data';
+import { fieldShown, pickerOf, type Field as FieldSpec, type Values } from './specs';
 import styles from './Tools.module.css';
 
 export interface FieldsProps {
@@ -30,9 +39,12 @@ export interface FieldsProps {
   /** Enter in a single-line field: run the tool that has a button. */
   onSubmit?: () => void;
   disabled?: boolean;
+  /** The engine's refusal, by the name of the field it is about. */
+  errors?: Readonly<Record<string, string>>;
 }
 
-export function Fields({ fields, values, onChange, devices, onSubmit, disabled }: FieldsProps) {
+export function Fields({ fields, values, onChange, devices, onSubmit, disabled, errors }: FieldsProps) {
+  const tables = useTables(fields);
   const shown = fields.filter((field) => fieldShown(field, values));
   if (shown.length === 0) return null;
 
@@ -47,6 +59,8 @@ export function Fields({ fields, values, onChange, devices, onSubmit, disabled }
             devices={devices}
             onSubmit={onSubmit}
             disabled={disabled}
+            error={errors?.[field.name]}
+            table={field.source ? tables[field.source.table] : undefined}
           />
         </div>
       ))}
@@ -61,9 +75,12 @@ interface OneFieldProps {
   devices?: readonly DeviceRow[];
   onSubmit?: () => void;
   disabled?: boolean;
+  error?: string;
+  /** The engine's table behind this field's choices, when it has one. */
+  table?: TableRead;
 }
 
-function OneField({ field, value, onChange, devices, onSubmit, disabled }: OneFieldProps) {
+function OneField({ field, value, onChange, devices, onSubmit, disabled, error, table }: OneFieldProps) {
   const enter = (event: { key: string; preventDefault: () => void }) => {
     if (event.key === 'Enter' && onSubmit) {
       event.preventDefault();
@@ -72,20 +89,32 @@ function OneField({ field, value, onChange, devices, onSubmit, disabled }: OneFi
   };
 
   if (field.kind === 'switch') {
+    // A switch has no Field around it, so a refusal about it is wired to it
+    // by hand: the same sentence, in the same place under the control.
+    const errorId = `tool-field-${field.name}-error`;
     return (
-      <Switch
-        checked={value === 'on'}
-        disabled={disabled}
-        onChange={(event) => onChange(event.currentTarget.checked ? 'on' : '')}
-      >
-        {field.label}
-      </Switch>
+      <>
+        <Switch
+          checked={value === 'on'}
+          disabled={disabled}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
+          onChange={(event) => onChange(event.currentTarget.checked ? 'on' : '')}
+        >
+          {field.label}
+        </Switch>
+        {error && (
+          <p id={errorId} className={styles.switchError}>
+            {error}
+          </p>
+        )}
+      </>
     );
   }
 
   if (field.kind === 'textarea') {
     return (
-      <Field label={field.label} hint={field.hint}>
+      <Field label={field.label} hint={field.hint} error={error}>
         <Textarea
           value={value}
           rows={field.rows ?? 4}
@@ -100,12 +129,13 @@ function OneField({ field, value, onChange, devices, onSubmit, disabled }: OneFi
   }
 
   if (field.kind === 'select') {
+    const picker = pickerOf(field, value, table);
     return (
-      <Field label={field.label} hint={field.hint}>
+      <Field label={field.label} hint={picker.hint} error={error ?? picker.error}>
         <Select
           value={value}
-          options={field.options ?? []}
-          disabled={disabled}
+          options={picker.options}
+          disabled={disabled || !picker.ready}
           onChange={(event) => onChange(event.currentTarget.value)}
         />
       </Field>
@@ -119,7 +149,7 @@ function OneField({ field, value, onChange, devices, onSubmit, disabled }: OneFi
       description: device.address || 'no address in the inventory',
     }));
     return (
-      <Field label={field.label} hint={field.hint}>
+      <Field label={field.label} hint={field.hint} error={error}>
         <Combobox
           options={options}
           value={value === '' ? null : value}
@@ -134,7 +164,7 @@ function OneField({ field, value, onChange, devices, onSubmit, disabled }: OneFi
   }
 
   return (
-    <Field label={field.label} hint={field.hint}>
+    <Field label={field.label} hint={field.hint} error={error}>
       <Input
         value={value}
         type={field.kind === 'number' ? 'number' : 'text'}

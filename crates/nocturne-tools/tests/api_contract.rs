@@ -5,7 +5,9 @@
 
 use std::fmt::Debug;
 
-use nocturne_tools::{ToolError, convert, mac, reference, secrets, subnet, text, vlsm, wildcard};
+use nocturne_tools::{
+    ToolError, convert, mac, qos, reference, secrets, subnet, text, vlsm, wildcard,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -72,6 +74,12 @@ fn function_signatures() {
     let _: fn(&str) -> Option<u64> = convert::parse_duration_s;
     let _: fn(u64) -> String = convert::format_duration;
     let _: fn(u32, &[String]) -> Result<convert::MtuResult, ToolError> = convert::mtu;
+
+    let _: fn(&str, qos::MarkingForm) -> Result<qos::Marking, ToolError> = qos::marking;
+    let _: fn() -> Vec<qos::VoiceCodec> = qos::voice_codecs;
+    let _: fn() -> Vec<qos::VoiceLink> = qos::voice_links;
+    let _: fn(&str, u32, &str, &qos::VoiceOptions) -> Result<qos::VoiceBandwidth, ToolError> =
+        qos::voice;
 
     let _: fn(&str) -> Vec<reference::PortEntry> = reference::ports;
     let _: fn() -> Vec<reference::DscpEntry> = reference::dscp_table;
@@ -423,6 +431,155 @@ fn result_types_have_the_promised_fields_and_derives() {
     assert_eq!(
         keys(&assert_result_type(&level)),
         ["level", "name", "cisco_keyword", "meaning"]
+    );
+
+    let marking = qos::Marking {
+        dscp: 34,
+        name: Some(s("AF41")),
+        dscp_binary: s("100010"),
+        dscp_hex: s("0x22"),
+        tos: 136,
+        tos_hex: s("0x88"),
+        tos_binary: s("10001000"),
+        precedence: 4,
+        precedence_name: s("Flash Override"),
+        ecn: 0,
+        ecn_binary: s("00"),
+        ecn_name: s("Not-ECT"),
+        ecn_meaning: s("Not ECN-capable: a congested router can only drop this packet (RFC 3168)"),
+        phb: s("Assured Forwarding class 4, low drop precedence (RFC 2597)"),
+        typical_use: Some(s("Multimedia conferencing: interactive video")),
+        notes: Vec::new(),
+    };
+    assert_eq!(
+        qos::marking("0x88", qos::MarkingForm::Tos).unwrap(),
+        marking
+    );
+    assert_eq!(
+        keys(&assert_result_type(&marking)),
+        [
+            "dscp",
+            "name",
+            "dscp_binary",
+            "dscp_hex",
+            "tos",
+            "tos_hex",
+            "tos_binary",
+            "precedence",
+            "precedence_name",
+            "ecn",
+            "ecn_binary",
+            "ecn_name",
+            "ecn_meaning",
+            "phb",
+            "typical_use",
+            "notes"
+        ]
+    );
+    assert_eq!(
+        assert_result_type(&qos::MarkingForm::Precedence),
+        json!("precedence")
+    );
+    let codec = qos::VoiceCodec {
+        id: s("g729"),
+        name: s("G.729"),
+        bit_rate_bps: 8000,
+        sample_bytes: 10,
+        sample_ms: 10,
+        packet_ms: 20,
+        payload_bytes: 20,
+        mos: Some(3.92),
+    };
+    assert_eq!(qos::voice_codecs()[1], codec);
+    assert_eq!(
+        keys(&assert_result_type(&codec)),
+        [
+            "id",
+            "name",
+            "bit_rate_bps",
+            "sample_bytes",
+            "sample_ms",
+            "packet_ms",
+            "payload_bytes",
+            "mos"
+        ]
+    );
+    let link = qos::VoiceLink {
+        id: s("ppp"),
+        name: s("PPP"),
+        overhead_bytes: 6,
+        parts: s("PPP header 6"),
+        crtp: true,
+        source: s("Cisco SRND 12.x, table 3-8"),
+        note: s(""),
+    };
+    assert_eq!(qos::voice_links()[2], link);
+    assert_eq!(
+        keys(&assert_result_type(&link)),
+        [
+            "id",
+            "name",
+            "overhead_bytes",
+            "parts",
+            "crtp",
+            "source",
+            "note"
+        ]
+    );
+    let voice_options = qos::VoiceOptions {
+        crtp: true,
+        vad: true,
+        packet_ms: None,
+        l2_bytes: None,
+    };
+    assert_eq!(
+        assert_result_type(&voice_options),
+        json!({"crtp": true, "vad": true, "packet_ms": null, "l2_bytes": null})
+    );
+    // Every option is optional: the default is none of them.
+    assert_eq!(
+        serde_json::from_value::<qos::VoiceOptions>(json!({})).unwrap(),
+        qos::VoiceOptions::default()
+    );
+    let bandwidth = qos::voice("g729", 30, "ppp", &voice_options).unwrap();
+    assert_eq!(
+        keys(&assert_result_type(&bandwidth)),
+        [
+            "codec",
+            "link",
+            "calls",
+            "crtp",
+            "packet_ms",
+            "packets_per_second",
+            "payload_bytes",
+            "packet",
+            "packet_bytes",
+            "per_call_bps",
+            "total_bps",
+            "per_call",
+            "total",
+            "vad",
+            "arithmetic",
+            "notes",
+            "sources"
+        ]
+    );
+    assert_eq!((&bandwidth.codec, &bandwidth.link), (&codec, &link));
+    assert_eq!(
+        keys(&assert_result_type(&bandwidth.packet[0])),
+        ["name", "bytes"]
+    );
+    assert_eq!(
+        keys(&assert_result_type(bandwidth.vad.as_ref().unwrap())),
+        [
+            "saving_pct",
+            "per_call_bps",
+            "total_bps",
+            "per_call",
+            "total",
+            "enough_calls",
+            "caveat"
+        ]
     );
 
     let found = text::RegexMatch {

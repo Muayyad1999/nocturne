@@ -4,8 +4,9 @@
  * `facts.ts` turns a result into {@link Section}s and this draws them, so a
  * subnet, a certificate chain and a port scan all read the same way: the
  * facts that matter first, in a two-column list with copy buttons on anything
- * worth pasting, then the tables, then the raw text a device or a server
- * actually sent.
+ * worth pasting, then the tables, then the lines the engine wrote out (the
+ * steps of a sum, the sources of a figure) and the raw text a device or a
+ * server actually sent.
  *
  * Numbers are monospace and right-aligned where they are compared down a
  * column, which is the only way a column of round-trip times can be read at
@@ -100,6 +101,24 @@ export function SectionView({ section }: { section: Section }) {
       <section className={styles.block}>
         <h4 className={styles.blockTitle}>{section.title}</h4>
         <CodeBlock code={section.text} wrap={section.wrap} maxHeight={320} />
+      </section>
+    );
+  }
+
+  if (section.kind === 'lines') {
+    // The steps of a sum are a numbered list because their order is the
+    // argument; sources are not, because theirs is not.
+    const List = section.numbered ? 'ol' : 'ul';
+    return (
+      <section className={styles.block}>
+        <h4 className={styles.blockTitle}>{section.title}</h4>
+        <List className={styles.lines} data-numbered={section.numbered || undefined}>
+          {section.lines.map((line, index) => (
+            <li key={index} className={cx(styles.line, section.mono && styles.lineMono)}>
+              {line}
+            </li>
+          ))}
+        </List>
       </section>
     );
   }

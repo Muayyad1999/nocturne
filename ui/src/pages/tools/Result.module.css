@@ -168,6 +168,51 @@
   padding: var(--sp-16) var(--sp-12);
 }
 
+/* Lines the engine wrote out: the steps of a sum, the sources of a figure.
+   Each line is one sentence and may wrap, so the list is a column of ruled
+   rows like the facts above it rather than a block of preformatted text. */
+.lines {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: line;
+  max-width: 96ch;
+}
+
+.line {
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.lineMono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+
+/* The step number is drawn by hand so it lines up as a column of its own and
+   takes the muted colour of a label; the list is still an <ol>, so it is
+   announced as numbered. */
+.lines[data-numbered] .line {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  gap: var(--sp-12);
+  counter-increment: line;
+}
+
+.lines[data-numbered] .line::before {
+  color: var(--text-3);
+  content: counter(line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  text-align: right;
+}
+
 /* ------------------------------------------------------------ live views */
 
 .live {

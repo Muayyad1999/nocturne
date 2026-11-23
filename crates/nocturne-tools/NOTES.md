@@ -49,6 +49,23 @@ cargo fmt -p nocturne-tools
 - `lib.rs` crate docs; rustdoc builds with `-D warnings`; `cargo fmt -p nocturne-tools` applied
   (hand-written reference tables are one row per line under `#[rustfmt::skip]`).
 
+- `qos/` — `marking` (a DSCP, a ToS byte, a precedence or a name in every form; reads the DSCP table of
+  `reference/dscp.rs` through three `pub(crate)` helpers rather than keeping a second one) and `voice`
+  (bandwidth per call and in total, with the packet shown part by part). The codec and link tables in
+  `voice.rs` are copied from two Cisco documents fetched from www.cisco.com on 2026-11-22 (document 7934 and
+  the Collaboration 12.x SRND, chapter 3); the unit tests reproduce their published tables and name them.
+  Where the two disagree (Ethernet 18 vs 14 bytes, MLPPP 7 vs 10) the named link follows 7934 and the row's
+  `note` says so; the `custom` link takes any byte count. Not offered because no cited figure supports them:
+  ATM, SRTP, IPv6, Opus and the other codecs neither document tabulates.
+  Added to `tests/api_contract.rs` and `tests/robustness.rs`.
+  Review (2026-11-22, both documents and the IANA DSCP registry fetched again): the citation of document 7934
+  carried the title of an older revision and now carries the one on the page ("Modify Bandwidth Consumption
+  Calculation for Voice Calls"); the cRTP refusal on wireless and MPLS said compressed RTP "does not exist"
+  there, which neither document says, and now says it is not counted; the VAD line of the arithmetic was
+  one bit off what it showed for totals that had been rounded (the estimate is now 65 % of the figures shown).
+  `marking` gained a test against every row of the IANA registry in every direction, `voice` one with six
+  everyday cases worked out by hand.
+
 ## In progress
 
 - Final read-through of every module, then the report.

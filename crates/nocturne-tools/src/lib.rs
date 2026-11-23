@@ -15,6 +15,7 @@
 //! | [`mac`] | MAC address notations, EUI-64 and vendor lookup in the bundled IEEE registry |
 //! | [`secrets`] | Cisco type 7 and Junos `$9$` decoding, secret identification, password generation |
 //! | [`convert`] | Number bases, sizes and rates, transfer time, durations, MTU and MSS |
+//! | [`qos`] | A DSCP, ToS byte or precedence in every form; bandwidth of voice calls over a link |
 //! | [`mod@reference`] | Ports, DSCP, protocol numbers, administrative distances, Ethernet standards, interface names |
 //! | [`text`] | Regex tester, digests, Base64 |
 //!
@@ -53,6 +54,7 @@ mod ip;
 
 pub mod convert;
 pub mod mac;
+pub mod qos;
 pub mod reference;
 pub mod secrets;
 pub mod subnet;

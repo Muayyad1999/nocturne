@@ -13,6 +13,8 @@ mod routing;
 mod syslog;
 
 pub use dscp::{DscpEntry, dscp, dscp_table};
+// The marking calculator reads the same table rather than keeping a second one.
+pub(crate) use dscp::{named as dscp_named, pool as dscp_pool, registered as dscp_registered};
 pub use ethernet::{CableEntry, ethernet_standards};
 pub use interfaces::{interface_long_name, interface_short_name, interface_sort_key};
 pub use numbers::{NamedNumber, ethertypes, icmp_types, icmpv6_types, ip_protocols};

@@ -6,9 +6,10 @@
  * answer, the ping is a real ping of the loopback address (or, on a machine
  * that may not send ICMP, the real refusal), the port check is against a
  * listener this file starts on a port the system chose, and the device probe
- * is a simulated switch really failing to reach 10.0.0.1. A screenshot of an
- * invented result would be worth nothing on a screen whose whole claim is
- * that it never invents one.
+ * is a simulated switch really failing to reach 10.0.0.1, and the two QoS
+ * calculators show the engine's own figures, arithmetic, sources and
+ * refusals. A screenshot of an invented result would be worth nothing on a
+ * screen whose whole claim is that it never invents one.
  *
  * The backend and the lab are set up the same way as `tools.spec.ts`; one
  * Playwright file may not import another's `test(...)` calls, so the harness
@@ -183,5 +184,134 @@ for (const theme of THEMES) {
     await expect(panel(page).getByRole('table', { name: 'Probe runs' })).toBeVisible();
     await shoot(page, theme, 'history-1280-dock');
     await page.setViewportSize({ width: 1440, height: 900 });
+  });
+}
+
+// The two QoS calculators, in a test of their own so they can be looked at
+// without waiting for a ping and a port scan (`-g QoS`).
+for (const theme of THEMES) {
+  test(`tools, QoS — ${theme}`, async ({ page }) => {
+    test.setTimeout(300_000);
+
+    // One marking in every form: what it is called, the six bits and the
+    // whole byte three ways each, and how a router treats it.
+    await openApp(page, '/tools/tools.qos.marking', { backend, theme });
+    await field(page, 'Marking', 'af41');
+    await panel(page).getByLabel('What the value is', { exact: true }).selectOption('dscp');
+    await expect(panel(page).getByText('Assured Forwarding class 4')).toBeVisible();
+    await shoot(page, theme, 'qos-marking');
+
+    // A whole byte with its ECN bits set, and a value the registry has not named.
+    await field(page, 'Marking', '0xb9');
+    await panel(page).getByLabel('What the value is', { exact: true }).selectOption('tos');
+    await expect(panel(page).getByText('01 (1) — ECT(1)')).toBeVisible();
+    await shoot(page, theme, 'qos-marking-tos');
+
+    await field(page, 'Marking', '47');
+    await panel(page).getByLabel('What the value is', { exact: true }).selectOption('dscp');
+    await expect(panel(page).getByText('the registry has not named this value', { exact: false })).toBeVisible();
+    await shoot(page, theme, 'qos-marking-unnamed');
+
+    // The engine refusing a number that is out of range for the form chosen:
+    // its sentence is beside the field it is about.
+    await field(page, 'Marking', '184');
+    await expect(panel(page).getByText('That input will not do')).toBeVisible();
+    await shoot(page, theme, 'qos-marking-refused');
+
+    // The DSCP reference table, which leads here instead of repeating it.
+    await openApp(page, '/tools/tools.reference', { backend, theme });
+    await panel(page).getByLabel('Table', { exact: true }).selectOption('dscp');
+    await expect(panel(page).getByRole('table', { name: 'DSCP and IP precedence' })).toBeVisible();
+    await expect(panel(page).getByText('opens it in QoS marking', { exact: false })).toBeVisible();
+    await shoot(page, theme, 'reference-dscp');
+
+    // The two tables the voice calculator's pickers are filled from.
+    await panel(page).getByLabel('Table', { exact: true }).selectOption('voice_links');
+    await expect(panel(page).getByRole('table', { name: 'Layer-2 overhead of a voice packet' })).toBeVisible();
+    await shoot(page, theme, 'reference-voice-links');
+    await panel(page).getByLabel('Table', { exact: true }).selectOption('voice_codecs');
+    await expect(panel(page).getByRole('table', { name: 'Voice codecs' })).toBeVisible();
+    await shoot(page, theme, 'reference-voice-codecs');
+
+    // Voice: the form before anything is chosen, with the engine's tables in
+    // the pickers.
+    await openApp(page, '/tools/tools.qos.voice', { backend, theme });
+    await expect(panel(page).getByLabel('Codec', { exact: true }).locator('option')).not.toHaveCount(1);
+    await shoot(page, theme, 'qos-voice-empty');
+
+    // Ten G.729 calls over Multilink PPP with compressed RTP, and the VAD
+    // estimate beside the full figure.
+    await panel(page).getByLabel('Codec', { exact: true }).selectOption('g729');
+    await panel(page).getByLabel('Link type', { exact: true }).selectOption('mlppp');
+    await field(page, 'Simultaneous calls', '10');
+    await panel(page).getByRole('switch', { name: 'Compressed RTP (cRTP) on the link' }).check();
+    await panel(page).getByRole('switch', { name: 'Also estimate voice-activity detection (VAD)' }).check();
+    await expect(panel(page).getByRole('heading', { name: 'The arithmetic' })).toBeVisible();
+    await expect(panel(page).getByRole('heading', { name: 'Where the figures come from' })).toBeVisible();
+    await shoot(page, theme, 'qos-voice');
+    // The lower half: the packet part by part, the arithmetic and the sources.
+    await panel(page).getByRole('heading', { name: 'Where the figures come from' }).scrollIntoViewIfNeeded();
+    await shoot(page, theme, 'qos-voice-arithmetic');
+
+    // Compressed RTP on a link the sources do not have it on: refused, beside
+    // the link.
+    await panel(page).getByLabel('Link type', { exact: true }).selectOption('ethernet');
+    await expect(panel(page).getByText('That input will not do')).toBeVisible();
+    await panel(page).getByLabel('Link type', { exact: true }).scrollIntoViewIfNeeded();
+    await shoot(page, theme, 'qos-voice-refused');
+
+    // A link of the reader's own, and a packet time the codec does not default to.
+    await panel(page).getByLabel('Link type', { exact: true }).selectOption('custom');
+    await field(page, 'Layer-2 bytes on every packet', '26');
+    await field(page, 'Voice per packet (ms)', '40');
+    await expect(panel(page).getByText('Layer 2, as given', { exact: true })).toBeVisible();
+    await shoot(page, theme, 'qos-voice-custom');
+
+    // The narrow end, with the assistant dock open.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await openApp(page, '/tools/tools.qos.voice', { backend, theme, dock: true });
+    await expect(panel(page).getByRole('heading', { name: 'The arithmetic' })).toBeVisible();
+    await shoot(page, theme, 'qos-voice-1280-dock');
+
+    // Reached with the keyboard: the focus ring on a switch, which is the one
+    // control here that the design system's Field does not frame.
+    await panel(page).getByLabel('Voice per packet (ms)', { exact: true }).focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(panel(page).getByRole('switch', { name: 'Compressed RTP (cRTP) on the link' })).toBeFocused();
+    await shoot(page, theme, 'qos-voice-focus');
+
+    // Narrower than the drawer and a form can share: the drawer goes on top
+    // and the form is one column. The refusal has to stay beside its field
+    // there too.
+    await page.setViewportSize({ width: 500, height: 1100 });
+    await openApp(page, '/tools/tools.qos.voice', { backend, theme, navCollapsed: true });
+    await expect(panel(page).getByRole('heading', { name: 'The arithmetic' })).toBeVisible();
+    await shoot(page, theme, 'qos-voice-narrow');
+    await panel(page).getByLabel('Link type', { exact: true }).selectOption('wlan');
+    await expect(panel(page).getByText('That input will not do')).toBeVisible();
+    await panel(page).getByLabel('Codec', { exact: true }).scrollIntoViewIfNeeded();
+    await shoot(page, theme, 'qos-voice-narrow-refused');
+    await openApp(page, '/tools/tools.qos.marking', { backend, theme, navCollapsed: true });
+    await field(page, 'Marking', '0xb9');
+    await panel(page).getByLabel('What the value is', { exact: true }).selectOption('tos');
+    await expect(panel(page).getByText('01 (1) — ECT(1)')).toBeVisible();
+    await shoot(page, theme, 'qos-marking-narrow');
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // A picker whose table could not be read. The one request is cut on the
+    // wire; what the screen says of it is the transport's own sentence.
+    await page.route('**/api/rpc', async (route) => {
+      if ((route.request().postData() ?? '').includes('"voice_codecs"')) await route.abort('connectionfailed');
+      else await route.continue();
+    });
+    await openApp(page, '/tools/tools.qos.voice', { backend, theme });
+    await expect(panel(page).getByText('could not be read', { exact: false })).toBeVisible();
+    // The form still holds G.729 from above, so that is still what is asked
+    // about and still what the list shows; over PPP the engine answers it.
+    await panel(page).getByLabel('Link type', { exact: true }).selectOption('ppp');
+    await expect(panel(page).getByRole('heading', { name: 'The arithmetic' })).toBeVisible();
+    await shoot(page, theme, 'qos-voice-unread');
+    await page.unroute('**/api/rpc');
   });
 }

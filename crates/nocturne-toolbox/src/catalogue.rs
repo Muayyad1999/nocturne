@@ -197,12 +197,25 @@ pub const CATALOGUE: &[Entry] = &[
         "MTU and MSS",
         "What a stack of encapsulations leaves of a link MTU, and the TCP MSS that follows.",
     ),
+    // ------------------------------------------------------------------ qos
+    tool(
+        "tools.qos.marking",
+        "qos",
+        "QoS marking",
+        "A DSCP value or name, a ToS byte or an IP precedence in every other form, with the ECN bits, the per-hop behaviour and what it is used for.",
+    ),
+    tool(
+        "tools.qos.voice",
+        "qos",
+        "Voice bandwidth",
+        "Bandwidth per call and in total for a codec, a number of calls and a link type, with compressed RTP and VAD, and the arithmetic shown.",
+    ),
     // ------------------------------------------------------------ reference
     tool(
         "tools.reference",
         "reference",
         "Reference tables",
-        "Ports, DSCP, protocol and EtherType numbers, ICMP types, administrative distances, optics, syslog levels.",
+        "Ports, DSCP, protocol and EtherType numbers, ICMP types, administrative distances, optics, syslog levels, voice codecs and link overheads.",
     ),
     tool(
         "tools.reference.tables",

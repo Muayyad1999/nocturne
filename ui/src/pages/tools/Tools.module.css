@@ -340,7 +340,11 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-12) var(--sp-16);
-  align-items: end;
+  /* Top-aligned: every label is one line, so two controls in a row sit level
+     whatever is under them. Bottom-aligned, a hint that grows — a codec's
+     figures appearing when it is chosen, a refusal taking a hint's place —
+     pushed the control beside it down the screen. */
+  align-items: start;
   max-width: 760px;
 }
 
@@ -356,6 +360,15 @@
 
 .formField {
   min-width: 0;
+}
+
+/* A refusal about a switch: the design system's Field shows an error under a
+   control it wraps, and a switch is not wrapped by one. Same colour, same
+   place. */
+.switchError {
+  margin: var(--sp-6) 0 0;
+  color: var(--crit);
+  font-size: var(--fs-12);
 }
 
 .actions {

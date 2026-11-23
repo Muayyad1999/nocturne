@@ -6,8 +6,9 @@
  *
  * 1. **Calculators and decoders.** Arithmetic on this machine: subnets, VLSM,
  *    masks and the ACL lines they make, MAC and OUI, OIDs, interface names,
- *    converters, MTU and MSS, regex, diff, digests, Base64, the reference
- *    tables. They answer as you type and nothing leaves the computer.
+ *    converters, MTU and MSS, QoS markings and what voice calls cost, regex,
+ *    diff, digests, Base64, the reference tables. They answer as you type and
+ *    nothing leaves the computer.
  * 2. **Probes from here.** Ping, traceroute, port check, sweep, DNS, WHOIS,
  *    TLS, HTTP, NTP, this machine's own network, Wake-on-LAN. These put
  *    packets on the wire from the machine the *engine* runs on — which in

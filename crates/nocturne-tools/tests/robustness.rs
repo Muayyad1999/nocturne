@@ -5,9 +5,12 @@
 //! itself; on top of that the results are checked for the bounds the API
 //! promises (list limits, short error messages, JSON-serialisable values).
 
+use nocturne_tools::qos::{MarkingForm, VoiceOptions};
 use nocturne_tools::secrets::PasswordPolicy;
 use nocturne_tools::vlsm::Request;
-use nocturne_tools::{ToolError, convert, mac, reference, secrets, subnet, text, vlsm, wildcard};
+use nocturne_tools::{
+    ToolError, convert, mac, qos, reference, secrets, subnet, text, vlsm, wildcard,
+};
 
 /// SplitMix64: small, deterministic, good enough to scatter test inputs.
 struct Rng(u64);
@@ -72,6 +75,12 @@ const SEEDS: &[&str] = &[
     "ef",
     "0xb8",
     "af41",
+    "0b10111000",
+    "flash-override",
+    "g723.1-6.3",
+    "G.729A",
+    "frame-relay",
+    "ilbc_mode_20",
     "53/udp",
     "Zm9vYmFy",
     "/24",
@@ -261,6 +270,51 @@ fn exercise(input: &str, rng: &mut Rng) {
     match convert::mtu(1500, &[input.to_owned(), "vxlan".to_owned()]) {
         Ok(result) => assert!(result.payload_mtu <= 1500 && result.breakdown.len() <= 65),
         Err(error) => check_error(&error),
+    }
+
+    // qos
+    for form in [
+        MarkingForm::Dscp,
+        MarkingForm::Tos,
+        MarkingForm::Precedence,
+        MarkingForm::Name,
+    ] {
+        match qos::marking(input, form) {
+            Ok(marking) => {
+                assert_eq!(marking.tos >> 2, marking.dscp);
+                assert_eq!(marking.tos & 3, marking.ecn);
+                serde_json::to_string(&marking).expect("a marking can be sent to the UI as JSON");
+            }
+            Err(error) => check_error(&error),
+        }
+    }
+    if let Err(error) = input.parse::<MarkingForm>() {
+        check_error(&error);
+    }
+    let voice_options = VoiceOptions {
+        crtp: rng.below(2) == 0,
+        vad: rng.below(2) == 0,
+        packet_ms: [None, Some(rng.next() as u32 >> rng.below(32))][rng.below(2)],
+        l2_bytes: [None, Some(rng.next() as u32 >> rng.below(32))][rng.below(2)],
+    };
+    let calls = rng.next() as u32 >> rng.below(32);
+    for (codec, link) in [
+        (input, "ppp"),
+        ("g729", input),
+        (input, input),
+        ("g711", "custom"),
+    ] {
+        match qos::voice(codec, calls, link, &voice_options) {
+            Ok(answer) => {
+                // The answer is the packet times the rate, whatever was asked.
+                let bytes: u32 = answer.packet.iter().map(|part| part.bytes).sum();
+                assert_eq!(bytes, answer.packet_bytes);
+                assert!(answer.per_call_bps > 0 && answer.total_bps >= answer.per_call_bps);
+                assert!(answer.arithmetic.len() <= 6 && answer.notes.len() <= 6);
+                serde_json::to_string(&answer).expect("an answer can be sent to the UI as JSON");
+            }
+            Err(error) => check_error(&error),
+        }
     }
 
     // reference
@@ -556,6 +610,8 @@ fn reference_tables_serialise() {
         serde_json::to_string(&reference::ethernet_standards()).unwrap(),
         serde_json::to_string(&reference::syslog_levels()).unwrap(),
         serde_json::to_string(&convert::encapsulations()).unwrap(),
+        serde_json::to_string(&qos::voice_codecs()).unwrap(),
+        serde_json::to_string(&qos::voice_links()).unwrap(),
     ] {
         assert!(json.starts_with('[') && json.len() > 300);
     }
