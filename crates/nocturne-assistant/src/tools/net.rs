@@ -252,27 +252,62 @@ async fn ipam_search(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let found = ctx
         .rpc(boundary::IPAM_SEARCH, json!({"query": input.query}))
         .await?;
+    // What a column is called for the model, and the field of the address
+    // plan's own record it is read from.
     let mut sections = Vec::new();
     for (label, key, columns) in [
         (
             "prefixes",
             "prefixes",
-            vec!["prefix", "description", "vlan", "site", "id"],
+            vec![
+                ("prefix", "cidr"),
+                ("name", "name"),
+                ("description", "description"),
+                ("vlan", "vlan_id"),
+                ("site", "site"),
+                ("used", "used"),
+                ("free", "free"),
+                ("id", "id"),
+            ],
         ),
         (
             "addresses",
             "addresses",
-            vec!["address", "name", "device", "interface", "status"],
+            vec![
+                ("address", "ip"),
+                ("name", "hostname"),
+                ("status", "status"),
+                ("interface", "interface"),
+                ("mac", "mac"),
+                ("documented", "documented"),
+                ("seen on the network", "observed"),
+                ("prefix id", "prefix_id"),
+            ],
         ),
-        ("vlans", "vlans", vec!["vlan_id", "name", "site", "id"]),
+        (
+            "vlans",
+            "vlans",
+            vec![
+                ("vlan", "vid"),
+                ("name", "name"),
+                ("site", "site"),
+                ("description", "description"),
+                ("id", "id"),
+            ],
+        ),
     ] {
         let rows = found[key].as_array().cloned().unwrap_or_default();
         if rows.is_empty() {
             continue;
         }
-        let mut table = Table::new(&columns, ctx.caps().rows);
+        let headers: Vec<&str> = columns.iter().map(|(header, _)| *header).collect();
+        let mut table = Table::new(&headers, ctx.caps().rows);
         for row in &rows {
-            table.push(columns.iter().map(|column| shape::text_of(row, column)));
+            table.push(columns.iter().map(|(_, field)| match &row[*field] {
+                Value::Bool(true) => "yes".to_string(),
+                Value::Bool(false) => "no".to_string(),
+                _ => shape::text_of(row, field),
+            }));
         }
         sections.push(format!(
             "{label}:\n{}",

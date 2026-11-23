@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use nocturne_ai::agent::{Agent, AgentConfig, AgentEvent, ToolCall, ToolHost, ToolOutput, TurnEnd};
 use nocturne_ai::{CancellationToken, Message, StreamEvent, ToolSpec, Usage};
 use nocturne_app::error::{AppError, AppResult};
@@ -27,7 +28,7 @@ use crate::providers;
 use crate::redact::ChatRedactor;
 use crate::settings::{Caps, Settings, small_context};
 use crate::shape;
-use crate::tools::{self, Tool, ToolCtx};
+use crate::tools::{self, Answer, Asker, Tool, ToolCtx};
 use crate::view::{
     AiEvent, EventSink, Link, Stop, TokenUsage, ToolStatus, UiBlock, UiMessage, UiRole,
     summarise_input,
@@ -75,16 +76,81 @@ struct CallOutcome {
     link: Option<Link>,
 }
 
-struct Host {
+/// The question a tool call puts to the person, and the wait for
+/// `ai.approve`. One mechanism for both reasons to ask: the user wanting to
+/// approve every device read (`confirm_reads`), and a tool that writes a
+/// record, which asks whatever the settings say.
+struct Approvals {
     app: App,
     chat_id: String,
     sink: Arc<EventSink>,
+    /// Where a question is handed to the turn's collector, which publishes
+    /// it after the events the agent had already sent — so a screen sees a
+    /// call start before it sees the question about it.
+    questions: tokio::sync::mpsc::UnboundedSender<AiEvent>,
+    redactor: Arc<ChatRedactor>,
+    timeout: std::time::Duration,
+    cancel: CancellationToken,
+}
+
+impl Approvals {
+    /// Publish `approval_needed` and wait for the answer, the timeout or the
+    /// end of the turn. `None` is the turn having been stopped.
+    async fn wait(&self, call_id: &str, tool: &Tool, detail: String) -> Option<Answer> {
+        let (tx, rx) = oneshot::channel();
+        let key = approval_key(&self.chat_id, call_id);
+        let state = self.app.state::<TurnState>();
+        state.approvals.lock().insert(key.clone(), tx);
+        let question = AiEvent::ApprovalNeeded {
+            call_id: call_id.to_string(),
+            name: tool.name.to_string(),
+            title: tool.title.to_string(),
+            detail: self.redactor.scrub_values(&detail),
+        };
+        // If the collector has gone, say it directly: a question that is
+        // waited for must never go unpublished.
+        if let Err(unsent) = self.questions.send(question) {
+            self.sink.send(unsent.0);
+        }
+        let answer = tokio::select! {
+            // A dropped sender is nobody saying yes.
+            answer = rx => Some(if answer.unwrap_or(false) { Answer::Yes } else { Answer::No }),
+            () = tokio::time::sleep(self.timeout) => Some(Answer::Nobody),
+            () = self.cancel.cancelled() => None,
+        };
+        state.approvals.lock().remove(&key);
+        answer
+    }
+}
+
+impl Asker for Approvals {
+    fn ask<'a>(
+        &'a self,
+        call_id: &'a str,
+        tool: &'static Tool,
+        detail: String,
+    ) -> BoxFuture<'a, AppResult<Answer>> {
+        Box::pin(async move {
+            self.wait(call_id, tool, detail).await.ok_or_else(|| {
+                AppError::new(
+                    "cancelled",
+                    "The user stopped this turn before answering, so nothing was written.",
+                )
+            })
+        })
+    }
+}
+
+struct Host {
+    app: App,
+    chat_id: String,
     tools: Vec<&'static Tool>,
     specs: Vec<ToolSpec>,
     settings: Settings,
     caps: Caps,
     redactor: Arc<ChatRedactor>,
     cancel: CancellationToken,
+    approvals: Arc<Approvals>,
     /// Tool calls made so far; `max_steps` is a budget of calls.
     used: Mutex<u32>,
     outcomes: Mutex<HashMap<String, CallOutcome>>,
@@ -98,57 +164,49 @@ impl Host {
     }
 
     /// Ask the user before touching a device, when they asked to be asked.
-    async fn approved(&self, tool: &Tool, call: &ToolCall) -> Result<(), ToolOutput> {
-        if !self.settings.confirm_reads || !tool.touches_device {
+    async fn approved(&self, tool: &'static Tool, call: &ToolCall) -> Result<(), ToolOutput> {
+        // A tool that writes a record asks for itself, once it knows exactly
+        // what it would write; asking here as well would be the same
+        // question twice.
+        if !self.settings.confirm_reads || !tool.touches_device || tool.asks_first() {
             return Ok(());
         }
-        let (tx, rx) = oneshot::channel();
-        let key = approval_key(&self.chat_id, &call.id);
-        self.app
-            .state::<TurnState>()
+        let answer = self
             .approvals
-            .lock()
-            .insert(key.clone(), tx);
-        self.sink.send(AiEvent::ApprovalNeeded {
-            call_id: call.id.clone(),
-            name: tool.name.to_string(),
-            title: tool.title.to_string(),
-            detail: self.redactor.scrub_values(&summarise_input(&call.input)),
-        });
-        let wait = std::time::Duration::from_secs(self.settings.approval_timeout_s.max(5) as u64);
-        let answer = tokio::select! {
-            answer = rx => answer.unwrap_or(false),
-            () = tokio::time::sleep(wait) => {
-                self.app.state::<TurnState>().approvals.lock().remove(&key);
-                self.outcome(&call.id, CallOutcome {
-                    status: ToolStatus::Denied,
-                    summary: "nobody answered".into(),
-                    link: None,
-                });
-                return Err(ToolOutput::error(
+            .wait(&call.id, tool, summarise_input(&call.input))
+            .await;
+        match answer {
+            Some(Answer::Yes) => Ok(()),
+            Some(Answer::Nobody) => {
+                self.outcome(
+                    &call.id,
+                    CallOutcome {
+                        status: ToolStatus::Denied,
+                        summary: "nobody answered".into(),
+                        link: None,
+                    },
+                );
+                Err(ToolOutput::error(
                     "Nobody answered the request to run this, so it was not run. Tell the user what you wanted to do and why, and ask them to approve it.",
-                ));
+                ))
             }
-            () = self.cancel.cancelled() => {
-                self.app.state::<TurnState>().approvals.lock().remove(&key);
-                return Err(ToolOutput::error("The user stopped this turn before approving it."));
+            Some(Answer::No) => {
+                self.outcome(
+                    &call.id,
+                    CallOutcome {
+                        status: ToolStatus::Denied,
+                        summary: "denied by the user".into(),
+                        link: None,
+                    },
+                );
+                Err(ToolOutput::error(
+                    "The user did not allow this. Do not try it again in another form; ask them what they would like you to do instead.",
+                ))
             }
-        };
-        self.app.state::<TurnState>().approvals.lock().remove(&key);
-        if answer {
-            return Ok(());
+            None => Err(ToolOutput::error(
+                "The user stopped this turn before approving it.",
+            )),
         }
-        self.outcome(
-            &call.id,
-            CallOutcome {
-                status: ToolStatus::Denied,
-                summary: "denied by the user".into(),
-                link: None,
-            },
-        );
-        Err(ToolOutput::error(
-            "The user did not allow this. Do not try it again in another form; ask them what they would like you to do instead.",
-        ))
     }
 }
 
@@ -202,15 +260,22 @@ impl ToolHost for Host {
             self.redactor.clone(),
             self.caps,
             self.cancel.clone(),
+            self.approvals.clone(),
         );
         let outcome = (tool.run)(&ctx, call.input.clone()).await;
         match outcome {
             Ok(ok) => {
-                let link = ok.link.or_else(|| ctx.take_link());
+                let link = ok.link.or_else(|| ctx.take_link()).filter(Link::plausible);
                 self.outcome(
                     &call.id,
                     CallOutcome {
-                        status: ToolStatus::Ok,
+                        // A no from the person is a result the model reads,
+                        // and the card says what it was.
+                        status: if ok.declined {
+                            ToolStatus::Denied
+                        } else {
+                            ToolStatus::Ok
+                        },
                         summary: shape::one_line(&self.redactor.scrub_values(&ok.summary), 120),
                         link: link.clone(),
                     },
@@ -227,7 +292,7 @@ impl ToolHost for Host {
                     CallOutcome {
                         status: ToolStatus::Error,
                         summary: shape::one_line(&message, 120),
-                        link: ctx.take_link(),
+                        link: ctx.take_link().filter(Link::plausible),
                     },
                 );
                 // A tool that fails is an error result for the model to read
@@ -377,7 +442,9 @@ async fn run_turn(
     let small = small_context(window);
     let caps = settings.caps_for(window);
     let available = tools::available(app, small);
-    let specs: Vec<ToolSpec> = available.iter().map(|tool| tool.spec(small)).collect();
+    // The short descriptions for a model the long ones would crowd out.
+    let brief = small || tools::describe_briefly(&available, window);
+    let specs: Vec<ToolSpec> = available.iter().map(|tool| tool.spec(brief)).collect();
 
     // The model's own history. A changed prefix (new version, different tool
     // set) invalidates provider-native blocks, so they are dropped and the
@@ -395,16 +462,25 @@ async fn run_turn(
     let briefing = prompt::briefing(app, &settings, &available, &context, &redactor);
     history.push(Message::user(prompt::user_message(&briefing, &text)));
 
+    let (questions, mut asked) = tokio::sync::mpsc::unbounded_channel::<AiEvent>();
     let host = Host {
         app: app.clone(),
         chat_id: chat.id.clone(),
-        sink: sink.clone(),
         tools: available.clone(),
         specs,
         settings: settings.clone(),
         caps,
         redactor: redactor.clone(),
         cancel: cancel.clone(),
+        approvals: Arc::new(Approvals {
+            app: app.clone(),
+            chat_id: chat.id.clone(),
+            sink: sink.clone(),
+            questions,
+            redactor: redactor.clone(),
+            timeout: std::time::Duration::from_secs(settings.approval_timeout_s.max(5) as u64),
+            cancel: cancel.clone(),
+        }),
         used: Mutex::new(0),
         outcomes: Mutex::new(HashMap::new()),
     };
@@ -460,8 +536,18 @@ async fn run_turn(
     };
     let translate = async {
         let mut collector = collector;
-        while let Some(event) = rx.recv().await {
-            collector.handle(event, &host.outcomes);
+        loop {
+            tokio::select! {
+                // The agent's events first: it announced a call before the
+                // tool could ask anything about it, and the stream has to
+                // say so in that order.
+                biased;
+                event = rx.recv() => match event {
+                    Some(event) => collector.handle(event, &host.outcomes),
+                    None => break,
+                },
+                Some(question) = asked.recv() => sink.send(question),
+            }
         }
         collector
     };

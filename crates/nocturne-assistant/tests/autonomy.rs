@@ -90,7 +90,7 @@ async fn in_draft_mode_nothing_is_ever_applied() {
         sent.contains("autonomy mode is `draft`") && sent.contains("Changes screen"),
         "the model is told what the user has to do: {sent}"
     );
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     assert_eq!(changes[0]["state"], "planned", "it stays a draft");
 }
 
@@ -104,7 +104,7 @@ async fn in_lab_mode_a_lab_device_is_applied_and_a_real_one_is_not() {
     )
     .await;
     assert_eq!(status, "ok", "{summary}");
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     assert_eq!(changes[0]["state"], "applied");
     assert_eq!(changes[0]["approval"]["by"], "policy:lab");
     assert!(
@@ -132,7 +132,7 @@ async fn in_low_risk_mode_a_low_risk_change_goes_through_and_a_risky_one_does_no
     let (status, _) =
         propose_then_apply(&harness, "HQ-ACC1", json!(["ntp server 192.0.2.1"])).await;
     assert_eq!(status, "ok", "an additive change to an access switch");
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     assert_eq!(changes[0]["approval"]["by"], "policy:low_risk");
 
     // Management access is always a human's decision, whatever the mode.

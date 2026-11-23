@@ -275,7 +275,7 @@ async fn a_model_that_does_obey_the_injection_gets_no_further_than_a_draft() {
     );
 
     // The change exists, as a draft on a protected resource, and nothing ran.
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     assert_eq!(changes[0]["state"], "planned");
     assert!(
         changes[0]["targets"][0]["plan"]["protected_hits"]

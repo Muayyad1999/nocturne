@@ -37,7 +37,7 @@ pub fn init(builder: &mut AppBuilder) {
     nocturne_insights::init(builder);
     // After the change engine, deliberately: both declare the `assistant`
     // settings section — they share `autonomy` — and a later `declare` wins
-    // for the keys it names. The assistant declares all nine, the change
+    // for the keys it names. The assistant declares all ten, the change
     // engine only `autonomy`, so this order is the one where every key is
     // visible to a settings screen.
     nocturne_assistant::init(builder);

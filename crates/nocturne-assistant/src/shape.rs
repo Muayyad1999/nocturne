@@ -53,6 +53,26 @@ pub fn iso(ms: i64) -> String {
         .unwrap_or_else(|| format!("{ms} (unreadable timestamp)"))
 }
 
+/// A moment the model wrote, as milliseconds: the form [`iso`] prints
+/// (`2026-11-22 03:14:00Z`), RFC 3339, or either without seconds. UTC unless
+/// the text carries an offset. `None` when it is not a time at all.
+pub fn parse_time(text: &str) -> Option<i64> {
+    let text = text.trim();
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Some(at.timestamp_millis());
+    }
+    let bare = text.trim_end_matches(['Z', 'z']).trim_end();
+    [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+    ]
+    .iter()
+    .find_map(|format| chrono::NaiveDateTime::parse_from_str(bare, format).ok())
+    .map(|at| at.and_utc().timestamp_millis())
+}
+
 /// A timestamp with how long ago it was, which is what a question about a
 /// device usually turns on.
 pub fn iso_ago(ms: i64, now: i64) -> String {
@@ -147,16 +167,40 @@ impl Table {
     }
 
     pub fn render(&self) -> String {
+        self.render_rows(self.rows.len())
+    }
+
+    /// As [`Table::render`], but stopping at `max_chars` as well as at the
+    /// row limit: a table of wide rows is cut by whichever cap it reaches
+    /// first, and the note counts every row that is missing, whatever cut
+    /// it. One row is always shown.
+    pub fn render_within(&self, max_chars: usize) -> String {
+        // The output only grows with the number of rows, so the most rows
+        // that fit can be found by halving.
+        let (mut fits, mut too_many) = (1, self.rows.len() + 1);
+        while fits + 1 < too_many {
+            let middle = (fits + too_many) / 2;
+            if self.render_rows(middle).chars().count() <= max_chars {
+                fits = middle;
+            } else {
+                too_many = middle;
+            }
+        }
+        self.render_rows(fits)
+    }
+
+    fn render_rows(&self, count: usize) -> String {
         if self.rows.is_empty() {
             return "(no rows)".into();
         }
+        let rows = &self.rows[..count.clamp(1, self.rows.len())];
         let columns = self.headers.len();
         let mut widths: Vec<usize> = self
             .headers
             .iter()
             .map(|header| header.chars().count())
             .collect();
-        for row in &self.rows {
+        for row in rows {
             for (index, cell) in row.iter().enumerate().take(columns) {
                 widths[index] = widths[index].max(cell.chars().count());
             }
@@ -174,11 +218,11 @@ impl Table {
             text.trim_end().to_string()
         };
         let mut out = line(&self.headers);
-        for row in &self.rows {
+        for row in rows {
             out.push('\n');
             out.push_str(&line(row));
         }
-        let left = self.total.saturating_sub(self.rows.len());
+        let left = self.total.saturating_sub(rows.len());
         if left > 0 {
             out.push_str(&format!(
                 "\n[{left} more row(s) not shown of {} — {}]",
@@ -242,6 +286,17 @@ pub fn scalar_text(value: &Value) -> String {
     }
 }
 
+/// The items of a JSON array as plain text; nothing for anything else.
+pub fn scalar_list(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(scalar_text)
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
 /// `true`/`false`/`unknown` — "we did not read it" and "it is false" are
 /// different answers and the model must be able to tell them apart.
 pub fn tristate(value: Option<&Value>) -> String {
@@ -271,6 +326,39 @@ mod tests {
             "{rendered}"
         );
         assert_eq!(Table::new(&["a"], 5).render(), "(no rows)");
+    }
+
+    #[test]
+    fn a_table_of_wide_rows_stops_at_the_character_cap_and_counts_what_it_left_out() {
+        let mut table = Table::new(&["name", "what"], 10);
+        for index in 0..30 {
+            table.push([format!("SW{index}"), "x".repeat(100)]);
+        }
+        // Ten rows by the row limit; each is over a hundred characters.
+        let whole = table.render();
+        assert!(whole.contains("SW9 ") && !whole.contains("SW10"), "{whole}");
+        assert!(whole.contains("[20 more row(s) not shown of 30"), "{whole}");
+
+        let cut = table.render_within(400);
+        assert!(
+            cut.chars().count() <= 400,
+            "{} characters",
+            cut.chars().count()
+        );
+        // Three rows of a hundred-odd characters fit in 400 with the header
+        // and the note; the fourth does not.
+        assert!(cut.contains("SW2 ") && !cut.contains("SW3 "), "{cut}");
+        // The rows the character cap cut are counted with the rest.
+        assert!(cut.contains("[27 more row(s) not shown of 30"), "{cut}");
+
+        // Room for everything changes nothing, and one row is always shown.
+        assert_eq!(table.render_within(100_000), whole);
+        let one = table.render_within(1);
+        assert!(
+            one.contains("SW0 ") && one.contains("[29 more row(s)"),
+            "{one}"
+        );
+        assert_eq!(Table::new(&["a"], 5).render_within(10), "(no rows)");
     }
 
     #[test]
@@ -304,5 +392,19 @@ mod tests {
         assert_eq!(ago_words(-7_200_000), "in 2 hours");
         assert_eq!(iso_ago(0, 1_000), "never");
         assert_eq!(duration_words(93_600), "1d 2h");
+    }
+
+    #[test]
+    fn a_time_the_model_wrote_is_read_back_as_the_time_it_was_shown() {
+        // What `iso` prints is what a model copies out of a result.
+        assert_eq!(parse_time(&iso(1_763_000_000_000)), Some(1_763_000_000_000));
+        assert_eq!(parse_time("2025-11-13T02:13:20Z"), Some(1_763_000_000_000));
+        assert_eq!(
+            parse_time("2025-11-13T04:13:20+02:00"),
+            Some(1_763_000_000_000)
+        );
+        assert_eq!(parse_time("2025-11-13 02:13"), Some(1_762_999_980_000));
+        assert_eq!(parse_time("yesterday"), None);
+        assert_eq!(parse_time(""), None);
     }
 }

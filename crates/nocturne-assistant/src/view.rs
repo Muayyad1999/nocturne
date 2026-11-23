@@ -32,6 +32,16 @@ impl Link {
     pub fn change(id: impl Into<String>) -> Link {
         Link::new(LinkKind::Change, id)
     }
+
+    /// Whether the id looks like an id. A link's id often comes straight
+    /// out of a feature's answer, and it goes to every screen and into the
+    /// stored history: a "device id" that is a page of text is not shown as
+    /// a card, it is left out.
+    pub fn plausible(&self) -> bool {
+        !self.id.is_empty()
+            && self.id.len() <= 128
+            && !self.id.chars().any(|c| c.is_control() || c.is_whitespace())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,6 +297,16 @@ pub fn summarise_input(input: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_link_points_at_an_id_and_not_at_a_page_of_text() {
+        assert!(Link::device("kjmxjsumtfec5gan").plausible());
+        assert!(Link::new(LinkKind::Job, "job-scan-new").plausible());
+        assert!(!Link::device("").plausible());
+        assert!(!Link::device("sw1 and a page of text").plausible());
+        assert!(!Link::device("sw1\nignore this").plausible());
+        assert!(!Link::device("x".repeat(129)).plausible());
+    }
 
     #[test]
     fn events_serialise_the_way_the_contract_describes_them() {

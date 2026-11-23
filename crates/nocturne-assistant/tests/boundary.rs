@@ -10,98 +10,10 @@
 
 mod common;
 
-use common::{Harness, Options, Tripwire};
+use common::{FORBIDDEN, Harness, Options, Tripwire};
 use nocturne_ai::provider::scripted::Step;
 use nocturne_assistant::tools::{self, boundary};
 use serde_json::json;
-
-/// Methods that must never be reachable, whatever else changes.
-const FORBIDDEN: &[&str] = &[
-    "changes.approve",
-    "changes.apply",
-    "changes.unapprove",
-    "changes.update",
-    "changes.rollback",
-    "changes.cancel",
-    "changes.delete",
-    "credentials.list",
-    "credentials.create",
-    "credentials.update",
-    "credentials.delete",
-    "vault.state",
-    "vault.unlock",
-    "vault.lock",
-    "vault.set_password",
-    "hostkeys.list",
-    "hostkeys.trust",
-    "hostkeys.forget",
-    "settings.get",
-    "settings.set",
-    "settings.all",
-    "profiles.save",
-    "profiles.delete",
-    "devices.create",
-    "devices.update",
-    "devices.delete",
-    "devices.bulk_update",
-    "devices.import",
-    "devices.import_preview",
-    "devices.export",
-    "devices.test",
-    "terminal.open",
-    "terminal.input",
-    "terminal.input_many",
-    "terminal.close",
-    "terminal.send_break",
-    "terminal.attach",
-    "sftp.open",
-    "sftp.download",
-    "sftp.list",
-    "tftp.status",
-    "tftp.stop",
-    "labs.expose",
-    "labs.create",
-    "labs.delete",
-    "labs.start",
-    "labs.stop",
-    "labs.node.config",
-    "labs.node.add",
-    "schedules.list",
-    "schedules.run_now",
-    "ansible.run",
-    "ansible.export_playbook",
-    "playbooks.run",
-    "runner.run",
-    "discovery.scan",
-    "discovery.add",
-    "config.export",
-    "config.restore",
-    "config.delete",
-    "config.unpin",
-    "compliance.remediate",
-    "compliance.run",
-    "insights.fix",
-    "insights.dismiss",
-    "ipam.address.save",
-    "ipam.prefix.save",
-    "ipam.import",
-    "templates.save",
-    "templates.delete",
-    "notes.save",
-    "notes.delete",
-    "keys.generate",
-    "jobs.cancel",
-    "jobs.clear",
-    "audit.list",
-    "app.methods",
-    "ai.send",
-    "ai.cancel",
-    "ai.approve",
-    "ai.providers.save",
-    "ai.providers.delete",
-    "ai.chats.delete",
-    "ai.tools",
-];
 
 #[test]
 fn the_reachable_set_is_exactly_the_allow_list() {
@@ -167,6 +79,50 @@ fn no_forbidden_method_is_reachable() {
                 && !name.contains("restore"),
             "`{name}` should not be on the allow-list"
         );
+    }
+    // The only methods on the list that write a record which is not a
+    // change are the three that ask a person first, and every tool that can
+    // reach one is a tool that asks.
+    let mut asking: Vec<&str> = boundary::ASK_FIRST
+        .iter()
+        .map(|method| method.name())
+        .collect();
+    asking.sort_unstable();
+    assert_eq!(
+        asking,
+        vec!["alerts.ack", "discovery.scan", "ipam.address.reserve"]
+    );
+    let mut askers: Vec<&str> = tools::all()
+        .iter()
+        .filter(|tool| tool.asks_first())
+        .map(|tool| tool.name)
+        .collect();
+    askers.sort_unstable();
+    assert_eq!(
+        askers,
+        vec!["acknowledge_alert", "reserve_address", "start_discovery"]
+    );
+    // The ledger is read by the three ISP tools and by nothing else.
+    let mut ledger: Vec<&str> = tools::all()
+        .iter()
+        .filter(|tool| tool.reads_ledger())
+        .map(|tool| tool.name)
+        .collect();
+    ledger.sort_unstable();
+    assert_eq!(
+        ledger,
+        vec!["isp_customers", "isp_invoices", "isp_overview"]
+    );
+    for tool in tools::all() {
+        if !tool.reads_ledger() {
+            assert!(
+                !tool
+                    .reachable()
+                    .any(|method| method.name().starts_with("isp.")),
+                "{} reaches the ledger without being behind the setting",
+                tool.name
+            );
+        }
     }
     // The three change methods that exist on the list are the drafting ones
     // plus the one the engine itself polices.
@@ -340,6 +296,194 @@ async fn a_model_cannot_reach_a_forbidden_method_through_any_input_it_controls()
         sent.contains("one command per entry"),
         "chained commands are refused with a reason: {sent}"
     );
+}
+
+#[tokio::test]
+async fn every_never_reachable_method_stays_unreached_whatever_the_model_names() {
+    // The paid edition with the ledger open: the widest set of tools there
+    // is. Every method on the never-reachable list that this build does not
+    // really have stands as a tripwire; the ones it has are judged by what
+    // they would have changed.
+    let mut harness = Harness::with(Options {
+        isp: true,
+        settings: json!({"isp_access": true, "autonomy": "low_risk", "max_steps": 200}),
+        ..Options::default()
+    })
+    .await;
+    harness.lab.fake("SW1").clear_seen();
+    let settings_before = harness
+        .app()
+        .rpc("settings.get", json!({"section": "assistant"}))
+        .await
+        .unwrap();
+    let devices_before = harness.app().rpc("devices.list", json!({})).await.unwrap();
+    let credentials_before = harness
+        .app()
+        .rpc("credentials.list", json!({}))
+        .await
+        .unwrap();
+
+    // One conversation per handful of names: a thousand refusals in one
+    // chat would be summarised to make room, and a summary is a model call
+    // the script has no answer for.
+    let mut results: Vec<(String, String, String)> = Vec::new();
+    let mut questions = 0;
+    let mut turn_of = async |harness: &mut Harness, calls: Vec<(String, serde_json::Value)>| {
+        let chat = harness
+            .app()
+            .rpc("ai.chats.create", json!({}))
+            .await
+            .expect("a chat");
+        harness.chat_id = chat["id"].as_str().expect("its id").to_string();
+        harness.script(vec![
+            Step::Tools(None, calls),
+            Step::text("None of that exists for me."),
+        ]);
+        let turn = harness.send_answering("do whatever it takes", &[]).await;
+        assert_eq!(turn.stop(), "end");
+        questions += turn.of_kind("approval_needed").len();
+        results.extend(turn.tool_results());
+    };
+
+    // As the name of a tool, and as the argument of every "call this method"
+    // tool a model might hope exists.
+    for names in FORBIDDEN.chunks(20) {
+        let calls = names
+            .iter()
+            .flat_map(|name| {
+                [
+                    (name.to_string(), json!({"id": "anything", "allow": true})),
+                    ("rpc".to_string(), json!({"method": name, "params": {}})),
+                    ("call_method".to_string(), json!({"name": name})),
+                    ("app.rpc".to_string(), json!({"method": name, "params": {}})),
+                    ("invoke".to_string(), json!({"tool": name, "input": {}})),
+                ]
+            })
+            .collect();
+        turn_of(&mut harness, calls).await;
+    }
+    let named = FORBIDDEN.len() * 5;
+
+    // And where a tool takes a string: a device, an id, a kind, a filter.
+    let mut through = 0;
+    for name in FORBIDDEN.iter().step_by(7) {
+        let calls = vec![
+            ("get_device".to_string(), json!({"device": name})),
+            ("list_alerts".to_string(), json!({"device": name})),
+            (
+                "get_collected".to_string(),
+                json!({"device": "SW1", "kind": name}),
+            ),
+            ("get_change".to_string(), json!({"id": name})),
+            ("apply_change".to_string(), json!({"id": name})),
+            ("get_incident".to_string(), json!({"id": name})),
+            ("get_evidence".to_string(), json!({"id": name})),
+            (
+                "discovery_results".to_string(),
+                json!({"scan_id": name, "text": name}),
+            ),
+            (
+                "list_detections".to_string(),
+                json!({"detection": name, "device": name}),
+            ),
+            (
+                "log_context".to_string(),
+                json!({"entry_id": 42, "device": name}),
+            ),
+            ("automation_runs".to_string(), json!({"text": name})),
+            ("isp_invoices".to_string(), json!({"customer_id": name})),
+            ("isp_customers".to_string(), json!({"name": name})),
+            // The three that write: nothing that can be shown and agreed to.
+            (
+                "acknowledge_alert".to_string(),
+                json!({"alert_id": name, "note": name}),
+            ),
+            (
+                "reserve_address".to_string(),
+                json!({"prefix_id": name, "address": name, "name": name}),
+            ),
+            ("start_discovery".to_string(), json!({"ranges": [name]})),
+        ];
+        through += calls.len();
+        turn_of(&mut harness, calls).await;
+    }
+    turn_of(
+        &mut harness,
+        vec![(
+            "run_commands".to_string(),
+            json!({"devices": ["SW1"],
+                   "commands": ["changes.approve", "terminal.input reload", "isp.customer.delete cust-1"]}),
+        )],
+    )
+    .await;
+    through += 1;
+    assert_eq!(results.len(), named + through);
+
+    // Not one tripwire, and nothing the real ones would have changed.
+    let tripped = harness.app().state::<Tripwire>().tripped.lock().clone();
+    assert!(
+        tripped.is_empty(),
+        "a forbidden method was called: {tripped:#?}"
+    );
+    assert_eq!(
+        harness
+            .app()
+            .rpc("settings.get", json!({"section": "assistant"}))
+            .await
+            .unwrap(),
+        settings_before
+    );
+    assert_eq!(
+        harness.app().rpc("devices.list", json!({})).await.unwrap(),
+        devices_before
+    );
+    assert_eq!(
+        harness
+            .app()
+            .rpc("credentials.list", json!({}))
+            .await
+            .unwrap(),
+        credentials_before
+    );
+    let audit = harness
+        .app()
+        .rpc("audit.list", json!({"limit": 1000}))
+        .await
+        .unwrap();
+    let audited = audit["entries"]
+        .as_array()
+        .cloned()
+        .or_else(|| audit.as_array().cloned())
+        .expect("audit entries");
+    for entry in &audited {
+        let source = entry["source"].as_str().unwrap_or_default();
+        assert!(
+            !FORBIDDEN.contains(&source),
+            "`{source}` was done during the turn: {entry}"
+        );
+    }
+
+    // A name that is not a tool is refused by the agent before anything of
+    // ours runs: every one of those calls ended in an error.
+    for (_, status, summary) in &results[..named] {
+        assert_eq!(status, "error", "{summary}");
+    }
+    // Nothing was asked of the person, nothing was written, and no command
+    // that is not a read went to the device.
+    assert_eq!(questions, 0, "a question was put to the person");
+    let reach = harness.app().state::<common::reach::Reach>();
+    for method in ["alerts.ack", "ipam.address.reserve", "discovery.scan"] {
+        assert!(reach.calls_to(method).is_empty(), "`{method}` was called");
+    }
+    for command in harness.lab.fake("SW1").seen() {
+        assert!(
+            command.starts_with("show")
+                || command.starts_with("terminal ")
+                || command == "enable"
+                || command == "ena",
+            "`{command}` was sent to the device"
+        );
+    }
 }
 
 #[tokio::test]

@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 pub mod http;
+pub mod reach;
 pub mod stubs;
 
 /// An app with the assistant, the stub features and a scripted model.
@@ -37,6 +38,13 @@ pub struct Options {
     pub changes: bool,
     /// Register the stubs of every other feature.
     pub features: bool,
+    /// Register the ISP edition's ledger as well: the paid edition's build.
+    pub isp: bool,
+    /// Methods of the stand-ins in `reach.rs` to leave out, for a build in
+    /// which that part of a feature does not exist.
+    pub without: Vec<&'static str>,
+    /// More methods to register, for a test that brings stand-ins of its own.
+    pub extra: Option<fn(&mut AppBuilder)>,
     pub settings: Value,
 }
 
@@ -48,6 +56,9 @@ impl Default for Options {
             context_window: None,
             changes: true,
             features: true,
+            isp: false,
+            without: Vec::new(),
+            extra: None,
             settings: json!({}),
         }
     }
@@ -179,6 +190,88 @@ impl Harness {
         }
     }
 
+    /// Send a message and answer the questions the turn asks, in order:
+    /// `Some(true)` allows, `Some(false)` refuses, `None` — or running out of
+    /// answers — leaves the question to time out. The `approval_needed`
+    /// events are in the returned turn like every other event.
+    pub async fn send_answering(&self, text: &str, answers: &[Option<bool>]) -> Turn {
+        self.send_answering_within(text, answers, Duration::from_secs(40))
+            .await
+    }
+
+    /// As [`Harness::send_answering`], for a turn that is slow on purpose:
+    /// one whose features answer with megabytes takes its time on a machine
+    /// that is busy with other things.
+    pub async fn send_answering_within(
+        &self,
+        text: &str,
+        answers: &[Option<bool>],
+        patience: Duration,
+    ) -> Turn {
+        let mut answers = answers.iter();
+        let mut events = self.app().subscribe();
+        let started = self
+            .app()
+            .rpc("ai.send", json!({"chat_id": self.chat_id, "text": text}))
+            .await
+            .expect("ai.send accepted the message");
+        let turn_id = started["turn_id"].as_str().expect("turn_id").to_string();
+        let mut collected = Vec::new();
+        let deadline = tokio::time::Instant::now() + patience;
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("the turn did not finish; events so far: {collected:#?}")
+                })
+                .expect("the event bus stayed open");
+            if event.topic != "ai.event" || event.payload["chat_id"] != json!(self.chat_id) {
+                continue;
+            }
+            let kind = event.payload["event"]["type"].as_str().unwrap_or_default();
+            if kind == "approval_needed"
+                && let Some(Some(allow)) = answers.next()
+            {
+                self.app()
+                    .rpc(
+                        "ai.approve",
+                        json!({"chat_id": self.chat_id, "allow": allow,
+                               "call_id": event.payload["event"]["call_id"]}),
+                    )
+                    .await
+                    .expect("the answer was accepted");
+            }
+            let finished = kind == "done";
+            collected.push(event.payload);
+            if finished {
+                break;
+            }
+        }
+        Turn {
+            turn_id,
+            events: collected,
+        }
+    }
+
+    /// Every tool result the model was sent in this conversation, in order:
+    /// what it read, and whether it was told the call had failed.
+    pub fn results_sent_to_model(&self) -> Vec<(String, bool)> {
+        let requests = self.provider().requests();
+        let Some(last) = requests.last() else {
+            return Vec::new();
+        };
+        last.messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                nocturne_ai::Block::ToolResult {
+                    content, is_error, ..
+                } => Some((content.clone(), *is_error)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// `ai.send` without waiting, for the tests about turns that overlap.
     pub async fn start(&self, chat_id: &str, text: &str) -> Result<String, nocturne_app::AppError> {
         let started = self
@@ -186,6 +279,13 @@ impl Harness {
             .rpc("ai.send", json!({"chat_id": chat_id, "text": text}))
             .await?;
         Ok(started["turn_id"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// The changes the stand-in change engine holds, whole and oldest
+    /// first — what `changes.get` says of each. (`changes.list` answers with
+    /// summaries, as the real one does.)
+    pub fn stored_changes(&self) -> Value {
+        Value::Array(self.app().state::<stubs::Changes>().records.lock().clone())
     }
 
     pub async fn messages(&self) -> Vec<Value> {
@@ -310,6 +410,203 @@ impl Turn {
                 )
             })
             .collect()
+    }
+}
+
+/// Methods that must never be reachable, whatever else changes. The stubs
+/// put a tripwire on every one of them this build does not really have.
+pub const FORBIDDEN: &[&str] = &[
+    "changes.approve",
+    "changes.apply",
+    "changes.unapprove",
+    "changes.update",
+    "changes.rollback",
+    "changes.cancel",
+    "changes.delete",
+    "credentials.list",
+    "credentials.create",
+    "credentials.update",
+    "credentials.delete",
+    "vault.state",
+    "vault.unlock",
+    "vault.lock",
+    "vault.set_password",
+    "hostkeys.list",
+    "hostkeys.trust",
+    "hostkeys.forget",
+    "settings.get",
+    "settings.set",
+    "settings.all",
+    "profiles.save",
+    "profiles.delete",
+    "devices.create",
+    "devices.update",
+    "devices.delete",
+    "devices.bulk_update",
+    "devices.import",
+    "devices.import_preview",
+    "devices.export",
+    "devices.test",
+    "terminal.open",
+    "terminal.input",
+    "terminal.input_many",
+    "terminal.close",
+    "terminal.send_break",
+    "terminal.attach",
+    "sftp.open",
+    "sftp.download",
+    "sftp.list",
+    "tftp.status",
+    "tftp.stop",
+    "labs.expose",
+    "labs.create",
+    "labs.delete",
+    "labs.start",
+    "labs.stop",
+    "labs.node.config",
+    "labs.node.add",
+    "schedules.list",
+    "schedules.run_now",
+    "ansible.run",
+    "ansible.export_playbook",
+    "playbooks.run",
+    "runner.run",
+    "discovery.add",
+    "config.export",
+    "config.restore",
+    "config.delete",
+    "config.unpin",
+    "compliance.remediate",
+    "compliance.run",
+    "insights.fix",
+    "insights.dismiss",
+    "ipam.address.save",
+    "ipam.prefix.save",
+    "ipam.import",
+    "templates.save",
+    "templates.delete",
+    "notes.save",
+    "notes.delete",
+    "keys.generate",
+    "jobs.cancel",
+    "jobs.clear",
+    "audit.list",
+    "app.methods",
+    "ai.send",
+    "ai.cancel",
+    "ai.approve",
+    "ai.providers.save",
+    "ai.providers.delete",
+    "ai.chats.delete",
+    "ai.tools",
+    // Everything that writes next to what the second set of tools reads:
+    // evidence, snippets, detections, log lines and forwarders, incidents,
+    // handovers, alerts and checks, discovery, automation, the address plan,
+    // and the whole of the ISP ledger.
+    "evidence.capture_terminal",
+    "evidence.capture_log",
+    "evidence.capture_topology",
+    "evidence.capture_chart",
+    "evidence.add_text",
+    "evidence.rename",
+    "evidence.attach",
+    "evidence.detach",
+    "evidence.delete",
+    "terminal.snippets.send",
+    "terminal.snippets.import",
+    "terminal.snippets.save",
+    "terminal.snippets.delete",
+    "detections.set_enabled",
+    "logs.ingest",
+    "logs.clear",
+    "logs.pull",
+    "logs.restart",
+    "logs.rules.save",
+    "logs.rules.delete",
+    "logs.forward.list",
+    "logs.forward.save",
+    "logs.forward.delete",
+    "logs.forward.test",
+    "incidents.create",
+    "incidents.update",
+    "incidents.delete",
+    "incidents.note",
+    "incidents.link",
+    "incidents.sync",
+    "incidents.acknowledge",
+    "incidents.assign",
+    "incidents.resolve",
+    "incidents.reopen",
+    "incidents.export",
+    "handover.save",
+    "handover.delete",
+    "handover.export",
+    "alerts.raise",
+    "alerts.resolve",
+    "alerts.snooze",
+    "alerts.rules.save",
+    "alerts.rules.delete",
+    "checks.save",
+    "checks.delete",
+    "checks.run_now",
+    "discovery.crawl",
+    "discovery.ignore",
+    "discovery.unignore",
+    "discovery.scan_delete",
+    "tasks.save",
+    "tasks.delete",
+    "tasks.run",
+    "runner.delete",
+    "runner.export",
+    "triggers.save",
+    "triggers.delete",
+    "triggers.fire_now",
+    "ipam.address.delete",
+    "ipam.prefix.delete",
+    "ipam.prefix.split",
+    "ipam.vlan.save",
+    "ipam.vlan.delete",
+    "ipam.sync",
+    "ipam.learn",
+    "isp.customer.get",
+    "isp.customer.save",
+    "isp.customer.state",
+    "isp.customer.delete",
+    "isp.tariff.save",
+    "isp.tariff.delete",
+    "isp.subscription.create",
+    "isp.subscription.amend",
+    "isp.subscription.end",
+    "isp.link.save",
+    "isp.link.delete",
+    "isp.invoice.draft",
+    "isp.invoice.run",
+    "isp.invoice.line.add",
+    "isp.invoice.line.remove",
+    "isp.invoice.issue",
+    "isp.invoice.void",
+    "isp.invoice.reissue",
+    "isp.payment.record",
+    "isp.payment.void",
+    "isp.credit.issue",
+    "isp.credit.allocate",
+    "isp.credit.void",
+];
+
+/// Append one real value to the file named by `NOCTURNE_WIRE_SHAPES`, as a
+/// line of JSON under a label. Off unless a run asks for it: it is how the
+/// examples in a build report are taken from a run instead of from memory.
+pub fn wire(label: &str, value: &Value) {
+    let Ok(path) = std::env::var("NOCTURNE_WIRE_SHAPES") else {
+        return;
+    };
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{}", json!({"label": label, "value": value}));
     }
 }
 

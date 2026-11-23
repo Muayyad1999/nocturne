@@ -308,7 +308,7 @@ async fn get_device(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     .with_link(Link::device(id)))
 }
 
-fn unknown_device(reference: &str, err: AppError) -> AppError {
+pub(super) fn unknown_device(reference: &str, err: AppError) -> AppError {
     if err.code == "not_found" {
         AppError::not_found(format!(
             "no device called `{reference}` — use list_devices to see what exists (names, addresses and ids all work)"

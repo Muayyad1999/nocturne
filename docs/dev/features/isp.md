@@ -124,9 +124,15 @@ guess.
   recorded payment, and nothing adjusts a balance except a recorded entry.
 * **Every mutation is audited** (`audit(...)`), because this is money.
 * **A customer's personal details are not secrets but are not public either.**
-  They never reach a model: `nocturne-ai::redact` is for device
-  configurations, so the assistant's tools expose counts and states, never a
-  name, a phone number or an address.
+  A phone number, an e-mail address, a postal address, an account code and a
+  note never reach a model, under any setting: `nocturne-ai::redact` is for
+  device configurations, so the assistant's tools pass on only the fields
+  they name. By default they pass on counts and states and nothing about any
+  one customer. An operator who switches the assistant's `isp_access` setting
+  on (off by default) lets it see, per customer, an id, the name, the state,
+  the plan and the balance, and invoices by number, state and amount; that is
+  the whole of it, and it is written in
+  [`assistant.md`](assistant.md).
 * **Deleting a customer does not delete their ledger.** A customer is
   `cancelled`; their invoices, payments and credit notes stay, because
   somebody will ask about them.
@@ -316,9 +322,13 @@ test reads the schema back to keep it that way. TypeScript:
    customer who has a plan and no ledger can be deleted and created again.
 10. **`isp.summary` is the assistant's method.** It carries counts, states and
     per-currency money and no name, code, phone number, email address, street
-    or note; a test fails if any of those appear in it. An assistant tool must
-    be registered against it (and against nothing else in this feature that
-    returns a customer).
+    or note; a test fails if any of those appear in it. It is the only method
+    of this feature an assistant tool may call while the assistant's
+    `isp_access` setting is off, which is the default. With it on, the
+    assistant's ledger tools also read `isp.customers`, `isp.subscriptions`,
+    `isp.arrears` and `isp.invoices`, and pass on an allow-list of fields
+    (never contact details, codes or notes); the methods themselves are
+    unchanged and no method of this feature that writes is reachable.
 11. **Every check-then-write is one transaction** (`db::atomically`, over the
     core's `Store::transaction`). `App::rpc` runs handlers on several threads,
     so two operators — or one request and its retry — can land at the same

@@ -84,6 +84,11 @@ pub struct Settings {
     pub result_rows: u32,
     /// Characters of one tool result kept (head and tail).
     pub result_chars: u32,
+    /// ISP edition: whether the model may see the customer ledger at all.
+    /// Off unless somebody decides otherwise, because switching it on sends
+    /// customers' names, plans and balances to whichever model is configured.
+    /// Contact details are never sent, whatever this says.
+    pub isp_access: bool,
     /// The team's own standing instructions, added to the system prompt.
     pub system_prompt_extra: String,
     /// Seconds to wait for an answer to an approval request.
@@ -101,6 +106,7 @@ impl Default for Settings {
             turn_timeout_s: 900,
             result_rows: 50,
             result_chars: 8000,
+            isp_access: false,
             system_prompt_extra: String::new(),
             approval_timeout_s: 300,
             max_concurrent_turns: 3,
@@ -184,5 +190,17 @@ mod tests {
         );
         // An unknown window is not treated as a small one.
         assert!(!small_context(0));
+    }
+
+    #[test]
+    fn the_customer_ledger_is_closed_until_somebody_opens_it() {
+        assert!(!Settings::default().isp_access);
+        // A settings file from before the key existed, and one that holds
+        // something that is not a yes, both read as closed.
+        let old: Settings = serde_json::from_value(json!({"autonomy": "lab"})).unwrap();
+        assert!(!old.isp_access);
+        assert!(serde_json::from_value::<Settings>(json!({"isp_access": "yes"})).is_err());
+        let open: Settings = serde_json::from_value(json!({"isp_access": true})).unwrap();
+        assert!(open.isp_access);
     }
 }

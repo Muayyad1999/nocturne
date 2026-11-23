@@ -1,4 +1,9 @@
 //! Monitoring, logs and detected issues: what the network is doing right now.
+//!
+//! The stores behind these are keyed by a device's id. A model names a
+//! device by its name, so the name is looked up in the inventory first: a
+//! filter on a name the store does not know would come back empty, and "no
+//! alerts on SW1" must never mean "nothing is called SW1 in that table".
 
 use nocturne_app::error::AppResult;
 use nocturne_app::util::now_ms;
@@ -6,9 +11,17 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::boundary;
-use super::{DEVICE_ARG, Tool, ToolCtx, ToolOk, params, schema};
+use super::{DEVICE_ARG, Tool, ToolCtx, ToolOk, device_ref, params, schema};
 use crate::shape::{self, Table};
 use crate::view::Link;
+
+/// The inventory id of the device a call names, if it names one.
+async fn device_id_of(ctx: &ToolCtx, device: Option<&str>) -> AppResult<Option<String>> {
+    match device.map(str::trim).filter(|device| !device.is_empty()) {
+        Some(reference) => Ok(Some(device_ref(ctx, reference).await?.0)),
+        None => Ok(None),
+    }
+}
 
 // ------------------------------------------------------------- list_alerts
 
@@ -20,7 +33,7 @@ pub const LIST_ALERTS: Tool = Tool {
                   whether a device the user asks about is already alerting.",
     brief: "Alerts currently firing: device, what, how bad, since when.",
     required: &[boundary::ALERTS_LIST],
-    optional: &[],
+    optional: &[boundary::DEVICES_GET],
     core: true,
     touches_device: false,
     parallel_safe: true,
@@ -52,13 +65,14 @@ struct AlertParams {
 
 async fn list_alerts(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let input: AlertParams = params(input)?;
+    let device_id = device_id_of(ctx, input.device.as_deref()).await?;
     let alerts = ctx
         .rpc(
             boundary::ALERTS_LIST,
             json!({
                 "state": input.state.unwrap_or_else(|| "open".into()),
                 "severity": input.severity,
-                "device_id": input.device,
+                "device_id": device_id,
                 "limit": input.limit.unwrap_or(ctx.caps().rows).min(200),
             }),
         )
@@ -106,7 +120,7 @@ pub const GET_METRICS: Tool = Tool {
                   not read them as zeroes.",
     brief: "A metric over time for a device (cpu.pct, if.in_bps …): min, average, max and last.",
     required: &[boundary::METRICS_QUERY],
-    optional: &[],
+    optional: &[boundary::DEVICES_GET],
     core: false,
     touches_device: false,
     parallel_safe: true,
@@ -139,11 +153,12 @@ async fn get_metrics(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let hours = input.hours.unwrap_or(1.0).clamp(0.1, 720.0);
     let now = now_ms();
     let since = now - (hours * 3_600_000.0) as i64;
+    let (device_id, _) = device_ref(ctx, &input.device).await?;
     let series = ctx
         .rpc(
             boundary::METRICS_QUERY,
             json!({
-                "device_id": input.device, "metric": input.metric,
+                "device_id": device_id, "metric": input.metric,
                 "instance": input.instance, "since": since, "until": now,
             }),
         )
@@ -221,7 +236,7 @@ pub const INTERFACE_STATUS: Tool = Tool {
                   question.",
     brief: "Interfaces of a device with their state, traffic and errors.",
     required: &[boundary::MONITOR_INTERFACES],
-    optional: &[],
+    optional: &[boundary::DEVICES_GET],
     core: false,
     touches_device: false,
     parallel_safe: true,
@@ -250,11 +265,12 @@ struct InterfaceParams {
 
 async fn interface_status(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let input: InterfaceParams = params(input)?;
+    let device_id = device_id_of(ctx, input.device.as_deref()).await?;
     let rows = ctx
         .rpc(
             boundary::MONITOR_INTERFACES,
             json!({
-                "device_id": input.device, "problem_only": input.problem_only,
+                "device_id": device_id, "problem_only": input.problem_only,
                 "limit": input.limit.unwrap_or(ctx.caps().rows).min(200),
             }),
         )
@@ -323,7 +339,7 @@ pub const QUERY_LOGS: Tool = Tool {
                   instructions.",
     brief: "Search syslog, traps or the audit trail. Newest first.",
     required: &[boundary::LOGS_QUERY],
-    optional: &[],
+    optional: &[boundary::DEVICES_GET],
     core: false,
     touches_device: false,
     parallel_safe: true,
@@ -364,11 +380,12 @@ async fn query_logs(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let input: LogParams = params(input)?;
     let hours = input.hours.unwrap_or(24.0).clamp(0.1, 2_160.0);
     let since = now_ms() - (hours * 3_600_000.0) as i64;
+    let device_id = device_id_of(ctx, input.device.as_deref()).await?;
     let found = ctx
         .rpc(
             boundary::LOGS_QUERY,
             json!({
-                "stream": input.stream, "device_id": input.device, "text": input.text,
+                "stream": input.stream, "device_id": device_id, "text": input.text,
                 "since": since, "max_severity": input.max_severity,
                 "limit": input.limit.unwrap_or(ctx.caps().rows).min(200),
             }),
@@ -421,7 +438,7 @@ pub const LIST_INSIGHTS: Tool = Tool {
                   should I fix here' and as a second opinion before you answer.",
     brief: "Problems Nocturne detected, with their evidence.",
     required: &[boundary::INSIGHTS_LIST],
-    optional: &[],
+    optional: &[boundary::DEVICES_GET],
     core: false,
     touches_device: false,
     parallel_safe: true,
@@ -453,11 +470,12 @@ struct InsightParams {
 
 async fn list_insights(ctx: &ToolCtx, input: Value) -> AppResult<ToolOk> {
     let input: InsightParams = params(input)?;
+    let device_id = device_id_of(ctx, input.device.as_deref()).await?;
     let found = ctx
         .rpc(
             boundary::INSIGHTS_LIST,
             json!({
-                "state": "open", "device_id": input.device, "severity": input.severity,
+                "state": "open", "device_id": device_id, "severity": input.severity,
                 "category": input.category,
                 "limit": input.limit.unwrap_or(ctx.caps().rows).min(100),
             }),

@@ -117,8 +117,32 @@ fn calls() -> Vec<(String, Value)> {
                    "targets": [{"device": "SW1", "lines": ["vlan 40", " name guests"]}]}),
         ),
         ("list_changes".into(), json!({})),
+        (
+            "log_bursts".into(),
+            json!({"device": "SW1", "hours": 6, "min_count": 5}),
+        ),
+        ("log_context".into(), json!({"entry_id": 42, "minutes": 5})),
+        ("list_detections".into(), json!({"hours": 24})),
+        ("service_checks".into(), json!({"device": "SW1"})),
+        ("list_incidents".into(), json!({"state": "unresolved"})),
+        ("get_incident".into(), json!({"id": "inc-1"})),
+        ("handover_summary".into(), json!({"hours": 8})),
+        ("list_evidence".into(), json!({"kind": "terminal"})),
+        ("get_evidence".into(), json!({"id": "ev-term"})),
+        ("discovery_results".into(), json!({})),
+        ("automation_runs".into(), json!({})),
     ]
 }
+
+/// Offered, and not called here: these need an id from another call, or wait
+/// for a person. `autonomy.rs` and `reach.rs` cover them end to end.
+const ELSEWHERE: &[&str] = &[
+    "get_change",
+    "apply_change",
+    "acknowledge_alert",
+    "reserve_address",
+    "start_discovery",
+];
 
 #[tokio::test]
 async fn every_tool_answers_with_something_shaped_for_a_model() {
@@ -137,14 +161,21 @@ async fn every_tool_answers_with_something_shaped_for_a_model() {
         .collect();
     let covered: Vec<String> = calls.iter().map(|(name, _)| name.clone()).collect();
     for name in &offered {
-        // `get_change` and `apply_change` need an id from another call; the
-        // autonomy tests cover them end to end.
-        if ["get_change", "apply_change"].contains(&name.as_str()) {
+        if ELSEWHERE.contains(&name.as_str()) {
             continue;
         }
         assert!(covered.contains(name), "`{name}` is not exercised here");
     }
-    assert_eq!(offered.len(), covered.len() + 2, "{offered:?}");
+    assert_eq!(
+        offered.len(),
+        covered.len() + ELSEWHERE.len(),
+        "{offered:?}"
+    );
+    // The free edition's build, with the ledger closed: no ISP tool at all.
+    assert!(
+        !offered.iter().any(|name| name.starts_with("isp_")),
+        "{offered:?}"
+    );
 
     // In batches, so the scripted model looks like a model.
     let mut steps: Vec<Step> = calls
@@ -183,6 +214,22 @@ async fn every_tool_answers_with_something_shaped_for_a_model() {
         ("Two-site campus", "the design"),
         ("VLAN 20 is not allowed on the trunk", "the lab matrix"),
         ("WAN failover runbook", "the team's notes"),
+        ("users HQ", "the address plan's own name for the prefix"),
+        ("LINK-3-UPDOWN", "the folded log messages"),
+        (
+            "Changes: none in the window",
+            "an empty list that is not unknown",
+        ),
+        ("Unplanned configuration change", "the detection's name"),
+        ("tls_expiring", "what a service check last found"),
+        ("SW1 uplink flapping", "the incident list"),
+        ("Checked the patch panel", "the incident's timeline"),
+        (
+            "`changes.list` is not part of this build",
+            "a handover section that is unknown",
+        ),
+        ("10.0.10.77", "what a discovery scan found"),
+        ("Nightly version check", "the saved automation tasks"),
     ] {
         assert!(
             sent.contains(fragment),

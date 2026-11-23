@@ -296,6 +296,7 @@ async fn the_registered_surface_is_the_contract() {
             "approval_timeout_s",
             "autonomy",
             "confirm_reads",
+            "isp_access",
             "max_concurrent_turns",
             "max_steps",
             "result_chars",
@@ -307,4 +308,6 @@ async fn the_registered_surface_is_the_contract() {
     assert_eq!(settings["autonomy"], "draft");
     assert_eq!(settings["max_steps"], 40);
     assert_eq!(settings["confirm_reads"], false);
+    // The customer ledger is closed to the model until somebody opens it.
+    assert_eq!(settings["isp_access"], false);
 }

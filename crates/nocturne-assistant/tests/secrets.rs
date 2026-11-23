@@ -240,7 +240,7 @@ async fn restoring_a_placeholder_cannot_be_turned_into_a_way_of_reading_it() {
 
     // The change engine did get the real values: that is the point of
     // restoration, and the change is what a human reviews.
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     let commands = changes[0]["targets"][0]["plan"]["commands"].to_string();
     assert!(
         commands.contains(SECRETS[0]) || commands.contains(SECRETS[2]),
@@ -287,7 +287,7 @@ async fn a_placeholder_the_model_invented_is_not_quietly_sent_to_a_device() {
     );
     // The line is still in the draft, as text, where a human will see it — it
     // is not silently dropped and not silently filled in.
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     assert!(
         changes[0]["targets"][0]["plan"]["commands"]
             .to_string()

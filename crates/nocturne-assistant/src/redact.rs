@@ -196,32 +196,47 @@ impl ChatRedactor {
     }
 
     fn values(&self, text: &str) -> String {
-        let mut out = text.to_string();
+        self.hide(text, &self.hidden_anywhere())
+    }
+
+    /// The values that are hidden wherever they appear, as things stand:
+    /// what Nocturne holds itself, then every credential-shaped value this
+    /// chat has given a placeholder to.
+    fn hidden_anywhere(&self) -> Vec<String> {
         // Cloned so that a `remember` from another turn cannot deadlock here.
-        let known = self.known.lock().clone();
-        for value in known {
-            out = self.redactor.redact_value(&out, &value);
-        }
+        let mut values = self.known.lock().clone();
         for (_, value) in self.redactor.export().entries {
-            if scrubbable_anywhere(&value) {
-                out = self.redactor.redact_value(&out, &value);
+            if scrubbable_anywhere(&value) && !values.contains(&value) {
+                values.push(value);
+            }
+        }
+        values
+    }
+
+    fn hide(&self, text: &str, values: &[String]) -> String {
+        let mut out = text.to_string();
+        for value in values {
+            // Looked for first: the engine copies the text it is handed
+            // whether the value is in it or not, and nearly always it is not.
+            if out.contains(value.as_str()) {
+                out = self.redactor.redact_value(&out, value);
             }
         }
         out
     }
 
     /// Scrub every string inside a JSON value, keys included.
+    ///
+    /// In two passes over the whole answer: the rules first, then the
+    /// values. A list of a thousand rows is a thousand texts, and working
+    /// out afresh for each which values are hidden everywhere made the cost
+    /// of an answer its length times the length of the chat's table. Taking
+    /// the values once, after the rules have read all of it, also hides a
+    /// secret in a row that came *before* the row a rule recognised it in.
     pub fn scrub_json(&self, value: &Value) -> Value {
-        match value {
-            Value::String(text) => Value::String(self.scrub(text)),
-            Value::Array(items) => Value::Array(items.iter().map(|i| self.scrub_json(i)).collect()),
-            Value::Object(map) => Value::Object(
-                map.iter()
-                    .map(|(key, item)| (self.scrub(key), self.scrub_json(item)))
-                    .collect(),
-            ),
-            other => other.clone(),
-        }
+        let by_rule = map_strings(value, &|text| self.redactor.redact(text));
+        let values = self.hidden_anywhere();
+        map_strings(&by_rule, &|text| self.hide(text, &values))
     }
 
     /// Put the real values back in place of placeholders, and keep hiding
@@ -257,6 +272,83 @@ impl ChatRedactor {
     pub fn forget(app: &App, chat_id: &str) {
         let _ = app.vault().delete(&vault_id(chat_id));
     }
+}
+
+/// A JSON value with every string in it, keys included, passed through
+/// `change`.
+fn map_strings(value: &Value, change: &dyn Fn(&str) -> String) -> Value {
+    match value {
+        Value::String(text) => Value::String(change(text)),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| map_strings(item, change)).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (change(key), map_strings(item, change)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// What stands in for a secret another feature hid before this chat saw it.
+/// The engine's rules know it as already masked and leave it alone.
+pub const HIDDEN_ELSEWHERE: &str = "<hidden>";
+
+/// Take the numbers off placeholders that are not this chat's.
+///
+/// Evidence, incident timelines and handovers are redacted by the feature
+/// that stores them, with placeholders numbered in *its* table. To a model
+/// they look exactly like this chat's — and a `<secret:1>` it copied out of
+/// an evidence item into a line it proposes would be restored to whatever
+/// this chat's first secret happens to be: the wrong value, sent towards a
+/// device. So before this chat's own redaction runs over such an answer,
+/// every placeholder in it becomes a marker that restores to nothing.
+pub fn without_foreign_placeholders(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(strip_placeholders(text)),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(without_foreign_placeholders).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (strip_placeholders(key), without_foreign_placeholders(item)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn strip_placeholders(text: &str) -> String {
+    const OPEN: &str = "<secret:";
+    if !text.contains(OPEN) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + OPEN.len()..];
+        // `<secret:12>` or `<secret:12:weak>`: digits, then the end.
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let tail = &after[digits..];
+        let closed = tail
+            .strip_prefix(":weak>")
+            .or_else(|| tail.strip_prefix('>'));
+        match closed {
+            Some(remaining) if digits > 0 => {
+                out.push_str(HIDDEN_ELSEWHERE);
+                rest = remaining;
+            }
+            // Not a placeholder after all: keep the text as it is.
+            _ => {
+                out.push_str(OPEN);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Is this value distinctive enough to hide wherever it appears, out of any
@@ -342,6 +434,29 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_a_rule_recognises_in_one_row_is_hidden_in_the_rows_before_it_too() {
+        let redactor = ChatRedactor::bare();
+        // The first row is a log line no rule matches; the second is the
+        // configuration line that gives the value away.
+        let scrubbed = redactor.scrub_json(&serde_json::json!([
+            {"message": "Community Index: Sup3rS3cretRO matched"},
+            {"message": "snmp-server community Sup3rS3cretRO RO"},
+            {"message": "nothing to hide here"},
+        ]));
+        let text = scrubbed.to_string();
+        assert!(!text.contains("Sup3rS3cretRO"), "{text}");
+        assert_eq!(scrubbed[2]["message"], "nothing to hide here");
+        // The same placeholder in both rows: one secret, said twice.
+        let placeholder = |row: usize| {
+            let message = scrubbed[row]["message"].as_str().unwrap().to_string();
+            let start = message.find("<secret:").expect("a placeholder");
+            let end = start + message[start..].find('>').expect("its end") + 1;
+            message[start..end].to_string()
+        };
+        assert_eq!(placeholder(0), placeholder(1));
+    }
+
+    #[test]
     fn only_credential_shaped_values_are_hidden_out_of_context() {
         assert!(scrubbable_anywhere("Sup3rS3cretCommunity"));
         assert!(scrubbable_anywhere("0822455D0A16"));
@@ -352,6 +467,44 @@ mod tests {
         assert!(!scrubbable_anywhere("from"));
         assert!(!scrubbable_anywhere("4096>"));
         assert!(!scrubbable_anywhere("INSTRUCTIONS"));
+    }
+
+    #[test]
+    fn a_placeholder_from_another_table_cannot_be_restored_to_this_chats_secret() {
+        let redactor = ChatRedactor::bare();
+        // This chat's first secret.
+        let own = redactor.scrub("snmp-server community Sup3rS3cretRO RO");
+        assert!(own.contains("<secret:1>"), "{own}");
+
+        // An evidence item the ops feature redacted with its own numbering.
+        let evidence = serde_json::json!({
+            "title": "SW1 password 7 <secret:1> — last 3 lines",
+            "body": {"type": "text", "text": "enable secret <secret:1>\n key <secret:2:weak>\n<hidden>\nSW1#"},
+            "note": "the text <secret:> and <secret:x> are not placeholders",
+        });
+        let cleaned = redactor.scrub_json(&without_foreign_placeholders(&evidence));
+        let text = cleaned.to_string();
+        assert!(
+            !text.contains("<secret:1>") && !text.contains("<secret:2"),
+            "{text}"
+        );
+        assert_eq!(
+            cleaned["body"]["text"],
+            "enable secret <hidden>\n key <hidden>\n<hidden>\nSW1#"
+        );
+        assert_eq!(cleaned["title"], "SW1 password 7 <hidden> — last 3 lines");
+        assert_eq!(
+            cleaned["note"],
+            "the text <secret:> and <secret:x> are not placeholders"
+        );
+
+        // What a model copies out of it restores to nothing of this chat's.
+        let restored = redactor.restore(cleaned["body"]["text"].as_str().unwrap());
+        assert!(
+            !restored.text.contains("Sup3rS3cretRO"),
+            "{}",
+            restored.text
+        );
     }
 
     #[test]

@@ -15,8 +15,9 @@ src/chats.rs        chat documents, UI messages, model context generations, chat
 src/usage.rs        hourly token ledger, ai.usage
 src/prompt.rs       the frozen system prompt, the per-turn briefing, Context, quick actions
 src/turn.rs         ai.send / ai.cancel / ai.approve, the turn runner, the ToolHost, the collector
-src/tools/          the boundary: boundary.rs (allow-list), mod.rs (gate + registry), 5 handler files
-tests/              common/ (harness, feature stubs, HTTP fixture) + 8 test files
+src/tools/          the boundary: boundary.rs (allow-list), mod.rs (gate + registry), 10 handler files
+                    (devices data watch net changes design; signals ops work records ledger)
+tests/              common/ (harness, feature stubs, reach stand-ins, HTTP fixture) + 9 test files
 ```
 
 ## Decisions (where the spec left room)
@@ -60,10 +61,90 @@ tests/              common/ (harness, feature stubs, HTTP fixture) + 8 test file
   `preview_change` tool, settings `approval_timeout_s` and `max_concurrent_turns`,
   `providers::use_provider` (`#[doc(hidden)]`) as the one test seam.
 
+## The second set of tools (logs, detections, checks, ops records, discovery, automation, three writers, the ISP ledger)
+
+* **Three properties of a method live in `boundary.rs`, not on the tool**: `ASK_FIRST` (writes a
+  record), `LEDGER` (the ISP ledger), `ALREADY_REDACTED` (another feature's placeholders). A tool
+  has the property because it declares such a method (`Tool::asks_first`, `Tool::reads_ledger`),
+  and the gate enforces each one call by call. So a new tool cannot acquire a write, or the
+  ledger, without the boundary tests noticing.
+* **A tool that writes asks from inside its handler** (`ToolCtx::confirm`), not before it runs:
+  the question has to show the alert's title, the prefix's own name and every range, which are
+  only known after the reads and the checks. The turn runner's `Approvals` is the one mechanism
+  behind both this and `confirm_reads`. The gate refuses an `ASK_FIRST` method unless this call's
+  `confirm` was answered yes, and spends the yes on the write.
+* **A no is `ToolOk::declined`**: `ToolOutput::ok` for the model, `ToolStatus::Denied` for the
+  card. `confirm_reads` refusals are unchanged (still an error result) because existing tests and
+  the UI rely on them; only the three writers use the new form.
+* **Ranges are parsed, not pattern-matched.** `discovery.scan` resolves anything it cannot read
+  as a range (`targets::plan` falls back to DNS), so `ab1.de` — all address characters — would
+  have been resolved after the person said yes. Each part must parse as an `IpAddr`.
+* **The ISP name filter is re-applied here.** `isp.customers {query}` matches phone, e-mail and
+  address (`db::customer_search`), so the tool keeps only rows whose *name* matches and does not
+  repeat the ledger's `matching` count when a name was given.
+* **`isp.subscriptions` and `isp.arrears` were added to the allow-list** beyond what the
+  specification named: `isp.customers` returns neither a plan nor a balance. Per customer shown,
+  so the work is bounded by the row cap whatever the size of the ledger.
+* **Foreign placeholders become `<hidden>`** (`redact::without_foreign_placeholders`) before the
+  chat's own redaction runs. `<hidden>` is on the engine's `already_masked` list, so a rule that
+  captures it leaves it alone.
+* **Short tool descriptions by measurement** (`tools::describe_briefly`): sixty tools in the long
+  form are ~14.4k estimated tokens with the system prompt, more than the 11.2k at which the agent
+  compacts a conversation for a 16k model — every step ended in a summary of the step before
+  (the prompted-mode test caught it). The 43 tools before this set were already at 84% of that
+  limit; in the short form the sixty are at 85%.
+* **Fixed on the way**: `ipam_search` read `prefix` / `vlan` / `address` / `name`, the field names
+  of a stub, where the address plan answers `cidr` / `vlan_id` / `ip` / `hostname`; the stub now
+  has the real shape. `query_logs`, `list_alerts`, `get_metrics`, `interface_status` and
+  `list_insights` look the device up first; `list_changes` and `search_notes` followed in review.
+
+## What the review of the second set changed
+
+Checked against the owning crates' handlers, then against a model, a device and a feature that
+all misbehave (`tests/adversary.rs`; `bend` in `tests/common/reach.rs` bends every stand-in's
+answer in one place).
+
+* **Shapes that were wrong.** `service_checks` told the model that `status: problem` keeps
+  everything that is not up and that `text` matches the device's name; `checks.list` leaves
+  `unknown` out of `problem` and matches the check's own name only. `list_changes` passed the
+  device *name* as `device_id` (the change list compares ids) and read `targets` /
+  `device_count`, which a `ChangeSummary` does not have (`devices[].name`). `search_notes` did the
+  same with the name and read a `body` that `notes.list` never returns (`NoteHead` plus an
+  `excerpt` when searched): the model got titles over empty blocks, with the titles outside the
+  block. The three stubs now answer in the real shapes; tests that want a whole change read
+  `Harness::stored_changes()`.
+* **The question.** An alert's title, its device, an earlier note and a prefix's name went into
+  the question as they came: a title with line breaks could forge "with the note:" and a second
+  question. They are flattened and cut (`records::shown`). The alert id was not checked at all.
+  U+2028, U+2029 and the direction marks are refused in anything that is recorded. A range that
+  runs backwards is refused (the scan engine falls back to DNS for what it cannot expand). An
+  address outside the prefix named is refused before asking. The scan's question said public
+  space "is not included"; the engine refuses the whole scan, and the question now says that.
+* **Stop.** A yes followed by a stop before the write used to race: the write could go ahead in
+  its own task while the tool reported "cancelled" and wrote no audit entry. Now a stop before
+  the write writes nothing, and a write that has begun is waited for.
+* **The ledger's errors** were passed to the model in the ledger's own words. The gate now
+  passes the code and a fixed sentence.
+* **Bounds.** `get_evidence` (title, session, device, note, hash), `get_incident` (assignee and
+  the other names), the detections catalogue and `log_context` (which lost its later headings to
+  the cut in the middle) were bounded only by the agent's last-resort cut, which is blind to
+  block markers. Every field now has a bound and every list its own share.
+* **Redaction cost.** `scrub_json` worked out the list of values hidden everywhere once per
+  string (a table export, a sort and a copy of the text per known value). It now runs the rules
+  over the whole answer, takes the list once, and then hides the values — which also hides a
+  secret in a row that comes before the row a rule recognised it in. The rules themselves
+  (`nocturne_ai::Redactor::redact`) remain the cost: 5–8 s per 100,000 short rows in a debug
+  build.
+* A test worth knowing about: `what_the_new_tools_return_is_delimited_data_with_the_secrets_replaced`
+  still passes with the gate's redaction removed, because the backups prime the redactor and the
+  turn's last pass over a result hides known values. `a_secret_no_backup_ever_held_…` is the one
+  that fails.
+
 ## Status
 
-Done: everything in the spec's "Tests" section, 75 tests, clippy clean with `-D warnings`,
-`cargo fmt` applied, no `unsafe`. `ui/src/api/types/ai.ts` written.
+Done: everything in the spec's "Tests" section, clippy clean with `-D warnings`, `cargo fmt`
+applied, no `unsafe`. `ui/src/api/types/ai.ts` written. Specified and not built: `qos_status`,
+`top_talkers`, `list_snippets` (the methods they call do not exist yet).
 
 Wiring note for the lead: both this crate and `nocturne-changes` declare the `assistant` settings
 section (the spec shares `autonomy` between them). This crate declares the whole section, the

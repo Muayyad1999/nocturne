@@ -79,7 +79,7 @@ async fn lists_devices_runs_commands_reads_a_config_and_proposes_a_change() {
     );
 
     // The change was created against the real device, by the assistant.
-    let changes = harness.app().rpc("changes.list", json!({})).await.unwrap();
+    let changes = harness.stored_changes();
     let change = &changes[0];
     assert_eq!(change["created_by"], "assistant");
     assert_eq!(change["origin"], "assistant");

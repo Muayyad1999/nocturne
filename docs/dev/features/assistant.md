@@ -24,6 +24,23 @@ product's AI and is fixed here:
   `changes.get` / `changes.list` / `changes.preview`, and
   `changes.assistant_apply` (which enforces the autonomy policy inside the
   change engine, not here).
+* It contains exactly three methods that write a record which is not a
+  device's configuration — `alerts.ack`, `ipam.address.reserve` and
+  `discovery.scan` (`boundary::ASK_FIRST`). The gate passes one only after
+  the person answered yes to that tool call's own question (see "Tools that
+  write a record"); one yes covers one write, and a handler that reaches one
+  without having asked gets an `internal` error and calls nothing. Stopping
+  the turn takes a yes back for as long as nothing has been written; a
+  write that has begun is waited for whatever happens to the turn, so that
+  what was written is always answered for (the audit entry, the result).
+* It contains five reads of the ISP ledger — `isp.summary`, `isp.customers`,
+  `isp.subscriptions`, `isp.arrears`, `isp.invoices` (`boundary::LEDGER`).
+  The gate refuses them (`forbidden`) while `isp_access` is off, checked on
+  every call, so switching the setting off closes them in the middle of a
+  turn too. A test asserts that every `isp.*` method on the list is one of
+  these five. When one of them fails, the gate passes on the error's code
+  and a fixed sentence, never the ledger's own message: that is free text
+  out of a store of other people's details.
 * It must never contain: `changes.approve`, `changes.apply`,
   `changes.update` of someone else's approved change, `credentials.*`,
   `vault.*`, `hostkeys.*`, `settings.set`, `profiles.save` / `.delete`,
@@ -31,6 +48,19 @@ product's AI and is fixed here:
   (typing into a human's terminal would bypass the command policy),
   `sftp.*`, `tftp.*`, `labs.expose`, `schedules.*`, `ansible.run`, anything
   that writes files, or any method added later unless this list is edited.
+  Nor anything that writes beside what the tools read: `evidence.capture_*`
+  / `.add_text` / `.rename` / `.attach` / `.detach` / `.delete`;
+  `terminal.snippets.send` / `.import` / `.save` / `.delete`;
+  `detections.set_enabled`; `logs.ingest` / `.clear` / `.pull` / `.restart`,
+  `logs.rules.save` / `.delete` and `logs.forward.*`; every `incidents.*`
+  and `handover.*` method except the three reads; `alerts.raise` /
+  `.resolve` / `.snooze` and `alerts.rules.*`; `checks.save` / `.delete` /
+  `.run_now`; `discovery.add` / `.crawl` / `.ignore` / `.unignore` /
+  `.scan_delete`; `tasks.save` / `.delete` / `.run`, `runner.run` /
+  `.delete` / `.export`, `triggers.*`; `ipam.address.save` / `.delete` and
+  the prefix and VLAN writes; and every `isp.*` method that writes
+  (customer, tariff, subscription, link, invoice, payment and credit
+  methods) together with `isp.customer.get`, which returns a customer whole.
   A test enumerates every tool's reachable methods and fails on any method
   outside the allow-list; another asserts the forbidden ones are absent.
 * Everything a device printed, every configuration, log line, interface
@@ -42,10 +72,22 @@ product's AI and is fixed here:
 * **Secrets never reach a model.** Every tool result passes through one
   `Redactor` per chat (stable placeholders, so the model can still refer to
   "the same secret"); placeholders in config lines the model proposes are
-  restored just before `changes.create`. A test with the `scripted`
+  restored just before `changes.create`. An answer is redacted as a whole,
+  in two passes — the rules over every text of it, then the values hidden
+  everywhere — so a secret a rule recognises in one row is hidden in the
+  rows before it too, and the cost does not grow with the chat's table. A test with the `scripted`
   provider records every request sent "to the model" over a conversation
   that reads a fake device's full config and asserts no secret substring
   appears anywhere in any request.
+* **Records another feature already redacted** — evidence, incident
+  timelines, handovers (`boundary::ALREADY_REDACTED`: `incidents.list` /
+  `.get`, `handover.generate`, `evidence.list` / `.get`) — carry that
+  feature's placeholders, numbered in *its* table. To a model they look like
+  this chat's, and a `<secret:1>` copied out of an evidence item into a
+  proposed line would be restored to whatever this chat's first secret is.
+  So the gate turns every placeholder in such an answer into `<hidden>`
+  before this chat's own redaction runs over it; `<hidden>` restores to
+  nothing.
 
 ## Providers (contract)
 
@@ -95,12 +137,19 @@ Event (contract): `ai.event {chat_id, turn_id, seq, event}` where `event` is
 one of `{type: "text", delta}`, `{type: "thinking", delta}` (summaries only),
 `{type: "tool_start", call_id, name, title, input_summary}`,
 `{type: "tool_end", call_id, status, result_summary, link?}`,
-`{type: "approval_needed", call_id, name, title, detail}`,
+`{type: "approval_needed", call_id, name, title, detail}` (`detail` is one
+line of the call's arguments when `confirm_reads` asks; for a tool that
+writes a record it is the question itself, several lines of plain text
+showing exactly what would be written — render it as text, line breaks
+kept; it is published after the `tool_start` of the call it is about and
+before that call's `tool_end`),
 `{type: "notice", text}` (fallback model used, context compacted, …),
 `{type: "usage", input_tokens, output_tokens}`,
 `{type: "done", stop: end|cancelled|max_steps|refused}`,
 `{type: "error", code, message}`. `seq` increases by one per chat so a
-re-attaching UI can detect a gap and call `ai.chats.get`.
+re-attaching UI can detect a gap and call `ai.chats.get`. A `link` is left
+out when what a feature gave as an id is not one (empty, longer than 128
+characters, or holding white space): an event goes to every screen.
 
 History is stored append-only and verbatim (`nocturne_ai::Message` including
 `raw` provider blocks — Anthropic thinking signatures must be replayed
@@ -137,26 +186,69 @@ offered.
 | `ping`, `traceroute`, `port_check`, `dns_lookup`, `tls_inspect`, `device_ping` | probes from here or from a device | `probe.*` (wait for the job, return the report) |
 | `list_templates`, `render_template` | configuration templates | `templates.list/render` |
 | `propose_change` | create a change (one or more devices; lines or intended config) and plan it; returns per device the exact commands, predicted diff, risk and protected hits, and the change id | `changes.create` + `changes.plan` (waits for the plan) |
-| `get_change`, `list_changes` | | `changes.get/list` |
+| `get_change`, `list_changes` | `list_changes {state?, device?, limit?}` reads the change engine's summaries (`devices[].name`), inside a data block | `changes.get/list` |
 | `apply_change` | ask to apply a planned change; the change engine's autonomy policy answers | `changes.assistant_apply` |
 | `design_network`, `create_lab`, `list_labs`, `lab_connectivity`, `lab_probe` | design from requirements; build it as a lab; test it | `design.generate/create_lab`, `labs.list/connectivity/probe` |
-| `search_notes` | the team's runbooks | `notes.list` |
+| `search_notes` | `{query?, device?, site?}` — the team's runbooks: titles and, when search words are given, the passage they were found in. A list of notes never carries a note's body, and no method that returns one is on the allow-list: the tool says the user can open the note | `notes.list` |
 | `validate_profile` | check a device-type profile the model drafted; returns problems. Saving is the user's click, never a tool. | `profiles.validate` |
 | `explain_terminal` | last lines of the terminal session in context | `terminal.snapshot` |
-| `qos_status` | per-class traffic, drops and queue depth on an interface or a device; says when the read is unverified or the interval could not be measured | `monitor.qos` |
-| `top_talkers` | who is filling a link: flows by source, destination, conversation, application, interface or DSCP, with what the answer covers | `flows.top` |
-| `log_bursts`, `log_context` | repeated messages folded into one row; what else happened around a moment (log lines, alerts, changes) | `logs.bursts`, `logs.around` |
-| `list_detections` | recent detections with the records each was decided from | `detections.recent`, `detections.list` |
-| `service_checks` | service checks and their state | `checks.list` |
-| `list_incidents`, `get_incident` | open and past incidents, a timeline | `incidents.list/get` |
-| `handover_summary` | what happened in a period, every item a real record | `handover.generate` |
-| `list_evidence`, `get_evidence` | captured evidence (already redacted) | `evidence.list/get` |
-| `discovery_results`, `start_discovery` | what a scan found and what is not in the inventory yet; starting a scan of a range **always asks first** | the discovery feature's read methods; its scan method |
-| `automation_runs` | saved tasks and how their last runs went (read-only: running one stays a person's click) | the automation feature's list and history methods |
-| `list_snippets` | the saved command snippets, to suggest one | `terminal.snippets.list` |
-| `acknowledge_alert` | acknowledge an alert with a note — **always asks first** | `alerts.ack` |
-| `reserve_address` | record an address as reserved in IPAM — **always asks first** | the IPAM feature's reserve method |
-| `isp_overview`, `isp_customers`, `isp_invoices` | ISP edition only, and only when `isp_access` is on: revenue and arrears figures, customers with plan and balance, invoices | `isp.summary`, `isp.customers`, `isp.invoices` |
+| `qos_status` | **not built yet.** Per-class traffic, drops and queue depth on an interface or a device; says when the read is unverified or the interval could not be measured | `monitor.qos` |
+| `top_talkers` | **not built yet.** Who is filling a link: flows by source, destination, conversation, application, interface or DSCP, with what the answer covers | `flows.top` |
+| `log_bursts` | `{device?, hours?: 24, min_count?: 5, max_severity?, text?, limit?}` — repeated syslog messages folded into one row each (count, first, last, an example, the entry id to pass on), most frequent first | `logs.bursts` |
+| `log_context` | `{entry_id? \| at?, device?, minutes?: 5, limit?}` — what else happened around one moment: log lines oldest first, repeats, signals, and the alerts and changes on the device in the window; each of the last two says `none in the window` or `unknown` (feature absent, read failed) | `logs.around` |
+| `list_detections` | `{detection?, device?, hours?: 24, limit?}` — hits with the records each was decided from, and which detections could not judge (switched off, cannot run, a failed check) | `detections.recent`; `detections.list` when present |
+| `service_checks` | `{device?, status?, kind?, text?, limit?}` — checks and what each last found, since when, the engine's reason and what was measured; `unknown` is not `up`. `status: problem` is warning, down and cannot-run and leaves out `unknown` (that is what `checks.list` does, and the tool says so); `text` matches the check's own name, not the device's | `checks.list` |
+| `list_incidents`, `get_incident` | `{state?, severity?, device?, text?, limit?}` / `{id}` — incidents with the feature's own count of all on record; one incident with its timeline (the first third and the last two thirds of the row cap when it is longer), gaps said | `incidents.list`, `incidents.get` |
+| `handover_summary` | `{hours?: 12}` — the period ending now, section by section, every item a real record with its id; a section the feature returned as `null` is `unknown — <reason>`, an empty one is `none` | `handover.generate` |
+| `list_evidence`, `get_evidence` | `{kind?, device?, incident_id?, text?, limit?}` / `{id}` — captured evidence (already redacted). Text is returned capped; a chart as figures per series with its coverage; **a drawing is never sent**: the model is told what it is and what it was drawn from | `evidence.list`, `evidence.get` |
+| `discovery_results` | `{scan_id?, only_new?: true, text?, limit?}` — the recent scans and the finds of one (the newest by default): address, name, device type or `not identified`, open ports, whether it is in the inventory | `discovery.scans`, `discovery.scan_get` |
+| `start_discovery` | `{ranges: [..1–16], note?}` — start a sweep of address ranges (CIDR, `first-last` with the lower address first, or one address); **always asks first**, showing every range | `discovery.scan`; `discovery.scans` to report how many addresses were planned |
+| `automation_runs` | `{text?, limit?}` — saved tasks (what each does, on what, last run, last result) and recent runs; read-only: running one stays a person's click. A playbook written into a task and its variables are never quoted | `tasks.list`; `runner.runs` when present |
+| `list_snippets` | **not built yet.** The saved command snippets, to suggest one | `terminal.snippets.list` |
+| `acknowledge_alert` | `{alert_id, note}` — acknowledge an alert with a note — **always asks first**, showing the alert and the whole note | `alerts.ack`; `alerts.get` to show what is being acknowledged |
+| `reserve_address` | `{prefix_id, address, name, description?}` — record one exact address as reserved in IPAM — **always asks first**, showing the address, the prefix by its own name, and the texts. An address the prefix named does not hold is refused before anybody is asked | `ipam.address.reserve`; `ipam.search` to name the prefix and to check that it holds the address |
+| `isp_overview` | ISP edition only, and only when `isp_access` is on: customers by state, subscriptions, megabits sold, invoices by state, arrears per currency with their age bands, what was received in 30 days, usage coverage. Counts and money, no customer named | `isp.summary` |
+| `isp_customers` | as above: `{name?, state?, limit?}` — customers with id, name, state, plan and balance | `isp.customers`; `isp.subscriptions` for the plan and `isp.arrears` for the balance, per customer shown |
+| `isp_invoices` | as above: `{customer_id?, state?, days?, limit?}` — invoices with number, customer, status, period, total, paid, credited, outstanding, due day and days overdue; no lines, notes or payment references | `isp.invoices` |
+
+Sixty tools in all (43 before this set, 17 in it); the free edition can
+offer 57 of them, and three more rows above are specified and not built
+because the methods they call do not exist yet. A tool that takes a
+`device` looks it up in the inventory first (`devices.get`): the stores it
+then filters are keyed by a device's id, not by its name.
+
+**What every tool of this set holds to.** It says plainly when a part of
+its answer is missing because the feature is not in this build or because
+the read failed (`unknown — …`), and that is never worded as an empty
+list; an empty list is said to be empty (`none`, `none in the window`,
+`no … matches`). Coverage the method gives is passed on (how many
+addresses a scan probed of those planned, how many customers match in all,
+which detections could not run, how many devices have no reachability
+samples, that a list was cut when it was read). And it bounds what it
+returns: at most `result_rows` rows and about `result_chars` characters,
+and when something was cut the result says so and says how to narrow it.
+Where a method takes a limit it is asked for no more rows than are shown
+plus one (the one is how the tool learns there are more); the exceptions
+are `runner.runs` (at least twenty, because the name filter is the
+tool's) and `isp.customers` when a name is searched for (five hundred, for
+the reason given under the ledger), and the methods that take no limit at
+all — `tasks.list`, `detections.list`, `handover.generate`,
+`incidents.get`. What comes back is bounded whatever the method returned:
+every field that is a name, an id or a label is held to a line, every text
+to its share, and an answer made of several lists (`log_context`,
+`handover_summary`, `get_incident`) cuts each list for itself, so that a
+long one cannot push the next one's heading out. The agent's own
+last-resort cut (three times `result_chars`, blind to what it cuts
+through) is never what bounds a result. Everything a feature returned is
+inside a `<nocturne:data source="…">` block, whose marker a payload cannot
+close.
+
+Bounding is of what the model is sent, not of the work: every text of an
+answer is redacted before a tool sees a row of it, which takes between
+half a second and a second per ten thousand rows in a debug build. The
+real methods clamp
+their limits; a feature that ignores the limit it was given costs time,
+not correctness.
 
 `propose_change` is the heart of "configure with a single prompt": the model
 never sends configuration to a device; it writes the intent, the change
@@ -168,24 +260,110 @@ the verification result.
 
 **Tools that write a record.** `acknowledge_alert`, `reserve_address` and
 `start_discovery` change something that is not a device. They wait for
-`ai.approve` every time, whatever `confirm_reads` says, the card shows
-exactly what will be written, and the write is audited as the assistant's
-with the chat id. Nothing else here writes: the assistant does not add to an
-incident's timeline, does not capture evidence, does not run automation and
-does not type into a terminal (`terminal.snippets.send` and `terminal.input*`
-are on the never-reachable list).
+`ai.approve` every time, whatever `confirm_reads` and `autonomy` say, the
+card shows exactly what will be written, and the write is audited twice:
+by the method that makes it, and as the assistant's with the chat id
+(`assistant.alert.ack`, `assistant.ipam.reserve`,
+`assistant.discovery.scan` — ids and ranges, never the note's text).
+Nothing else here writes: the assistant does not add to an incident's
+timeline, does not capture evidence, does not run automation and does not
+type into a terminal (`terminal.snippets.send` and `terminal.input*` are on
+the never-reachable list).
+
+* The question is the same `approval_needed` event and the same
+  `ai.approve` as `confirm_reads` uses, with the same `approval_timeout_s`.
+  It is asked by the tool itself, once it knows what it would write — after
+  the alert has been read, the prefix named, every range checked — so a
+  call that cannot work (an alert that has resolved or does not exist, text
+  that is not one address) never becomes a question. With `confirm_reads`
+  on, such a tool asks once, not twice.
+* What is shown is what is written. Everything the model supplies is
+  checked and bounded *before* the question and never cut afterwards: a
+  note is one line of at most 500 characters, a name 100, a description
+  300, a scan's label 200, an alert's or a prefix's id 100, a scan names at
+  most 16 ranges. Past a limit the call is an error and nothing is asked.
+  "One line" also refuses what is not a control character and still breaks
+  or reorders a line on a screen: U+2028, U+2029 and the direction marks
+  and overrides.
+* What a feature answered with and the question shows beside it — an
+  alert's title, its device, an earlier note, a prefix's name — is what a
+  device or somebody else wrote. Each is flattened to one line and cut
+  (200 characters for a title, 80 for a name), so none of it can add a
+  line to the question or pass for the note or the name the person is
+  agreeing to. The question has a fixed number of lines.
+* A range is a CIDR block, a `first-last` pair of whole addresses, or one
+  address — each part must parse as an IP address. **Host names are
+  refused**: the scan engine resolves what it cannot read as a range, to
+  addresses the person who said yes never saw. For the same reason a
+  `first-last` range must have its lower address first. The scan is always
+  asked for with `allow_public: false` and no SNMP credentials, and the
+  question says what the engine then does: a scan that reaches into public
+  address space, or covers more addresses than the discovery settings
+  allow, is refused whole and nothing is sent; addresses on the never-scan
+  list are left out. A refusal by the engine after a yes comes back as the
+  error it is.
+* `reserve_address` takes the exact address. "The next free one" would be a
+  yes to an address nobody was shown; the model finds one first
+  (`next_free_address`). Searching the address plan for the address answers
+  with every prefix that holds it: when the prefix named is not among them
+  the call is an error that says where the address does belong, and nobody
+  is asked. Only when that search cannot be made is the prefix shown by
+  its id.
+* **A no is a result, not an error.** The model reads "the user said no, so
+  nothing was written" as an ordinary tool result and the card's status is
+  `denied` (`declined by the user`). A question nobody answers within
+  `approval_timeout_s` is the same with `nobody answered`. Neither writes
+  anything, and answering a question after it timed out is `not_found`.
 
 **The ISP ledger is other people's data.** The ISP tools are offered only
 when the build has the feature *and* the `isp_access` setting is on (it is
 off by default, and the setting says that customer records would be sent to
-the configured model). Even then a customer is a name, an id, a plan and a
-balance: phone numbers, addresses, e-mail and notes are never put in front
-of a model. No ISP tool writes.
+the configured model). Even then a customer is a name, an id, a state, a
+plan and a balance: phone numbers, addresses, e-mail and notes are never put
+in front of a model. No ISP tool writes.
+
+* What is passed on is built from an **allow-list of fields**, not by
+  removing known ones: of a customer `id`, `name`, `state`; of a
+  subscription `tariff_name`, `mbit`, `price`, `period`; of an arrears row
+  `outstanding`, `invoices`, `oldest_days`, `overpaid`; of an invoice `id`,
+  `number`, `customer_id`, `customer_name`, `status`, the period, `total`,
+  `paid`, `credited`, `outstanding`, `due_at`, `days_overdue`. A field a
+  later version of the ledger adds is not passed on until it is added here.
+  The account code, the site, the tower, where the service is, tags, every
+  note and reason, invoice lines and payments are among what is left out.
+* `isp.customers` carries neither a plan nor a balance, which is why two
+  more reads are on the list: `isp.subscriptions {customer_id, state:
+  active}` and `isp.arrears {customer_id}`, asked once per customer shown
+  (so never for more customers than `result_rows`). A plan or a balance
+  that could not be read is `unknown`, never `no active plan` or `nothing`.
+  Money is per currency and is never added across currencies.
+* The ledger's own free-text search also matches phone numbers, e-mail and
+  addresses. The `name` filter is therefore applied again by the tool, to
+  names only, and the ledger's count of matches is not repeated: a model
+  cannot learn from it that a contact detail exists. (That is why a search
+  by name asks the ledger for up to five hundred rows: its own cut must not
+  hide a customer behind matches on something else.)
+* A read of the ledger that fails is an error result with the error's code
+  and a fixed sentence. The ledger's own message is not passed on.
+* `docs/dev/features/isp.md` still says that the assistant sees counts and
+  states and never a name, and that `isp.summary` is the only method a tool
+  may be registered against. That was written before `isp_access` existed;
+  with the setting off it is exactly what holds, and with it on this
+  section is the rule.
 
 Small-context models (`context_window` < 16k) get a core subset
 (`list_devices`, `get_device`, `run_commands`, `get_config`,
 `search_configs`, `list_alerts`, `propose_change`, `get_change`,
 `subnet_calc`, `ping`) with shorter descriptions and tighter result caps.
+
+Above that, a model gets every tool, described in the long form only when
+it has the room: the tool set is sent with every request, so the short
+descriptions are used whenever the long ones (with the system prompt) would
+take more than half of what the agent lets a conversation grow to before
+compacting it — 70% of the window. With sixty tools that is any window
+below about 41k tokens, which includes a local model nobody configured a
+window for (the engine assumes 16k). A test holds the short form of the
+whole tool set under 90% of that 16k model's compaction limit.
 
 ## Behaviour and settings
 
@@ -199,7 +377,9 @@ engine — declare the section only if absent):
   turn_timeout_s: 900,
   result_rows: 50, result_chars: 8000,
   isp_access: false,                 // ISP edition: may the model see the customer ledger (never contact details)
-  system_prompt_extra: "" }          // the team's own standing instructions (naming conventions, change windows…)
+  system_prompt_extra: "",           // the team's own standing instructions (naming conventions, change windows…)
+  approval_timeout_s: 300,           // how long a question waits for ai.approve (at least 5)
+  max_concurrent_turns: 3 }
 ```
 
 * System prompt (assembled per turn): who it is (a network engineer's
@@ -214,7 +394,12 @@ engine — declare the section only if absent):
 * A tool handler error is returned to the model as an error result (with the
   message a human would see), not a failed turn. A refused action
   (`forbidden`) is returned with the reason so the model can tell the user
-  what they need to do themselves.
+  what they need to do themselves. A person's no to a tool that writes a
+  record is neither: it is an ordinary result with the card's status
+  `denied`.
+* `isp_access` is read when the tools are offered and again on every call
+  to the ledger. It declares nothing about the build: in the free edition
+  the key exists, is `false`, and changes nothing if set.
 * Cancellation and the step/timeouts end the turn with a `done` event and
   leave history consistent (every tool call has a result block).
 * Titles: after the first exchange, the chat is titled from the user's first
@@ -250,4 +435,40 @@ in the test build:
   local fake HTTP server speaking each API (use the fixtures style of
   `crates/nocturne-ai/tests/providers_http.rs`); no provider configured;
 * small-context tool subset; prompted-tools mode end to end with a scripted
-  text-only model.
+  text-only model;
+* the second set of tools (`tests/reach.rs`, against stand-ins that answer
+  in the owning crates' real shapes and say which file each shape came
+  from): the three record-writing tools ask whatever the settings say,
+  write exactly what the question showed, and write nothing on a no, on
+  silence, or when the input cannot be shown whole; the gate passes a
+  writing method once per yes and never without one; the ISP tools do not
+  exist with `isp_access` off or in the free edition, and with it on no
+  contact detail — including a field the stand-in invents — reaches the
+  model, the event stream or the history; a search by name does not confirm
+  a match on a phone number; switching the setting off mid-turn closes the
+  gate; evidence text is redacted again, foreign placeholders become
+  `<hidden>`, and a drawing's markup is never sent; unknown and empty are
+  worded differently; a failed read is an error result; small caps cut
+  every result and each says so; every result is one balanced data block
+  that a hostile title cannot close;
+* the same tools against everybody misbehaving (`tests/adversary.rs`; the
+  stand-ins' answers are bent in one place, `bend` in `common/reach.rs`):
+  the three record-writing tools at every autonomy setting with
+  `confirm_reads` on and off, a model that hands in a yes of its own or
+  writes "the user already agreed" into the note, an alert title and a
+  prefix name that forge the end of the question; every list a feature
+  returns a thousand records long through a whole turn, and a hundred
+  thousand for the tool whose method takes no limit; every text a hundred
+  thousand characters, and five megabytes in each field a device or a
+  person fills in — each result bounded, cut by the tool and not by the
+  agent, and saying so; every text ending in an order to the model and an
+  attempt to close the block, and every occurrence of it inside a block; a
+  secret no stored configuration ever held, said by a device in a log line
+  and on a captured screen; the ledger's own error message naming a
+  customer; `isp_access` off — not listed by `ai.tools`, not offered, not
+  callable by any name, refused by the gate;
+* every method on the never-reachable list tried as the name of a tool, as
+  the argument of a "call this method" tool, and through the string inputs
+  of the real tools (`tests/boundary.rs`): the stubs put a tripwire on every
+  such method the test build does not really have, and the real ones are
+  judged by what they would have changed.
