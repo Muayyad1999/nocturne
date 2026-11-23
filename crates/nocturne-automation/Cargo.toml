@@ -33,6 +33,10 @@ tempfile.workspace = true
 nocturne-app = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# The QoS templates are typed into a simulated router to see that it takes
+# every line. The simulator is an engine, not a feature, so depending on it
+# here breaks no layering rule.
+nocturne-netsim.workspace = true
 
 [lints]
 workspace = true

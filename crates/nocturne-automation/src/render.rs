@@ -10,11 +10,17 @@
 //! `Expressions` owns its environment privately and renders with *chainable*
 //! undefined, which is right for parsing a device's output and wrong for
 //! writing configuration.
+//!
+//! A template can also refuse what it was given: `{{ fail("…") }}` stops the
+//! rendering with that message. A variable's kind says what one value is; it
+//! cannot say that three percentages must leave something over, or that a
+//! guaranteed rate may not be above its limit — and lines like those are the
+//! dangerous ones, because a device accepts them and then queues wrongly.
 
 use std::collections::BTreeMap;
 
 use minijinja::value::{Serde, Value as JValue};
-use minijinja::{Environment, UndefinedBehavior};
+use minijinja::{Environment, ErrorKind, UndefinedBehavior};
 use nocturne_app::error::{AppError, AppResult};
 use nocturne_app::model::Device;
 use nocturne_app::{App, collect, inventory};
@@ -36,6 +42,52 @@ fn text(value: &JValue) -> String {
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| value.to_string())
+}
+
+/// Marks an error as the template's own `fail("…")`, so that its message is
+/// passed on as written instead of being reported as a broken template.
+#[derive(Debug)]
+struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the template refused its variables")
+    }
+}
+
+impl std::error::Error for Refused {}
+
+fn refused(err: &minijinja::Error) -> bool {
+    std::error::Error::source(err).is_some_and(|source| source.is::<Refused>())
+}
+
+/// The longest refusal that is passed on, in characters.
+const REFUSAL_LIMIT: usize = 400;
+
+/// What `fail("…")` was given, as one line of bounded length.
+///
+/// A template usually quotes the value it refuses, and a value is whatever
+/// the caller sent: it can be a megabyte long and hold line breaks or escape
+/// sequences. The message goes to a screen, into an error and possibly a log
+/// line, once per device, so it is cut and its control characters become
+/// spaces. A message that fits is passed on exactly as written.
+fn refusal(message: &str) -> String {
+    let mut text: String = message
+        .chars()
+        .take(REFUSAL_LIMIT)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if message.chars().nth(REFUSAL_LIMIT).is_some() {
+        text.push('…');
+    }
+    text
+}
+
+/// Is `name` something the environment itself provides (`fail`, `range`,
+/// `namespace`…)? MiniJinja's static analysis lists those among the names a
+/// template reads, and they are neither variables nor missing.
+fn provided(env: &Environment<'_>, name: &str) -> bool {
+    env.globals().any(|(global, _)| global == name)
 }
 
 /// A strict environment with the networking filters.
@@ -94,6 +146,15 @@ pub fn environment() -> Environment<'static> {
     env.add_test("matching", |value: JValue, pattern: String| {
         Regex::new(&pattern).is_ok_and(|regex| regex.is_match(&text(&value)))
     });
+    env.add_function(
+        "fail",
+        |message: String| -> Result<JValue, minijinja::Error> {
+            Err(
+                minijinja::Error::new(ErrorKind::InvalidOperation, refusal(&message))
+                    .with_source(Refused),
+            )
+        },
+    );
     env
 }
 
@@ -201,7 +262,11 @@ pub struct Problem {
 pub fn used_variables(body: &str) -> Result<Vec<String>, Problem> {
     let env = environment();
     let template = env.template_from_str(body).map_err(problem)?;
-    let mut names: Vec<String> = template.undeclared_variables(false).into_iter().collect();
+    let mut names: Vec<String> = template
+        .undeclared_variables(false)
+        .into_iter()
+        .filter(|name| !provided(&env, name))
+        .collect();
     names.sort();
     Ok(names)
 }
@@ -234,7 +299,7 @@ pub fn render(body: &str, context: &Context) -> AppResult<Vec<String>> {
     let mut unknown: Vec<String> = template
         .undeclared_variables(false)
         .into_iter()
-        .filter(|name| !available.contains(name))
+        .filter(|name| !available.contains(name) && !provided(&env, name))
         .collect();
     unknown.sort();
     if let Some(name) = unknown.first() {
@@ -268,6 +333,15 @@ fn missing_name(name: &str, context: &Context) -> AppError {
 }
 
 fn template_error(err: minijinja::Error, context: &Context) -> AppError {
+    if refused(&err) {
+        // The template's own words: they name the variable and say what is
+        // wrong with it, which "could not be rendered at line 7" does not.
+        return AppError::invalid(
+            err.detail()
+                .unwrap_or("the template refused its variables")
+                .to_string(),
+        );
+    }
     let problem = problem(err);
     let where_ = problem
         .line

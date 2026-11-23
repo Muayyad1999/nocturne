@@ -120,6 +120,11 @@ fn coerce(variable: &Variable, value: Value) -> AppResult<Value> {
             if variable.kind == VariableKind::Interface && text.is_empty() {
                 return Err(bad("must name an interface"));
             }
+            // A rendered line break is a second configuration line. Free text
+            // may span lines (a banner does); an interface name never does.
+            if variable.kind == VariableKind::Interface && text.contains(char::is_control) {
+                return Err(bad("must be one interface name, on one line"));
+            }
             if variable.kind == VariableKind::Choice
                 && !variable
                     .choices
@@ -160,7 +165,12 @@ fn coerce(variable: &Variable, value: Value) -> AppResult<Value> {
             match text.split_once('/') {
                 Some((address, length)) => {
                     let address = address.parse::<std::net::IpAddr>().ok();
-                    let length = length.parse::<u32>().ok();
+                    // Digits only: `parse` also takes `+24`, which no device does.
+                    let length = length
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit())
+                        .then(|| length.parse::<u32>().ok())
+                        .flatten();
                     let limit = match address {
                         Some(std::net::IpAddr::V4(_)) => 32,
                         Some(std::net::IpAddr::V6(_)) => 128,

@@ -146,8 +146,16 @@ async fn a_variable_is_checked_against_its_kind_with_its_label_in_the_message() 
         ("address", json!("10.0.0.300"), "must be an IP address"),
         ("prefix", json!("10.0.0.0"), "prefix length"),
         ("prefix", json!("10.0.0.0/40"), "prefix length"),
+        // Digits only: `+24` is a number to a parser and not to a device.
+        ("prefix", json!("10.0.0.0/+24"), "prefix length"),
+        ("prefix", json!("10.0.0.0/24 secondary"), "prefix length"),
         ("count", json!("many"), "whole number"),
         ("on", json!("perhaps"), "true or false"),
+        (
+            "port",
+            json!("Gi0/1\n shutdown"),
+            "one interface name, on one line",
+        ),
         ("level", json!("medium"), "must be one of low, high"),
     ] {
         let mut vars = good.clone();
@@ -230,6 +238,151 @@ async fn validate_reports_what_a_body_uses_and_what_it_has_not_declared() {
     assert!(
         checked["problems"][0]["line"].as_u64().is_some(),
         "a syntax error says where: {checked:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_template_can_refuse_its_variables_in_its_own_words() {
+    let lab = lab(&["SW1"]).await;
+    let body = "{% if low > high %}{{ fail('Lowest VLAN (' ~ low ~ ') is above Highest VLAN (' ~ high ~ ')') }}{% endif %}\n\
+                vlan {{ low }}-{{ high }}";
+    let rendered = render_one(&lab, body, json!({"low": 30, "high": 20})).await;
+    assert_eq!(rendered["ok"], json!(false));
+    assert_eq!(
+        rendered["error"],
+        json!("Lowest VLAN (30) is above Highest VLAN (20)"),
+        "the template's message, as written"
+    );
+    assert!(rendered["lines"].is_null(), "and no line: {rendered:?}");
+
+    let rendered = render_one(&lab, body, json!({"low": 20, "high": 30})).await;
+    assert_eq!(rendered["lines"], json!(["vlan 20-30"]));
+
+    // A refusal stops an apply before a change exists.
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "vlan_range", "name": "VLAN range", "kind": "config", "body": body,
+                   "variables": [{"name": "low", "kind": "vlan", "required": true},
+                                 {"name": "high", "kind": "vlan", "required": true}]}),
+        )
+        .await
+        .expect("a template that calls `fail` can be saved");
+    let err = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "vlan_range", "device_ids": [lab.id("SW1")],
+                   "vars": {"low": 30, "high": 20}}),
+        )
+        .await
+        .expect_err("the template refuses");
+    assert_eq!(err.code, "invalid");
+    assert_eq!(
+        err.message,
+        "`SW1`: Lowest VLAN (30) is above Highest VLAN (20)"
+    );
+    assert!(
+        lab.app
+            .state::<Changes>()
+            .created
+            .lock()
+            .expect("lock")
+            .is_empty(),
+        "a refused template creates no change"
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_is_one_line_of_bounded_length_whatever_the_template_put_in_it() {
+    // A template may quote the value it refuses, and a value is whatever the
+    // caller sent: a megabyte, a line break, an escape sequence. The refusal
+    // goes to a screen, an error and a log line, once per device.
+    let lab = lab(&["SW1", "SW2"]).await;
+    let body = "{{ fail('Name: `' ~ name ~ '` is not a name') }}";
+    let hostile = format!("x\n\u{1b}[2J\r{}", "A".repeat(1_000_000));
+    let rendered = lab
+        .app
+        .rpc(
+            "templates.render",
+            json!({"body": body, "device_ids": [lab.id("SW1"), lab.id("SW2")],
+                   "vars": {"name": hostile}}),
+        )
+        .await
+        .expect("templates.render");
+    for device in rendered.as_array().expect("one per device") {
+        assert_eq!(device["ok"], json!(false));
+        let error = device["error"].as_str().expect("an error");
+        assert!(
+            error.starts_with("Name: `x  [2J AAAA"),
+            "the start is kept, with a space where a control character was: {:?}",
+            &error[..40]
+        );
+        assert!(!error.contains(char::is_control), "{:?}", &error[..40]);
+        assert!(error.ends_with('…'), "and it says that it was cut");
+        assert_eq!(error.chars().count(), 401);
+    }
+
+    // A message that fits is passed on exactly as written.
+    let rendered = render_one(&lab, "{{ fail('Größe: 10 % too many') }}", json!({})).await;
+    assert_eq!(rendered["error"], json!("Größe: 10 % too many"));
+
+    // The same through `templates.apply`, whose error carries the message.
+    lab.app
+        .rpc(
+            "templates.save",
+            json!({"id": "named", "name": "Named", "kind": "config", "body": body,
+                   "variables": [{"name": "name", "kind": "string", "required": true}]}),
+        )
+        .await
+        .expect("templates.save");
+    let err = lab
+        .app
+        .rpc(
+            "templates.apply",
+            json!({"template_id": "named", "device_ids": [lab.id("SW1")],
+                   "vars": {"name": hostile}}),
+        )
+        .await
+        .expect_err("the template refuses");
+    assert_eq!(err.code, "invalid");
+    assert!(err.message.chars().count() < 420, "{}", err.message.len());
+    assert!(!err.message.contains(char::is_control));
+}
+
+#[tokio::test]
+async fn what_the_template_language_provides_is_not_a_missing_variable() {
+    // `fail`, `range` and `namespace` are functions of the language. The
+    // analysis that finds the names a body reads lists them too, and they
+    // must be neither reported as undeclared nor refused as unknown.
+    let lab = lab(&["SW1"]).await;
+    let body = "{% if count > 4 %}{{ fail('too many') }}{% endif %}\n\
+                {% for n in range(count) %}vlan {{ first + n }}\n{% endfor %}";
+    let checked = lab
+        .app
+        .rpc(
+            "templates.validate",
+            json!({"body": body,
+                   "variables": [{"name": "count", "kind": "int", "required": true},
+                                 {"name": "first", "kind": "vlan", "required": true}]}),
+        )
+        .await
+        .expect("templates.validate");
+    assert_eq!(checked["ok"], json!(true), "{checked}");
+    assert_eq!(checked["used_variables"], json!(["count", "first"]));
+    assert_eq!(checked["undeclared"], json!([]));
+
+    let rendered = render_one(&lab, body, json!({"count": 3, "first": 10})).await;
+    assert_eq!(rendered["lines"], json!(["vlan 10", "vlan 11", "vlan 12"]));
+
+    // A name that really is missing is still said to be.
+    let rendered = render_one(&lab, "{{ fail(reason) }}", json!({})).await;
+    assert!(
+        rendered["error"]
+            .as_str()
+            .expect("an error")
+            .contains("`reason`"),
+        "{rendered:?}"
     );
 }
 
@@ -410,7 +563,9 @@ async fn every_built_in_template_renders_to_the_lines_it_is_meant_to() {
         );
     }
 
-    // Every built-in was covered by the table above.
+    // Every built-in was covered by the table above. The ones tagged `qos`
+    // have a table of their own, in `qos_templates.rs`, which checks in turn
+    // that it covers every one carrying the tag.
     let listed: Vec<String> = lab
         .app
         .rpc("templates.list", json!({}))
@@ -420,6 +575,7 @@ async fn every_built_in_template_renders_to_the_lines_it_is_meant_to() {
         .expect("array")
         .iter()
         .filter(|template| template["builtin"] == json!(true))
+        .filter(|template| template["tags"] != json!(["qos"]))
         .map(|template| template["id"].as_str().expect("id").to_string())
         .collect();
     for id in &listed {

@@ -14,6 +14,8 @@
 
 use crate::model::{Template, TemplateKind, Variable, VariableKind};
 
+mod qos;
+
 fn var(name: &str, label: &str, kind: VariableKind, required: bool) -> Variable {
     Variable {
         name: name.to_string(),
@@ -59,6 +61,12 @@ fn template(
 
 /// Every built-in, in a stable order.
 pub fn all() -> Vec<Template> {
+    let mut all = general();
+    all.extend(qos::all());
+    all
+}
+
+fn general() -> Vec<Template> {
     use VariableKind::*;
     vec![
         // ------------------------------------------------------------- IOS
