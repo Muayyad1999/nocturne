@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { dueText, prorationText } from './billing-rows';
 import {
   dayNumber,
@@ -23,6 +23,13 @@ import {
   yearIn,
   type SeedDates,
 } from './seed-dates';
+
+// Several tests here hold a rule at every midnight of five years in six
+// calendars: about 33,000 moments each, through the screens' own formatters.
+// Alone that is two seconds for the slowest; beside eighty other test files on
+// a busy machine it went past the default five and failed, which says nothing
+// about the rule. The sweep is the point, so the limit moves, not the sweep.
+vi.setConfig({ testTimeout: 60_000 });
 
 const MINUTE = 60_000;
 const DAY = 86_400_000;
