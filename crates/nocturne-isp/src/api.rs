@@ -1273,7 +1273,7 @@ pub fn init(builder: &mut AppBuilder) {
             reports::revenue(
                 &app,
                 params.since,
-                params.until.unwrap_or_else(util::now_ms),
+                open_end(params.until, util::now_ms()),
                 params.convert,
             )
         },
@@ -1301,7 +1301,7 @@ pub fn init(builder: &mut AppBuilder) {
         };
         let window = params
             .since
-            .map(|since| (since, params.until.unwrap_or_else(util::now_ms)));
+            .map(|since| (since, open_end(params.until, util::now_ms())));
         network::usage(&app, &settings, &customers, window).await
     });
 
@@ -1311,7 +1311,7 @@ pub fn init(builder: &mut AppBuilder) {
             let settings = config(&app)?;
             let window = params
                 .since
-                .map(|since| (since, params.until.unwrap_or_else(util::now_ms)));
+                .map(|since| (since, open_end(params.until, util::now_ms())));
             network::capacity(
                 &app,
                 &settings,
@@ -1333,9 +1333,32 @@ pub fn init(builder: &mut AppBuilder) {
     });
 }
 
+/// Where a window that was given no end stops: one millisecond past now.
+///
+/// Windows here are half open, `[since, until)`. Ending one at "now" leaves
+/// out whatever was written in the millisecond the question was asked in, so
+/// a report asked for straight after an invoice was issued did not count that
+/// invoice in "everything so far". That is how it was found: one test, on the
+/// fastest of three machines.
+fn open_end(until: Option<i64>, now: i64) -> i64 {
+    until.unwrap_or_else(|| now.saturating_add(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_with_no_end_takes_in_the_instant_it_is_asked_at() {
+        let now = 1_700_000_000_000;
+        assert!(
+            (0..open_end(None, now)).contains(&now),
+            "what was written this millisecond is part of everything so far"
+        );
+        // An end somebody gave is theirs, also when it is in the past.
+        assert_eq!(open_end(Some(now - 5), now), now - 5);
+        assert_eq!(open_end(None, i64::MAX), i64::MAX);
+    }
 
     #[test]
     fn a_billing_run_previews_unless_it_is_told_otherwise() {

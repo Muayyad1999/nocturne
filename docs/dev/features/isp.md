@@ -187,7 +187,7 @@ nothing here touches a device.
 | `isp.credit.allocate` | `{id, invoice_id}` | `{credit, invoice, warnings}` — a note that was issued on the account, set against one invoice; once only |
 | `isp.credit.void` | `{id, reason}` | the void credit note; the debt it cancelled comes back |
 | `isp.arrears` | `{customer_id?}` | one aged report **per currency**, plus who owes what, and — never netted against it — `overpaid` per currency and `customers_overpaid`, who is in credit |
-| `isp.revenue` | `{since, until?, convert?}` | issued and received per currency, what is outstanding, and a converted figure only if the caller supplied the rates |
+| `isp.revenue` | `{since, until?, convert?}` | issued and received per currency, what is outstanding, and a converted figure only if the caller supplied the rates. The window is `[since, until)`; with no `until` it ends one millisecond past now, so what was written this instant is counted (the same for `isp.usage` and `isp.capacity`) |
 | `isp.usage` | `{customer_id? \| filters, since?, until?}` | used against sold, with coverage per row and counted per reason |
 | `isp.capacity` | `{link_id?, tower?, since?, until?}` | sold against capacity as a ratio with both figures, and what is measured |
 | `isp.margin` | `{link_id?, tower?, customer_id?}` | revenue per currency, the wholesale cost, and the margin **in the cost's currency only** |
