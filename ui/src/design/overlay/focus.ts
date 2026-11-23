@@ -65,11 +65,12 @@ export function useFocusScope(
   }, [active, ref, restore, autoFocus]);
 
   // Under a modal layer the page is inert, and an inert element refuses the
-  // focus. The layer stack lifts that in a passive cleanup, which runs after
-  // the layout cleanup above — so for a dialog the hand-back there did
-  // nothing, and the focus fell to the body: the next Tab started at the top
-  // of the page. This cleanup runs after the stack's (a layer registers
-  // before it scopes the focus), and makes the hand-back if it is still owed.
+  // focus. The layer stack lifts that in its own layout cleanup, which runs
+  // before the one above when the layer is registered first, as every layer
+  // here is. Where it is not, or where the focus fell to the body because the
+  // layer's element went first, the hand-back above did nothing and the next
+  // Tab would start at the top of the page: this passive cleanup runs after
+  // every layout one, and makes the hand-back if it is still owed.
   useEffect(() => {
     if (!active || !restore) return;
     return () => {
@@ -81,7 +82,9 @@ export function useFocusScope(
     };
   }, [active, restore]);
 
-  useEffect(() => {
+  // Layout, like the layer itself: a Tab pressed the instant the layer
+  // appeared would otherwise leave it before the trap was set.
+  useLayoutEffect(() => {
     const container = ref.current;
     if (!active || !trap || !container) return;
 

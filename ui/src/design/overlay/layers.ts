@@ -8,7 +8,7 @@
  * it, including the app itself, is inert.
  */
 
-import { useEffect, useEffectEvent, type RefObject } from 'react';
+import { useEffectEvent, useLayoutEffect, type RefObject } from 'react';
 
 interface Layer {
   element: HTMLElement;
@@ -91,7 +91,12 @@ export function useLayer(
   const escape = useEffectEvent(() => onEscape?.());
   const pressOutside = useEffectEvent(() => onPressOutside?.());
 
-  useEffect(() => {
+  // A layout effect, so the layer is listening before the browser paints it.
+  // A passive one runs after the paint, and an Escape pressed the instant the
+  // layer appeared was lost (CI pressed one in that gap, under load). It also
+  // lifts the inert page in the layout cleanup, before the focus scope's own
+  // layout cleanup hands the focus back to that page.
+  useLayoutEffect(() => {
     const element = ref.current;
     if (!open || !element) return;
     return push({

@@ -143,6 +143,14 @@ pub struct AppBuilder {
     lock: Option<std::fs::File>,
 }
 
+/// How long a held lock is waited for before it counts as another instance.
+///
+/// An instance that is closing can hold the directory a moment after it has
+/// let go of it: macOS CI once refused the second of two opens in one test,
+/// where the first had already been dropped. An instance that really is
+/// running still holds the lock when this has passed, and is reported then.
+const LOCK_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Take the exclusive lock on a data directory, creating the directory if needed.
 fn lock_data_dir(dir: &Path) -> AppResult<std::fs::File> {
     std::fs::create_dir_all(dir).map_err(|err| {
@@ -158,16 +166,26 @@ fn lock_data_dir(dir: &Path) -> AppResult<std::fs::File> {
         .write(true)
         .open(&path)
         .map_err(|err| AppError::internal(format!("{} cannot be opened: {err}", path.display())))?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::conflict(format!(
-            "Nocturne is already running with the data directory {} (the desktop app and the server cannot share one). Close the other instance, or start this one with a different data directory.",
-            dir.display()
-        ))),
-        Err(std::fs::TryLockError::Error(err)) => Err(AppError::internal(format!(
-            "{} cannot be locked: {err}",
-            path.display()
-        ))),
+    let started = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_PATIENCE => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(AppError::conflict(format!(
+                    "Nocturne is already running with the data directory {} (the desktop app and the server cannot share one). Close the other instance, or start this one with a different data directory.",
+                    dir.display()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(err)) => {
+                return Err(AppError::internal(format!(
+                    "{} cannot be locked: {err}",
+                    path.display()
+                )));
+            }
+        }
     }
 }
 
@@ -548,5 +566,18 @@ mod tests {
         drop(first);
         drop(AppBuilder::new(AppConfig::at(dir.path())).unwrap());
         AppBuilder::new(AppConfig::at(dir.path())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_instance_that_lets_go_a_moment_later_is_waited_for_not_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let closing = AppBuilder::new(AppConfig::at(dir.path())).unwrap();
+        let letting_go = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(closing);
+        });
+        AppBuilder::new(AppConfig::at(dir.path()))
+            .expect("a lock released while the second instance starts is not a conflict");
+        letting_go.join().unwrap();
     }
 }
