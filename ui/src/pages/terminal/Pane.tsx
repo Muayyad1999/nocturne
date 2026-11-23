@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleDot,
+  ClipboardPaste,
   Columns2,
   Copy,
   Eraser,
@@ -25,6 +26,7 @@ import {
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
+import { inDesktopShell } from '@/api/transports/shell';
 import type { SessionInfo } from '@/api/types/terminal';
 import { Button, IconButton } from '@/design/Button';
 import { Checkbox } from '@/design/Checkbox';
@@ -38,8 +40,10 @@ import { Spinner } from '@/design/Spinner';
 import { StatusDot } from '@/design/StatusDot';
 import { useTokens } from '@/design/theme';
 import { Tooltip } from '@/design/Tooltip';
+import { isMacPlatform } from '@/lib/keyboard';
 import { MAX_PANES, type Pane as PaneModel } from './layout';
 import styles from './Pane.module.css';
+import { carriesText, droppedText, pasteKeyRoute, TAB_DRAG_TYPE } from './paste';
 import { terminals } from './sessions';
 import { TransportDetails } from './TransportDetails';
 
@@ -52,8 +56,11 @@ export interface PaneActions {
   split: (sessionId: string) => void;
   moveTo: (sessionId: string, paneId: string) => void;
   closePane: (paneId: string) => void;
-  /** A paste the user asked for; it goes through the confirm sheet. */
-  paste: (sessionId: string, text: string) => void;
+  /**
+   * Paste what is on the clipboard, for the doors that have no `paste` event
+   * of their own to carry the text: the context menu, the toolbar.
+   */
+  pasteFromClipboard: (sessionId: string) => void;
   copySelection: (sessionId: string) => void;
   explain: (sessionId: string) => void;
   clear: (sessionId: string) => void;
@@ -284,6 +291,8 @@ function Tab({ sessionId, info, active, paneId, actions, onDragging }: TabProps)
       }}
       onDragStart={(event: DragEvent<HTMLDivElement>) => {
         event.dataTransfer.setData('text/plain', sessionId);
+        // So a terminal can tell a tab from text dropped on it: see `droppedText`.
+        event.dataTransfer.setData(TAB_DRAG_TYPE, sessionId);
         event.dataTransfer.effectAllowed = 'move';
         setDragging(true);
         onDragging(sessionId);
@@ -329,8 +338,8 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const view = useSyncExternalStore(terminals.subscribe, () => terminals.view(sessionId));
 
-  // The handlers the terminal's own key and paste events reach, kept fresh
-  // without re-attaching them on every render.
+  // The handlers the terminal's own key events reach, kept fresh without
+  // re-attaching them on every render.
   const handlers = useRef({ actions, onFind, sessionId });
   handlers.current = { actions, onFind, sessionId };
 
@@ -342,13 +351,6 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
     terminals.adopt(sessionId);
     const unmount = terminals.mount(sessionId, host);
     const term = terminals.terminal(sessionId);
-
-    const onPaste = (event: ClipboardEvent) => {
-      event.preventDefault();
-      const text = event.clipboardData?.getData('text') ?? '';
-      if (text !== '') handlers.current.actions.paste(sessionId, text);
-    };
-    term?.textarea?.addEventListener('paste', onPaste);
 
     term?.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
@@ -378,14 +380,17 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
         return false;
       }
       if (key === 'v') {
+        // Where the browser pastes on this chord itself, the key is left to
+        // it: xterm is told to ignore it and nothing is prevented, so the
+        // browser raises `paste`, which the registry takes. That event
+        // carries its own text and needs no clipboard permission — reading
+        // the clipboard here instead is what made this chord dead in the
+        // desktop shell, and in a browser over plain HTTP.
+        const where = { mac: isMacPlatform(), desktop: inDesktopShell() };
+        if (pasteKeyRoute(event, where) === 'browser') return false;
+        // A chord nothing is bound to (Ctrl+Shift+V on a Mac): read instead.
         event.preventDefault();
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text !== '') handlers.current.actions.paste(sessionId, text);
-          })
-          // Without clipboard permission the browser's own paste still works.
-          .catch(() => undefined);
+        handlers.current.actions.pasteFromClipboard(sessionId);
         return false;
       }
       return true;
@@ -397,7 +402,6 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
 
     return () => {
       observer.disconnect();
-      term?.textarea?.removeEventListener('paste', onPaste);
       term?.attachCustomKeyEventHandler(() => true);
       unmount();
     };
@@ -410,7 +414,7 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
       disabled: view.selection === '',
       onSelect: () => actions.copySelection(sessionId),
     },
-    { label: 'Paste…', icon: Copy, onSelect: () => void pasteFromClipboard(sessionId, actions) },
+    { label: 'Paste…', icon: ClipboardPaste, onSelect: () => actions.pasteFromClipboard(sessionId) },
     { type: 'separator' },
     {
       label: 'Explain the selection',
@@ -430,6 +434,21 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
           className={styles.surface}
           // The device gets every key: Ctrl+K is its own, not the palette's.
           data-global-shortcuts="off"
+          // Text dropped on the terminal is a paste by another road, and goes
+          // the same way: asked about, then sent once. A tab being dragged
+          // is not text, and neither is a file.
+          onDragOver={(event: DragEvent<HTMLDivElement>) => {
+            if (!carriesText(event.dataTransfer.types)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={(event: DragEvent<HTMLDivElement>) => {
+            const text = droppedText(event.dataTransfer);
+            if (text === null) return;
+            event.preventDefault();
+            terminals.paste(sessionId, text, 'drop');
+            terminals.focus(sessionId);
+          }}
         />
       </ContextMenu>
 
@@ -465,15 +484,6 @@ function Surface({ sessionId, title, actions, onFind, finding }: SurfaceProps) {
       )}
     </>
   );
-}
-
-async function pasteFromClipboard(sessionId: string, actions: PaneActions): Promise<void> {
-  try {
-    const text = await navigator.clipboard.readText();
-    if (text !== '') actions.paste(sessionId, text);
-  } catch {
-    // Nothing to paste, or no permission: the keyboard path still works.
-  }
 }
 
 // -------------------------------------------------------------- the finding

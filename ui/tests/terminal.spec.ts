@@ -10,7 +10,19 @@
 
 import { expect, test, type Page } from '@playwright/test';
 import { goTo, openApp, pageLoaded, watchConsole } from './support/app';
-import { startSshd, startTerminalEngine, type Sshd, type TerminalEngine } from './terminal-support';
+import {
+  announceLag,
+  loseOutputOnRequest,
+  losingOutput,
+  openInDesktopShell,
+  outputLossSettled,
+  setShellClipboard,
+  shellRecord,
+  startSshd,
+  startTerminalEngine,
+  type Sshd,
+  type TerminalEngine,
+} from './terminal-support';
 
 test.describe('Terminal', () => {
   test.describe.configure({ mode: 'serial', timeout: 240_000 });
@@ -49,6 +61,7 @@ test.describe('Terminal', () => {
   test.beforeEach(async () => {
     const sessions = await engine.rpc<{ id: string }[]>('terminal.list');
     for (const session of sessions) await engine.rpc('terminal.close', { session_id: session.id });
+    engine.device.forget();
   });
 
   // ------------------------------------------------------------- helpers
@@ -265,6 +278,141 @@ test.describe('Terminal', () => {
     expect(console.messages, engine.backend.log()).toEqual([]);
   });
 
+  test('holds a paste the browser raises itself until it is answered, and sends it once', async ({
+    page,
+    context,
+  }) => {
+    const console = watchConsole(page);
+    // Writing is all this test needs. Reading is deliberately not granted: a
+    // paste the browser raises carries its own text, so nothing here may
+    // depend on the page being allowed to read the clipboard — which it is
+    // not over plain HTTP, and not until the person has said yes anywhere.
+    await context.grantPermissions(['clipboard-write']);
+    await openApp(page, '/terminal', { backend: engine.backend });
+    await openDeviceSession(page);
+    await page.evaluate(() => navigator.clipboard.writeText('say NATIVE-ONE\nsay NATIVE-TWO\n'));
+    const sheet = page.getByRole('dialog', { name: /Paste into SW1-LAB/ });
+
+    // Shift+Insert is the browser's own paste: no key handler of ours sees it.
+    await page.locator('.xterm-screen:visible').first().click();
+    await page.keyboard.press('Shift+Insert');
+    await expect(sheet).toBeVisible();
+    // The question is on screen and unanswered, so the device has run nothing.
+    // The screen cannot show this — the lines would be behind the sheet — but
+    // the console knows what it executed. The wait is for a paste that was
+    // sent anyway to have arrived: it used to, within a few milliseconds.
+    await page.waitForTimeout(500);
+    expect(engine.device.said).toEqual([]);
+
+    // Backing out sends nothing, then or afterwards.
+    await page.keyboard.press('Escape');
+    await expect(sheet).toBeHidden();
+    await typeInTerminal(page, 'say AFTER-CANCEL\r');
+    await expectOnScreen(page, '[AFTER-CANCEL]');
+    expect(engine.device.said).toEqual(['say AFTER-CANCEL']);
+
+    // Saying yes sends each line once.
+    await page.keyboard.press('Shift+Insert');
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(sheet).toBeHidden();
+    await expectOnScreen(page, '[NATIVE-TWO]');
+    await typeInTerminal(page, 'say AFTER-PASTE\r');
+    await expectOnScreen(page, '[AFTER-PASTE]');
+    expect(engine.device.said).toEqual([
+      'say AFTER-CANCEL',
+      'say NATIVE-ONE',
+      'say NATIVE-TWO',
+      'say AFTER-PASTE',
+    ]);
+
+    // Ctrl+Shift+V is the browser's paste too, and needs no permission either.
+    await page.keyboard.press('Control+Shift+V');
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(sheet).toBeHidden();
+
+    // Text dropped on the terminal is a paste by another road, and is asked
+    // about in the same way.
+    await page.evaluate(() => {
+      const screen = [...document.querySelectorAll('.xterm-screen')].find(
+        (element) => (element as HTMLElement).offsetParent !== null,
+      );
+      const transfer = new DataTransfer();
+      transfer.setData('text/plain', 'say DROPPED-ONE\nsay DROPPED-TWO\n');
+      for (const type of ['dragover', 'drop']) {
+        screen?.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+      }
+    });
+    const dropSheet = page.getByRole('dialog', { name: /Drop this text into SW1-LAB/ });
+    await expect(dropSheet).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dropSheet).toBeHidden();
+
+    await typeInTerminal(page, 'say THE-END\r');
+    await expectOnScreen(page, '[THE-END]');
+    expect(engine.device.said.slice(4)).toEqual(['say THE-END']);
+
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
+  test('presses Enter once for each pasted line, whatever line endings the clipboard had', async ({
+    page,
+    context,
+  }) => {
+    const console = watchConsole(page);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await openApp(page, '/terminal', { backend: engine.backend });
+    await openDeviceSession(page);
+
+    // What a Windows clipboard holds: CR and LF at the end of every line.
+    await page.evaluate(() => navigator.clipboard.writeText('say CRLF-ONE\r\nsay CRLF-TWO\r\n'));
+    await page.locator('.xterm-screen:visible').first().click();
+    await page.keyboard.press('Control+Shift+V');
+    const sheet = page.getByRole('dialog', { name: /Paste into SW1-LAB/ });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByRole('listitem')).toHaveCount(2);
+    await page.keyboard.press('Enter');
+    await expectOnScreen(page, '[CRLF-TWO]');
+
+    // The console answers CR and LF alike, so the screen looks the same
+    // either way; the bytes are what differ. A line feed after the carriage
+    // return is a second Enter, and on a real device it answers whatever
+    // prompt the first one raised.
+    await expect
+      .poll(() => engine.device.receivedWith('CRLF-ONE'))
+      .toBe('say CRLF-ONE\rsay CRLF-TWO\r');
+
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
+  test('brackets a paste for a program that asked for it, so a shell holds the lines', async ({
+    page,
+    context,
+  }) => {
+    const console = watchConsole(page);
+    await context.grantPermissions(['clipboard-write']);
+    await openApp(page, '/terminal', { backend: engine.backend });
+    await openDeviceSession(page);
+
+    // The far end turns bracketed paste on, as bash and zsh do.
+    await typeInTerminal(page, 'brackets on\r');
+    await expect.poll(() => engine.device.executed).toContain('brackets on');
+
+    await page.evaluate(() => navigator.clipboard.writeText('say HELD-ONE\nsay HELD-TWO\n'));
+    await page.keyboard.press('Shift+Insert');
+    const sheet = page.getByRole('dialog', { name: /Paste into SW1-LAB/ });
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(sheet).toBeHidden();
+
+    // It arrived as one paste, between the brackets, and nothing in it ran.
+    await expect.poll(() => engine.device.bracketed).toEqual(['say HELD-ONE\rsay HELD-TWO\r']);
+    expect(engine.device.said).toEqual([]);
+
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
   test('splits into panes and can type into both at once', async ({ page }) => {
     const console = watchConsole(page);
     await openApp(page, '/terminal', { backend: engine.backend });
@@ -336,6 +484,184 @@ test.describe('Terminal', () => {
     // Typed, not run: the device has not answered it.
     expect(await screenText(page)).not.toContain('FakeOS Software, Version 1.0');
 
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
+  test('keeps the tags and the device type of a snippet that is edited', async ({ page }) => {
+    const console = watchConsole(page);
+    // A device with a type of its own, on the same console: the drawer must
+    // not rewrite a snippet as "for this type" just because it was edited
+    // from such a session.
+    await engine.rpc('devices.create', {
+      name: 'SW2-IOS',
+      address: '127.0.0.1',
+      port: engine.device.port,
+      transport: 'telnet',
+      profile: 'cisco_ios',
+    });
+    const saved = await engine.rpc<{ id: string }>('terminal.snippets.save', {
+      name: 'Clock',
+      text: 'show clock',
+      tags: ['daily', 'ops'],
+    });
+
+    await openApp(page, '/terminal', { backend: engine.backend });
+    await page.getByRole('button', { name: /SW2-IOS/ }).first().click();
+    await expect(page.getByRole('tab', { name: /SW2-IOS/ })).toBeVisible();
+    await expectOnScreen(page, 'FakeOS 1.0 console');
+
+    await page.getByRole('button', { name: 'Snippets' }).click();
+    const drawer = page.getByRole('dialog', { name: 'Snippets' });
+    await drawer.getByRole('button', { name: 'Edit Clock' }).click();
+    await drawer.getByLabel('Name').fill('Clock, twice a day');
+    await drawer.getByRole('button', { name: 'Save snippet' }).click();
+    await expect(drawer.getByRole('button', { name: 'Edit Clock, twice a day' })).toBeVisible();
+
+    const snippets = await engine.rpc<{ id: string; name: string; profile: string | null; tags: string[] }[]>(
+      'terminal.snippets.list',
+    );
+    const edited = snippets.find((snippet) => snippet.id === saved.id);
+    expect(edited).toMatchObject({ name: 'Clock, twice a day', profile: null, tags: ['daily', 'ops'] });
+
+    // And both can be changed on purpose.
+    await drawer.getByRole('button', { name: 'Edit Clock, twice a day' }).click();
+    await drawer.getByLabel('Device type').selectOption('cisco_ios');
+    await drawer.getByLabel('Tags').fill('ntp');
+    await drawer.getByLabel('Tags').press('Enter');
+    await drawer.getByRole('button', { name: 'Save snippet' }).click();
+    await expect
+      .poll(async () => {
+        const list = await engine.rpc<{ id: string; profile: string | null; tags: string[] }[]>(
+          'terminal.snippets.list',
+        );
+        const found = list.find((snippet) => snippet.id === saved.id);
+        return found ? { profile: found.profile, tags: [...found.tags].sort() } : null;
+      })
+      .toEqual({ profile: 'cisco_ios', tags: ['daily', 'ntp', 'ops'] });
+
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
+  test('opens a link from the output in a new tab and stays where it is', async ({ page, context }) => {
+    const console = watchConsole(page);
+    // The address is never really fetched: the test answers for it.
+    await context.route('https://nocturne.example/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<title>opened</title>' }),
+    );
+    await openApp(page, '/terminal', { backend: engine.backend });
+    await openDeviceSession(page);
+    await typeInTerminal(page, 'link https://nocturne.example/kb/42\r');
+    await expectOnScreen(page, 'https://nocturne.example/kb/42');
+
+    // The device's own line, not the echo of the command: it starts the row.
+    const row = page.locator('.xterm-rows:visible > div').filter({ hasText: /^https:\/\/nocturne\.example/ }).first();
+    const box = await row.boundingBox();
+    expect(box).not.toBeNull();
+    const opened = context.waitForEvent('page');
+    await page.mouse.move(box!.x + 40, box!.y + box!.height / 2);
+    await page.mouse.click(box!.x + 40, box!.y + box!.height / 2);
+    const tab = await opened;
+    await tab.waitForURL('https://nocturne.example/kb/42');
+    // A page opened from device output gets no handle on the application.
+    expect(await tab.evaluate(() => window.opener === null)).toBe(true);
+    await tab.close();
+
+    await expect(page.getByRole('tab', { name: /SW1-LAB/ })).toBeVisible();
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
+  test('shows every byte, once, when output is lost on a connection that stays open', async ({ page }) => {
+    const console = watchConsole(page);
+    await loseOutputOnRequest(page);
+    await openApp(page, '/terminal', { backend: engine.backend });
+    await openDeviceSession(page);
+    await typeInTerminal(page, 'say BEFORE\r');
+    await expectOnScreen(page, '[BEFORE]');
+
+    // What the device prints next never reaches the interface, and nothing
+    // reconnects: the socket is as open as it was.
+    await losingOutput(page, true);
+    await typeInTerminal(page, 'say LOST\r');
+    await expect.poll(() => engine.device.said).toContain('say LOST');
+    const lost = await outputLossSettled(page);
+    await losingOutput(page, false);
+    expect(await screenText(page)).not.toContain('[LOST]');
+
+    // The next output is not the next number. Printed as it comes it would
+    // follow `[BEFORE]` as if the device had said nothing in between.
+    await typeInTerminal(page, 'say AFTER\r');
+    await expectOnScreen(page, '[AFTER]');
+    await expectOnScreen(page, '[LOST]');
+    const recovered = await screenText(page);
+    for (const answer of ['[BEFORE]', '[LOST]', '[AFTER]']) expect(occurrences(recovered, answer), answer).toBe(1);
+    expect(recovered.indexOf('[BEFORE]')).toBeLessThan(recovered.indexOf('[LOST]'));
+    expect(recovered.indexOf('[LOST]')).toBeLessThan(recovered.indexOf('[AFTER]'));
+
+    // A session that goes quiet straight after the loss never sees a wrong
+    // number. The engine's notice that it dropped events is all it gets.
+    await losingOutput(page, true);
+    await typeInTerminal(page, 'say QUIET\r');
+    await expect.poll(() => engine.device.said).toContain('say QUIET');
+    await outputLossSettled(page, lost);
+    await losingOutput(page, false);
+    // Nothing arrives to give the loss away, however long one waits.
+    await page.waitForTimeout(500);
+    expect(await screenText(page)).not.toContain('[QUIET]');
+    await announceLag(page, 3);
+    await expectOnScreen(page, '[QUIET]');
+    expect(occurrences(await screenText(page), '[QUIET]')).toBe(1);
+
+    expect(console.messages, engine.backend.log()).toEqual([]);
+  });
+
+  test('pastes and opens links through the desktop shell, where the WebView offers neither', async ({ page }) => {
+    const console = watchConsole(page);
+    await openInDesktopShell(page, engine.backend, '/terminal');
+    await expect(page.getByRole('heading', { level: 1, name: 'Terminal' })).toBeVisible();
+    await openDeviceSession(page);
+    const sheet = page.getByRole('dialog', { name: /Paste into SW1-LAB/ });
+
+    // The toolbar button has no `paste` event to carry the text, and here a
+    // script may not read the clipboard: the text has to come from the shell.
+    await setShellClipboard(page, 'say SHELL-ONE\nsay SHELL-TWO\n');
+    await page.getByRole('button', { name: 'Paste into this session' }).click();
+    await expect(sheet).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(engine.device.said).toEqual([]);
+    await page.keyboard.press('Enter');
+    await expect(sheet).toBeHidden();
+    await expectOnScreen(page, '[SHELL-TWO]');
+    expect(engine.device.said).toEqual(['say SHELL-ONE', 'say SHELL-TWO']);
+
+    // The context menu is the other door without an event of its own.
+    await page.locator('.xterm-screen:visible').first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: /Paste/ }).click();
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(sheet).toBeHidden();
+
+    // With nothing to paste the person is told why, in the shell's words,
+    // and which keys work without reading the clipboard at all.
+    await setShellClipboard(page, null);
+    await page.getByRole('button', { name: 'Paste into this session' }).click();
+    const told = page.getByRole('status').filter({ hasText: 'Nothing was pasted' });
+    await expect(told).toContainText('the clipboard is empty');
+    await expect(told).toContainText('Ctrl+Shift+V or Shift+Insert');
+
+    // A link in the output is not an element the opener plugin could see,
+    // and `window.open` goes nowhere: it has to be handed to the opener.
+    await typeInTerminal(page, 'link https://nocturne.example/kb/42\r');
+    await expectOnScreen(page, 'https://nocturne.example/kb/42');
+    const row = page.locator('.xterm-rows:visible > div').filter({ hasText: /^https:\/\/nocturne\.example/ }).first();
+    const box = await row.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + 40, box!.y + box!.height / 2);
+    await page.mouse.click(box!.x + 40, box!.y + box!.height / 2);
+    await expect.poll(async () => (await shellRecord(page)).opened).toEqual(['https://nocturne.example/kb/42']);
+
+    // Neither of the things the WebView refuses was even tried.
+    expect(await shellRecord(page)).toMatchObject({ pageClipboardReads: 0, windowOpens: 0 });
+    expect(engine.device.said).toEqual(['say SHELL-ONE', 'say SHELL-TWO']);
     expect(console.messages, engine.backend.log()).toEqual([]);
   });
 

@@ -12,6 +12,12 @@
  * `terminal.output` events are decoded and written straight into xterm. React
  * is told only when something it draws changes — the attach state, the
  * selection, the find results — through a tiny store (`subscribe`/`view`).
+ *
+ * Pasted text is this module's business too, for the same reason the
+ * terminals are: every screen that shows a terminal borrows it from here
+ * (the Terminal screen, a lab's consoles, the session docked on the map), and
+ * a paste must be asked about and sent in one way whichever of them it lands
+ * in. See `paste` below and `pasteFunnel.ts`.
  */
 
 // The stylesheet belongs with the module that creates the terminals, not
@@ -27,12 +33,19 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { rpc, subscribe, useConnection } from '@/api/client';
 import { RpcError } from '@/api/errors';
+import { openExternal } from '@/api/transports/shell';
 import type {
+  SessionInfo,
   TerminalAttached,
   TerminalClosedEvent,
+  TerminalLineClass,
   TerminalOutputEvent,
   TerminalRemovedEvent,
 } from '@/api/types/terminal';
+import { confirm } from '@/design/Dialog';
+import { toast } from '@/design/Toast';
+import { pasteRisk, pasteSummary, pasteTitle } from './paste';
+import { PasteFunnel, type PasteQuestion, type PasteSource } from './pasteFunnel';
 import { decodeBase64, SessionStream } from './stream';
 
 /** Lines xterm keeps per session. The backend's ring buffer is the real bound. */
@@ -40,6 +53,8 @@ const SCROLLBACK_LINES = 10_000;
 /** xterm's own limits for a resize, mirrored from the backend's `terminal.open`. */
 const COLS = { min: 20, max: 500 };
 const ROWS = { min: 5, max: 200 };
+/** How long to wait before asking again for a scrollback that came back short. */
+const RESYNC_MS = { first: 200, most: 5000 };
 
 export type AttachState = 'attaching' | 'live' | 'failed';
 
@@ -68,6 +83,51 @@ interface Entry {
   size: { cols: number; rows: number };
   resizeTimer: ReturnType<typeof setTimeout> | null;
   send: { inflight: boolean; pending: string };
+  /** What the backend said the session is, once an attach has answered. */
+  info: SessionInfo | null;
+  /** Settles when the first attach has answered, one way or the other. */
+  ready: Promise<void>;
+  /** The attach in flight, and whether another was asked for meanwhile. */
+  attaching: Promise<void> | null;
+  attachAgain: boolean;
+  /** Attach answers in a row that left a hole in the output, and the retry waiting on them. */
+  shortAnswers: number;
+  resyncTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Typing that goes to several sessions at once, while a broadcast is on. */
+export interface Broadcast {
+  /** The sessions typing goes to. Input for any other session is its own. */
+  targets: readonly string[];
+  /** Sends to all of them in one call, so none can fall behind the others. */
+  send: (data: string) => void;
+}
+
+/** Shows a paste question and resolves true to send, false to drop it. */
+export type PasteAsker = (question: PasteQuestion) => Promise<boolean>;
+
+/**
+ * The question as a plain confirm dialog: for a screen that lends a terminal
+ * without a paste sheet of its own (a lab console, the session docked on the
+ * map). The Terminal screen replaces it with the sheet that shows every line.
+ */
+function askPlainly(question: PasteQuestion): Promise<boolean> {
+  const risk = question.classes ? pasteRisk(question.classes) : null;
+  const sentences = [pasteSummary(question.text, risk)];
+  if (risk?.headline) sentences.push(`${risk.headline}.`);
+  if (question.classes === null) sentences.push('The device policy could not be asked about these lines.');
+  return confirm({
+    title: pasteTitle(question),
+    description: sentences.join(' '),
+    confirmLabel: 'Paste anyway',
+    tone: risk && risk.dangerous > 0 ? 'danger' : 'default',
+  });
+}
+
+/** An error as a sentence: the shell rejects with a string, the engine with an `RpcError`. */
+function reason(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : 'no reason was given';
 }
 
 const IDLE_VIEW: SessionView = { attach: 'attaching', error: null, selection: '', find: null, closed: null };
@@ -94,7 +154,32 @@ class Terminals {
   private lineHeight = 1.25;
   private started = false;
   /** Set while a broadcast is on: it decides where a keystroke goes. */
-  private router: ((id: string, data: string) => boolean) | null = null;
+  private broadcast: Broadcast | null = null;
+  /** How a paste question is shown; the plain dialog when no screen has said. */
+  private asker: PasteAsker | null = null;
+
+  /** The one road pasted text takes to a device: see `pasteFunnel.ts`. */
+  private pastes = new PasteFunnel({
+    target: async (id) => {
+      const entry = this.entries.get(id);
+      if (!entry) return null;
+      // The title and the device arrive with the attach answer. A paste made
+      // before it waits, rather than being judged by the generic policy
+      // because nobody had yet said which device this is.
+      await entry.ready;
+      if (this.entries.get(id) !== entry) return null;
+      return {
+        title: entry.info?.title ?? 'this session',
+        deviceId: entry.info?.device_id ?? null,
+        targets: this.broadcast?.targets.includes(id) ? this.broadcast.targets.length : 1,
+        bracketedPaste: entry.term.modes.bracketedPasteMode,
+      };
+    },
+    classify: (deviceId, text) =>
+      rpc<TerminalLineClass[]>('terminal.classify', { device_id: deviceId, text }),
+    ask: (question) => (this.asker ?? askPlainly)(question),
+    send: (id, data) => this.dispatch(id, data),
+  });
 
   // ----------------------------------------------------------- the store
 
@@ -158,6 +243,16 @@ class Terminals {
       if (connection.state !== 'online' || previous.state === 'online') return;
       for (const id of this.entries.keys()) void this.attach(id);
     });
+
+    // The server drops events for a client that has fallen too far behind,
+    // and says so on the same socket, which stays open: nothing reconnects.
+    // A session that keeps printing shows the hole in its numbering and asks
+    // for its scrollback itself (`SessionStream.receive`). One that went
+    // quiet straight after the lost events never would, so every terminal
+    // asks here; `attach` rewrites only those the backend has run ahead of.
+    subscribe('events.lagged', () => {
+      for (const id of this.entries.keys()) void this.attach(id);
+    });
   }
 
   // --------------------------------------------------------- the sessions
@@ -193,12 +288,39 @@ class Terminals {
     const search = new SearchAddon();
     term.loadAddon(fit);
     term.loadAddon(search);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(
+      // The add-on's own handler calls `window.open`, which goes nowhere in
+      // the desktop shell's WebView: the link underlined and did nothing.
+      new WebLinksAddon((_event, address) => {
+        openExternal(address).catch((error: unknown) => {
+          toast.error('The link could not be opened', { description: reason(error) });
+        });
+      }),
+    );
 
     const host = document.createElement('div');
     host.className = 'nocturne-terminal-host';
     host.style.cssText = 'width:100%;height:100%;';
     parkingLot().append(host);
+
+    // xterm listens for `paste` on its textarea and on its own element, and
+    // sends the text to the device the instant the event arrives: before any
+    // question, and a second time if a listener beside it then asks one and
+    // is told yes. `preventDefault` does not stop a listener. Taking the
+    // event here, in the capture phase on the element xterm lives in, means
+    // it never reaches xterm at all. Every paste the browser raises comes
+    // this way — Shift+Insert, Ctrl+Shift+V, ⌘V, a middle click on Linux,
+    // the WebView's Edit menu — and carries its own text, so none of them
+    // needs permission to read the clipboard.
+    host.addEventListener(
+      'paste',
+      (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.paste(id, event.clipboardData?.getData('text/plain') ?? '');
+      },
+      true,
+    );
 
     const entry: Entry = {
       id,
@@ -210,11 +332,18 @@ class Terminals {
       stream: new SessionStream({
         write: (bytes) => term.write(bytes),
         reset: () => term.reset(),
+        resync: () => this.resync(id),
       }),
       view: { ...IDLE_VIEW },
       size: { cols: term.cols, rows: term.rows },
       resizeTimer: null,
       send: { inflight: false, pending: '' },
+      info: null,
+      ready: Promise.resolve(),
+      attaching: null,
+      attachAgain: false,
+      shortAnswers: 0,
+      resyncTimer: null,
     };
     this.entries.set(id, entry);
 
@@ -226,7 +355,7 @@ class Terminals {
       }),
     );
 
-    void this.attach(id);
+    entry.ready = this.attach(id);
   }
 
   /** Whether a session already has a terminal here. */
@@ -240,11 +369,22 @@ class Terminals {
   }
 
   /**
-   * Diverts keystrokes, for broadcast typing. The router returns true when it
-   * has taken the input; anything it refuses goes to its own session as usual.
+   * Diverts keystrokes, for broadcast typing: what is typed (or pasted) into
+   * one of the targets goes to all of them. Anything for another session goes
+   * to that session as usual.
    */
-  setRouter(router: ((id: string, data: string) => boolean) | null): void {
-    this.router = router;
+  setBroadcast(broadcast: Broadcast | null): void {
+    this.broadcast = broadcast;
+  }
+
+  /**
+   * How a paste that is worth a question is shown. The Terminal screen gives
+   * its sheet; `null` goes back to the plain dialog. Whoever sets one must
+   * answer what it was asked — an unanswered question holds up every paste
+   * behind it.
+   */
+  setPasteAsker(asker: PasteAsker | null): void {
+    this.asker = asker;
   }
 
   /** Disposes the terminal. The session itself is closed through `terminal.close`. */
@@ -252,6 +392,7 @@ class Terminals {
     const entry = this.entries.get(id);
     if (!entry) return;
     if (entry.resizeTimer) clearTimeout(entry.resizeTimer);
+    if (entry.resyncTimer) clearTimeout(entry.resyncTimer);
     entry.term.dispose();
     entry.host.remove();
     this.entries.delete(id);
@@ -265,23 +406,77 @@ class Terminals {
    * last event it covers. The stream was already listening, so nothing that
    * arrived while this was in flight is lost.
    */
-  private async attach(id: string): Promise<void> {
+  private attach(id: string): Promise<void> {
+    const entry = this.entries.get(id);
+    if (!entry) return Promise.resolve();
+    if (entry.attaching) {
+      // One at a time: an answer carries the whole scrollback, and a lagging
+      // client that asked once per notice would bury itself. But the answer
+      // on its way may have been taken before whatever prompted this request,
+      // so it is asked once more when that one is in.
+      entry.attachAgain = true;
+      return entry.attaching;
+    }
+    entry.attaching = this.attachOnce(entry).finally(() => {
+      entry.attaching = null;
+      if (!entry.attachAgain) return;
+      entry.attachAgain = false;
+      if (this.entries.get(id) === entry) void this.attach(id);
+    });
+    return entry.attaching;
+  }
+
+  /**
+   * The stream found a hole in the output and wants the scrollback. Asked at
+   * once the first time. An answer can fall short of the hole once, because
+   * it was already on its way; if answers keep falling short something is
+   * wrong at the far end, and asking in a tight loop would only freeze the
+   * window — so each further try waits longer than the last.
+   */
+  private resync(id: string): void {
     const entry = this.entries.get(id);
     if (!entry) return;
+    const tries = entry.shortAnswers;
+    entry.shortAnswers += 1;
+    if (tries === 0) {
+      void this.attach(id);
+      return;
+    }
+    if (entry.resyncTimer) return;
+    const wait = Math.min(RESYNC_MS.most, RESYNC_MS.first * 2 ** (tries - 1));
+    entry.resyncTimer = setTimeout(() => {
+      entry.resyncTimer = null;
+      if (this.entries.get(id) === entry) void this.attach(id);
+    }, wait);
+  }
+
+  private async attachOnce(entry: Entry): Promise<void> {
+    const id = entry.id;
     this.update(id, { attach: entry.view.attach === 'live' ? 'live' : 'attaching', error: null });
     try {
       const attached = await rpc<TerminalAttached>('terminal.attach', { session_id: id });
       if (!this.entries.has(id)) return;
-      entry.stream.attach(decodeBase64(attached.scrollback), attached.seq);
+      entry.info = attached.info;
+      const { rewritten } = entry.stream.attach(decodeBase64(attached.scrollback), attached.seq);
+      if (entry.stream.isAttached) {
+        // The screen is whole again: the next hole is a new one.
+        entry.shortAnswers = 0;
+        if (entry.resyncTimer) clearTimeout(entry.resyncTimer);
+        entry.resyncTimer = null;
+      }
+      // An attach that changed nothing on screen (it is asked for whenever
+      // events may have been missed) must not say "closed" a second time, nor
+      // pull someone reading the scrollback back down to the last line.
+      const saidClosed = entry.view.closed !== null && !rewritten;
       this.update(id, {
         attach: 'live',
         error: null,
         closed: attached.info.state === 'closed' ? (attached.info.close_reason ?? 'closed') : null,
       });
-      if (attached.info.state === 'closed') {
+      if (attached.info.state === 'closed' && !saidClosed) {
         this.notice(id, `session closed — ${attached.info.close_reason ?? 'the far end hung up'}`);
       }
-      entry.term.scrollToBottom();
+      if (rewritten) entry.term.scrollToBottom();
     } catch (error) {
       if (!this.entries.has(id)) return;
       const message = error instanceof RpcError ? error.message : 'the session could not be attached';
@@ -301,14 +496,41 @@ class Terminals {
   // ------------------------------------------------------------- the keys
 
   /**
-   * Keystrokes go to the backend as they are typed. Sends are chained per
-   * session so bytes cannot overtake each other, and anything typed while a
-   * send is in flight rides along with the next one.
+   * Text someone wants in a session, by whatever door it came: the browser's
+   * own paste, the toolbar, the context menu, a snippet, a drop. It is judged
+   * by the device's policy, asked about when that is worth a question, and
+   * sent once — or not at all. Nothing reaches the device before the answer.
+   */
+  paste(id: string, text: string, source: PasteSource = 'paste'): void {
+    if (text === '' || !this.entries.has(id)) return;
+    this.pastes.offer(id, text, source).catch((error: unknown) => {
+      toast.error('The paste was not sent', { description: reason(error) });
+    });
+  }
+
+  /**
+   * What the keyboard produced, or the terminal answering its device. It
+   * goes straight out, unless a paste into the same session is still being
+   * judged: then it waits behind the paste, as it was typed.
    */
   input(id: string, data: string): void {
+    if (data === '' || !this.entries.has(id)) return;
+    if (this.pastes.typed(id, data)) return;
+    this.dispatch(id, data);
+  }
+
+  /**
+   * Bytes go to the backend as they come. Sends are chained per session so
+   * bytes cannot overtake each other, and anything typed while a send is in
+   * flight rides along with the next one.
+   */
+  private dispatch(id: string, data: string): void {
     const entry = this.entries.get(id);
     if (!entry || data === '') return;
-    if (this.router?.(id, data)) return;
+    if (this.broadcast?.targets.includes(id)) {
+      this.broadcast.send(data);
+      return;
+    }
     if (entry.send.inflight) {
       entry.send.pending += data;
       return;

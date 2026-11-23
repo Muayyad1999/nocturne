@@ -12,28 +12,17 @@ import { Button } from '@/design/Button';
 import { Dialog } from '@/design/Dialog';
 import { Kbd } from '@/design/Kbd';
 import styles from './PasteSheet.module.css';
-import { pasteRisk, pasteSummary, splitLines } from './paste';
+import { pasteRisk, pasteSummary, pasteTitle, shownLines } from './paste';
+import type { PasteQuestion } from './pasteFunnel';
 
 /** Lines shown in full; a paste longer than this is summarised at the end. */
 const SHOWN = 200;
 
-export interface PasteRequest {
-  sessionId: string;
-  /** The session's title, for the question. */
-  title: string;
-  text: string;
-  /** What `terminal.classify` said, or null when it could not be asked. */
-  classes: TerminalLineClass[] | null;
-  /** Where the text came from, so the sheet can say it. */
-  source: 'paste' | 'snippet';
-  /** How many sessions it is going to, when a broadcast is on. */
-  targets: number;
-}
-
 export interface PasteSheetProps {
-  request: PasteRequest | null;
+  /** The question the paste funnel is asking, or null when it asks nothing. */
+  request: PasteQuestion | null;
   onCancel: () => void;
-  onConfirm: (request: PasteRequest) => void;
+  onConfirm: (request: PasteQuestion) => void;
 }
 
 const CLASS_LABEL: Record<TerminalLineClass['class'], string> = {
@@ -45,20 +34,17 @@ const CLASS_LABEL: Record<TerminalLineClass['class'], string> = {
 export function PasteSheet({ request, onCancel, onConfirm }: PasteSheetProps) {
   if (!request) return null;
 
-  const lines = splitLines(request.text.replace(/\n$/, ''));
+  const lines = shownLines(request.text);
   const classes = request.classes;
   const risk = classes ? pasteRisk(classes) : null;
   const shown = lines.slice(0, SHOWN);
-  const verb = request.source === 'snippet' ? 'Send this snippet' : 'Paste';
-  const where =
-    request.targets > 1 ? `${request.targets} sessions` : request.title;
 
   return (
     <Dialog
       open
       onClose={onCancel}
       size="lg"
-      title={`${verb} into ${where}?`}
+      title={pasteTitle(request)}
       description={
         <>
           {pasteSummary(request.text, risk)}{' '}

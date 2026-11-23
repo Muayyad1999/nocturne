@@ -26,13 +26,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { rpc } from '@/api/client';
 import { RpcError } from '@/api/errors';
 import { useRpc, useRpcMutation } from '@/api/hooks';
+import { inDesktopShell, readClipboardText } from '@/api/transports/shell';
 import type {
   Adhoc,
   SerialPortInfo,
   SessionInfo,
   Snippet,
   TerminalInputManyResult,
-  TerminalLineClass,
   TerminalOpenParams,
 } from '@/api/types/terminal';
 import { registerCommand } from '@/app/CommandPalette/commands';
@@ -49,13 +49,14 @@ import { Splitter } from '@/design/Splitter';
 import { toast } from '@/design/Toast';
 import { Toolbar, ToolbarSpacer } from '@/design/Toolbar';
 import { copyText } from '@/lib/clipboard';
+import { isMacPlatform } from '@/lib/keyboard';
 import { useTerminalAppearance } from './appearance';
 import { explainWithAssistant } from './assistant';
 import type { InventoryDevice } from './inventory';
 import { activeSessionId, broadcastTargets, MAX_PANES, useTerminalLayout } from './layout';
 import { Pane, type PaneActions } from './Pane';
-import { needsConfirmation } from './paste';
-import { PasteSheet, type PasteRequest } from './PasteSheet';
+import type { PasteQuestion } from './pasteFunnel';
+import { PasteSheet } from './PasteSheet';
 import { adhocFromSession } from './quickconnect';
 import { readRecents, rememberRecent, type Recent } from './recents';
 import styles from './Screen.module.css';
@@ -77,7 +78,11 @@ export default function TerminalPage() {
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [findPanes, setFindPanes] = useState<string[]>([]);
   const [dragging, setDragging] = useState<string | null>(null);
-  const [pasteRequest, setPasteRequest] = useState<PasteRequest | null>(null);
+  /** The paste question on screen, and how the funnel is told the answer. */
+  const [pasteQuestion, setPasteQuestion] = useState<{
+    question: PasteQuestion;
+    answer: (confirmed: boolean) => void;
+  } | null>(null);
 
   // -------------------------------------------------------------- the data
 
@@ -136,25 +141,50 @@ export default function TerminalPage() {
   // slower than the others cannot reorder what the rest receive.
   useEffect(() => {
     if (!layout.broadcast || targets.length < 2) {
-      terminals.setRouter(null);
+      terminals.setBroadcast(null);
       return;
     }
     const to = targetKey.split(' ');
-    terminals.setRouter((id, data) => {
-      if (!to.includes(id)) return false;
-      void rpc<TerminalInputManyResult>('terminal.input_many', { session_ids: to, data })
-        .then((result) => {
-          for (const failure of result.failed) {
-            toast.error('A session did not take that', { description: failure.message });
-          }
-        })
-        .catch((error: unknown) => {
-          if (error instanceof RpcError) toast.error(error.message);
-        });
-      return true;
+    terminals.setBroadcast({
+      targets: to,
+      send: (data) => {
+        void rpc<TerminalInputManyResult>('terminal.input_many', { session_ids: to, data })
+          .then((result) => {
+            for (const failure of result.failed) {
+              toast.error('A session did not take that', { description: failure.message });
+            }
+          })
+          .catch((error: unknown) => {
+            if (error instanceof RpcError) toast.error(error.message);
+          });
+      },
     });
-    return () => terminals.setRouter(null);
+    return () => terminals.setBroadcast(null);
   }, [layout.broadcast, targets.length, targetKey]);
+
+  // The seat belt. Every paste, by whatever door, goes through the registry's
+  // funnel (`terminals.paste`); when one is worth a question this screen
+  // shows it as the sheet with every line on it.
+  useEffect(() => {
+    let open: ((confirmed: boolean) => void) | null = null;
+    terminals.setPasteAsker(
+      (question) =>
+        new Promise<boolean>((resolve) => {
+          open = (confirmed) => {
+            open = null;
+            setPasteQuestion(null);
+            resolve(confirmed);
+          };
+          setPasteQuestion({ question, answer: open });
+        }),
+    );
+    return () => {
+      terminals.setPasteAsker(null);
+      // Leaving the screen with the sheet open is a "no": an answer that
+      // never came would hold up every paste after it, on every screen.
+      open?.(false);
+    };
+  }, []);
 
   // ----------------------------------------------------------- the actions
 
@@ -262,34 +292,6 @@ export default function TerminalPage() {
     );
   };
 
-  /** Everything typed from the UI goes through here, so the seat belt is never skipped. */
-  const requestPaste = async (sessionId: string, text: string, source: 'paste' | 'snippet' = 'paste') => {
-    const info = byId.get(sessionId);
-    let classes: TerminalLineClass[] | null = null;
-    try {
-      classes = await rpc<TerminalLineClass[]>('terminal.classify', {
-        device_id: info?.device_id ?? null,
-        text,
-      });
-    } catch {
-      // A policy that cannot be asked must not stop a paste; the sheet says so.
-      classes = null;
-    }
-    const broadcasting = layout.broadcast && targets.length > 1 && targets.includes(sessionId);
-    if (!broadcasting && !needsConfirmation(text, classes)) {
-      terminals.input(sessionId, text);
-      return;
-    }
-    setPasteRequest({
-      sessionId,
-      title: info?.title ?? 'this session',
-      text,
-      classes,
-      source,
-      targets: broadcasting ? targets.length : 1,
-    });
-  };
-
   const copySelection = async (sessionId: string) => {
     const selection = terminals.terminal(sessionId)?.getSelection() ?? '';
     if (selection === '') {
@@ -312,15 +314,37 @@ export default function TerminalPage() {
     });
   };
 
+  /**
+   * A paste with no `paste` event to carry its text — the toolbar button, the
+   * context menu — reads the clipboard: through the shell on the desktop, and
+   * with the browser's permission elsewhere. When that is refused the person
+   * is told, and told what works without it.
+   */
   const pasteFromClipboard = async (sessionId: string) => {
+    let text: string;
     try {
-      const text = await navigator.clipboard.readText();
-      if (text !== '') await requestPaste(sessionId, text);
-    } catch {
-      toast.info('Nothing to paste', {
-        description: 'The browser did not hand over the clipboard. Ctrl+Shift+V inside the terminal always works.',
+      text = await readClipboardText();
+    } catch (error) {
+      // The shell rejects with its reason as a sentence (an empty clipboard,
+      // most often); a browser with an exception that says nothing useful.
+      const why =
+        inDesktopShell() && typeof error === 'string'
+          ? error.replace(/[.\s]*$/, '.')
+          : inDesktopShell()
+            ? 'The clipboard could not be read.'
+            : 'The browser did not hand over the clipboard.';
+      // The keyboard's paste carries its own text, so it works regardless.
+      const chord = isMacPlatform() ? '⌘V' : 'Ctrl+Shift+V or Shift+Insert';
+      toast.info('Nothing was pasted', {
+        description: `${why} ${chord} in the terminal pastes without reading it.`,
       });
+      return;
     }
+    if (text === '') {
+      toast.info('Nothing was pasted', { description: 'There is no text on the clipboard.' });
+      return;
+    }
+    terminals.paste(sessionId, text);
   };
 
   const focusSearch = () => {
@@ -345,7 +369,7 @@ export default function TerminalPage() {
     split: (sessionId) => useTerminalLayout.getState().split(sessionId),
     moveTo: (sessionId, paneId) => useTerminalLayout.getState().moveTo(sessionId, paneId),
     closePane: (paneId) => useTerminalLayout.getState().closePane(paneId),
-    paste: (sessionId, text) => void requestPaste(sessionId, text),
+    pasteFromClipboard: (sessionId) => void pasteFromClipboard(sessionId),
     copySelection: (sessionId) => void copySelection(sessionId),
     explain,
     clear: (sessionId) => terminals.clear(sessionId),
@@ -722,12 +746,12 @@ export default function TerminalPage() {
       </div>
 
       <PasteSheet
-        request={pasteRequest}
-        onCancel={() => setPasteRequest(null)}
-        onConfirm={(request) => {
-          setPasteRequest(null);
-          terminals.input(request.sessionId, request.text);
-          terminals.focus(request.sessionId);
+        request={pasteQuestion?.question ?? null}
+        onCancel={() => pasteQuestion?.answer(false)}
+        onConfirm={(question) => {
+          // The funnel sends it; this only says yes.
+          pasteQuestion?.answer(true);
+          terminals.focus(question.sessionId);
         }}
       />
 
@@ -739,8 +763,9 @@ export default function TerminalPage() {
         onSend={(snippet: Snippet) => {
           if (!focusedId) return;
           setSnippetsOpen(false);
-          // Never an Enter of ours: the trailing newline comes off.
-          void requestPaste(focusedId, snippet.text.replace(/\n$/, ''), 'snippet');
+          // As a snippet, so that its last newline is not sent: the Enter is
+          // never ours.
+          terminals.paste(focusedId, snippet.text, 'snippet');
         }}
       />
     </Page>

@@ -15,9 +15,19 @@ import { ErrorState } from '@/design/ErrorState';
 import { Field } from '@/design/Field';
 import { Input } from '@/design/Input';
 import { SearchInput } from '@/design/SearchInput';
+import { Select } from '@/design/Select';
 import { Skeleton } from '@/design/Skeleton';
+import { TagInput } from '@/design/TagInput';
 import { Textarea } from '@/design/Textarea';
 import { fuzzyFilter } from '@/lib/fuzzy';
+import {
+  draftFor,
+  newDraft,
+  profileChoices,
+  saveParams,
+  withProfileChoice,
+  type SnippetDraft,
+} from './snippetDraft';
 import styles from './SnippetsDrawer.module.css';
 
 export interface SnippetsDrawerProps {
@@ -30,15 +40,9 @@ export interface SnippetsDrawerProps {
   onSend: (snippet: Snippet) => void;
 }
 
-interface Draft {
-  id: string | null;
-  name: string;
-  text: string;
-}
-
 export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: SnippetsDrawerProps) {
   const [query, setQuery] = useState('');
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [draft, setDraft] = useState<SnippetDraft | null>(null);
 
   const snippets = useRpc<Snippet[]>(
     'terminal.snippets.list',
@@ -82,7 +86,7 @@ export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: 
       }
       footer={
         draft ? null : (
-          <Button icon={Plus} onClick={() => setDraft({ id: null, name: '', text: '' })}>
+          <Button icon={Plus} onClick={() => setDraft(newDraft(profile))}>
             New snippet
           </Button>
         )
@@ -93,10 +97,7 @@ export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: 
           className={styles.form}
           onSubmit={(event) => {
             event.preventDefault();
-            save.mutate(
-              { id: draft.id, name: draft.name.trim(), text: draft.text, profile },
-              { onSuccess: () => setDraft(null) },
-            );
+            save.mutate(saveParams(draft), { onSuccess: () => setDraft(null) });
           }}
         >
           <Field label="Name" required>
@@ -117,6 +118,19 @@ export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: 
               value={draft.text}
               onChange={(event) => setDraft({ ...draft, text: event.target.value })}
             />
+          </Field>
+          <Field
+            label="Device type"
+            hint="A snippet for one device type is offered only in sessions to devices of that type."
+          >
+            <Select
+              options={profileChoices(draft, profile)}
+              value={draft.profile ?? ''}
+              onChange={(event) => setDraft(withProfileChoice(draft, event.target.value))}
+            />
+          </Field>
+          <Field label="Tags" hint="Words to find it by. Enter or a comma adds one.">
+            <TagInput value={draft.tags} onChange={(tags) => setDraft({ ...draft, tags })} />
           </Field>
           <div className={styles.formActions}>
             <Button onClick={() => setDraft(null)} disabled={save.isPending}>
@@ -154,7 +168,7 @@ export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: 
                   : 'Save the commands you type most and send them to any device in one click.'
               }
               action={
-                <Button size="sm" icon={Plus} onClick={() => setDraft({ id: null, name: '', text: '' })}>
+                <Button size="sm" icon={Plus} onClick={() => setDraft(newDraft(profile))}>
                   New snippet
                 </Button>
               }
@@ -178,6 +192,15 @@ export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: 
                     {snippet.text.includes('\n') && (
                       <span className={styles.more}>{snippet.text.trimEnd().split('\n').length} lines</span>
                     )}
+                    {snippet.tags.length > 0 && (
+                      <span className={styles.tags}>
+                        {snippet.tags.map((tag) => (
+                          <span key={tag} className={styles.tag}>
+                            {tag}
+                          </span>
+                        ))}
+                      </span>
+                    )}
                   </button>
                   <span className={styles.rowActions}>
                     <IconButton
@@ -191,7 +214,7 @@ export function SnippetsDrawer({ open, onClose, profile, destination, onSend }: 
                       icon={Pencil}
                       size="sm"
                       aria-label={`Edit ${snippet.name}`}
-                      onClick={() => setDraft({ id: snippet.id, name: snippet.name, text: snippet.text })}
+                      onClick={() => setDraft(draftFor(snippet))}
                     />
                     <IconButton
                       icon={Trash}

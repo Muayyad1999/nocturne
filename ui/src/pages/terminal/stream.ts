@@ -16,7 +16,11 @@
  *     that lands behind what is already on screen);
  *   * if the backend has moved further than the last event we applied — the
  *     event stream was down — the screen is cleared and the scrollback is
- *     written again, because that is the only way to be sure of no gap.
+ *     written again, because that is the only way to be sure of no gap;
+ *   * an event that is not the next one is a hole: the server dropped events
+ *     for a client that fell behind, on a socket that stayed open. Nothing
+ *     after a hole is written. The stream stops, asks for the scrollback
+ *     (`resync`) and holds what arrives until it has it.
  */
 
 /** Decodes the base64 of an output event into the raw bytes it carries. */
@@ -32,7 +36,21 @@ export interface StreamSink {
   write(bytes: Uint8Array): void;
   /** Throw away what is on screen: a reattach is about to rewrite it. */
   reset(): void;
+  /**
+   * Events went missing: call `terminal.attach` again and give the answer to
+   * `attach`. Asked once per hole; until the answer comes, events are held.
+   */
+  resync(): void;
 }
+
+/**
+ * The most events held while an attach is unanswered. An event is at most
+ * 32 KiB, and without a bound a device that keeps printing at a session whose
+ * attach never answers would fill memory. Letting the oldest go is safe: an
+ * attach that answers later covers them with its scrollback, and one that
+ * answered earlier leaves a hole, which is noticed.
+ */
+const HELD_MAX = 1024;
 
 /** What an attach did, for the caller's log and the tests. */
 export interface AttachOutcome {
@@ -67,15 +85,33 @@ export class SessionStream {
     return this.attached;
   }
 
+  /** How many events are waiting for an attach answer. */
+  get heldEvents(): number {
+    return this.held.length;
+  }
+
   /** An output event for this session. */
   receive(seq: number, bytes: Uint8Array): void {
     if (!this.attached) {
-      this.held.push({ seq, bytes });
+      this.hold(seq, bytes);
       return;
     }
     if (seq <= this.applied) return;
+    if (seq !== this.applied + 1) {
+      // Writing this would put it straight after the last event applied, as
+      // if the device had never printed what lies between.
+      this.attached = false;
+      this.hold(seq, bytes);
+      this.sink.resync();
+      return;
+    }
     this.applied = seq;
     this.sink.write(bytes);
+  }
+
+  private hold(seq: number, bytes: Uint8Array): void {
+    this.held.push({ seq, bytes });
+    if (this.held.length > HELD_MAX) this.held.shift();
   }
 
   /**
@@ -95,16 +131,17 @@ export class SessionStream {
     const held = this.held;
     this.held = [];
     let applied = 0;
-    // In the order they arrived; `receive` drops what the scrollback covers.
+    // In the order they arrived; `receive` drops what the scrollback covers,
+    // and stops again if this answer ends short of what is being held.
     for (const event of held.sort((a, b) => a.seq - b.seq)) {
       if (event.seq <= this.applied) continue;
-      applied += 1;
+      if (this.attached && event.seq === this.applied + 1) applied += 1;
       this.receive(event.seq, event.bytes);
     }
     return { rewritten, applied };
   }
 
-  /** Back to "nothing on screen is known", for the next attach. */
+  /** Back to "nothing on screen is known": the next attach writes the scrollback whatever its number. */
   detach(): void {
     this.attached = false;
     this.held = [];
