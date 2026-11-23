@@ -68,6 +68,16 @@ Fallback only if another crate's manifest breaks the workspace again (mention in
         `ssh/tunnel.rs`: a task always drains the outer channel into a Relay (cap 32 MiB); inner session reads
         from that. 8/8 pass after; also verified against real sshd as hop (new openssh_interop test: 3 raw `cat`
         shells × 3.2 MB echo + SFTP 6 MiB up/down twice, one session through the hop).
+      * Later (Windows CI stall, finding t2): the same wait exists between any two russh session loops at the two
+        ends of one connection, client ↔ `serve_ssh` included — russh writes all it has before it reads again, so
+        once both have more to send than the socket buffers hold, neither reads. Linux autotunes loopback buffers
+        to megabytes and hid it (0 of 75 runs froze, one core and busy loops included); with tcp_wmem/tcp_rmem
+        fixed in a private netns: ≥ 448 KiB never, 384 KiB 1/10, 320 KiB 8/10, ≤ 256 KiB 25/25 (both sockets
+        with full Recv-Q and Send-Q, nothing moving). With the drain: 0 of 190 runs froze, the same conditions
+        down to 4 KiB buffers. `tunnel.rs` became `drain.rs`, applied to
+        the transport of every client session (every hop, so the tunnel too) and every `serve_ssh` connection.
+        Tests over a 2 KiB in-memory pipe: our client ↔ our server, ↔ a plain russh server, plain russh client ↔
+        our server. Not affected: OpenSSH as the peer (it keeps reading while it writes).
 - [x] tests/stock_clients.rs (8 tests): serve_ssh / serve_telnet against the stock OpenSSH `ssh` client
       (no terminal + in a pty via our own `connect_local`: pty size, window-change, password and
       keyboard-interactive via SSH_ASKPASS, every modern kex/cipher/MAC + compression + ed25519/rsa-sha2 host

@@ -19,7 +19,7 @@ pub use ssh::{SshServerConfig, serve_ssh};
 pub use telnet::serve_telnet;
 
 #[cfg(test)]
-pub(crate) use ssh::{SshServerOptions, serve_ssh_with};
+pub(crate) use ssh::{SshServerOptions, serve_ssh_over, serve_ssh_with};
 
 /// How long sessions get to hang up after a shutdown was requested.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);

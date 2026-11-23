@@ -62,6 +62,7 @@
 //! or anything opened from it (shells, [`Sftp`]), is alive.
 
 mod connection;
+mod drain;
 mod error;
 mod local;
 mod net;

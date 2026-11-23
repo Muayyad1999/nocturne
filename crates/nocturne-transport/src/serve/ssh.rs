@@ -23,12 +23,14 @@ use russh::{
     Channel, ChannelId, ChannelMsg, ChannelOpenFailure, ChannelReadHalf, ChannelWriteHalf,
     Disconnect, MethodKind, MethodSet, Pty,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use super::{ServerHandle, SessionHandler, ShutdownSignal, spawn_server};
 use crate::connection::{Connection, ConnectionReader, Input, Output};
+use crate::drain;
 use crate::error::TransportError;
 use crate::relay::{Relay, Staging};
 use crate::ssh::{CryptoPolicy, Role, decode_private_key, preferred_algorithms};
@@ -55,6 +57,10 @@ const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 const FLOOD_NOTICE: &str = "\r\nSession closed: too much input that the device does not read.\r\n";
 /// Session channels one connection may hold open.
 const MAX_CHANNELS: usize = 16;
+/// What is taken off a connection while its session is not reading (see
+/// [`crate::drain`]): twice what a client that respects its windows can
+/// have in flight on every channel it may hold.
+const UNREAD_HIGH_WATER: usize = 2 * MAX_CHANNELS * WINDOW as usize;
 /// A client must have identified itself within this time…
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// …and be logged in within this one.
@@ -131,6 +137,50 @@ pub(crate) async fn serve_ssh_with(
     handler: Arc<dyn SessionHandler>,
     options: SshServerOptions,
 ) -> Result<ServerHandle, TransportError> {
+    let bind = config.bind;
+    let (russh_config, shared) = settings(config, handler, options)?;
+    let listener = TcpListener::bind(bind).await?;
+    let local_addr = listener.local_addr()?;
+    Ok(spawn_server(
+        listener,
+        local_addr,
+        move |stream, peer, shutdown| {
+            serve_connection(
+                stream,
+                peer,
+                Arc::clone(&russh_config),
+                Arc::clone(&shared),
+                shutdown,
+            )
+        },
+    ))
+}
+
+/// Serves the one client at the other end of `stream`, whatever kind of
+/// stream it is, until that client is gone.
+#[cfg(test)]
+pub(crate) async fn serve_ssh_over<S>(
+    stream: S,
+    handler: Arc<dyn SessionHandler>,
+    options: SshServerOptions,
+) -> Result<(), TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (russh_config, shared) = settings(SshServerConfig::default(), handler, options)?;
+    let peer = SocketAddr::from(([127, 0, 0, 1], 0));
+    // Nobody asks this server to stop; the sender only has to outlive it.
+    let (_running, stopped) = tokio::sync::watch::channel(false);
+    serve_connection(stream, peer, russh_config, shared, ShutdownSignal(stopped)).await;
+    Ok(())
+}
+
+/// What the connections of one server are run with.
+fn settings(
+    config: SshServerConfig,
+    handler: Arc<dyn SessionHandler>,
+    options: SshServerOptions,
+) -> Result<(Arc<server::Config>, Arc<Shared>), TransportError> {
     let host_key = match &config.host_key {
         Some(text) => decode_private_key(text, None)
             .map_err(|reason| TransportError::Protocol(format!("invalid host key: {reason}")))?,
@@ -178,22 +228,7 @@ pub(crate) async fn serve_ssh_with(
         allow_tcp_forwarding: options.allow_tcp_forwarding,
         input_limit: options.input_limit.unwrap_or(INPUT_LIMIT),
     });
-
-    let listener = TcpListener::bind(config.bind).await?;
-    let local_addr = listener.local_addr()?;
-    Ok(spawn_server(
-        listener,
-        local_addr,
-        move |stream, peer, shutdown| {
-            serve_connection(
-                stream,
-                peer,
-                Arc::clone(&russh_config),
-                Arc::clone(&shared),
-                shutdown,
-            )
-        },
-    ))
+    Ok((russh_config, shared))
 }
 
 /// What every connection of one server shares.
@@ -219,13 +254,15 @@ impl Shared {
 }
 
 /// Runs one client connection to its end.
-async fn serve_connection(
-    stream: TcpStream,
+async fn serve_connection<S>(
+    stream: S,
     peer: SocketAddr,
     config: Arc<server::Config>,
     shared: Arc<Shared>,
     mut shutdown: ShutdownSignal,
-) {
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let logged_in = Arc::new(AtomicBool::new(false));
     let handler = ClientSession {
         peer,
@@ -235,6 +272,9 @@ async fn serve_connection(
         behind: Arc::new(AtomicUsize::new(0)),
         logged_in: Arc::clone(&logged_in),
     };
+    // russh stops reading while it has something to write; a client that
+    // does the same (ours does) would wait for us as we wait for it.
+    let stream = drain::always_read(stream, UNREAD_HIGH_WATER);
     let hello = server::run_stream(config, stream, handler);
     let session = match tokio::time::timeout(HELLO_TIMEOUT, hello).await {
         Ok(Ok(session)) => session,

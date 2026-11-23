@@ -4,19 +4,21 @@ use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use russh::keys::{Algorithm, HashAlg};
-use russh::{MethodKind, cipher, kex, mac};
+use russh::{ChannelId, ChannelMsg, Disconnect, MethodKind, MethodSet, Pty, cipher, kex, mac};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
-use super::support::{Lab, Tap, contains, in_the_end, pattern, soon, tap};
-use crate::serve::{ServerHandle, SshServerConfig, SshServerOptions, serve_ssh, serve_ssh_with};
+use super::support::{Lab, PATIENCE, Receive, Tap, contains, in_the_end, pattern, soon, tap};
+use crate::serve::{
+    ServerHandle, SshServerConfig, SshServerOptions, serve_ssh, serve_ssh_over, serve_ssh_with,
+};
 use crate::ssh::{CryptoPolicy, Role, preferred_algorithms};
 use crate::{
-    AcceptAnyHostKey, Connection, HostKeyVerifier, KeyKind, LegacyCrypto, MemoryKnownHosts,
+    AcceptAnyHostKey, Connection, HostKeyVerifier, KeyKind, LegacyCrypto, MemoryKnownHosts, Output,
     PresentedKey, SshAuth, SshHop, SshParams, SshSession, TransportError, TransportKind,
     connect_ssh, generate_keypair,
 };
@@ -983,31 +985,287 @@ async fn bulk_traffic_both_ways_on_several_shells() {
     lab.wait_idle().await;
 }
 
-/// Megabytes of input, echoed, on four shells of one session at once.
-async fn echo_in_bulk_on_several_shells(params: &SshParams) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_traffic_both_ways_does_not_depend_on_what_the_connection_holds() {
+    // Megabytes are owed in each direction and the connection takes a few
+    // kilobytes of them at a time: an end that stops listening until it has
+    // been heard out waits for a peer that is doing the same. A socket hides
+    // this for as long as the operating system buffers enough for it (Linux
+    // does, here; on a Windows CI runner it most likely did not), a pipe of a
+    // fixed size does not. With our code at both ends, either end that keeps
+    // reading is enough; the two tests after this one hold each end to it.
+    for capacity in [64 * 1024, 2 * 1024] {
+        let (session, lab) = joined_by_a_pipe(capacity).await;
+        echo_in_bulk_on_several_shells_of(session).await;
+        lab.wait_idle().await;
+    }
+}
+
+/// A session with a server at the other end of an in-memory pipe that holds
+/// `capacity` bytes in each direction.
+async fn joined_by_a_pipe(capacity: usize) -> (SshSession, Arc<Lab>) {
+    let (near, far) = tokio::io::duplex(capacity);
+    let lab = Lab::new();
+    tokio::spawn(serve_ssh_over(
+        far,
+        lab.clone(),
+        SshServerOptions::default(),
+    ));
+    let params = SshParams {
+        host: "pipe".to_owned(),
+        username: "op".to_owned(),
+        ..SshParams::default()
+    };
+    let session = soon(SshSession::connect_over(near, &params, any_host_key()))
+        .await
+        .unwrap();
+    (session, lab)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_that_stops_reading_while_it_writes_does_not_freeze_our_client() {
+    // Such a server only finishes writing, and gets back to reading what we
+    // send, once we have read what it wrote: it is our client that has to
+    // keep reading. (Against our own server the server's side would hide
+    // it.)
+    let (near, far) = tokio::io::duplex(2 * 1024);
+    tokio::spawn(async move {
+        let config = plain_server_config();
+        if let Ok(session) = russh::server::run_stream(config, far, PlainEcho).await {
+            let _ = session.await;
+        }
+    });
+    let params = SshParams {
+        host: "pipe".to_owned(),
+        username: "op".to_owned(),
+        ..SshParams::default()
+    };
+    let session = soon(SshSession::connect_over(near, &params, any_host_key()))
+        .await
+        .unwrap();
+    echo_in_bulk_on_several_shells_of(session).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_stops_reading_while_it_writes_does_not_freeze_our_server() {
+    // The same the other way round: against such a client, it is our server
+    // that has to keep reading. (Our own client would hide it.)
     const SHELLS: usize = 4;
     const CHUNK: usize = 32_000;
     const CHUNKS: usize = 150;
-    let session = soon(SshSession::connect(params, any_host_key()))
+    let (near, far) = tokio::io::duplex(2 * 1024);
+    let lab = Lab::new();
+    tokio::spawn(serve_ssh_over(
+        far,
+        lab.clone(),
+        SshServerOptions::default(),
+    ));
+    let config = Arc::new(russh::client::Config::default());
+    let mut client = soon(russh::client::connect_stream(config, near, PlainClient))
         .await
         .unwrap();
+    assert!(
+        soon(client.authenticate_none("op"))
+            .await
+            .unwrap()
+            .success()
+    );
 
+    let progress: Vec<Arc<Progress>> = (0..SHELLS).map(|_| Arc::default()).collect();
     let mut shells = Vec::new();
-    for _ in 0..SHELLS {
-        let (writer, reader) = soon(session.shell()).await.unwrap().split();
+    for slot in &progress {
+        let opening = async {
+            let channel = client.channel_open_session().await?;
+            channel.request_shell(false).await?;
+            Ok::<_, russh::Error>(channel)
+        };
+        // Not `soon`: a plain russh client waits for ever, and the failure
+        // has to say where the shells stood.
+        let channel = match tokio::time::timeout(PATIENCE, opening).await {
+            Ok(Ok(channel)) => channel,
+            Ok(Err(error)) => panic!(
+                "the server does not open another shell: {error}\n{}",
+                stall_report(&progress)
+            ),
+            Err(_) => panic!(
+                "the server does not answer a request for another shell\n{}",
+                stall_report(&progress)
+            ),
+        };
+        let (reader, writer) = channel.split();
+        let progress = Arc::clone(slot);
         shells.push(tokio::spawn(async move {
             let mut reader = tap(reader);
             reader.until(b"lab> ").await;
+            let sent = Arc::clone(&progress);
+            let sender = tokio::spawn(async move {
+                let chunk = bytes::Bytes::from((0..CHUNK).map(pattern).collect::<Vec<u8>>());
+                for _ in 0..CHUNKS {
+                    writer.data_bytes(chunk.clone()).await.unwrap();
+                    sent.sent.fetch_add(CHUNK, Ordering::Relaxed);
+                }
+                writer
+            });
+            for chunk in 0..CHUNKS {
+                let echoed = reader.exactly(CHUNK).await;
+                for (index, byte) in echoed.iter().enumerate() {
+                    let at = chunk * CHUNK + index;
+                    assert_eq!(*byte, pattern(index), "byte {at} is wrong");
+                }
+                progress.echoed.fetch_add(CHUNK, Ordering::Relaxed);
+            }
+            in_the_end(sender).await.unwrap()
+        }));
+    }
+    for shell in shells {
+        if let Err(failure) = in_the_end(shell).await {
+            panic!("{failure}\n{}", stall_report(&progress));
+        }
+    }
+    soon(client.disconnect(Disconnect::ByApplication, "", "en"))
+        .await
+        .unwrap();
+    lab.wait_idle().await;
+}
+
+/// A server built on russh the way its examples build one: what a channel
+/// receives is echoed from inside the session's loop, which writes all of it
+/// before it reads again.
+struct PlainEcho;
+
+fn plain_server_config() -> Arc<russh::server::Config> {
+    let key =
+        russh::keys::PrivateKey::random(&mut russh::keys::key::safe_rng(), Algorithm::Ed25519)
+            .unwrap();
+    Arc::new(russh::server::Config {
+        methods: MethodSet::from(&[MethodKind::None][..]),
+        keys: vec![key],
+        ..russh::server::Config::default()
+    })
+}
+
+impl russh::server::Handler for PlainEcho {
+    type Error = russh::Error;
+
+    async fn auth_none(&mut self, _user: &str) -> Result<russh::server::Auth, Self::Error> {
+        Ok(russh::server::Auth::Accept)
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        _channel: russh::Channel<russh::server::Msg>,
+        reply: russh::server::ChannelOpenHandle,
+        _session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        // What arrives is handled in `data`; nobody reads the channel.
+        reply.accept().await;
+        Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        _term: &str,
+        _cols: u32,
+        _rows: u32,
+        _pixel_width: u32,
+        _pixel_height: u32,
+        _modes: &[(Pty, u32)],
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel)
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel)?;
+        session.data(channel, bytes::Bytes::from_static(b"lab> "))
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        session.data(channel, bytes::Bytes::copy_from_slice(data))
+    }
+}
+
+/// A client built on russh the way its examples build one.
+struct PlainClient;
+
+impl russh::client::Handler for PlainClient {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
+/// What a channel of a plain russh client receives, as a [`Tap`] reads it.
+impl Receive for russh::ChannelReadHalf {
+    async fn next(&mut self) -> Option<Output> {
+        loop {
+            match self.wait().await? {
+                ChannelMsg::Data { data } => return Some(Output::Data(data)),
+                ChannelMsg::Close => return Some(Output::Closed { reason: None }),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Megabytes of input, echoed, on four shells of one session at once.
+async fn echo_in_bulk_on_several_shells(params: &SshParams) {
+    let session = soon(SshSession::connect(params, any_host_key()))
+        .await
+        .unwrap();
+    echo_in_bulk_on_several_shells_of(session).await;
+}
+
+async fn echo_in_bulk_on_several_shells_of(session: SshSession) {
+    const SHELLS: usize = 4;
+    const CHUNK: usize = 32_000;
+    const CHUNKS: usize = 150;
+
+    let progress: Vec<Arc<Progress>> = (0..SHELLS).map(|_| Arc::default()).collect();
+    let mut shells = Vec::new();
+    for slot in &progress {
+        let (writer, reader) = match soon(session.shell()).await {
+            Ok(shell) => shell.split(),
+            // The shells before this one are already busy.
+            Err(error) => panic!(
+                "the session does not open another shell: {error}\n{}",
+                stall_report(&progress)
+            ),
+        };
+        let progress = Arc::clone(slot);
+        shells.push(tokio::spawn(async move {
+            let mut reader = tap(reader);
+            reader.until(b"lab> ").await;
+            let sent = Arc::clone(&progress);
             let sender = tokio::spawn(async move {
                 let chunk = bytes::Bytes::from((0..CHUNK).map(pattern).collect::<Vec<u8>>());
                 for _ in 0..CHUNKS {
                     writer.send(chunk.clone()).await.unwrap();
+                    sent.sent.fetch_add(CHUNK, Ordering::Relaxed);
                 }
                 writer
             });
-            let echoed = reader.exactly(CHUNK * CHUNKS).await;
-            for (index, byte) in echoed.iter().enumerate() {
-                assert_eq!(*byte, pattern(index % CHUNK), "byte {index} is wrong");
+            for chunk in 0..CHUNKS {
+                let echoed = reader.exactly(CHUNK).await;
+                for (index, byte) in echoed.iter().enumerate() {
+                    let at = chunk * CHUNK + index;
+                    assert_eq!(*byte, pattern(index), "byte {at} is wrong");
+                }
+                progress.echoed.fetch_add(CHUNK, Ordering::Relaxed);
             }
             let writer = in_the_end(sender).await.unwrap();
             writer.close().await;
@@ -1016,9 +1274,48 @@ async fn echo_in_bulk_on_several_shells(params: &SshParams) {
         }));
     }
     for shell in shells {
-        in_the_end(shell).await.unwrap();
+        if let Err(failure) = in_the_end(shell).await {
+            let answers = match tokio::time::timeout(PATIENCE, session.shell()).await {
+                Ok(Ok(_)) => "still opens another shell".to_owned(),
+                Ok(Err(error)) => format!("does not open another shell: {error}"),
+                Err(_) => "does not answer a request for another shell".to_owned(),
+            };
+            panic!(
+                "{failure}\nthe session {answers}\n{}",
+                stall_report(&progress)
+            );
+        }
     }
     soon(session.close()).await;
+}
+
+/// How far one shell of a bulk test got.
+#[derive(Default)]
+struct Progress {
+    /// Bytes the transport took from the test.
+    sent: AtomicUsize,
+    /// Bytes of echo the test got back and checked.
+    echoed: AtomicUsize,
+}
+
+/// Where a bulk test that failed stood, for whoever reads the failure and
+/// cannot run it again. Read it together with whether the session still
+/// opens a shell: one that does not has both ends waiting to be read
+/// ([`crate::drain`] is there to prevent that); one that does, with shells
+/// that stand still, lost a window adjustment or holds one back.
+fn stall_report(progress: &[Arc<Progress>]) -> String {
+    let lines: Vec<String> = progress
+        .iter()
+        .enumerate()
+        .map(|(shell, progress)| {
+            format!(
+                "shell {shell}: the transport took {} bytes, {} came back",
+                progress.sent.load(Ordering::Relaxed),
+                progress.echoed.load(Ordering::Relaxed),
+            )
+        })
+        .collect();
+    lines.join("\n")
 }
 
 // ------------------------------------------------------------ legacy crypto
@@ -1213,9 +1510,12 @@ async fn algorithms_no_set_contains_are_reported_as_unsupported() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slow_reader_does_not_stall_keepalives() {
-    // The server drops clients that miss two keep-alives 150 ms apart.
+    // The server drops clients that miss three keep-alives 400 ms apart, well
+    // inside the 2.5 s the reader looks away below. At two misses 150 ms apart,
+    // a CPU taken by the bulk tests running beside this one was enough to miss
+    // them now and then: the scheduler's doing, not the session's.
     let options = SshServerOptions {
-        keepalive: Some((Duration::from_millis(150), 2)),
+        keepalive: Some((Duration::from_millis(400), 3)),
         ..SshServerOptions::default()
     };
     let (server, lab) = server_with(config(&[]), options).await;
@@ -1227,7 +1527,7 @@ async fn a_slow_reader_does_not_stall_keepalives() {
     const TOTAL: usize = 1_500_000;
     let command = format!("flood {TOTAL} 60\r");
     conn.send(command.clone()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
 
     conn.until(command.as_bytes()).await;
     let payload = conn.exactly(TOTAL).await;

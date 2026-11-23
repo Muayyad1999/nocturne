@@ -217,6 +217,23 @@ releases).**
   clean `Output::Closed { reason }` on EOF/exit/failure (include the exit
   status or disconnect message when known). Back-pressure must not deadlock:
   a slow reader must not stall keepalives.
+* A session never relies on the connection to hold what is in flight. russh
+  writes everything it has to send before it reads again, so two russh
+  sessions facing each other — our client and `serve_ssh`, either of them
+  and any other russh-based peer, a session and the one it tunnels through a
+  jump host — each with more to send than the connection buffers, wait for
+  each other for good, keep-alives included (most likely what froze a test on
+  a Windows CI runner, though that was not reproduced on Windows; on Linux it
+  took loopback buffers held to a few hundred kilobytes). The transport of
+  every session, client and server, is therefore read by a task of its own
+  (`drain.rs`): up to 32 MiB (client) or 8 MiB (server) is taken off it while
+  the session is busy. That is what the windows let a peer that keeps to them
+  have in flight on 16 busy channels of the client (2 MiB each), and twice
+  what they let reach the server (at most 16 channels of 256 KiB); beyond it
+  the session stops reading after all. Bulk traffic in both directions must
+  get through a connection that buffers next to nothing, whether or not the
+  other end reads while it writes (OpenSSH does, a plain russh peer does
+  not).
 * SFTP via `russh-sftp` (add it to the crate's `Cargo.toml`).
 * Agent auth: implement if russh exposes a usable agent client on both Unix
   and Windows; otherwise return `Unsupported` on the missing platform.
@@ -249,7 +266,12 @@ concurrent sessions.
    host-key verifier accept/reject/TOFU-changed); `connect_telnet` ↔
    `serve_telnet`, plus a raw TCP fake that sends awkward IAC sequences split
    across writes; `connect_local` running `printf`/`echo`; `Connection::pair`
-   semantics; a jump-host test chaining two in-process servers.
+   semantics; a jump-host test chaining two in-process servers; megabytes
+   echoed on several shells at once, over sockets and over an in-memory pipe
+   that holds a couple of kilobytes (the operating system's socket buffers
+   must not be what makes it work) — our client with our server, and each of
+   them with a plain russh peer that stops reading while it writes, so that
+   each end is shown to keep reading on its own.
 2. **Interoperability with real daemons on this machine** (skip, don't fail,
    when they are missing): start a private OpenSSH `sshd` on a high port
    (`/usr/sbin/sshd -D -e -f <temp config> -p <port>`, own host keys, a

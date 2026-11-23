@@ -18,11 +18,11 @@ use super::auth;
 use super::jump;
 use super::keys::{HostKeyVerifier, PresentedKey};
 use super::sftp::Sftp;
-use super::tunnel;
 use super::{LegacyCrypto, SshAuth, SshParams};
 use crate::connection::{
     Backend, Connection, ConnectionInfo, Features, Input, Output, TransportKind,
 };
+use crate::drain;
 use crate::error::TransportError;
 use crate::net::host_port;
 use crate::pump::{Outcome, ReadEnd, WriteEnd, drive};
@@ -41,6 +41,12 @@ const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const MIN_AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// What `exec` collects at most: a runaway command must not eat the memory.
 const EXEC_OUTPUT_LIMIT: usize = 256 * 1024 * 1024;
+/// What is taken off a session's transport — the socket, or the tunnel
+/// through a jump host — while the session itself is not reading (see
+/// [`crate::drain`]). Far above what the windows of a handful of busy
+/// channels allow to be in flight (2 MiB each); beyond it the server is
+/// made to wait after all.
+const UNREAD_HIGH_WATER: usize = 32 * 1024 * 1024;
 
 const BREAK_UNSUPPORTED: &str = "a break cannot be sent over SSH: russh 0.65 has no way to send \
      the RFC 4335 \"break\" channel request";
@@ -244,7 +250,8 @@ impl SessionInner {
         let target = host_port(host, port);
         match tokio::time::timeout(limit, opening).await {
             Err(_) => Err(TransportError::ConnectTimeout),
-            Ok(Ok(channel)) => Ok(tunnel::stream(channel)),
+            // The channel is closed once the next session lets go of it.
+            Ok(Ok(channel)) => Ok(channel.into_stream()),
             Ok(Err(russh::Error::ChannelOpenFailure(reason))) => Err(match reason {
                 russh::ChannelOpenFailure::ConnectFailed => TransportError::Unreachable(format!(
                     "the jump host could not connect to {target}"
@@ -304,6 +311,17 @@ pub(crate) struct ConnectOptions {
     pub keepalive: Option<Duration>,
     pub legacy: LegacyCrypto,
     pub verifier: Arc<dyn HostKeyVerifier>,
+}
+
+impl ConnectOptions {
+    fn new(params: &SshParams, verifier: Arc<dyn HostKeyVerifier>) -> Self {
+        Self {
+            timeout: Duration::from_millis(params.connect_timeout_ms.max(1)),
+            keepalive: (params.keepalive_s > 0).then(|| Duration::from_secs(params.keepalive_s)),
+            legacy: params.legacy,
+            verifier,
+        }
+    }
 }
 
 /// A session that completed the handshake and authentication.
@@ -373,6 +391,9 @@ async fn handshake<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    // russh stops reading while it has something to write; a peer that does
+    // the same would wait for us as we wait for it.
+    let stream = drain::always_read(stream, UNREAD_HIGH_WATER);
     let connecting = client::connect_stream(config, stream, handler);
     tokio::pin!(connecting);
     let mut deadline = Instant::now() + limit;
@@ -474,16 +495,19 @@ impl SshSession {
         params: &SshParams,
         verifier: Arc<dyn HostKeyVerifier>,
     ) -> Result<SshSession, TransportError> {
-        let timeout = Duration::from_millis(params.connect_timeout_ms.max(1));
-        let options = ConnectOptions {
-            timeout,
-            keepalive: (params.keepalive_s > 0).then(|| Duration::from_secs(params.keepalive_s)),
-            legacy: params.legacy,
-            verifier,
-        };
+        let options = ConnectOptions::new(params, verifier);
         let (established, via) = jump::open_chain(params, &options).await?;
-        let session = established.session;
+        Ok(Self::over(established, via, params, options.timeout))
+    }
 
+    /// The session object for a connection that is logged in.
+    fn over(
+        established: Established,
+        via: Vec<String>,
+        params: &SshParams,
+        timeout: Duration,
+    ) -> SshSession {
+        let session = established.session;
         let info = {
             let state = session.shared.state();
             let negotiated = state.negotiated.clone().unwrap_or_default();
@@ -500,14 +524,37 @@ impl SshSession {
                 via,
             }
         };
-        Ok(SshSession {
+        SshSession {
             session,
             info,
             term: params.term.clone(),
             cols: params.cols,
             rows: params.rows,
             request_timeout: timeout.max(Duration::from_secs(5)),
-        })
+        }
+    }
+
+    /// Logs in over a stream that is already connected to the server,
+    /// whatever kind of stream it is.
+    #[cfg(test)]
+    pub(crate) async fn connect_over<S>(
+        stream: S,
+        params: &SshParams,
+        verifier: Arc<dyn HostKeyVerifier>,
+    ) -> Result<SshSession, TransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let options = ConnectOptions::new(params, verifier);
+        let endpoint = Endpoint {
+            host: &params.host,
+            port: params.port,
+            username: &params.username,
+            auth: &params.auth,
+        };
+        let established =
+            establish(stream, &endpoint, CryptoPolicy::Modern, &options, None).await?;
+        Ok(Self::over(established, Vec::new(), params, options.timeout))
     }
 
     pub fn info(&self) -> &ConnectionInfo {
