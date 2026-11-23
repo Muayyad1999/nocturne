@@ -143,6 +143,13 @@ mod tests {
             "logs.pull",
             "logs.rules.save",
             "logs.status",
+            "logs.ingest",
+            "logs.forward.list",
+            "logs.forward.save",
+            "logs.forward.delete",
+            "logs.forward.test",
+            "flows.top",
+            "flows.exporters",
             // automation
             "tasks.list",
             "tasks.run",
