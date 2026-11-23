@@ -24,6 +24,7 @@ which mirrors the engine's structs and is brought up to them when they move.
 | `CreditDialogs.tsx`, `CreditNoteList.tsx`, `Credits.tsx` | issuing, allocating and voiding a credit note; a customer's or an invoice's notes; the list of all of them |
 | `SettingsTab.tsx` | the business's calendar (with "use this computer's offset"), payment terms, number prefix, arrears bands, usage basis |
 | `opening.ts` | when a dialog's form is prepared: as it opens, and not again while it is open |
+| `seed-dates.ts` | not part of the application: the dates the end-to-end seed writes, counted from the day it runs, and the months and document numbers the spec and the screenshots then expect (`tests/support/isp.ts`). It is here because unit tests are collected from `src/` only |
 
 The React-free modules (`money`, `calendar`, `coverage`, `ageing`,
 `billing-rows`, `credit-notes`, `records`) hold every decision that could be
@@ -213,13 +214,42 @@ which is what that test asserts. The calendar tests open their own browser
 contexts in `Asia/Baghdad` and `Pacific/Auckland`: the point of them is that
 the zone of the browser changes nothing.
 
-The seed's invoices are dated October to December 2026 and two tests read
-them against the real clock ("overdue", "not due yet"), so the spec is right
-from 11 October to 1 December 2026 and wants its dates moved after that. The
-steps added for credit notes, the calendar, the months billed from the
-screens and the month filter take their dates from the clock instead; the
-month filter's last step reads the August 2026 draft an earlier test left,
-and goes with the seed when that is re-dated.
+Two tests read the seed's invoices against the real clock ("overdue", "not
+due yet"), and dates typed into the seed could satisfy them for seven weeks
+of 2026 and no longer. So the seed's dates are counted from the moment it
+runs, in the calendar the engine has then (`seed-dates.ts`): the month it
+bills is the last whole one, the overdue invoice was issued on the 2nd of it
+and fell due on its 10th, the open one is issued on the 1st of this month and
+falls due three weeks from today, the part-period plan starts on the 16th of
+the billed month, and the two plans billed whole began two months before it.
+`seed-dates.test.ts` holds that to the engine's rules and to the screens'
+own formatting over every midnight of five years in six calendars: the
+overdue invoice is at least two days late and the open one at least two days
+from due in whichever calendar it is read in, no invoice is issued in the
+future or before its plan began, every period is one whole month and no two
+overlap.
+
+The spec and the screenshots type in no date, month or document number: the
+month a run previews, the months the reissued invoice and the hand-made
+draft are for, the words on a part-period line and the numbers of the two
+seeded invoices all come from `seeded.dates`. A date typed in beside them is
+right on the day it is typed, so the spec would only notice once the month
+had turned: `seed-dates.test.ts` therefore also reads the seed, the spec and
+the screenshots and fails, the same day, if the code of one holds a year
+with a month, a day or a document number, a `Date.UTC` of a figure or a
+month by name. It cannot see a date that is fixed without being written as
+one — the wrong field of `seeded.dates`, a start counted by hand — and for
+those the spec is still the only check, after the month turns.
+
+A number carries the year its document was issued in and each year counts
+from one, so in January the seed's two invoices are the first of two
+different years. What a test issues itself — the credit notes, the invoice
+that falls due today — is numbered in the year the test runs in; a run still
+going when the year ends would expect the old year's sequence on notes
+issued after midnight, which is not guarded against. The steps added for the
+calendar, the months billed from the screens and the month filter take their
+dates from the clock in the test itself, and their arithmetic (`dayIn`,
+`monthIn`, `monthsBefore`) is the same module's.
 
 What a helper decides is tested in the unit tests, and that a screen
 actually uses it is tested here, one screen at a time: the plan's start

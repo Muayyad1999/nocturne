@@ -14,13 +14,17 @@
  *   (`interface_never_collected`: nobody has looked), and one with no serving
  *   device at all (`no_serving_device`) — two different nothings;
  * * **an invoice that is overdue**, issued and due in the past, and one that
- *   is owed but not due yet, so the ageing has something in two bands;
+ *   is owed but not due yet, so the ageing has something in two bands —
+ *   which stays true only of dates counted from the day the seed runs, so
+ *   every date written here is one (`src/pages/isp/seed-dates.ts`);
  * * **a payment in a currency the invoice is not in**, recorded at the rate
  *   it was taken at (1 USD = 1320 IQD, as a person quotes it);
  * * **a part period**, from a subscription that started mid-month, so an
  *   invoice line carries its proration;
  * * **a draft that is left a draft**, and a suspended account.
  */
+
+import { seedDates, type SeedDates } from '../../src/pages/isp/seed-dates';
 
 export interface Rpc {
   <T = unknown>(method: string, params?: unknown): Promise<T>;
@@ -43,16 +47,22 @@ export interface Seeded {
   openInvoice: string;
   /** The draft that is deliberately left a draft, with a pro-rated line. */
   draftInvoice: string;
-  /** The October window every invoice here is for. */
-  october: { start: number; end: number };
+  /**
+   * Every date that was written, and what the screens will call them: the
+   * month every invoice here is for, the months either side of it, when each
+   * invoice was issued and falls due, and the number the engine gave it.
+   */
+  dates: SeedDates;
 }
 
-const UTC = (year: number, month: number, day = 1) => Date.UTC(year, month - 1, day);
-
-/** The whole of October 2026, as `[start, end)` — one whole monthly period. */
-const OCTOBER = { start: UTC(2026, 10), end: UTC(2026, 11) };
-
 export async function seedIsp(rpc: Rpc): Promise<Seeded> {
+  // Counted from now, in the calendar the engine will write each invoice in:
+  // it decides what is overdue by its own clock and the business's calendar.
+  const settings = await rpc<{ utc_offset_minutes: number }>('settings.get', { section: 'isp' });
+  const dates = seedDates(Date.now(), settings.utc_offset_minutes);
+  // One whole monthly period, as `[start, end)`.
+  const billed = { period_start: dates.billed.start, period_end: dates.billed.end };
+
   const device = await rpc<{ id: string }>('devices.create', {
     name: 'tower-a-rtr',
     address: '10.9.9.1',
@@ -112,21 +122,24 @@ export async function seedIsp(rpc: Rpc): Promise<Seeded> {
     tower: 'Tower A',
   });
 
+  // Both since two months before the billed one, so that it and the month
+  // before it are each a whole period of a plan already in force.
   await rpc('isp.subscription.create', {
     customer_id: zagros.customer.id,
     tariff_id: home.tariff.id,
-    started_at: UTC(2026, 8),
+    started_at: dates.plansStart,
   });
   await rpc('isp.subscription.create', {
     customer_id: tigris.customer.id,
     tariff_id: business.tariff.id,
-    started_at: UTC(2026, 8),
+    started_at: dates.plansStart,
   });
-  // Mid-October, so an October invoice for them is a part period.
+  // From the middle of the billed month, so their invoice for it is a part
+  // period.
   await rpc('isp.subscription.create', {
     customer_id: dohuk.customer.id,
     tariff_id: home.tariff.id,
-    started_at: UTC(2026, 10, 16),
+    started_at: dates.partPlanStart,
   });
 
   const link = await rpc<{ link: { id: string } }>('isp.link.save', {
@@ -141,13 +154,12 @@ export async function seedIsp(rpc: Rpc): Promise<Seeded> {
   // Zagros: issued and overdue, with part of it paid in dinars.
   const zagrosDraft = await rpc<{ invoice: { id: string } }>('isp.invoice.draft', {
     customer_id: zagros.customer.id,
-    period_start: OCTOBER.start,
-    period_end: OCTOBER.end,
+    ...billed,
   });
-  const overdue = await rpc<{ id: string }>('isp.invoice.issue', {
+  const overdue = await rpc<{ id: string; number: string | null }>('isp.invoice.issue', {
     id: zagrosDraft.invoice.id,
-    issued_at: UTC(2026, 10, 2),
-    due_at: UTC(2026, 10, 10),
+    issued_at: dates.overdue.issuedAt,
+    due_at: dates.overdue.dueAt,
   });
   await rpc('isp.payment.record', {
     customer_id: zagros.customer.id,
@@ -161,14 +173,28 @@ export async function seedIsp(rpc: Rpc): Promise<Seeded> {
   // the rate it was taken at. 33 000 IQD ÷ 1 320 = 25.00 USD, exactly.
   const tigrisDraft = await rpc<{ invoice: { id: string } }>('isp.invoice.draft', {
     customer_id: tigris.customer.id,
-    period_start: OCTOBER.start,
-    period_end: OCTOBER.end,
+    ...billed,
   });
-  const open = await rpc<{ id: string }>('isp.invoice.issue', {
+  const open = await rpc<{ id: string; number: string | null }>('isp.invoice.issue', {
     id: tigrisDraft.invoice.id,
-    issued_at: UTC(2026, 11, 1),
-    due_at: UTC(2026, 12, 1),
+    issued_at: dates.open.issuedAt,
+    due_at: dates.open.dueAt,
   });
+  // The numbers are the engine's to give. If it gave others, every assertion
+  // that looks an invoice up by its number would fail somewhere else, on a
+  // row that is not there: say so here instead.
+  for (const [invoice, planned] of [
+    [overdue, dates.overdue],
+    [open, dates.open],
+  ] as const) {
+    if (invoice.number !== planned.number) {
+      throw new Error(
+        `the seed expected the engine to number an invoice ${planned.number} and it is ` +
+          `${invoice.number ?? 'not numbered'}: the ledger was not empty, or it has a number ` +
+          'prefix set, or `seed-dates.ts` no longer numbers as `isp.invoice.issue` does',
+      );
+    }
+  }
   await rpc('isp.payment.record', {
     customer_id: tigris.customer.id,
     invoice_id: open.id,
@@ -182,8 +208,7 @@ export async function seedIsp(rpc: Rpc): Promise<Seeded> {
   // account — which is a decision about the account and nothing else.
   const dohukDraft = await rpc<{ invoice: { id: string } }>('isp.invoice.draft', {
     customer_id: dohuk.customer.id,
-    period_start: OCTOBER.start,
-    period_end: OCTOBER.end,
+    ...billed,
   });
   await rpc('isp.customer.state', {
     id: dohuk.customer.id,
@@ -202,7 +227,7 @@ export async function seedIsp(rpc: Rpc): Promise<Seeded> {
     overdueInvoice: overdue.id,
     openInvoice: open.id,
     draftInvoice: dohukDraft.invoice.id,
-    october: OCTOBER,
+    dates,
   };
 }
 

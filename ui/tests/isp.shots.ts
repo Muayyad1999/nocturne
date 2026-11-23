@@ -12,6 +12,11 @@
  *
  * These are written to `tests/shots/isp/<night|day>/` and are not compared
  * against anything: they exist to be looked at before a change ships.
+ *
+ * The dates in the picture are counted from the day it is taken
+ * (`src/pages/isp/seed-dates.ts`), so the overdue invoice is overdue and the
+ * other is not due yet whenever that is; the months and the document numbers
+ * waited for below come from the same place.
  */
 
 import { execFile } from 'node:child_process';
@@ -23,6 +28,7 @@ import { promisify } from 'node:util';
 import { expect, test, type Page } from '@playwright/test';
 import { openApp, pageLoaded, settle, type Theme } from './support/app';
 import { startBackend, type Backend } from './support/backend';
+import { creditNoteNumber, yearIn } from '../src/pages/isp/seed-dates';
 import { seedIsp, seedManyCustomers, type Seeded } from './support/isp';
 
 const run = promisify(execFile);
@@ -90,6 +96,14 @@ test.afterAll(async () => {
   if (uiDir) await rm(uiDir, { recursive: true, force: true });
 });
 
+/**
+ * The number of the `sequence`th credit note issued above: numbered in the
+ * year it is issued in, in the business's calendar, each year from one.
+ */
+function creditNote(sequence: number): string {
+  return creditNoteNumber(yearIn(Date.now(), seeded.dates.offset), sequence);
+}
+
 async function shoot(page: Page, theme: Theme, name: string): Promise<void> {
   const directory = join(SHOTS, THEME_FOLDER[theme]);
   await mkdir(directory, { recursive: true });
@@ -105,6 +119,8 @@ async function openIsp(page: Page, theme: Theme, tab: string, dock = false): Pro
 for (const theme of THEMES) {
   test(`isp screens — ${theme}`, async ({ page }) => {
     test.setTimeout(600_000);
+    const overdue = seeded.dates.overdue.number;
+    const open = seeded.dates.open.number;
 
     // ---------------------------------------------------------- the customers
     await openIsp(page, theme, 'customers');
@@ -121,14 +137,14 @@ for (const theme of THEMES) {
 
     // ----------------------------------------------------------- the invoices
     await openIsp(page, theme, 'invoices');
-    await expect(page.getByRole('table', { name: 'Invoices' })).toContainText('2026-0001');
+    await expect(page.getByRole('table', { name: 'Invoices' })).toContainText(overdue);
     await shoot(page, theme, 'invoices');
 
     // An issued invoice: frozen, part paid, part credited — the four figures
     // that add up, the rate the dinar payment was taken at, and the note.
-    await page.getByRole('table', { name: 'Invoices' }).getByRole('button', { name: '2026-0002' }).click();
-    const issued = page.getByRole('dialog', { name: '2026-0002' });
-    await expect(issued.getByRole('group', { name: 'Credit notes' })).toContainText('CN-2026-0001');
+    await page.getByRole('table', { name: 'Invoices' }).getByRole('button', { name: open }).click();
+    const issued = page.getByRole('dialog', { name: open });
+    await expect(issued.getByRole('group', { name: 'Credit notes' })).toContainText(creditNote(1));
     await shoot(page, theme, 'invoice-issued');
 
     // Issuing another: what a credit note is, the cap, and what it would leave.
@@ -158,9 +174,10 @@ for (const theme of THEMES) {
     await page.getByLabel('Invoice state').selectOption('');
     await page.getByRole('button', { name: 'Bill a period…' }).click();
     const run = page.getByRole('dialog', { name: 'Bill a period' });
-    // November: October is already invoiced for both of them, so a preview
-    // of it would be a screen full of "already invoiced" reasons.
-    await run.getByLabel('Period').selectOption('2026-11');
+    // The month after the one the seed billed: that one is already invoiced
+    // for both of them, so a preview of it would be a screen full of
+    // "already invoiced" reasons.
+    await run.getByLabel('Period').selectOption(seeded.dates.following.name);
     await run.getByRole('button', { name: 'Preview', exact: true }).click();
     await expect(run.getByText('Preview — nothing has been written')).toBeVisible();
     await shoot(page, theme, 'run-preview');
@@ -186,9 +203,9 @@ for (const theme of THEMES) {
 
     // ------------------------------------------------------- the credit notes
     await openIsp(page, theme, 'credits');
-    await expect(page.getByRole('table', { name: 'Credit notes' })).toContainText('CN-2026-0002');
+    await expect(page.getByRole('table', { name: 'Credit notes' })).toContainText(creditNote(2));
     await expect(page.getByRole('table', { name: 'Credit notes' })).toContainText(
-      'against invoice 2026-0002',
+      `against invoice ${open}`,
     );
     await shoot(page, theme, 'credits');
 
